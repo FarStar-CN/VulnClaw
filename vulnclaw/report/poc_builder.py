@@ -9,7 +9,6 @@ from pathlib import Path
 from vulnclaw.agent.context import SessionState, VulnerabilityFinding
 from vulnclaw.report.verifier import PoCGenerator
 
-
 PYTHON_POC_TEMPLATE = '''\
 #!/usr/bin/env python3
 """
@@ -30,7 +29,6 @@ Notes:
 
 
 _VULN_TYPE_ALIASES: dict[str, str] = {
-    "sqli": "sql_injection",
     "sqli": "sql_injection",
     "sql injection": "sql_injection",
     "sql_injection": "sql_injection",
@@ -118,7 +116,9 @@ def generate_pocs(session: SessionState, output_dir: Path) -> list[Path]:
 
     for i, finding in enumerate(session.findings, 1):
         safe_name = _sanitize_filename_component(finding.title)
-        cve_suffix = f"_{_sanitize_filename_component(finding.cve, max_length=24)}" if finding.cve else ""
+        cve_suffix = (
+            f"_{_sanitize_filename_component(finding.cve, max_length=24)}" if finding.cve else ""
+        )
         filename = f"poc_{i:02d}_{safe_name}{cve_suffix}.py"
         target = _extract_target(finding, session.target or "")
         content = _build_poc_content(finding, target=target, filename=filename)
@@ -165,4 +165,3 @@ def _next_available_poc_path(output_dir: Path, filename: str) -> Path:
         if not candidate.exists():
             return candidate
     return output_dir / f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}{suffix}"
-

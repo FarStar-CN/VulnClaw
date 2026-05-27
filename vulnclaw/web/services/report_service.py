@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 from vulnclaw.config.settings import SESSIONS_DIR, ensure_dirs
 from vulnclaw.report.generator import generate_report_from_target_state
@@ -26,9 +26,13 @@ def list_reports(limit: int = 50) -> list[dict[str, str | int]]:
     """List recent reports from the sessions directory."""
     ensure_dirs()
     items: list[dict[str, str | int]] = []
-    for path in sorted(SESSIONS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+    for path in sorted(SESSIONS_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)[
+        :limit
+    ]:
         items.append(_report_item(path, "markdown"))
-    for path in sorted(SESSIONS_DIR.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+    for path in sorted(SESSIONS_DIR.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True)[
+        :limit
+    ]:
         items.append(_report_item(path, "html"))
     return items[:limit]
 

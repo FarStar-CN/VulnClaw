@@ -13,26 +13,69 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import re
 import urllib.parse
-import html
 from typing import Any, Optional
-
 
 # ── Morse Code Tables ────────────────────────────────────────────────
 
 MORSE_ENCODE = {
-    "A": ".-", "B": "-...", "C": "-.-.", "D": "-..", "E": ".", "F": "..-.",
-    "G": "--.", "H": "....", "I": "..", "J": ".---", "K": "-.-", "L": ".-..",
-    "M": "--", "N": "-.", "O": "---", "P": ".--.", "Q": "--.-", "R": ".-.",
-    "S": "...", "T": "-", "U": "..-", "V": "...-", "W": ".--", "X": "-..-",
-    "Y": "-.--", "Z": "--..", "0": "-----", "1": ".----", "2": "..---",
-    "3": "...--", "4": "....-", "5": ".....", "6": "-....", "7": "--...",
-    "8": "---..", "9": "----.", ".": ".-.-.-", ",": "--..--", "?": "..--..",
-    "'": ".----.", "!": "-.-.--", "/": "-..-.", "(": "-.--.", ")": "-.--.-",
-    "&": ".-...", ":": "---...", ";": "-.-.-.", "=": "-...-", "+": ".-.-.",
-    "-": "-....-", "_": "..--.-", '"': ".-..-.", "$": "...-..-", "@": ".--.-.",
+    "A": ".-",
+    "B": "-...",
+    "C": "-.-.",
+    "D": "-..",
+    "E": ".",
+    "F": "..-.",
+    "G": "--.",
+    "H": "....",
+    "I": "..",
+    "J": ".---",
+    "K": "-.-",
+    "L": ".-..",
+    "M": "--",
+    "N": "-.",
+    "O": "---",
+    "P": ".--.",
+    "Q": "--.-",
+    "R": ".-.",
+    "S": "...",
+    "T": "-",
+    "U": "..-",
+    "V": "...-",
+    "W": ".--",
+    "X": "-..-",
+    "Y": "-.--",
+    "Z": "--..",
+    "0": "-----",
+    "1": ".----",
+    "2": "..---",
+    "3": "...--",
+    "4": "....-",
+    "5": ".....",
+    "6": "-....",
+    "7": "--...",
+    "8": "---..",
+    "9": "----.",
+    ".": ".-.-.-",
+    ",": "--..--",
+    "?": "..--..",
+    "'": ".----.",
+    "!": "-.-.--",
+    "/": "-..-.",
+    "(": "-.--.",
+    ")": "-.--.-",
+    "&": ".-...",
+    ":": "---...",
+    ";": "-.-.-.",
+    "=": "-...-",
+    "+": ".-.-.",
+    "-": "-....-",
+    "_": "..--.-",
+    '"': ".-..-.",
+    "$": "...-..-",
+    "@": ".--.-.",
 }
 
 MORSE_DECODE = {v: k for k, v in MORSE_ENCODE.items()}
@@ -47,9 +90,15 @@ BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 OPERATIONS: dict[str, dict[str, Any]] = {}
 
 
-def _register(name: str, category: str, description: str, required_params: list[str],
-              optional_params: dict[str, str] | None = None):
+def _register(
+    name: str,
+    category: str,
+    description: str,
+    required_params: list[str],
+    optional_params: dict[str, str] | None = None,
+):
     """Decorator to register a crypto operation."""
+
     def decorator(func):
         OPERATIONS[name] = {
             "function": func,
@@ -59,10 +108,12 @@ def _register(name: str, category: str, description: str, required_params: list[
             "optional_params": optional_params or {},
         }
         return func
+
     return decorator
 
 
 # ── Encoding / Decoding Operations ───────────────────────────────────
+
 
 @_register("base64_encode", "encode", "Base64 编码", ["input"])
 def _base64_encode(input_str: str, **_) -> dict:
@@ -84,7 +135,9 @@ def _base64_decode(input_str: str, **_) -> dict:
     except Exception as e:
         # Try URL-safe base64
         try:
-            decoded = base64.urlsafe_b64decode(cleaned + "=" * (4 - missing_padding if missing_padding else 0))
+            decoded = base64.urlsafe_b64decode(
+                cleaned + "=" * (4 - missing_padding if missing_padding else 0)
+            )
             return {"success": True, "result": decoded.decode("utf-8", errors="replace")}
         except Exception:
             return {"success": False, "result": "", "error": f"Base64 解码失败: {e}"}
@@ -217,6 +270,7 @@ def _unicode_decode(input_str: str, **_) -> dict:
 @_register("rot13_encode", "encode", "ROT13 编码（自逆，编码即解码）", ["input"])
 def _rot13(input_str: str, **_) -> dict:
     import codecs
+
     result = codecs.encode(input_str, "rot_13")
     return {"success": True, "result": result}
 
@@ -225,8 +279,9 @@ def _rot13(input_str: str, **_) -> dict:
 _register("rot13_decode", "decode", "ROT13 解码（自逆）", ["input"])(_rot13)
 
 
-@_register("caesar_encode", "encode", "Caesar 密码编码（位移加密）", ["input"],
-            {"shift": "位移量，默认3"})
+@_register(
+    "caesar_encode", "encode", "Caesar 密码编码（位移加密）", ["input"], {"shift": "位移量，默认3"}
+)
 def _caesar_encode(input_str: str, shift: int = 3, **_) -> dict:
     result = []
     for char in input_str:
@@ -238,8 +293,13 @@ def _caesar_encode(input_str: str, shift: int = 3, **_) -> dict:
     return {"success": True, "result": "".join(result)}
 
 
-@_register("caesar_decode", "decode", "Caesar 密码解码（暴力破解所有位移）", ["input"],
-            {"shift": "位移量，如不提供则返回所有25种可能"})
+@_register(
+    "caesar_decode",
+    "decode",
+    "Caesar 密码解码（暴力破解所有位移）",
+    ["input"],
+    {"shift": "位移量，如不提供则返回所有25种可能"},
+)
 def _caesar_decode(input_str: str, shift: Optional[int] = None, **_) -> dict:
     if shift is not None:
         result = []
@@ -298,6 +358,7 @@ def _morse_decode(input_str: str, **_) -> dict:
 
 # ── Hash Operations ──────────────────────────────────────────────────
 
+
 @_register("md5_hash", "hash", "MD5 哈希", ["input"])
 def _md5_hash(input_str: str, **_) -> dict:
     result = hashlib.md5(input_str.encode("utf-8")).hexdigest()
@@ -324,12 +385,17 @@ def _sha512_hash(input_str: str, **_) -> dict:
 
 # ── JWT Operations ───────────────────────────────────────────────────
 
+
 @_register("jwt_decode", "decode", "JWT 解码（Header + Payload）", ["input"])
 def _jwt_decode(input_str: str, **_) -> dict:
     try:
         parts = input_str.strip().split(".")
         if len(parts) != 3:
-            return {"success": False, "result": "", "error": "JWT 必须包含3部分（header.payload.signature）"}
+            return {
+                "success": False,
+                "result": "",
+                "error": "JWT 必须包含3部分（header.payload.signature）",
+            }
 
         # Decode header (base64url)
         header_b64 = parts[0]
@@ -351,22 +417,37 @@ def _jwt_decode(input_str: str, **_) -> dict:
         return {"success": False, "result": "", "error": f"JWT 解码失败: {e}"}
 
 
-@_register("jwt_encode", "encode", "JWT 编码（需要 header, payload, secret）", ["input"],
-            {"header": "JWT header JSON", "secret": "签名密钥", "algorithm": "签名算法，默认 HS256"})
-def _jwt_encode(input_str: str, header: str = '{"alg":"HS256","typ":"JWT"}',
-                secret: str = "", algorithm: str = "HS256", **_) -> dict:
+@_register(
+    "jwt_encode",
+    "encode",
+    "JWT 编码（需要 header, payload, secret）",
+    ["input"],
+    {"header": "JWT header JSON", "secret": "签名密钥", "algorithm": "签名算法，默认 HS256"},
+)
+def _jwt_encode(
+    input_str: str,
+    header: str = '{"alg":"HS256","typ":"JWT"}',
+    secret: str = "",
+    algorithm: str = "HS256",
+    **_,
+) -> dict:
     try:
         import hmac
+
         header_data = json.loads(header)
         payload_data = json.loads(input_str)
 
-        header_b64 = base64.urlsafe_b64encode(
-            json.dumps(header_data, separators=(",", ":")).encode()
-        ).rstrip(b"=").decode()
+        header_b64 = (
+            base64.urlsafe_b64encode(json.dumps(header_data, separators=(",", ":")).encode())
+            .rstrip(b"=")
+            .decode()
+        )
 
-        payload_b64 = base64.urlsafe_b64encode(
-            json.dumps(payload_data, separators=(",", ":")).encode()
-        ).rstrip(b"=").decode()
+        payload_b64 = (
+            base64.urlsafe_b64encode(json.dumps(payload_data, separators=(",", ":")).encode())
+            .rstrip(b"=")
+            .decode()
+        )
 
         signing_input = f"{header_b64}.{payload_b64}"
 
@@ -385,12 +466,19 @@ def _jwt_encode(input_str: str, header: str = '{"alg":"HS256","typ":"JWT"}',
 
 # ── AES Operations ───────────────────────────────────────────────────
 
-@_register("aes_encrypt", "encrypt", "AES 加密（CBC 模式，PKCS7 填充）", ["input"],
-            {"key": "密钥（16/24/32字节）", "iv": "初始化向量（16字节，默认与密钥相同）"})
+
+@_register(
+    "aes_encrypt",
+    "encrypt",
+    "AES 加密（CBC 模式，PKCS7 填充）",
+    ["input"],
+    {"key": "密钥（16/24/32字节）", "iv": "初始化向量（16字节，默认与密钥相同）"},
+)
 def _aes_encrypt(input_str: str, key: str = "", iv: str = "", **_) -> dict:
     try:
         from Crypto.Cipher import AES
         from Crypto.Util.Padding import pad
+
         key_bytes = key.encode("utf-8") if key else b"0123456789abcdef"
         iv_bytes = (iv.encode("utf-8") if iv else key_bytes)[:16]
 
@@ -402,17 +490,27 @@ def _aes_encrypt(input_str: str, key: str = "", iv: str = "", **_) -> dict:
         encrypted = cipher.encrypt(padded)
         return {"success": True, "result": base64.b64encode(encrypted).decode()}
     except ImportError:
-        return {"success": False, "result": "", "error": "需要安装 pycryptodome: pip install pycryptodome"}
+        return {
+            "success": False,
+            "result": "",
+            "error": "需要安装 pycryptodome: pip install pycryptodome",
+        }
     except Exception as e:
         return {"success": False, "result": "", "error": f"AES 加密失败: {e}"}
 
 
-@_register("aes_decrypt", "decrypt", "AES 解密（CBC 模式，PKCS7 填充）", ["input"],
-            {"key": "密钥（16/24/32字节）", "iv": "初始化向量（16字节，默认与密钥相同）"})
+@_register(
+    "aes_decrypt",
+    "decrypt",
+    "AES 解密（CBC 模式，PKCS7 填充）",
+    ["input"],
+    {"key": "密钥（16/24/32字节）", "iv": "初始化向量（16字节，默认与密钥相同）"},
+)
 def _aes_decrypt(input_str: str, key: str = "", iv: str = "", **_) -> dict:
     try:
         from Crypto.Cipher import AES
         from Crypto.Util.Padding import unpad
+
         key_bytes = key.encode("utf-8") if key else b"0123456789abcdef"
         iv_bytes = (iv.encode("utf-8") if iv else key_bytes)[:16]
 
@@ -424,12 +522,17 @@ def _aes_decrypt(input_str: str, key: str = "", iv: str = "", **_) -> dict:
         decrypted = unpad(cipher.decrypt(encrypted), AES.block_size)
         return {"success": True, "result": decrypted.decode("utf-8", errors="replace")}
     except ImportError:
-        return {"success": False, "result": "", "error": "需要安装 pycryptodome: pip install pycryptodome"}
+        return {
+            "success": False,
+            "result": "",
+            "error": "需要安装 pycryptodome: pip install pycryptodome",
+        }
     except Exception as e:
         return {"success": False, "result": "", "error": f"AES 解密失败: {e}"}
 
 
 # ── Auto-detect decode ───────────────────────────────────────────────
+
 
 @_register("auto_decode", "decode", "自动识别编码类型并解码（尝试所有常见编码）", ["input"])
 def _auto_decode(input_str: str, **_) -> dict:
@@ -464,7 +567,7 @@ def _auto_decode(input_str: str, **_) -> dict:
             pass
 
     # 4. Base64 decode
-    if re.match(r'^[A-Za-z0-9+/]+=*$', s) and len(s) >= 4:
+    if re.match(r"^[A-Za-z0-9+/]+=*$", s) and len(s) >= 4:
         try:
             cleaned = s
             missing = len(cleaned) % 4
@@ -477,7 +580,7 @@ def _auto_decode(input_str: str, **_) -> dict:
             pass
 
     # 5. Base64url decode (for JWT-like)
-    if re.match(r'^[A-Za-z0-9_-]+$', s) and len(s) >= 4:
+    if re.match(r"^[A-Za-z0-9_-]+$", s) and len(s) >= 4:
         try:
             cleaned = s
             missing = len(cleaned) % 4
@@ -490,7 +593,7 @@ def _auto_decode(input_str: str, **_) -> dict:
             pass
 
     # 6. Base32 decode
-    if re.match(r'^[A-Z2-7]+=*$', s.upper()) and len(s) >= 8:
+    if re.match(r"^[A-Z2-7]+=*$", s.upper()) and len(s) >= 8:
         try:
             cleaned = s.upper()
             missing = len(cleaned) % 8
@@ -503,7 +606,7 @@ def _auto_decode(input_str: str, **_) -> dict:
             pass
 
     # 7. Hex decode
-    if re.match(r'^[0-9a-fA-F]+$', s) and len(s) % 2 == 0 and len(s) >= 2:
+    if re.match(r"^[0-9a-fA-F]+$", s) and len(s) % 2 == 0 and len(s) >= 2:
         try:
             decoded = bytes.fromhex(s).decode("utf-8", errors="strict")
             if decoded and any(c.isprintable() for c in decoded):
@@ -523,6 +626,7 @@ def _auto_decode(input_str: str, **_) -> dict:
     # 9. ROT13
     if s.isalpha():
         import codecs
+
         try:
             decoded = codecs.encode(s, "rot_13")
             if decoded != s:
@@ -537,6 +641,7 @@ def _auto_decode(input_str: str, **_) -> dict:
 
 
 # ── Public API ───────────────────────────────────────────────────────
+
 
 def execute(operation: str, input_str: str, **kwargs) -> dict:
     """Execute a crypto operation by name.

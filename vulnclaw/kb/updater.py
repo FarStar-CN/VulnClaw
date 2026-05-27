@@ -17,8 +17,8 @@ def seed_knowledge_base(store: KnowledgeStore) -> None:
             "id": "CVE-2026-21858",
             "title": "n8n Arbitrary File Read via Public Form",
             "description": "n8n versions >= 1.65.0 and < 1.121.0 allow unauthenticated "
-                          "arbitrary file read through public form submission endpoints when "
-                          "a workflow contains a Form Ending node returning a binary file.",
+            "arbitrary file read through public form submission endpoints when "
+            "a workflow contains a Form Ending node returning a binary file.",
             "severity": "Critical",
             "affected": "n8n >= 1.65.0, < 1.121.0",
             "tags": ["n8n", "file-read", "rce", "critical"],
@@ -36,7 +36,7 @@ def seed_knowledge_base(store: KnowledgeStore) -> None:
             "id": "CVE-2025-68613",
             "title": "n8n Authenticated Expression Injection RCE",
             "description": "Authenticated expression injection in n8n allows RCE via "
-                          "malicious workflow expressions.",
+            "malicious workflow expressions.",
             "severity": "Critical",
             "affected": "n8n >= 0.211.0, < 1.120.4",
             "tags": ["n8n", "rce", "expression-injection", "critical"],

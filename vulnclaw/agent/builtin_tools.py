@@ -17,7 +17,6 @@ from urllib.parse import urlparse
 
 from vulnclaw.agent.constraint_policy import validate_tool_action
 
-
 BLOCKED_PATTERNS: list[str] = [
     r"os\.\s*system\s*\(",
     r"subprocess\.\s*Popen\s*\(",
@@ -140,7 +139,9 @@ async def execute_mcp_tool(agent: Any, tool_name: str, args: dict[str, Any]) -> 
                 if content is not None:
                     summary_parts.append(str(content))
                 if isinstance(structured, dict) and structured:
-                    summary_parts.append(f"[structured] {json.dumps(structured, ensure_ascii=False)}")
+                    summary_parts.append(
+                        f"[structured] {json.dumps(structured, ensure_ascii=False)}"
+                    )
                 if summary_parts:
                     return "\n".join(summary_parts)
                 return f"[tool:{tool_name}] completed"
@@ -181,7 +182,9 @@ def enforce_port_constraints(agent: Any, ports: list[int], *, target: str = "") 
     return None
 
 
-def enforce_host_path_constraints(agent: Any, *, host: str = "", path: str = "", target: str = "") -> str | None:
+def enforce_host_path_constraints(
+    agent: Any, *, host: str = "", path: str = "", target: str = ""
+) -> str | None:
     """Return a user-facing violation when host/path are out of scope."""
     session = getattr(agent, "session_state", None)
     constraints = getattr(session, "task_constraints", None)
@@ -258,122 +261,155 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
     """Build OpenAI function calling schema from MCP tools + built-in tools."""
     tools: list[dict[str, Any]] = []
 
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "load_skill_reference",
-            "description": "加载指定 Skill 的参考文档，获取详细的渗透测试方法论、工作流或命令参考。当系统提示中提到'可用参考文档'时，使用此工具获取具体内容。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "skill_name": {
-                        "type": "string",
-                        "description": "Skill 名称，如 client-reverse, web-security-advanced, ai-mcp-security, intranet-pentest-advanced, pentest-tools, rapid-checklist, crypto-toolkit, ctf-web, ctf-crypto, ctf-misc, osint-recon",
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "load_skill_reference",
+                "description": "加载指定 Skill 的参考文档，获取详细的渗透测试方法论、工作流或命令参考。当系统提示中提到'可用参考文档'时，使用此工具获取具体内容。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Skill 名称，如 client-reverse, web-security-advanced, ai-mcp-security, intranet-pentest-advanced, pentest-tools, rapid-checklist, crypto-toolkit, ctf-web, ctf-crypto, ctf-misc, osint-recon",
+                        },
+                        "reference_name": {
+                            "type": "string",
+                            "description": "参考文档文件名，如 02-client-api-reverse-and-burp.md, web-injection.md, encoding-cheatsheet.md",
+                        },
                     },
-                    "reference_name": {
-                        "type": "string",
-                        "description": "参考文档文件名，如 02-client-api-reverse-and-burp.md, web-injection.md, encoding-cheatsheet.md",
-                    },
+                    "required": ["skill_name", "reference_name"],
                 },
-                "required": ["skill_name", "reference_name"],
             },
-        },
-    })
+        }
+    )
 
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "python_execute",
-            "description": (
-                "执行 Python 代码片段。用于：构造复杂 HTTP 请求并解析响应、"
-                "做编码转换和数据处理、批量测试不同 payload、比较响应差异、"
-                "执行数学计算等。代码在受限环境中执行，超时 30 秒。"
-                "预装库：requests, beautifulsoup4, pycryptodome, base64, json, re 等。"
-                "重要：构造 HTTP 请求时请使用此工具而非猜测响应内容。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {
-                        "type": "string",
-                        "description": "要执行的 Python 代码。支持多行，可 import 标准库和 requests/bs4 等。",
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "python_execute",
+                "description": (
+                    "执行 Python 代码片段。用于：构造复杂 HTTP 请求并解析响应、"
+                    "做编码转换和数据处理、批量测试不同 payload、比较响应差异、"
+                    "执行数学计算等。代码在受限环境中执行，超时 30 秒。"
+                    "预装库：requests, beautifulsoup4, pycryptodome, base64, json, re 等。"
+                    "重要：构造 HTTP 请求时请使用此工具而非猜测响应内容。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": "要执行的 Python 代码。支持多行，可 import 标准库和 requests/bs4 等。",
+                        },
+                        "purpose": {
+                            "type": "string",
+                            "description": "简要说明执行目的（用于审计日志），如'构造HTTP请求测试弱比较绕过'",
+                        },
                     },
-                    "purpose": {
-                        "type": "string",
-                        "description": "简要说明执行目的（用于审计日志），如'构造HTTP请求测试弱比较绕过'",
+                    "required": ["code"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "crypto_decode",
+                "description": (
+                    "编码解码与加解密工具。遇到 base64/hex/URL/HTML/Unicode 编码字符串、"
+                    "需要计算哈希、解密 AES/DES、解析 JWT 等场景时调用此工具。"
+                    "重要：不要自行脑补解码结果，始终使用此工具确保准确性。"
+                    "支持操作：base64_encode/decode, base32_encode/decode, base58_encode/decode, "
+                    "hex_encode/decode, url_encode/decode, html_encode/decode, unicode_encode/decode, "
+                    "rot13_encode/decode, caesar_encode/decode, morse_encode/decode, "
+                    "md5_hash, sha1_hash, sha256_hash, sha512_hash, "
+                    "aes_encrypt/decrypt, jwt_decode/encode, auto_decode"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"type": "string", "description": "操作名称"},
+                        "input": {
+                            "type": "string",
+                            "description": "待处理的输入字符串（待编码/解码/哈希/加密的文本）",
+                        },
+                        "key": {
+                            "type": "string",
+                            "description": "加密/解密密钥（AES/DES 需要，16/24/32字节）",
+                        },
+                        "iv": {"type": "string", "description": "AES 初始化向量（16字节，可选）"},
+                        "shift": {
+                            "type": "integer",
+                            "description": "Caesar 密码位移量（默认3，解码时不提供则暴力所有位移）",
+                        },
+                        "secret": {"type": "string", "description": "JWT 签名密钥"},
                     },
+                    "required": ["operation", "input"],
                 },
-                "required": ["code"],
             },
-        },
-    })
+        }
+    )
 
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "crypto_decode",
-            "description": (
-                "编码解码与加解密工具。遇到 base64/hex/URL/HTML/Unicode 编码字符串、"
-                "需要计算哈希、解密 AES/DES、解析 JWT 等场景时调用此工具。"
-                "重要：不要自行脑补解码结果，始终使用此工具确保准确性。"
-                "支持操作：base64_encode/decode, base32_encode/decode, base58_encode/decode, "
-                "hex_encode/decode, url_encode/decode, html_encode/decode, unicode_encode/decode, "
-                "rot13_encode/decode, caesar_encode/decode, morse_encode/decode, "
-                "md5_hash, sha1_hash, sha256_hash, sha512_hash, "
-                "aes_encrypt/decrypt, jwt_decode/encode, auto_decode"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "operation": {"type": "string", "description": "操作名称"},
-                    "input": {"type": "string", "description": "待处理的输入字符串（待编码/解码/哈希/加密的文本）"},
-                    "key": {"type": "string", "description": "加密/解密密钥（AES/DES 需要，16/24/32字节）"},
-                    "iv": {"type": "string", "description": "AES 初始化向量（16字节，可选）"},
-                    "shift": {"type": "integer", "description": "Caesar 密码位移量（默认3，解码时不提供则暴力所有位移）"},
-                    "secret": {"type": "string", "description": "JWT 签名密钥"},
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "nmap_scan",
+                "description": (
+                    "nmap 网络端口扫描工具。信息收集时用于发现目标开放端口、服务版本和操作系统指纹。\n"
+                    "用法示例：\n"
+                    "  扫描常见端口: scan_type=top_ports, target=1.2.3.4\n"
+                    "  SYN扫描: scan_type=syn, target=1.2.3.4（需要管理员权限）\n"
+                    "  服务版本检测: scan_type=service, target=1.2.3.4\n"
+                    "  漏洞扫描: scan_type=vuln, target=1.2.3.4\n"
+                    "  全量扫描: scan_type=full, target=1.2.3.4\n"
+                    "优先使用 nmap_scan 而非 python_execute 构造 socket 扫描，nmap 更专业更准确。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "目标 IP 地址或域名（必填），如 192.168.1.1 或 scanme.nmap.org",
+                        },
+                        "scan_type": {
+                            "type": "string",
+                            "description": "扫描类型：top_ports/syn/tcp/service/os/vuln/full",
+                        },
+                        "ports": {
+                            "type": "string",
+                            "description": "指定端口或范围（可选），如 80,443,8080 或 1-1000",
+                        },
+                        "timing": {
+                            "type": "integer",
+                            "description": "扫描速度模板 0-5（默认4），数字越大越快但越容易被检测",
+                        },
+                    },
+                    "required": ["target"],
                 },
-                "required": ["operation", "input"],
             },
-        },
-    })
-
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "nmap_scan",
-            "description": (
-                "nmap 网络端口扫描工具。信息收集时用于发现目标开放端口、服务版本和操作系统指纹。\n"
-                "用法示例：\n"
-                "  扫描常见端口: scan_type=top_ports, target=1.2.3.4\n"
-                "  SYN扫描: scan_type=syn, target=1.2.3.4（需要管理员权限）\n"
-                "  服务版本检测: scan_type=service, target=1.2.3.4\n"
-                "  漏洞扫描: scan_type=vuln, target=1.2.3.4\n"
-                "  全量扫描: scan_type=full, target=1.2.3.4\n"
-                "优先使用 nmap_scan 而非 python_execute 构造 socket 扫描，nmap 更专业更准确。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "目标 IP 地址或域名（必填），如 192.168.1.1 或 scanme.nmap.org"},
-                    "scan_type": {"type": "string", "description": "扫描类型：top_ports/syn/tcp/service/os/vuln/full"},
-                    "ports": {"type": "string", "description": "指定端口或范围（可选），如 80,443,8080 或 1-1000"},
-                    "timing": {"type": "integer", "description": "扫描速度模板 0-5（默认4），数字越大越快但越容易被检测"},
-                },
-                "required": ["target"],
-            },
-        },
-    })
+        }
+    )
 
     if mcp_manager:
         for schema in mcp_manager.get_tool_schemas():
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": schema.get("name", ""),
-                    "description": schema.get("description", ""),
-                    "parameters": schema.get("inputSchema", {"type": "object", "properties": {}}),
-                },
-            })
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": schema.get("name", ""),
+                        "description": schema.get("description", ""),
+                        "parameters": schema.get(
+                            "inputSchema", {"type": "object", "properties": {}}
+                        ),
+                    },
+                }
+            )
 
     return tools
 
@@ -412,7 +448,9 @@ async def execute_nmap(agent: Any, args: dict[str, Any]) -> str:
     nmap_cmd = shutil.which("nmap")
     if not nmap_cmd:
         try:
-            result = subprocess.run(["where.exe", "nmap"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(
+                ["where.exe", "nmap"], capture_output=True, text=True, timeout=10
+            )
             if result.returncode == 0:
                 nmap_cmd = result.stdout.strip().split("\n")[0]
         except Exception:
@@ -520,7 +558,9 @@ def parse_nmap_xml(xml_output: str, target: str) -> str:
         host_ip = addrs[0] if addrs else target
         reserved, reason = is_reserved_ip(host_ip)
         if reserved:
-            host_str = f"\n[主机] {host_ip} ⚠️ **保留地址 ({reason})，测试网络结果不代表真实目标安全状态**"
+            host_str = (
+                f"\n[主机] {host_ip} ⚠️ **保留地址 ({reason})，测试网络结果不代表真实目标安全状态**"
+            )
         else:
             host_str = f"\n[主机] {host_ip}"
         if hostname is not None:
@@ -590,6 +630,7 @@ def _write_python_audit(
 
     try:
         from datetime import datetime
+
         from vulnclaw.config.settings import PYTHON_EXECUTE_AUDIT_FILE, ensure_dirs
 
         ensure_dirs()
@@ -628,12 +669,21 @@ async def execute_python(agent: Any, args: dict[str, Any]) -> str:
 
     safety = getattr(agent.config, "safety", None)
     if safety is None or not safety.enable_python_execute:
-        return "[!] python_execute is disabled. Set safety.enable_python_execute = true to enable it"
+        return (
+            "[!] python_execute is disabled. Set safety.enable_python_execute = true to enable it"
+        )
 
     mode = _resolve_python_execute_mode(agent)
     max_lines = getattr(safety, "python_execute_max_lines", 50)
     if code.count("\n") + 1 > max_lines:
-        _write_python_audit(agent, purpose=purpose, code=code, mode=mode, outcome="blocked", blocked_reason="max_lines")
+        _write_python_audit(
+            agent,
+            purpose=purpose,
+            code=code,
+            mode=mode,
+            outcome="blocked",
+            blocked_reason="max_lines",
+        )
         return f"[!] Code exceeds the max line limit ({max_lines})"
 
     show_warning = getattr(safety, "python_execute_show_warning", True)
@@ -650,12 +700,26 @@ async def execute_python(agent: Any, args: dict[str, Any]) -> str:
 
     for pattern in BLOCKED_PATTERNS:
         if re.search(pattern, code):
-            _write_python_audit(agent, purpose=purpose, code=code, mode=mode, outcome="blocked", blocked_reason=pattern)
+            _write_python_audit(
+                agent,
+                purpose=purpose,
+                code=code,
+                mode=mode,
+                outcome="blocked",
+                blocked_reason=pattern,
+            )
             return f"[!] Code contains a blocked operation pattern: {pattern}"
 
     blocked_pattern = _validate_python_execute_mode(mode, code)
     if blocked_pattern:
-        _write_python_audit(agent, purpose=purpose, code=code, mode=mode, outcome="blocked", blocked_reason=blocked_pattern)
+        _write_python_audit(
+            agent,
+            purpose=purpose,
+            code=code,
+            mode=mode,
+            outcome="blocked",
+            blocked_reason=blocked_pattern,
+        )
         if mode == "safe":
             return f"[!] safe mode blocked operation: {blocked_pattern}"
         return f"[!] lab mode blocked operation: {blocked_pattern}"
@@ -663,7 +727,9 @@ async def execute_python(agent: Any, args: dict[str, Any]) -> str:
     max_output_chars = getattr(safety, "python_execute_max_output_chars", 8000)
     tmp_path = ""
     try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
             preamble = (
                 "import sys, json, re, os, base64, hashlib, itertools, collections, datetime, struct, binascii, textwrap\n"
                 "try:\n    import requests\nexcept ImportError:\n    pass\n"
@@ -734,5 +800,7 @@ async def execute_python(agent: Any, args: dict[str, Any]) -> str:
             os.unlink(tmp_path)
         except OSError:
             pass
-        _write_python_audit(agent, purpose=purpose, code=code, mode=mode, outcome="error", blocked_reason=str(e))
+        _write_python_audit(
+            agent, purpose=purpose, code=code, mode=mode, outcome="error", blocked_reason=str(e)
+        )
         return f"[!] Python execution error: {e}"

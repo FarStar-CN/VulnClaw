@@ -5,20 +5,18 @@ from __future__ import annotations
 import os
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 from pydantic import ValidationError
 
 from .schema import (
     BUILTIN_MCP_SERVERS,
-    LLMConfig,
+    PROVIDER_PRESETS,
     LLMProvider,
     MCPServerConfig,
     MCPServersConfig,
     MCPTransportConfig,
-    PROVIDER_PRESETS,
-    SessionConfig,
     VulnClawConfig,
 )
 
@@ -106,7 +104,6 @@ def set_config_value(key: str, value: str) -> None:
             value = float(value)
         elif annotation is bool:
             value = value.lower() in ("true", "1", "yes")
-
 
     setattr(obj, field_name, value)
     save_config(config)
@@ -280,10 +277,12 @@ def list_providers() -> list[dict[str, str]]:
     """Return all available provider presets as a list of dicts."""
     result = []
     for provider, preset in PROVIDER_PRESETS.items():
-        result.append({
-            "provider": provider.value,
-            "label": preset.get("label", provider.value),
-            "base_url": preset.get("base_url", ""),
-            "default_model": preset.get("default_model", ""),
-        })
+        result.append(
+            {
+                "provider": provider.value,
+                "label": preset.get("label", provider.value),
+                "base_url": preset.get("base_url", ""),
+                "default_model": preset.get("default_model", ""),
+            }
+        )
     return result

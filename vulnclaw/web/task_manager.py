@@ -7,7 +7,6 @@ import contextlib
 import json
 from collections import deque
 from datetime import datetime
-from pathlib import Path
 from uuid import uuid4
 
 from vulnclaw.config.settings import WEB_TASKS_FILE, ensure_dirs
@@ -39,7 +38,9 @@ class WebTaskManager:
         self._tasks[task_id] = record
         self._history[task_id] = deque(maxlen=500)
         self._queues[task_id] = asyncio.Queue()
-        self.publish(task_id, "task_created", {"command": request.command, "target": request.target})
+        self.publish(
+            task_id, "task_created", {"command": request.command, "target": request.target}
+        )
         self._save_state()
         return record
 
@@ -72,7 +73,12 @@ class WebTaskManager:
         record.started_at = datetime.now().isoformat()
         self.publish(task_id, "task_started", {"status": record.status})
 
-    def set_completed(self, task_id: str, latest_message: str | None = None, summary: dict | TaskSummary | None = None) -> None:
+    def set_completed(
+        self,
+        task_id: str,
+        latest_message: str | None = None,
+        summary: dict | TaskSummary | None = None,
+    ) -> None:
         record = self._tasks[task_id]
         record.status = "completed"
         record.completed_at = datetime.now().isoformat()
@@ -98,7 +104,9 @@ class WebTaskManager:
         record.completed_at = datetime.now().isoformat()
         self.publish(task_id, "task_stopped", {"status": record.status})
 
-    def update_progress(self, task_id: str, *, phase: str | None = None, message: str | None = None) -> None:
+    def update_progress(
+        self, task_id: str, *, phase: str | None = None, message: str | None = None
+    ) -> None:
         record = self._tasks[task_id]
         if phase:
             record.latest_phase = phase
@@ -144,7 +152,9 @@ class WebTaskManager:
                 for task_id, history in self._history.items()
             },
         }
-        self._storage_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._storage_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     def _load_state(self) -> None:
         ensure_dirs()

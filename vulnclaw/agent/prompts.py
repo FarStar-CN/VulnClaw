@@ -206,7 +206,7 @@ WAF_BYPASS_KNOWLEDGE = """\
 
 ### SQL 注入绕过
 - 大小写混合：`SeLeCt` 代替 `SELECT`
-- 内联注释：`S/*!ELECT*/` 
+- 内联注释：`S/*!ELECT*/`
 - 双重编码：`%2565` 解码为 `%65` 再解码为 `e`
 - 等价函数：`GROUP_CONCAT` 代替 `concat_ws`
 

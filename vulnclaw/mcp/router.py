@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-
 # ── Intent → Tool mapping ───────────────────────────────────────────
 
 INTENT_TOOL_MAP: dict[str, list[dict[str, Any]]] = {
@@ -83,22 +82,24 @@ class MCPRouter:
             keywords = pattern.split("|")
             if any(kw in input_lower for kw in keywords):
                 for tool_entry in tools:
-                    results.append({
-                        "tool": tool_entry["tool"],
-                        "server": tool_entry["server"],
-                        "confidence": 0.8,
-                    })
+                    results.append(
+                        {
+                            "tool": tool_entry["tool"],
+                            "server": tool_entry["server"],
+                            "confidence": 0.8,
+                        }
+                    )
 
         return results
 
     def extract_url(self, text: str) -> Optional[str]:
         """Extract URL from text."""
-        url_match = re.search(r'(https?://\S+)', text)
+        url_match = re.search(r"(https?://\S+)", text)
         return url_match.group(1) if url_match else None
 
     def extract_ip(self, text: str) -> Optional[str]:
         """Extract IP address from text."""
-        ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', text)
+        ip_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", text)
         return ip_match.group(1) if ip_match else None
 
     def suggest_tools_for_phase(self, phase: str) -> list[dict[str, Any]]:

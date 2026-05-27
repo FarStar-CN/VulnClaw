@@ -8,8 +8,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # ── LLM Provider Presets ────────────────────────────────────────────
+
 
 class LLMProvider(str, Enum):
     """Supported LLM providers with OpenAI-compatible APIs."""
@@ -84,7 +84,9 @@ class LLMConfig(BaseModel):
     model: str = Field(default="gpt-4o", description="Model name to use (auto-filled by provider)")
     max_tokens: int = Field(default=4096, description="Max tokens per response")
     temperature: float = Field(default=0.1, description="Sampling temperature")
-    reasoning_effort: str = Field(default="high", description="Reasoning effort level (OpenAI o-series only)")
+    reasoning_effort: str = Field(
+        default="high", description="Reasoning effort level (OpenAI o-series only)"
+    )
 
 
 class MCPTransportConfig(BaseModel):
@@ -153,20 +155,29 @@ class SessionConfig(BaseModel):
 
     output_dir: Path = Field(default=Path("./vulnclaw-output"), description="Output directory")
     auto_save: bool = Field(default=True, description="Auto-save session state")
-    report_format: str = Field(default="markdown", description="Default report format: markdown, html")
+    report_format: str = Field(
+        default="markdown", description="Default report format: markdown, html"
+    )
     poc_language: str = Field(default="python", description="Default PoC language: python, bash")
     max_rounds: int = Field(default=15, description="Max autonomous pentest rounds (1-100)")
-    show_thinking: bool = Field(default=False, description="Show LLM thinking/reasoning output (default: off)")
+    show_thinking: bool = Field(
+        default=False, description="Show LLM thinking/reasoning output (default: off)"
+    )
     # Dead-loop detection
     stale_rounds_threshold: int = Field(
         default=5,
         description="Consecutive rounds without progress before dead-loop warning (1-50)",
     )
     # Persistent pentest configuration
-    persistent_rounds_per_cycle: int = Field(default=100, description="Rounds per persistent pentest cycle")
-    persistent_max_cycles: int = Field(default=10, description="Max cycles for persistent pentest (0=unlimited)")
-    persistent_auto_report: bool = Field(default=True, description="Auto-generate report after each cycle")
-
+    persistent_rounds_per_cycle: int = Field(
+        default=100, description="Rounds per persistent pentest cycle"
+    )
+    persistent_max_cycles: int = Field(
+        default=10, description="Max cycles for persistent pentest (0=unlimited)"
+    )
+    persistent_auto_report: bool = Field(
+        default=True, description="Auto-generate report after each cycle"
+    )
 
 
 class VulnClawConfig(BaseModel):
@@ -181,7 +192,6 @@ class VulnClawConfig(BaseModel):
         env_prefix="VULNCLAW_",
         env_nested_delimiter="__",
     )
-
 
 
 # ── Built-in MCP server definitions (MVP) ──────────────────────────

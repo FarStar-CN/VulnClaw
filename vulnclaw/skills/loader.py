@@ -12,7 +12,6 @@ from typing import Any, Optional
 
 from vulnclaw.config.settings import SKILLS_DIR
 
-
 # ── Built-in skills directory ───────────────────────────────────────
 
 _CORE_SKILLS_DIR = Path(__file__).parent / "core"
@@ -177,6 +176,7 @@ def _parse_skill_file(path: Path) -> dict[str, Any]:
         parts = content.split("---", 2)
         if len(parts) >= 3:
             import yaml
+
             try:
                 frontmatter = yaml.safe_load(parts[1])
                 if isinstance(frontmatter, dict):

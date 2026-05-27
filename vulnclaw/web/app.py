@@ -8,7 +8,11 @@ from vulnclaw.web.schemas import ConfigUpdateRequest, ReportGenerateRequest, Tas
 from vulnclaw.web.services.config_service import get_public_config, update_public_config
 from vulnclaw.web.services.constraint_audit_service import get_constraint_audit
 from vulnclaw.web.services.mcp_service import get_mcp_diagnostics
-from vulnclaw.web.services.report_service import generate_target_report, list_reports, read_report_content
+from vulnclaw.web.services.report_service import (
+    generate_target_report,
+    list_reports,
+    read_report_content,
+)
 from vulnclaw.web.services.target_service import (
     clear_target,
     get_diff,

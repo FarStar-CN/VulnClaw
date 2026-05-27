@@ -8,7 +8,8 @@ def test_package_version_matches_pyproject() -> None:
 
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     version_line = next(
-        line for line in pyproject.read_text(encoding="utf-8").splitlines()
+        line
+        for line in pyproject.read_text(encoding="utf-8").splitlines()
         if line.startswith("version = ")
     )
     pyproject_version = version_line.split('"')[1]

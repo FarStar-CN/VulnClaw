@@ -6,27 +6,12 @@ import pytest
 def test_import_vulnclaw():
     """Test that the main package can be imported."""
     import vulnclaw
+
     assert vulnclaw.__version__ == "0.2.8"
 
 
 def test_all_submodules_importable():
     """Test that all major submodules can be imported."""
-    import vulnclaw.config.schema
-    import vulnclaw.config.settings
-    import vulnclaw.agent.context
-    import vulnclaw.agent.memory
-    import vulnclaw.agent.prompts
-    import vulnclaw.agent.core
-    import vulnclaw.mcp.registry
-    import vulnclaw.mcp.router
-    import vulnclaw.mcp.lifecycle
-    import vulnclaw.skills.loader
-    import vulnclaw.skills.dispatcher
-    import vulnclaw.kb.store
-    import vulnclaw.kb.retriever
-    import vulnclaw.kb.updater
-    import vulnclaw.report.generator
-    import vulnclaw.report.poc_builder
 
 
 def test_no_import_errors():

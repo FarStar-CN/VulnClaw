@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import hashlib
 import json
 import shutil
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -15,7 +15,6 @@ from vulnclaw.target_state.planner import (
     compute_finding_confidence,
     compute_recon_asset_confidence,
 )
-
 
 TARGET_STATE_SCHEMA_VERSION = 2
 
@@ -131,7 +130,9 @@ def save_target_state(
     return path
 
 
-def get_target_state_preview(target: str, snapshot_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+def get_target_state_preview(
+    target: str, snapshot_id: Optional[str] = None
+) -> Optional[dict[str, Any]]:
     raw = load_target_state(target, snapshot_id=snapshot_id)
     if not raw:
         return None
@@ -142,7 +143,9 @@ def get_target_state_preview(target: str, snapshot_id: Optional[str] = None) -> 
     verified = [f for f in findings if f.get("verification_status") == "verified"]
     pending = [f for f in findings if f.get("verification_status", "pending") == "pending"]
     candidate = [f for f in findings if f.get("lifecycle_status") == "candidate"]
-    pending_verification = [f for f in findings if f.get("lifecycle_status") == "pending_verification"]
+    pending_verification = [
+        f for f in findings if f.get("lifecycle_status") == "pending_verification"
+    ]
     manual_review_count = _manual_review_count(findings)
 
     return {
@@ -166,9 +169,15 @@ def get_target_state_preview(target: str, snapshot_id: Optional[str] = None) -> 
         "recent_failed_steps": plan.get("recent_failed_steps", []),
         "next_actions": plan.get("next_actions", []),
         "low_value_rounds": plan.get("low_value_rounds", 0),
-        "constraints": raw.get("task_constraints", {}) if isinstance(raw.get("task_constraints"), dict) else {},
-        "constraint_violations": raw.get("constraint_violations", []) if isinstance(raw.get("constraint_violations"), list) else [],
-        "constraint_violation_events": raw.get("constraint_violation_events", []) if isinstance(raw.get("constraint_violation_events"), list) else [],
+        "constraints": raw.get("task_constraints", {})
+        if isinstance(raw.get("task_constraints"), dict)
+        else {},
+        "constraint_violations": raw.get("constraint_violations", [])
+        if isinstance(raw.get("constraint_violations"), list)
+        else [],
+        "constraint_violation_events": raw.get("constraint_violation_events", [])
+        if isinstance(raw.get("constraint_violation_events"), list)
+        else [],
     }
 
 
@@ -178,12 +187,18 @@ def diff_target_state_snapshots(
     to_snapshot_id: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     base = load_target_state(target, snapshot_id=from_snapshot_id)
-    compare = load_target_state(target, snapshot_id=to_snapshot_id) if to_snapshot_id else load_target_state(target)
+    compare = (
+        load_target_state(target, snapshot_id=to_snapshot_id)
+        if to_snapshot_id
+        else load_target_state(target)
+    )
     if not base or not compare:
         return None
 
     base_resume = base.get("resume_meta", {}) if isinstance(base.get("resume_meta"), dict) else {}
-    compare_resume = compare.get("resume_meta", {}) if isinstance(compare.get("resume_meta"), dict) else {}
+    compare_resume = (
+        compare.get("resume_meta", {}) if isinstance(compare.get("resume_meta"), dict) else {}
+    )
 
     return {
         "target": target,
@@ -193,19 +208,35 @@ def diff_target_state_snapshots(
         "to_snapshot_id": to_snapshot_id or compare_resume.get("snapshot_id", "current"),
         "resume_strategy_from": base_resume.get("resume_strategy", ""),
         "resume_strategy_to": compare_resume.get("resume_strategy", ""),
-        "added_findings": _diff_finding_titles(base.get("findings", []), compare.get("findings", []), mode="added"),
-        "removed_findings": _diff_finding_titles(base.get("findings", []), compare.get("findings", []), mode="removed"),
-        "updated_findings": _diff_updated_findings(base.get("findings", []), compare.get("findings", [])),
-        "added_steps": _diff_list(base.get("executed_steps", []), compare.get("executed_steps", [])),
-        "removed_steps": _diff_list(compare.get("executed_steps", []), base.get("executed_steps", [])),
+        "added_findings": _diff_finding_titles(
+            base.get("findings", []), compare.get("findings", []), mode="added"
+        ),
+        "removed_findings": _diff_finding_titles(
+            base.get("findings", []), compare.get("findings", []), mode="removed"
+        ),
+        "updated_findings": _diff_updated_findings(
+            base.get("findings", []), compare.get("findings", [])
+        ),
+        "added_steps": _diff_list(
+            base.get("executed_steps", []), compare.get("executed_steps", [])
+        ),
+        "removed_steps": _diff_list(
+            compare.get("executed_steps", []), base.get("executed_steps", [])
+        ),
         "added_notes": _diff_list(base.get("notes", []), compare.get("notes", [])),
         "removed_notes": _diff_list(compare.get("notes", []), base.get("notes", [])),
-        "added_recon_assets": _diff_recon_assets(base.get("recon_meta", {}), compare.get("recon_meta", {}), mode="added"),
-        "removed_recon_assets": _diff_recon_assets(base.get("recon_meta", {}), compare.get("recon_meta", {}), mode="removed"),
+        "added_recon_assets": _diff_recon_assets(
+            base.get("recon_meta", {}), compare.get("recon_meta", {}), mode="added"
+        ),
+        "removed_recon_assets": _diff_recon_assets(
+            base.get("recon_meta", {}), compare.get("recon_meta", {}), mode="removed"
+        ),
     }
 
 
-def hydrate_session_from_target_state(target: str, snapshot_id: Optional[str] = None) -> Optional[SessionState]:
+def hydrate_session_from_target_state(
+    target: str, snapshot_id: Optional[str] = None
+) -> Optional[SessionState]:
     raw = load_target_state(target, snapshot_id=snapshot_id)
     if not raw:
         return None
@@ -222,7 +253,9 @@ def hydrate_session_from_target_state(target: str, snapshot_id: Optional[str] = 
     return SessionState(**raw)
 
 
-def apply_target_state_to_agent(agent: Any, target: str, snapshot_id: Optional[str] = None) -> SessionRestoreResult:
+def apply_target_state_to_agent(
+    agent: Any, target: str, snapshot_id: Optional[str] = None
+) -> SessionRestoreResult:
     """Restore a target state into an agent and return a structured restore result."""
     restored_state = hydrate_session_from_target_state(target, snapshot_id=snapshot_id)
     if restored_state:
@@ -256,7 +289,9 @@ def build_task_session_summary(
     snapshot_id: str = "",
 ) -> dict[str, Any]:
     """Build a structured session summary for task completion surfaces."""
-    resume_meta = session.resume_meta if isinstance(getattr(session, "resume_meta", {}), dict) else {}
+    resume_meta = (
+        session.resume_meta if isinstance(getattr(session, "resume_meta", {}), dict) else {}
+    )
     return {
         "target": session.target or "",
         "command": command,
@@ -270,7 +305,9 @@ def build_task_session_summary(
         "executed_steps": len(session.executed_steps),
         "resume_strategy": resume_meta.get("resume_strategy", ""),
         "resume_reason": resume_meta.get("resume_strategy_reason", ""),
-        "constraints": session.task_constraints.model_dump(mode="json") if hasattr(session, "task_constraints") else {},
+        "constraints": session.task_constraints.model_dump(mode="json")
+        if hasattr(session, "task_constraints")
+        else {},
         "constraint_violations": list(getattr(session, "constraint_violations", [])),
         "constraint_violation_events": [
             item.model_dump(mode="json") if hasattr(item, "model_dump") else item
@@ -358,7 +395,9 @@ def _build_resume_summary(raw: dict[str, Any], resume_meta: dict[str, Any]) -> s
         parts.append("- 最近漏洞线索")
         prioritized = sorted(
             findings,
-            key=lambda item: -float(finding_meta.get(_finding_key(item), {}).get("confidence", 0.5)),
+            key=lambda item: (
+                -float(finding_meta.get(_finding_key(item), {}).get("confidence", 0.5))
+            ),
         )
         for finding in prioritized[:5]:
             title = finding.get("title", "unknown")
@@ -398,16 +437,22 @@ def _merge_target_state(existing: dict[str, Any], current: dict[str, Any]) -> di
     merged = dict(existing)
     merged.update(current)
 
-    merged["recon_data"] = _merge_recon_data(existing.get("recon_data", {}), current.get("recon_data", {}))
+    merged["recon_data"] = _merge_recon_data(
+        existing.get("recon_data", {}), current.get("recon_data", {})
+    )
     merged["findings"] = _merge_findings(existing.get("findings", []), current.get("findings", []))
 
     existing_steps = existing.get("executed_steps", [])
     current_steps = current.get("executed_steps", [])
-    merged["executed_steps"] = existing_steps + [step for step in current_steps if step not in existing_steps]
+    merged["executed_steps"] = existing_steps + [
+        step for step in current_steps if step not in existing_steps
+    ]
 
     existing_notes = existing.get("notes", [])
     current_notes = current.get("notes", [])
-    merged["notes"] = existing_notes + [note for note in current_notes if note not in existing_notes]
+    merged["notes"] = existing_notes + [
+        note for note in current_notes if note not in existing_notes
+    ]
 
     existing_constraints = existing.get("task_constraints", {})
     current_constraints = current.get("task_constraints", {})
@@ -445,7 +490,9 @@ def _merge_target_state(existing: dict[str, Any], current: dict[str, Any]) -> di
     return merged
 
 
-def _merge_finding_meta(existing_meta: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
+def _merge_finding_meta(
+    existing_meta: dict[str, Any], findings: list[dict[str, Any]]
+) -> dict[str, Any]:
     now = datetime.now().isoformat()
     merged = dict(existing_meta)
     for finding in findings:
@@ -511,10 +558,15 @@ def _merge_recon_meta(existing_meta: dict[str, Any], recon_data: dict[str, Any])
     return merged
 
 
-def _merge_findings(existing: list[dict[str, Any]], current: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_findings(
+    existing: list[dict[str, Any]], current: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     by_key: dict[str, dict[str, Any]] = {}
     for finding in existing + current:
-        key = finding.get("finding_id") or f"{finding.get('title', '')}::{finding.get('vuln_type', '')}"
+        key = (
+            finding.get("finding_id")
+            or f"{finding.get('title', '')}::{finding.get('vuln_type', '')}"
+        )
         prev = by_key.get(key)
         if prev is None:
             by_key[key] = finding
@@ -530,7 +582,9 @@ def _merge_findings(existing: list[dict[str, Any]], current: list[dict[str, Any]
 
 
 def _finding_key(finding: dict[str, Any]) -> str:
-    return finding.get("finding_id") or f"{finding.get('title', '')}::{finding.get('vuln_type', '')}"
+    return (
+        finding.get("finding_id") or f"{finding.get('title', '')}::{finding.get('vuln_type', '')}"
+    )
 
 
 def _phase_name(value: Any) -> str:
@@ -543,7 +597,9 @@ def _manual_review_count(findings: list[dict[str, Any]]) -> int:
     count = 0
     for finding in findings:
         severity = str(finding.get("severity", "")).strip()
-        lifecycle = str(finding.get("lifecycle_status", finding.get("verification_status", ""))).strip()
+        lifecycle = str(
+            finding.get("lifecycle_status", finding.get("verification_status", ""))
+        ).strip()
         verified = bool(finding.get("verified"))
         verification_status = str(finding.get("verification_status", "")).strip()
         if lifecycle == "needs_manual_review":
@@ -575,7 +631,9 @@ def _diff_list(base: list[Any], compare: list[Any], limit: int = 10) -> list[str
     return [item for item in compare_items if item not in base_items][:limit]
 
 
-def _diff_finding_titles(base: list[dict[str, Any]], compare: list[dict[str, Any]], *, mode: str) -> list[str]:
+def _diff_finding_titles(
+    base: list[dict[str, Any]], compare: list[dict[str, Any]], *, mode: str
+) -> list[str]:
     base_map = {_finding_key(item): item for item in base}
     compare_map = {_finding_key(item): item for item in compare}
     if mode == "added":
@@ -634,7 +692,9 @@ def _top_recon_assets_for_summary(recon_meta: dict[str, Any]) -> list[str]:
     return [label for _, label in ranked[:8]]
 
 
-def _merge_runtime_meta(existing: dict[str, Any], session: SessionState, runtime: Any | None) -> dict[str, Any]:
+def _merge_runtime_meta(
+    existing: dict[str, Any], session: SessionState, runtime: Any | None
+) -> dict[str, Any]:
     blocked_targets = set(existing.get("blocked_targets", []))
     failed_targets = dict(existing.get("failed_targets", {}))
     failed_steps = list(existing.get("failed_steps", []))

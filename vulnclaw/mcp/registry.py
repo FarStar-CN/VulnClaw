@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any
-
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -41,7 +38,6 @@ class MCPServerState(BaseModel):
     failure_count: int = 0
 
 
-
 class MCPRegistry:
     """Central registry for MCP servers and their tools.
 
@@ -69,6 +65,7 @@ class MCPRegistry:
             self._servers[name].pid = pid
             if running:
                 from datetime import datetime
+
                 self._servers[name].started_at = datetime.now().isoformat()
 
     def set_server_execution_mode(self, name: str, mode: str) -> None:
@@ -106,10 +103,6 @@ class MCPRegistry:
                 self._servers[name].failure_count += 1
                 if self._servers[name].health_status == "unknown":
                     self._servers[name].health_status = "degraded"
-
-
-
-
 
     def register_tool(self, server_name: str, tool_schema: dict[str, Any]) -> None:
         """Register a tool from an MCP server."""

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-import sys
 from contextlib import suppress
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from vulnclaw.agent.builtin_tools import infer_port_from_url
-from vulnclaw.config.schema import VulnClawConfig, MCPServerConfig
+from vulnclaw.config.schema import MCPServerConfig, VulnClawConfig
 from vulnclaw.mcp.registry import MCPRegistry
 
 try:
@@ -20,7 +19,6 @@ except ImportError:  # pragma: no cover - optional runtime dependency
     ClientSession = None
     StdioServerParameters = None
     stdio_client = None
-
 
 
 class MCPLifecycleManager:
@@ -219,20 +217,30 @@ class MCPLifecycleManager:
         """Attempt a real stdio MCP attach when SDK primitives are available."""
         transport = config.transport
         if ClientSession is None or StdioServerParameters is None or stdio_client is None:
-            self.registry.set_server_error(name, "MCP Python SDK is not installed", error_type="sdk_unavailable")
+            self.registry.set_server_error(
+                name, "MCP Python SDK is not installed", error_type="sdk_unavailable"
+            )
             return False
 
         if not transport.command:
-            self.registry.set_server_error(name, "stdio transport is missing command", error_type="config_error")
+            self.registry.set_server_error(
+                name, "stdio transport is missing command", error_type="config_error"
+            )
             return False
 
         if name not in {"chrome-devtools", "burp"}:
-            self.registry.set_server_error(name, "stdio attach not implemented for this server yet", error_type="unsupported_mode")
+            self.registry.set_server_error(
+                name,
+                "stdio attach not implemented for this server yet",
+                error_type="unsupported_mode",
+            )
             return False
 
         ok, details, tools = self._probe_stdio_server(config)
         if not ok:
-            self.registry.set_server_error(name, details or "stdio attach probe failed", error_type="attach_failed")
+            self.registry.set_server_error(
+                name, details or "stdio attach probe failed", error_type="attach_failed"
+            )
             return False
 
         self._mcp_clients[name] = {"kind": "stdio-probe", "config": config}
@@ -246,17 +254,23 @@ class MCPLifecycleManager:
 
         url = config.transport.url or ""
         if not url:
-            self.registry.set_server_error(name, "sse transport is missing url", error_type="config_error")
+            self.registry.set_server_error(
+                name, "sse transport is missing url", error_type="config_error"
+            )
             return False
 
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
-            self.registry.set_server_error(name, f"invalid SSE url: {url}", error_type="config_error")
+            self.registry.set_server_error(
+                name, f"invalid SSE url: {url}", error_type="config_error"
+            )
             return False
 
         return False
 
-    def _probe_stdio_server(self, config: MCPServerConfig) -> tuple[bool, str, list[dict[str, Any]]]:
+    def _probe_stdio_server(
+        self, config: MCPServerConfig
+    ) -> tuple[bool, str, list[dict[str, Any]]]:
         """Run a one-shot stdio MCP probe to validate the server can initialize."""
         try:
             loop = asyncio.get_running_loop()
@@ -273,7 +287,9 @@ class MCPLifecycleManager:
         except Exception as exc:  # pragma: no cover - defensive
             return False, str(exc), []
 
-    async def _async_probe_stdio_server(self, config: MCPServerConfig) -> tuple[bool, str, list[dict[str, Any]]]:
+    async def _async_probe_stdio_server(
+        self, config: MCPServerConfig
+    ) -> tuple[bool, str, list[dict[str, Any]]]:
         transport = config.transport
         server = StdioServerParameters(
             command=transport.command or "",
@@ -318,7 +334,11 @@ class MCPLifecycleManager:
         content_items = getattr(result, "content", None)
 
         if not content_items:
-            return str(structured or result), structured if isinstance(structured, dict) else None, is_error
+            return (
+                str(structured or result),
+                structured if isinstance(structured, dict) else None,
+                is_error,
+            )
 
         parts: list[str] = []
         for item in content_items:
@@ -350,7 +370,9 @@ class MCPLifecycleManager:
         for tool in tools:
             self.registry.register_tool(server_name, tool)
 
-    async def _call_stdio_server(self, server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+    async def _call_stdio_server(
+        self, server_name: str, tool_name: str, arguments: dict[str, Any]
+    ) -> Any:
         """Run a one-shot stdio MCP call using the Python SDK."""
         client_meta = self._mcp_clients.get(server_name)
         config = None
@@ -412,12 +434,7 @@ class MCPLifecycleManager:
         }
         return session
 
-
-
-
-
     def _register_known_tools(self, server_name: str) -> None:
-
         """Register known tools for a server based on its type.
 
         This is a temporary approach for MVP. In production, tools will be
@@ -432,7 +449,11 @@ class MCPLifecycleManager:
                         "type": "object",
                         "properties": {
                             "url": {"type": "string", "description": "URL to fetch"},
-                            "method": {"type": "string", "description": "HTTP method", "default": "GET"},
+                            "method": {
+                                "type": "string",
+                                "description": "HTTP method",
+                                "default": "GET",
+                            },
                             "headers": {"type": "object", "description": "HTTP headers"},
                             "body": {"type": "string", "description": "Request body"},
                         },
@@ -498,7 +519,10 @@ class MCPLifecycleManager:
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "expression": {"type": "string", "description": "JS expression to evaluate"},
+                            "expression": {
+                                "type": "string",
+                                "description": "JS expression to evaluate",
+                            },
                         },
                         "required": ["expression"],
                     },
@@ -511,7 +535,10 @@ class MCPLifecycleManager:
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "url": {"type": "string", "description": "URL of the JS file to analyze"},
+                            "url": {
+                                "type": "string",
+                                "description": "URL of the JS file to analyze",
+                            },
                             "code": {"type": "string", "description": "Raw JS code to analyze"},
                         },
                     },
@@ -522,7 +549,10 @@ class MCPLifecycleManager:
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "url": {"type": "string", "description": "URL of the page to extract endpoints from"},
+                            "url": {
+                                "type": "string",
+                                "description": "URL of the page to extract endpoints from",
+                            },
                         },
                         "required": ["url"],
                     },
@@ -599,7 +629,10 @@ class MCPLifecycleManager:
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "command": {"type": "string", "description": "Shell command to execute"},
+                            "command": {
+                                "type": "string",
+                                "description": "Shell command to execute",
+                            },
                         },
                         "required": ["command"],
                     },
@@ -623,7 +656,10 @@ class MCPLifecycleManager:
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "class_name": {"type": "string", "description": "Fully qualified class name"},
+                            "class_name": {
+                                "type": "string",
+                                "description": "Fully qualified class name",
+                            },
                         },
                         "required": ["class_name"],
                     },
@@ -647,7 +683,10 @@ class MCPLifecycleManager:
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "address": {"type": "string", "description": "Address to find xrefs for"},
+                            "address": {
+                                "type": "string",
+                                "description": "Address to find xrefs for",
+                            },
                         },
                         "required": ["address"],
                     },
@@ -661,7 +700,10 @@ class MCPLifecycleManager:
                         "type": "object",
                         "properties": {
                             "thought": {"type": "string", "description": "Current thought step"},
-                            "next_step": {"type": "string", "description": "What to think about next"},
+                            "next_step": {
+                                "type": "string",
+                                "description": "What to think about next",
+                            },
                         },
                         "required": ["thought"],
                     },
@@ -674,7 +716,10 @@ class MCPLifecycleManager:
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "library_name": {"type": "string", "description": "Name of the library"},
+                            "library_name": {
+                                "type": "string",
+                                "description": "Name of the library",
+                            },
                         },
                         "required": ["library_name"],
                     },
@@ -688,7 +733,10 @@ class MCPLifecycleManager:
                         "type": "object",
                         "properties": {
                             "query": {"type": "string", "description": "Search query"},
-                            "max_results": {"type": "integer", "description": "Max results to return"},
+                            "max_results": {
+                                "type": "integer",
+                                "description": "Max results to return",
+                            },
                         },
                         "required": ["query"],
                     },
@@ -741,10 +789,16 @@ class MCPLifecycleManager:
 
     def list_available_tools(self) -> list[str]:
         """List all available tool names."""
-        return [schema.name for schema in
-                [self.registry.get_tool_schema(n) for n in
-                 [t for server_tools in self.registry._server_tools.values() for t in server_tools]]
-                if schema is not None]
+        return [
+            schema.name
+            for schema in [
+                self.registry.get_tool_schema(n)
+                for n in [
+                    t for server_tools in self.registry._server_tools.values() for t in server_tools
+                ]
+            ]
+            if schema is not None
+        ]
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         """Get all tool schemas for LLM function calling."""
@@ -809,7 +863,9 @@ class MCPLifecycleManager:
                 except Exception as exc:
                     message = str(exc)
                     self.registry.record_tool_call(server_name, success=False)
-                    self.registry.set_server_error(server_name, message, error_type="service_unavailable")
+                    self.registry.set_server_error(
+                        server_name, message, error_type="service_unavailable"
+                    )
                     return self._tool_result(
                         ok=False,
                         server=server_name,
@@ -835,7 +891,9 @@ class MCPLifecycleManager:
                 except Exception as exc:
                     message = str(exc)
                     self.registry.record_tool_call(server_name, success=False)
-                    self.registry.set_server_error(server_name, message, error_type="service_unavailable")
+                    self.registry.set_server_error(
+                        server_name, message, error_type="service_unavailable"
+                    )
                     return self._tool_result(
                         ok=False,
                         server=server_name,
@@ -846,8 +904,12 @@ class MCPLifecycleManager:
                         suggestion="Start the Burp MCP service and verify the proxy integration is ready.",
                     )
 
-            message = f"MCP tool '{tool_name}' is registered in {mode} mode but is not executable yet."
-            suggestion = "Use a local alternative, or enable a runnable MCP backend for this service."
+            message = (
+                f"MCP tool '{tool_name}' is registered in {mode} mode but is not executable yet."
+            )
+            suggestion = (
+                "Use a local alternative, or enable a runnable MCP backend for this service."
+            )
             self.registry.record_tool_call(server_name, success=False)
             self.registry.set_server_error(server_name, message, error_type="unsupported_mode")
             return self._tool_result(
@@ -876,6 +938,7 @@ class MCPLifecycleManager:
         """Execute a fetch request using httpx."""
         try:
             import httpx
+
             url = args.get("url", "")
             method = args.get("method", "GET").upper()
             headers = args.get("headers", {})
@@ -902,6 +965,7 @@ class MCPLifecycleManager:
     async def _call_memory(self, tool_name: str, args: dict) -> str:
         """Execute a memory tool call (local implementation)."""
         from vulnclaw.agent.memory import MemoryStore
+
         store = MemoryStore()
 
         if tool_name == "save":

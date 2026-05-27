@@ -48,7 +48,10 @@ class TestBuiltinPythonExecute:
 
         result = await builtin_tools.execute_python(
             agent,
-            {"code": "import requests\nprint(requests.get('https://example.com').status_code)", "purpose": "recon"},
+            {
+                "code": "import requests\nprint(requests.get('https://example.com').status_code)",
+                "purpose": "recon",
+            },
         )
         assert "safe mode blocked operation" in result
 
@@ -120,7 +123,9 @@ class TestBuiltinMcpExecution:
         agent = DummyAgent()
         agent.mcp_manager = DummyMcpManager()
 
-        result = await builtin_tools.execute_mcp_tool(agent, "navigate", {"url": "https://example.com"})
+        result = await builtin_tools.execute_mcp_tool(
+            agent, "navigate", {"url": "https://example.com"}
+        )
         assert "navigated to page" in result
         assert "[structured]" in result
         assert '"status": "ok"' in result

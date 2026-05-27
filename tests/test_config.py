@@ -1,17 +1,15 @@
 """VulnClaw Config Module Tests — schema.py + settings.py"""
 
-import os
-import pytest
-from pathlib import Path
-
 
 # ── schema.py ────────────────────────────────────────────────────────
+
 
 class TestLLMConfig:
     """Test LLMConfig schema."""
 
     def test_default_values(self):
         from vulnclaw.config.schema import LLMConfig
+
         config = LLMConfig()
         assert config.model == "gpt-4o"
         assert config.api_key == ""
@@ -21,6 +19,7 @@ class TestLLMConfig:
 
     def test_custom_values(self):
         from vulnclaw.config.schema import LLMConfig
+
         config = LLMConfig(
             model="deepseek-chat",
             api_key="sk-test",
@@ -34,11 +33,13 @@ class TestLLMConfig:
 
     def test_provider_field(self):
         from vulnclaw.config.schema import LLMConfig
+
         config = LLMConfig(provider="deepseek")
         assert config.provider == "deepseek"
 
     def test_reasoning_effort_field(self):
         from vulnclaw.config.schema import LLMConfig
+
         config = LLMConfig(reasoning_effort="high")
         assert config.reasoning_effort == "high"
 
@@ -48,6 +49,7 @@ class TestMCPServerConfig:
 
     def test_default_values(self):
         from vulnclaw.config.schema import MCPServerConfig, MCPTransportConfig
+
         config = MCPServerConfig(
             name="test-server",
             transport=MCPTransportConfig(type="stdio"),
@@ -59,6 +61,7 @@ class TestMCPServerConfig:
 
     def test_custom_values(self):
         from vulnclaw.config.schema import MCPServerConfig, MCPTransportConfig
+
         config = MCPServerConfig(
             name="burp",
             enabled=False,
@@ -76,13 +79,15 @@ class TestVulnClawConfig:
 
     def test_default_values(self):
         from vulnclaw.config.schema import VulnClawConfig
+
         config = VulnClawConfig()
         assert config.llm.model == "gpt-4o"
         assert isinstance(config.mcp.servers, dict)
 
     def test_mcp_builtin_servers(self):
-        from vulnclaw.config.schema import VulnClawConfig, BUILTIN_MCP_SERVERS
-        config = VulnClawConfig()
+        from vulnclaw.config.schema import BUILTIN_MCP_SERVERS, VulnClawConfig
+
+        VulnClawConfig()
         # Builtin servers are defined in BUILTIN_MCP_SERVERS, not in default config
         # Default config has empty servers dict; servers are populated by settings
         assert "fetch" in BUILTIN_MCP_SERVERS
@@ -90,18 +95,29 @@ class TestVulnClawConfig:
 
     def test_builtin_mcp_server_count(self):
         from vulnclaw.config.schema import BUILTIN_MCP_SERVERS
+
         # Should have 12 builtin servers
         assert len(BUILTIN_MCP_SERVERS) == 12
 
     def test_provider_presets(self):
         from vulnclaw.config.schema import PROVIDER_PRESETS
+
         # Should have at least the documented providers
-        expected_providers = ["openai", "minimax", "deepseek", "zhipu", "moonshot", "qwen", "siliconflow"]
+        expected_providers = [
+            "openai",
+            "minimax",
+            "deepseek",
+            "zhipu",
+            "moonshot",
+            "qwen",
+            "siliconflow",
+        ]
         for provider in expected_providers:
             assert provider in PROVIDER_PRESETS, f"Missing provider: {provider}"
 
     def test_llm_provider_enum(self):
         from vulnclaw.config.schema import LLMProvider
+
         assert hasattr(LLMProvider, "OPENAI")
         assert hasattr(LLMProvider, "DEEPSEEK")
         assert hasattr(LLMProvider, "MINIMAX")
@@ -109,28 +125,33 @@ class TestVulnClawConfig:
 
 # ── settings.py ──────────────────────────────────────────────────────
 
+
 class TestSettingsLoad:
     """Test config loading."""
 
     def test_load_config_returns_config(self):
-        from vulnclaw.config.settings import load_config
         from vulnclaw.config.schema import VulnClawConfig
+        from vulnclaw.config.settings import load_config
+
         config = load_config()
         assert isinstance(config, VulnClawConfig)
 
     def test_load_config_has_llm(self):
         from vulnclaw.config.settings import load_config
+
         config = load_config()
         assert config.llm is not None
 
     def test_load_config_has_mcp(self):
         from vulnclaw.config.settings import load_config
+
         config = load_config()
         assert config.mcp is not None
 
     def test_save_config(self):
-        from vulnclaw.config.settings import save_config
         from vulnclaw.config.schema import VulnClawConfig
+        from vulnclaw.config.settings import save_config
+
         config = VulnClawConfig()
         config.llm.model = "test-model"
         # save_config saves to the default path
@@ -138,16 +159,19 @@ class TestSettingsLoad:
 
     def test_set_config_value(self):
         from vulnclaw.config.settings import set_config_value
+
         # set_config_value(key, value) — sets in the YAML config
         set_config_value("llm.model", "gpt-4o-mini")  # Should not crash
 
     def test_set_config_nested(self):
         from vulnclaw.config.settings import set_config_value
+
         set_config_value("llm.temperature", "0.1")  # Should not crash
 
     def test_apply_provider_preset(self):
-        from vulnclaw.config.settings import apply_provider_preset
         from vulnclaw.config.schema import VulnClawConfig
+        from vulnclaw.config.settings import apply_provider_preset
+
         config = VulnClawConfig()
         apply_provider_preset(config, "deepseek")
         assert config.llm.provider == "deepseek"
@@ -155,6 +179,7 @@ class TestSettingsLoad:
 
     def test_list_providers(self):
         from vulnclaw.config.settings import list_providers
+
         providers = list_providers()
         assert isinstance(providers, list)
         assert len(providers) >= 7
@@ -167,6 +192,7 @@ class TestSettingsLoad:
     def test_env_var_override(self, monkeypatch):
         """Test that environment variables override config values."""
         from vulnclaw.config.settings import load_config
+
         monkeypatch.setenv("VULNCLAW_LLM_API_KEY", "env-test-key")
         monkeypatch.setenv("VULNCLAW_LLM_MODEL", "env-test-model")
         # Config should pick up env vars

@@ -3,8 +3,8 @@
 import pytest
 from typer.testing import CliRunner
 
-
 # CLI smoke tests
+
 
 class TestCLI:
     """Test CLI entry point and sub-commands."""
@@ -15,6 +15,7 @@ class TestCLI:
 
     def test_cli_help(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
         assert "VulnClaw" in result.output or "vulnclaw" in result.output.lower()
@@ -22,18 +23,21 @@ class TestCLI:
     def test_cli_version(self, runner):
         from vulnclaw import __version__
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["--version"])
         # Typer may return exit code 0 or 2 depending on version
         assert __version__ in result.output or result.exit_code in (0, 2)
 
     def test_cli_init(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["init"])
         # Should not crash
         assert result.exit_code == 0
 
     def test_cli_doctor(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["doctor"])
         # Should not crash
         assert result.exit_code == 0
@@ -42,25 +46,28 @@ class TestCLI:
 
     def test_cli_config_list(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["config", "list"])
         # Should not crash
         assert result.exit_code == 0
 
     def test_cli_config_provider_list(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["config", "provider", "--list"])
         # Should show available providers
         assert result.exit_code == 0
 
     def test_cli_config_provider_set(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["config", "provider", "deepseek"])
         # Should not crash
         assert result.exit_code == 0
 
     def test_cli_kb_update(self, runner, monkeypatch, tmp_path):
-        from vulnclaw.cli.main import app
         import vulnclaw.kb.store as kb_store
+        from vulnclaw.cli.main import app
 
         monkeypatch.setattr(kb_store, "KB_DIR", tmp_path)
         result = runner.invoke(app, ["kb", "update"])
@@ -77,10 +84,10 @@ class TestCLI:
         assert "Tools:" in result.output
 
     def test_recon_resumes_target_state(self, runner, monkeypatch, tmp_path):
-        from vulnclaw.cli.main import app
         import vulnclaw.orchestrator as orchestrator_mod
         import vulnclaw.target_state.store as store_mod
-        from vulnclaw.agent.context import SessionState, PentestPhase
+        from vulnclaw.agent.context import PentestPhase, SessionState
+        from vulnclaw.cli.main import app
 
         monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
         state = SessionState(target="https://example.com")
@@ -102,9 +109,9 @@ class TestCLI:
         assert calls == [("https://example.com", None)]
 
     def test_recon_no_resume_skips_target_state(self, runner, monkeypatch, tmp_path):
-        from vulnclaw.cli.main import app
         import vulnclaw.target_state.store as store_mod
-        from vulnclaw.agent.context import SessionState, PentestPhase
+        from vulnclaw.agent.context import PentestPhase, SessionState
+        from vulnclaw.cli.main import app
 
         monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
         state = SessionState(target="https://example.com")
@@ -116,11 +123,11 @@ class TestCLI:
         assert result.output is not None
 
     def test_repl_persistent_explicit_target_restores_history(self, runner, monkeypatch):
-        from vulnclaw.cli.main import app
-        import vulnclaw.cli.main as cli_main
         import vulnclaw.agent.core as agent_core
+        import vulnclaw.cli.main as cli_main
         import vulnclaw.mcp.lifecycle as lifecycle_mod
         from vulnclaw.agent.context import PentestPhase, SessionState
+        from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
         config = VulnClawConfig()
@@ -135,7 +142,9 @@ class TestCLI:
         observed: dict[str, str] = {}
 
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
-        monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "start_enabled_servers", lambda self: 0)
+        monkeypatch.setattr(
+            lifecycle_mod.MCPLifecycleManager, "start_enabled_servers", lambda self: 0
+        )
         monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "stop_all", lambda self: None)
 
         def fake_apply(agent, target: str, snapshot_id=None):
@@ -195,9 +204,9 @@ class TestCLI:
         assert observed["phase"] == PentestPhase.EXPLOITATION.value
 
     def test_report_target_mode(self, runner, monkeypatch, tmp_path):
-        from vulnclaw.cli.main import app
         import vulnclaw.target_state.store as store_mod
         from vulnclaw.agent.context import SessionState, VulnerabilityFinding
+        from vulnclaw.cli.main import app
 
         monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
         state = SessionState(target="https://example.com")
@@ -212,18 +221,22 @@ class TestCLI:
         assert "Report generated" in result.output or result.output
 
     def test_repl_report_command_uses_current_session_or_target_state(self, runner, monkeypatch):
-        from vulnclaw.cli.main import app
         import vulnclaw.cli.main as cli_main
         import vulnclaw.mcp.lifecycle as lifecycle_mod
+        from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
         config = VulnClawConfig()
         config.llm.api_key = "test-key"
 
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
-        monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "start_enabled_servers", lambda self: 0)
+        monkeypatch.setattr(
+            lifecycle_mod.MCPLifecycleManager, "start_enabled_servers", lambda self: 0
+        )
         monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "stop_all", lambda self: None)
-        monkeypatch.setattr(cli_main, "_generate_report_for_target", lambda target, **kwargs: "C:/tmp/report.md")
+        monkeypatch.setattr(
+            cli_main, "_generate_report_for_target", lambda target, **kwargs: "C:/tmp/report.md"
+        )
 
         result = runner.invoke(
             app,
@@ -236,8 +249,8 @@ class TestCLI:
         assert "report.md" in result.output
 
     def test_run_uses_shared_orchestrator(self, runner, monkeypatch):
-        from vulnclaw.cli.main import app
         import vulnclaw.cli.main as cli_main
+        from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
         config = VulnClawConfig()
@@ -257,8 +270,8 @@ class TestCLI:
         assert called == [("run", "https://example.com")]
 
     def test_run_cli_constraints_are_appended_to_prompt(self, runner, monkeypatch):
-        from vulnclaw.cli.main import app
         import vulnclaw.cli.main as cli_main
+        from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
         config = VulnClawConfig()
@@ -280,7 +293,16 @@ class TestCLI:
 
         result = runner.invoke(
             app,
-            ["run", "https://example.com", "--only-port", "443", "--only-host", "example.com", "--only-path", "/admin"],
+            [
+                "run",
+                "https://example.com",
+                "--only-port",
+                "443",
+                "--only-host",
+                "example.com",
+                "--only-path",
+                "/admin",
+            ],
         )
         assert result.exit_code == 0
         assert prompts
@@ -289,8 +311,8 @@ class TestCLI:
         assert "Only test path /admin" in prompts[0]
 
     def test_run_cli_blocked_host_and_path_are_appended_to_prompt(self, runner, monkeypatch):
-        from vulnclaw.cli.main import app
         import vulnclaw.cli.main as cli_main
+        from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
         config = VulnClawConfig()
@@ -312,7 +334,14 @@ class TestCLI:
 
         result = runner.invoke(
             app,
-            ["run", "https://example.com", "--blocked-host", "staging.example.com", "--blocked-path", "/internal"],
+            [
+                "run",
+                "https://example.com",
+                "--blocked-host",
+                "staging.example.com",
+                "--blocked-path",
+                "/internal",
+            ],
         )
         assert result.exit_code == 0
         assert prompts
@@ -320,22 +349,26 @@ class TestCLI:
         assert "Blocked path /internal" in prompts[0]
 
     def test_cli_blocks_command_when_allowed_actions_conflict(self, runner, monkeypatch):
-        from vulnclaw.cli.main import app
         import vulnclaw.cli.main as cli_main
+        from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
         config = VulnClawConfig()
         config.llm.api_key = "test-key"
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
-        monkeypatch.setattr(cli_main, "_append_cli_constraints", lambda prompt, only_port, only_host, only_path: f"{prompt} 仅做信息收集。")
+        monkeypatch.setattr(
+            cli_main,
+            "_append_cli_constraints",
+            lambda prompt, only_port, only_host, only_path: f"{prompt} 仅做信息收集。",
+        )
 
         result = runner.invoke(app, ["run", "https://example.com"])
         assert result.exit_code == 1
         assert "constraint_violation" in result.output
 
     def test_cli_blocks_command_with_explicit_allow_actions_option(self, runner):
-        from vulnclaw.cli.main import app
         import vulnclaw.cli.main as cli_main
+        from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
         config = VulnClawConfig()
@@ -349,8 +382,8 @@ class TestCLI:
         assert "constraint_violation" in result.output
 
     def test_persistent_command_uses_correct_cycle_callback(self, runner, monkeypatch):
-        from vulnclaw.cli.main import app
         import vulnclaw.cli.main as cli_main
+        from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
         config = VulnClawConfig()
@@ -359,7 +392,9 @@ class TestCLI:
 
         class DummyAgent:
             def __init__(self):
-                self.context = type("Ctx", (), {"state": type("State", (), {"target": "https://example.com"})()})()
+                self.context = type(
+                    "Ctx", (), {"state": type("State", (), {"target": "https://example.com"})()}
+                )()
                 self.runtime = type("Runtime", (), {})()
 
             async def persistent_pentest(self, *args, **kwargs):
@@ -373,22 +408,26 @@ class TestCLI:
 
         monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
 
-        result = runner.invoke(app, ["persistent", "https://example.com", "--cycles", "1", "--rounds", "1"])
+        result = runner.invoke(
+            app, ["persistent", "https://example.com", "--cycles", "1", "--rounds", "1"]
+        )
         assert result.exit_code == 0
 
     def test_repl_persistent_interrupt_generates_final_report(self, runner, monkeypatch):
-        from vulnclaw.cli.main import app
-        import vulnclaw.cli.main as cli_main
         import vulnclaw.agent.core as agent_core
+        import vulnclaw.cli.main as cli_main
         import vulnclaw.mcp.lifecycle as lifecycle_mod
         from vulnclaw.agent.context import SessionState, VulnerabilityFinding
+        from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
         config = VulnClawConfig()
         config.llm.api_key = "test-key"
 
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
-        monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "start_enabled_servers", lambda self: 0)
+        monkeypatch.setattr(
+            lifecycle_mod.MCPLifecycleManager, "start_enabled_servers", lambda self: 0
+        )
         monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "stop_all", lambda self: None)
 
         state = SessionState(target="https://example.com")
@@ -415,7 +454,9 @@ class TestCLI:
 
         monkeypatch.setattr(cli_main, "apply_target_state_to_agent", fake_apply)
         monkeypatch.setattr(agent_core.AgentCore, "persistent_pentest", fake_persistent_pentest)
-        monkeypatch.setattr(cli_main, "_generate_report_for_target", lambda target, **kwargs: "C:/tmp/final.md")
+        monkeypatch.setattr(
+            cli_main, "_generate_report_for_target", lambda target, **kwargs: "C:/tmp/final.md"
+        )
 
         result = runner.invoke(
             app,
@@ -426,10 +467,11 @@ class TestCLI:
         assert result.exit_code == 0
         assert "Final report" in result.output
         assert "final.md" in result.output
+
     def test_target_state_list_and_clear(self, runner, monkeypatch, tmp_path):
-        from vulnclaw.cli.main import app
         import vulnclaw.target_state.store as store_mod
         from vulnclaw.agent.context import SessionState
+        from vulnclaw.cli.main import app
 
         monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
         state = SessionState(target="https://example.com")
@@ -444,9 +486,9 @@ class TestCLI:
         assert result_clear.output
 
     def test_target_state_preview_and_diff(self, runner, monkeypatch, tmp_path):
-        from vulnclaw.cli.main import app
         import vulnclaw.target_state.store as store_mod
         from vulnclaw.agent.context import SessionState, VulnerabilityFinding
+        from vulnclaw.cli.main import app
 
         monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
 
@@ -465,7 +507,14 @@ class TestCLI:
 
         result_diff = runner.invoke(
             app,
-            ["target-state", "diff", "https://example.com", snapshots[-1]["snapshot_id"], "--to", snapshots[0]["snapshot_id"]],
+            [
+                "target-state",
+                "diff",
+                "https://example.com",
+                snapshots[-1]["snapshot_id"],
+                "--to",
+                snapshots[0]["snapshot_id"],
+            ],
         )
         assert result_diff.exit_code == 0
         assert "Target Diff" in result_diff.output
@@ -489,6 +538,7 @@ class TestCLI:
 
     def test_cli_kb_info(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["kb", "info"])
         # kb info might not exist in all versions, just verify no crash
         assert result.exit_code in (0, 2)
@@ -496,6 +546,7 @@ class TestCLI:
     def test_cli_no_args(self, runner):
         """Running with no args should show help or enter REPL mode."""
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, [])
         # Should not crash
         assert result.exit_code == 0
@@ -510,21 +561,24 @@ class TestCLISubCommands:
 
     def test_run_help(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["run", "--help"])
         assert result.exit_code == 0
 
     def test_recon_help(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["recon", "--help"])
         assert result.exit_code == 0
 
     def test_scan_help(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["scan", "--help"])
         assert result.exit_code == 0
 
     def test_report_help(self, runner):
         from vulnclaw.cli.main import app
+
         result = runner.invoke(app, ["report", "--help"])
         assert result.exit_code == 0
-

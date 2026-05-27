@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from vulnclaw.agent.core import AgentCore
 from vulnclaw.config.settings import load_config
 from vulnclaw.mcp.lifecycle import MCPLifecycleManager
 from vulnclaw.web.schemas import MCPDiagnosticsView, MCPServiceView

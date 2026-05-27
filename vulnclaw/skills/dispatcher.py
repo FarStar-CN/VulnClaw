@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any, Optional
 
-from vulnclaw.skills.loader import load_skill_by_name, list_core_skills, list_specialized_skills
-
+from vulnclaw.skills.loader import list_core_skills, list_specialized_skills, load_skill_by_name
 
 # ── Intent → Skill mapping ─────────────────────────────────────────
 
@@ -26,7 +24,9 @@ SKILL_INTENT_MAP: dict[str, list[str]] = {
     "逆向|reverse|签名恢复|burp重放|js签名|客户端逆向|请求链|重放|签名": ["client-reverse"],
     "抓包|packet|frida|jadx|hook|ssl pinning|scrcpy": ["client-reverse"],
     "浏览器签名|反爬|antibot|token生成|cookie跳转": ["client-reverse"],
-    "web高级|注入|sql注入|xss|ssrf|ssti|xxe|命令注入|反序列化|rce|远程代码执行": ["web-security-advanced"],
+    "web高级|注入|sql注入|xss|ssrf|ssti|xxe|命令注入|反序列化|rce|远程代码执行": [
+        "web-security-advanced"
+    ],
     "cors|graphql|websocket|oauth|请求走私|jwt|csrf|原型污染": ["web-security-advanced"],
     "认证漏洞|逻辑漏洞|越权|idor|支付逻辑|文件上传|路径穿越": ["web-security-advanced"],
     "ai安全|mcp安全|prompt注入|工具滥用|agent安全|模型安全": ["ai-mcp-security"],
@@ -115,21 +115,25 @@ class SkillDispatcher:
         for name in list_core_skills():
             skill = load_skill_by_name(name)
             if skill:
-                skills.append({
-                    "name": skill["name"],
-                    "description": skill.get("description", ""),
-                    "type": "core",
-                    "format": skill.get("format", "flat"),
-                    "references": str(len(skill.get("references", []))),
-                })
+                skills.append(
+                    {
+                        "name": skill["name"],
+                        "description": skill.get("description", ""),
+                        "type": "core",
+                        "format": skill.get("format", "flat"),
+                        "references": str(len(skill.get("references", []))),
+                    }
+                )
         for name in list_specialized_skills():
             skill = load_skill_by_name(name)
             if skill:
-                skills.append({
-                    "name": skill["name"],
-                    "description": skill.get("description", ""),
-                    "type": "specialized",
-                    "format": skill.get("format", "flat"),
-                    "references": str(len(skill.get("references", []))),
-                })
+                skills.append(
+                    {
+                        "name": skill["name"],
+                        "description": skill.get("description", ""),
+                        "type": "specialized",
+                        "format": skill.get("format", "flat"),
+                        "references": str(len(skill.get("references", []))),
+                    }
+                )
         return skills

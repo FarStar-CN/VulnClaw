@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 
+from vulnclaw.agent.context import TaskConstraints
+from vulnclaw.agent.constraint_policy import validate_action_constraints
 from vulnclaw.agent.core import AgentCore
+from vulnclaw.agent.input_analysis import extract_task_constraints
+from vulnclaw.config.settings import load_config
 from vulnclaw.mcp.lifecycle import MCPLifecycleManager
-from vulnclaw.orchestrator import run_agent_task, validate_action_constraints
+from vulnclaw.orchestrator import run_agent_task
 from vulnclaw.web.schemas import TaskCreateRequest
 from vulnclaw.web.task_manager import WebTaskManager
-from vulnclaw.config.settings import load_config
-from vulnclaw.agent.context import TaskConstraints
-from vulnclaw.agent.input_analysis import extract_task_constraints
 
 
 def start_task(manager: WebTaskManager, request: TaskCreateRequest) -> str:
@@ -30,7 +31,10 @@ async def _run_task(manager: WebTaskManager, task_id: str, request: TaskCreateRe
         manager.set_failed(task_id, violation)
         return
     if request.options.only_path and request.command == "persistent":
-        manager.set_failed(task_id, "constraint_violation: persistent tasks are not allowed with only_path scope yet")
+        manager.set_failed(
+            task_id,
+            "constraint_violation: persistent tasks are not allowed with only_path scope yet",
+        )
         return
 
     mcp_manager = MCPLifecycleManager(config)
@@ -38,6 +42,7 @@ async def _run_task(manager: WebTaskManager, task_id: str, request: TaskCreateRe
     agent = AgentCore(config, mcp_manager)
 
     try:
+
         def before_restore(_restore_result) -> None:
             if request.resume:
                 manager.set_restoring(task_id, snapshot_id=request.snapshot_id)
@@ -82,15 +87,24 @@ async def _run_task(manager: WebTaskManager, task_id: str, request: TaskCreateRe
         mcp_manager.stop_all()
 
 
-async def _run_single_task(manager: WebTaskManager, task_id: str, agent: AgentCore, request: TaskCreateRequest) -> None:
+async def _run_single_task(
+    manager: WebTaskManager, task_id: str, agent: AgentCore, request: TaskCreateRequest
+) -> None:
     prompt = _build_prompt_v2(request)
 
     if request.command == "run":
         max_rounds = request.options.max_rounds or agent.config.session.max_rounds
-        results = await agent.auto_pentest(prompt, target=request.target, max_rounds=max_rounds, on_step=_build_step_callback(manager, task_id))
+        results = await agent.auto_pentest(
+            prompt,
+            target=request.target,
+            max_rounds=max_rounds,
+            on_step=_build_step_callback(manager, task_id),
+        )
         if results:
             last = results[-1]
-            manager.update_progress(task_id, phase=last.phase, message=last.output[:200] if last.output else None)
+            manager.update_progress(
+                task_id, phase=last.phase, message=last.output[:200] if last.output else None
+            )
         return
 
     result = await agent.chat(prompt, target=request.target)
@@ -106,8 +120,12 @@ async def _run_single_task(manager: WebTaskManager, task_id: str, agent: AgentCo
         manager.update_progress(task_id, phase=result.phase, message=result.output[:200])
 
 
-async def _run_persistent_task(manager: WebTaskManager, task_id: str, agent: AgentCore, request: TaskCreateRequest) -> None:
-    rounds_per_cycle = request.options.rounds_per_cycle or agent.config.session.persistent_rounds_per_cycle
+async def _run_persistent_task(
+    manager: WebTaskManager, task_id: str, agent: AgentCore, request: TaskCreateRequest
+) -> None:
+    rounds_per_cycle = (
+        request.options.rounds_per_cycle or agent.config.session.persistent_rounds_per_cycle
+    )
     max_cycles = request.options.max_cycles or agent.config.session.persistent_max_cycles
     prompt = _build_prompt_v2(request)
 
@@ -178,9 +196,13 @@ def _build_task_constraints(request: TaskCreateRequest) -> TaskConstraints:
     if options.blocked_path and options.blocked_path not in constraints.blocked_paths:
         constraints.blocked_paths.append(options.blocked_path)
     if options.allow_actions:
-        constraints.allowed_actions = list(dict.fromkeys([*constraints.allowed_actions, *options.allow_actions]))
+        constraints.allowed_actions = list(
+            dict.fromkeys([*constraints.allowed_actions, *options.allow_actions])
+        )
     if options.block_actions:
-        constraints.blocked_actions = list(dict.fromkeys([*constraints.blocked_actions, *options.block_actions]))
+        constraints.blocked_actions = list(
+            dict.fromkeys([*constraints.blocked_actions, *options.block_actions])
+        )
 
     if options.only_port is not None and request.command == "exploit" and not options.allow_actions:
         constraints.blocked_actions = list(dict.fromkeys([*constraints.blocked_actions, "exploit"]))
@@ -219,4 +241,6 @@ def _build_prompt_v2(request: TaskCreateRequest) -> str:
         return f"Attempt authorized exploitation against {request.target}{cve_hint}{cmd_hint}.{constraint_suffix}"
     if request.command == "persistent":
         return f"Perform an authorized persistent penetration test against {request.target}.{constraint_suffix}"
-    return f"Perform a full authorized penetration test against {request.target}.{constraint_suffix}"
+    return (
+        f"Perform a full authorized penetration test against {request.target}.{constraint_suffix}"
+    )

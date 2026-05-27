@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from vulnclaw.agent.context import PentestPhase, TaskConstraints
-
 
 PHASE_TO_ACTION: dict[PentestPhase, str] = {
     PentestPhase.RECON: "recon",
@@ -92,7 +89,19 @@ def infer_tool_action(tool_name: str, args: dict[str, object]) -> str:
 
     if normalized_tool == "python_execute":
         code = str(args.get("code", "") or "").lower()
-        if any(marker in code for marker in ["requests.", "httpx.", "urllib", "socket.", "whoami", "extractvalue(", "../", "<script"]):
+        if any(
+            marker in code
+            for marker in [
+                "requests.",
+                "httpx.",
+                "urllib",
+                "socket.",
+                "whoami",
+                "extractvalue(",
+                "../",
+                "<script",
+            ]
+        ):
             return "exploit"
         return "scan"
 
@@ -102,7 +111,9 @@ def infer_tool_action(tool_name: str, args: dict[str, object]) -> str:
     return "scan"
 
 
-def validate_tool_action(tool_name: str, args: dict[str, object], constraints: TaskConstraints) -> str | None:
+def validate_tool_action(
+    tool_name: str, args: dict[str, object], constraints: TaskConstraints
+) -> str | None:
     """Return a constraint violation when a tool invocation implies a blocked action."""
     inferred = infer_tool_action(tool_name, args)
     violation = validate_action_constraints(inferred, constraints)

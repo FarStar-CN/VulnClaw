@@ -1,5 +1,6 @@
-import pytest
 from pathlib import Path
+
+import pytest
 from typer.testing import CliRunner
 
 
@@ -80,8 +81,15 @@ class TestWebServices:
         monkeypatch.setattr(target_service, "TARGETS_DIR", tmp_path)
 
         state = SessionState(target="https://example.com")
-        state.add_finding(VulnerabilityFinding(title="Candidate", severity="Low", lifecycle_status="candidate"))
-        review = VulnerabilityFinding(title="Review Me", severity="High", evidence_level="L2", lifecycle_status="needs_manual_review")
+        state.add_finding(
+            VulnerabilityFinding(title="Candidate", severity="Low", lifecycle_status="candidate")
+        )
+        review = VulnerabilityFinding(
+            title="Review Me",
+            severity="High",
+            evidence_level="L2",
+            lifecycle_status="needs_manual_review",
+        )
         state.add_finding(review)
         store_mod.save_target_state("https://example.com", state, command="recon")
 
@@ -193,7 +201,9 @@ class TestWebServices:
         from vulnclaw.web.task_manager import WebTaskManager
 
         manager = WebTaskManager()
-        record = manager.create_task(TaskCreateRequest(command="recon", target="https://example.com"))
+        record = manager.create_task(
+            TaskCreateRequest(command="recon", target="https://example.com")
+        )
         manager.set_running(record.task_id)
         manager.publish(record.task_id, "round_output", {"round": 1, "text": "hello"})
         manager.set_completed(record.task_id, latest_message="done")
@@ -212,7 +222,9 @@ class TestWebServices:
         from vulnclaw.web.task_manager import WebTaskManager
 
         manager = WebTaskManager()
-        record = manager.create_task(TaskCreateRequest(command="recon", target="https://example.com"))
+        record = manager.create_task(
+            TaskCreateRequest(command="recon", target="https://example.com")
+        )
         manager.set_restoring(record.task_id, snapshot_id="snap_001")
         manager.set_completed(
             record.task_id,
@@ -224,8 +236,15 @@ class TestWebServices:
                 "phase": "Recon",
                 "findings_count": 1,
                 "constraints": {"allowed_ports": [443]},
-                "constraint_violations": ["constraint_violation: command 'run' is outside allowed actions [recon]"],
-                "constraint_violation_events": [{"source": "command", "summary": "constraint_violation: command 'run' is outside allowed actions [recon]"}],
+                "constraint_violations": [
+                    "constraint_violation: command 'run' is outside allowed actions [recon]"
+                ],
+                "constraint_violation_events": [
+                    {
+                        "source": "command",
+                        "summary": "constraint_violation: command 'run' is outside allowed actions [recon]",
+                    }
+                ],
             },
         )
 
@@ -273,7 +292,9 @@ class TestWebServices:
         monkeypatch.setattr(task_manager_mod, "ensure_dirs", lambda: None)
 
         manager = task_manager_mod.WebTaskManager()
-        record = manager.create_task(TaskCreateRequest(command="scan", target="https://example.com"))
+        record = manager.create_task(
+            TaskCreateRequest(command="scan", target="https://example.com")
+        )
         manager.set_running(record.task_id)
         manager.publish(record.task_id, "round_output", {"round": 1, "text": "hello"})
         manager.set_completed(
@@ -323,7 +344,9 @@ class TestWebServices:
             def __init__(self, config, mcp_manager):
                 self.config = config
                 self.mcp_manager = mcp_manager
-                self.context = type("Ctx", (), {"state": SessionState(target="https://example.com")})()
+                self.context = type(
+                    "Ctx", (), {"state": SessionState(target="https://example.com")}
+                )()
                 self.runtime = type("Runtime", (), {})()
 
             @property
@@ -338,7 +361,17 @@ class TestWebServices:
         monkeypatch.setattr(task_service, "MCPLifecycleManager", DummyLifecycle)
         monkeypatch.setattr(task_service, "AgentCore", DummyAgent)
 
-        async def fake_run_agent_task(*, agent, command, target, resume=True, snapshot_id=None, before_restore=None, on_restored=None, runner=None):
+        async def fake_run_agent_task(
+            *,
+            agent,
+            command,
+            target,
+            resume=True,
+            snapshot_id=None,
+            before_restore=None,
+            on_restored=None,
+            runner=None,
+        ):
             if before_restore is not None:
                 before_restore(None)
             restore = type(
@@ -376,8 +409,15 @@ class TestWebServices:
                         "resume_strategy": "continue_recon",
                         "resume_reason": "need more recon",
                         "constraints": {"allowed_ports": [443]},
-                        "constraint_violations": ["constraint_violation: command 'run' is outside allowed actions [recon]"],
-                        "constraint_violation_events": [{"source": "command", "summary": "constraint_violation: command 'run' is outside allowed actions [recon]"}],
+                        "constraint_violations": [
+                            "constraint_violation: command 'run' is outside allowed actions [recon]"
+                        ],
+                        "constraint_violation_events": [
+                            {
+                                "source": "command",
+                                "summary": "constraint_violation: command 'run' is outside allowed actions [recon]",
+                            }
+                        ],
                     },
                 },
             )()
@@ -385,7 +425,9 @@ class TestWebServices:
         monkeypatch.setattr(task_service, "run_agent_task", fake_run_agent_task)
 
         manager = WebTaskManager()
-        request = TaskCreateRequest(command="recon", target="https://example.com", resume=True, snapshot_id="snap_001")
+        request = TaskCreateRequest(
+            command="recon", target="https://example.com", resume=True, snapshot_id="snap_001"
+        )
         record = manager.create_task(request)
 
         original_publish = manager.publish
@@ -446,7 +488,9 @@ class TestWebServices:
         monkeypatch.setattr(
             task_service,
             "_build_prompt_v2",
-            lambda request: "Perform authorized reconnaissance against https://example.com. 仅做信息收集。",
+            lambda request: (
+                "Perform authorized reconnaissance against https://example.com. 仅做信息收集。"
+            ),
         )
 
         manager = WebTaskManager()
@@ -492,7 +536,9 @@ class TestWebServices:
 
         class DummyAgent:
             def __init__(self):
-                self.context = type("Ctx", (), {"state": SessionState(target="https://example.com")})()
+                self.context = type(
+                    "Ctx", (), {"state": SessionState(target="https://example.com")}
+                )()
                 self.runtime = type("Runtime", (), {})()
 
             @property
@@ -525,7 +571,12 @@ class TestWebServices:
             called.append("save")
 
         def fake_summary(session, *, command, restored=False, snapshot_id=""):
-            return {"target": session.target or "", "command": command, "restored": restored, "snapshot_id": snapshot_id}
+            return {
+                "target": session.target or "",
+                "command": command,
+                "restored": restored,
+                "snapshot_id": snapshot_id,
+            }
 
         monkeypatch.setattr(orchestrator, "apply_target_state_to_agent", fake_apply)
         monkeypatch.setattr(orchestrator, "save_target_state", fake_save)
@@ -560,7 +611,9 @@ class TestWebServices:
         from vulnclaw.web.schemas import TaskEvent
         from vulnclaw.web.stream import encode_sse
 
-        encoded = encode_sse(TaskEvent(event="round_output", task_id="task_demo", payload={"round": 1}))
+        encoded = encode_sse(
+            TaskEvent(event="round_output", task_id="task_demo", payload={"round": 1})
+        )
         assert "event: round_output" in encoded
         assert '"task_id": "task_demo"' in encoded
 
@@ -569,7 +622,13 @@ class TestWebApp:
     def test_constraint_audit_route_works_without_fastapi(self, monkeypatch):
         import vulnclaw.web.app as web_app
 
-        monkeypatch.setattr(web_app, "get_constraint_audit", lambda: type("View", (), {"model_dump": lambda self, mode="json": {"total_events": 1}})())
+        monkeypatch.setattr(
+            web_app,
+            "get_constraint_audit",
+            lambda: type(
+                "View", (), {"model_dump": lambda self, mode="json": {"total_events": 1}}
+            )(),
+        )
         # Route body itself is exercised indirectly by type and service tests; this smoke check guards import wiring.
         assert callable(web_app.get_constraint_audit)
 
@@ -650,7 +709,12 @@ class TestWebApp:
             lambda target, from_snapshot_id, to_snapshot_id=None: type(
                 "Diff",
                 (),
-                {"model_dump": lambda self, mode="json": {"target": target, "from_snapshot_id": from_snapshot_id}},
+                {
+                    "model_dump": lambda self, mode="json": {
+                        "target": target,
+                        "from_snapshot_id": from_snapshot_id,
+                    }
+                },
             )(),
         )
 

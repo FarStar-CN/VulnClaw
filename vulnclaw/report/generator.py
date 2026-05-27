@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +10,6 @@ from typing import Any, Optional
 from jinja2 import Template
 
 from vulnclaw.agent.context import SessionState, VulnerabilityFinding
-
 
 # ── Report Template ─────────────────────────────────────────────────
 
@@ -207,7 +205,9 @@ def generate_report(
     verified_findings = session.get_verified_findings()
     pending_findings = session.get_pending_findings()
     rejected_findings = session.get_rejected_findings()
-    candidate_findings = session.get_candidate_findings() if hasattr(session, "get_candidate_findings") else []
+    candidate_findings = (
+        session.get_candidate_findings() if hasattr(session, "get_candidate_findings") else []
+    )
     pending_verification_findings = (
         session.get_pending_verification_findings()
         if hasattr(session, "get_pending_verification_findings")
@@ -243,6 +243,7 @@ def generate_report(
 
     if output_path is None:
         from vulnclaw.config.settings import SESSIONS_DIR
+
         safe_target = (session.target or "unknown").replace("/", "_").replace(":", "_")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = str(SESSIONS_DIR / f"report_{timestamp}_{safe_target}.md")
@@ -251,10 +252,12 @@ def generate_report(
     output.parent.mkdir(parents=True, exist_ok=True)
 
     from vulnclaw.report.poc_builder import generate_pocs
+
     pocs_dir = output.parent / "pocs"
     generate_pocs(session, pocs_dir)
 
     from vulnclaw.report.filter import ReportContentFilter
+
     if not llm_attack_summary:
         llm_attack_summary = _generate_attack_summary_from_session(session)
         if llm_attack_summary:
@@ -313,6 +316,7 @@ def generate_report(
         output.write_text(report_content, encoding="utf-8")
 
     return output
+
 
 def generate_report_from_file(session_path: str) -> Path:
     """Generate a report from a saved session JSON file."""
@@ -487,6 +491,7 @@ def _generate_attack_summary_from_session(session: SessionState) -> str:
     """Generate a readable attack-path summary using VulnClaw's configured LLM."""
     try:
         from openai import OpenAI
+
         from vulnclaw.agent.think_filter import strip_think_tags
         from vulnclaw.config.settings import load_config
 
@@ -503,7 +508,11 @@ def _generate_attack_summary_from_session(session: SessionState) -> str:
         notes = session.notes[-25:] if session.notes else []
         findings = session.findings[-20:] if session.findings else []
 
-        steps_text = "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(steps)) if steps else "No step records"
+        steps_text = (
+            "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(steps))
+            if steps
+            else "No step records"
+        )
         notes_text = "\n".join(f"- {note}" for note in notes) if notes else "No key observations"
         findings_text = (
             "\n".join(
@@ -625,6 +634,7 @@ def generate_persistent_cycle_report(
 
     if output_path is None:
         from vulnclaw.config.settings import SESSIONS_DIR
+
         safe_target = (session.target or "unknown").replace("/", "_").replace(":", "_")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = str(
@@ -635,6 +645,7 @@ def generate_persistent_cycle_report(
     output.parent.mkdir(parents=True, exist_ok=True)
 
     from vulnclaw.report.poc_builder import generate_pocs
+
     pocs_dir = output.parent / "pocs"
     generate_pocs(session, pocs_dir)
 
@@ -644,6 +655,7 @@ def generate_persistent_cycle_report(
     # ★ 攻击路径摘要（过滤 LLM 原始输出中的 think 标签 / 调试标记）
     step_summary = session.get_step_summary()
     from vulnclaw.report.filter import ReportContentFilter
+
     if not llm_attack_summary:
         llm_attack_summary = _generate_attack_summary_from_session(session)
     filtered_summary = ReportContentFilter.filter(llm_attack_summary) if llm_attack_summary else ""
@@ -703,7 +715,9 @@ def _render_target_state_context(target_state_context: dict[str, Any]) -> str:
         if resume_meta.get("priority_targets"):
             lines.append(f"- 恢复优先目标: {', '.join(resume_meta['priority_targets'][:5])}")
         if resume_meta.get("priority_recon_assets"):
-            lines.append(f"- 恢复优先侦察资产: {', '.join(resume_meta['priority_recon_assets'][:5])}")
+            lines.append(
+                f"- 恢复优先侦察资产: {', '.join(resume_meta['priority_recon_assets'][:5])}"
+            )
         if resume_meta.get("blocked_targets"):
             lines.append(f"- 已阻塞目标: {', '.join(resume_meta['blocked_targets'][:5])}")
         if resume_meta.get("failed_targets"):
@@ -743,7 +757,7 @@ def _top_recon_assets_for_report(recon_meta: dict[str, Any]) -> list[str]:
 def _extract_location_summary_clean(finding: VulnerabilityFinding) -> str:
     text = " ".join(part for part in [finding.evidence or "", finding.description or ""] if part)
     urls = re.findall(r'https?://[^\s<>"\')\]]+', text)
-    paths = re.findall(r'(?:/[\w%&=?\-]+)+', text)
+    paths = re.findall(r"(?:/[\w%&=?\-]+)+", text)
 
     items: list[str] = []
     seen: set[str] = set()
@@ -769,7 +783,9 @@ def _build_repro_summary_clean(finding: VulnerabilityFinding) -> str:
     return "；".join(parts) if parts else "暂无可用复现说明"
 
 
-def _render_verified_finding_details_clean(findings: list[VulnerabilityFinding], heading: str) -> str:
+def _render_verified_finding_details_clean(
+    findings: list[VulnerabilityFinding], heading: str
+) -> str:
     lines = [heading, ""]
     for idx, finding in enumerate(findings, 1):
         location = _extract_location_summary_clean(finding) or "未定位 / 未提取到 URL"
@@ -788,7 +804,7 @@ def _render_verified_finding_details_clean(findings: list[VulnerabilityFinding],
 def _extract_location_summary(finding: VulnerabilityFinding) -> str:
     text = " ".join(part for part in [finding.evidence or "", finding.description or ""] if part)
     urls = re.findall(r'https?://[^\s<>"\')\]]+', text)
-    paths = re.findall(r'(?:/[\w%&=?\-]+)+', text)
+    paths = re.findall(r"(?:/[\w%&=?\-]+)+", text)
 
     items: list[str] = []
     seen: set[str] = set()

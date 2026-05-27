@@ -2,21 +2,8 @@
 
 from __future__ import annotations
 
-import json
-import os
-import re
-import subprocess
-import sys
-import tempfile
 from typing import Any, Callable, Optional
 
-
-from vulnclaw.config.schema import VulnClawConfig
-from vulnclaw.agent.context import ContextManager, PentestPhase, SessionState
-from vulnclaw.agent.prompts import build_system_prompt
-from vulnclaw.agent.runtime_state import AgentResult, PersistentCycleResult, RuntimeState
-from vulnclaw.agent.think_filter import strip_think_tags, format_think_tags
-from vulnclaw.agent.finding_parser import FindingParser
 from vulnclaw.agent.anti_loop import (
     detect_attack_path,
     detect_phase_from_output,
@@ -24,10 +11,20 @@ from vulnclaw.agent.anti_loop import (
     is_meaningful_step,
     track_failed_target,
 )
+from vulnclaw.agent.builtin_tools import (
+    BLOCKED_PATTERNS,
+    RESERVED_IP_RANGES,
+    build_openai_tools,
+    execute_mcp_tool,
+    execute_nmap,
+    execute_python,
+    is_reserved_ip,
+    parse_nmap_xml,
+    validate_scan_target,
+)
+from vulnclaw.agent.context import ContextManager, PentestPhase, SessionState
 from vulnclaw.agent.ctf_mode import detect_flag_claim
-from vulnclaw.agent.llm_client import call_llm, call_llm_auto
-from vulnclaw.agent.loop_controller import auto_pentest as run_auto_pentest, persistent_pentest as run_persistent_pentest
-from vulnclaw.agent.prompt_context import build_round_context, generate_attack_summary
+from vulnclaw.agent.finding_parser import FindingParser
 from vulnclaw.agent.input_analysis import (
     detect_phase,
     detect_target,
@@ -35,24 +32,17 @@ from vulnclaw.agent.input_analysis import (
     extract_user_vuln_hint,
     get_payload_examples,
 )
-from vulnclaw.agent.skill_context import get_active_skill_context
 from vulnclaw.agent.kb_context import build_kb_context
-from vulnclaw.agent.recon_tracker import RECON_MIN_ROUNDS, update_recon_dimension_completion
-from vulnclaw.agent.tool_call_manager import safe_parse_tool_args
+from vulnclaw.agent.llm_client import call_llm
+from vulnclaw.agent.loop_controller import auto_pentest as run_auto_pentest
+from vulnclaw.agent.loop_controller import persistent_pentest as run_persistent_pentest
+from vulnclaw.agent.prompt_context import build_round_context, generate_attack_summary
+from vulnclaw.agent.recon_tracker import update_recon_dimension_completion
+from vulnclaw.agent.runtime_state import AgentResult, PersistentCycleResult, RuntimeState
+from vulnclaw.agent.skill_context import get_active_skill_context
 from vulnclaw.agent.system_prompt import build_dynamic_system_prompt
-from vulnclaw.agent.builtin_tools import (
-
-
-    BLOCKED_PATTERNS,
-    RESERVED_IP_RANGES,
-    build_openai_tools,
-    execute_mcp_tool,
-    execute_python,
-    execute_nmap,
-    is_reserved_ip,
-    parse_nmap_xml,
-    validate_scan_target,
-)
+from vulnclaw.agent.tool_call_manager import safe_parse_tool_args
+from vulnclaw.config.schema import VulnClawConfig
 from vulnclaw.target_state.store import save_target_state
 
 # Optional KB integration — gracefully degrade if KB data is unavailable
@@ -60,10 +50,6 @@ try:
     from vulnclaw.kb.retriever import KnowledgeRetriever
 except Exception:
     KnowledgeRetriever = None
-
-
-
-
 
 
 class AgentCore:
@@ -95,7 +81,6 @@ class AgentCore:
 
     @property
     def session_state(self) -> SessionState:
-
         """Access current session state."""
         return self.context.state
 
@@ -112,7 +97,11 @@ class AgentCore:
         """Reset per-run runtime state to avoid cross-run contamination."""
         user_lower = user_input.lower() if user_input else ""
         existing_constraints = self.context.state.task_constraints
-        parsed_constraints = extract_task_constraints(user_input) if user_input else self.context.state.task_constraints
+        parsed_constraints = (
+            extract_task_constraints(user_input)
+            if user_input
+            else self.context.state.task_constraints
+        )
         if (
             user_input
             and "[Persistent Cycle " in user_input
@@ -147,22 +136,29 @@ class AgentCore:
             "personnel": False,
         }
         social_engineering_keywords = [
-            "社会工程", "社工", "人员信息", "作者追踪", "人物追踪", "人物画像",
-            "osint", "情报", "作者", "调查",
+            "社会工程",
+            "社工",
+            "人员信息",
+            "作者追踪",
+            "人物追踪",
+            "人物画像",
+            "osint",
+            "情报",
+            "作者",
+            "调查",
         ]
-        self.context.state.recon_dimension4_active = (
-            self.runtime.is_recon_phase
-            and any(kw in user_lower for kw in social_engineering_keywords)
+        self.context.state.recon_dimension4_active = self.runtime.is_recon_phase and any(
+            kw in user_lower for kw in social_engineering_keywords
         )
         # Re-bind finding parser to the new runtime object
         self._finding_parser = FindingParser(self.context, self.runtime)
 
     def _get_client(self):
-
         """Lazy-initialize OpenAI client."""
         if self._client is None:
             try:
                 from openai import OpenAI
+
                 self._client = OpenAI(
                     api_key=self.config.llm.api_key,
                     base_url=self.config.llm.base_url,
@@ -178,7 +174,12 @@ class AgentCore:
 
         return extract_response(message)
 
-    def _build_system_prompt(self, target: Optional[str] = None, auto_mode: bool = False, user_input: Optional[str] = None) -> str:
+    def _build_system_prompt(
+        self,
+        target: Optional[str] = None,
+        auto_mode: bool = False,
+        user_input: Optional[str] = None,
+    ) -> str:
         """Build the dynamic system prompt for this turn."""
         # Collect MCP tools if available
         mcp_tools = []
@@ -188,13 +189,28 @@ class AgentCore:
         # Collect skill context — dynamically dispatch based on user input
         skill_context = self._get_active_skill_context(user_input=user_input)
 
-        phase = self.context.state.phase.value if self.context.state.phase != PentestPhase.IDLE else None
+        phase = (
+            self.context.state.phase.value
+            if self.context.state.phase != PentestPhase.IDLE
+            else None
+        )
         personnel_keywords = [
-            "社会工程", "社工", "人员信息", "作者追踪", "人物追踪", "人物画像",
-            "osint", "情报", "调查", "作者",
+            "社会工程",
+            "社工",
+            "人员信息",
+            "作者追踪",
+            "人物追踪",
+            "人物画像",
+            "osint",
+            "情报",
+            "调查",
+            "作者",
         ]
         enable_personnel = any(kw in (user_input or "").lower() for kw in personnel_keywords)
-        if hasattr(self.context.state, "recon_dimension4_active") and self.context.state.recon_dimension4_active:
+        if (
+            hasattr(self.context.state, "recon_dimension4_active")
+            and self.context.state.recon_dimension4_active
+        ):
             enable_personnel = True
 
         kb_context = self._build_kb_context(user_input)
@@ -210,7 +226,6 @@ class AgentCore:
             kb_context=kb_context,
         )
 
-
     def _get_active_skill_context(self, user_input: Optional[str] = None) -> Optional[str]:
         return get_active_skill_context(user_input)
 
@@ -218,7 +233,6 @@ class AgentCore:
         return build_kb_context(self, user_input)
 
     def _detect_phase(self, user_input: str) -> Optional[PentestPhase]:
-
         """Detect pentest phase from user input using keyword matching."""
         return detect_phase(user_input)
 
@@ -267,7 +281,9 @@ class AgentCore:
         self.context.add_user_message(user_input)
 
         # Build system prompt — pass user_input for dynamic Skill dispatch
-        system_prompt = self._build_system_prompt(detected_target, auto_mode=False, user_input=user_input)
+        system_prompt = self._build_system_prompt(
+            detected_target, auto_mode=False, user_input=user_input
+        )
 
         # Call LLM
         try:
@@ -300,7 +316,6 @@ class AgentCore:
         """Autonomous penetration test loop."""
         return await run_auto_pentest(self, user_input, target, max_rounds, on_step)
 
-
     def _build_round_context(self, round_num: int, max_rounds: int) -> str:
         """Build context string for the current round in auto loop."""
         return build_round_context(self, round_num, max_rounds)
@@ -328,7 +343,6 @@ class AgentCore:
             on_cycle_step,
             on_cycle_complete,
         )
-
 
     def _detect_phase_from_output(self, output: str) -> Optional[PentestPhase]:
         """Detect phase transition signals from LLM output."""
@@ -385,16 +399,13 @@ class AgentCore:
         """Safely parse tool call arguments JSON, with fallback for malformed input."""
         return safe_parse_tool_args(arguments)
 
-
     async def _execute_mcp_tool(self, tool_name: str, args: dict) -> str:
         """Execute a tool call via MCP manager or built-in tools."""
         return await execute_mcp_tool(self, tool_name, args)
 
-
     def _build_openai_tools(self) -> list[dict]:
         """Build OpenAI function calling schema from MCP tools + built-in tools."""
         return build_openai_tools(self.mcp_manager)
-
 
     # ── Python code executor ─────────────────────────────────────────
 
@@ -419,9 +430,6 @@ class AgentCore:
     async def _execute_python(self, args: dict) -> str:
         return await execute_python(self, args)
 
-
     def _update_recon_dimension_completion(self, response: str) -> None:
         """Auto-detect which recon dimensions have been explored."""
         update_recon_dimension_completion(self, response)
-
-

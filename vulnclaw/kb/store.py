@@ -51,12 +51,14 @@ class KnowledgeStore:
                     try:
                         with open(entry_file, "r", encoding="utf-8") as f:
                             data = json.load(f)
-                        self._index[category].append({
-                            "id": data.get("id", entry_file.stem),
-                            "title": data.get("title", entry_file.stem),
-                            "tags": data.get("tags", []),
-                            "file": str(entry_file),
-                        })
+                        self._index[category].append(
+                            {
+                                "id": data.get("id", entry_file.stem),
+                                "title": data.get("title", entry_file.stem),
+                                "tags": data.get("tags", []),
+                                "file": str(entry_file),
+                            }
+                        )
                     except (json.JSONDecodeError, IOError):
                         continue
 
@@ -88,12 +90,14 @@ class KnowledgeStore:
         # Update index
         if category not in self._index:
             self._index[category] = []
-        self._index[category].append({
-            "id": entry_id,
-            "title": data.get("title", entry_id),
-            "tags": data.get("tags", []),
-            "file": str(filepath),
-        })
+        self._index[category].append(
+            {
+                "id": entry_id,
+                "title": data.get("title", entry_id),
+                "tags": data.get("tags", []),
+                "file": str(filepath),
+            }
+        )
         self._save_index()
 
         return filepath
@@ -138,7 +142,11 @@ class KnowledgeStore:
                 entry_title = entry_meta.get("title", "").lower()
                 entry_tags = " ".join(entry_meta.get("tags", [])).lower()
 
-                if query_lower in entry_id or query_lower in entry_title or query_lower in entry_tags:
+                if (
+                    query_lower in entry_id
+                    or query_lower in entry_title
+                    or query_lower in entry_tags
+                ):
                     # Load full entry
                     filepath = entry_meta.get("file")
                     if filepath and Path(filepath).exists():

@@ -8,7 +8,6 @@ from vulnclaw.agent.context import ContextManager, VulnerabilityFinding
 from vulnclaw.agent.runtime_state import RuntimeState
 from vulnclaw.agent.think_filter import strip_think_tags
 
-
 PROOF_PATTERNS: list[str] = [
     r"差异[：: ]*\d+",
     r"\d+\s*bytes|\d+\s*字节",
@@ -133,7 +132,9 @@ class FindingParser:
                 for p in PROOF_PATTERNS
             )
             has_confirmed_fact = any(
-                re.search(p, " ".join(getattr(self.context.state, "confirmed_facts", [])), re.IGNORECASE)
+                re.search(
+                    p, " ".join(getattr(self.context.state, "confirmed_facts", [])), re.IGNORECASE
+                )
                 for p in PROOF_PATTERNS
             )
             if not has_proof and not has_confirmed_fact:
@@ -150,17 +151,23 @@ class FindingParser:
 
             location = _collect_location_summary(evidence_pool)
             proof_text = " | ".join(proof_snippets) if proof_snippets else ""
-            evidence = f"{location} | {proof_text}" if location and proof_text else location or proof_text
+            evidence = (
+                f"{location} | {proof_text}" if location and proof_text else location or proof_text
+            )
 
             self.context.state.add_finding(
                 VulnerabilityFinding(
                     title=canonical_title,
                     severity=severity,
                     vuln_type=vuln_type,
-                    description=f"自动检测：{vuln_matches[0].strip()[:100]}" if vuln_matches else "通过自然语言模式自动检测",
+                    description=f"自动检测：{vuln_matches[0].strip()[:100]}"
+                    if vuln_matches
+                    else "通过自然语言模式自动检测",
                     evidence=evidence[:300],
                     evidence_level="L2",
-                    lifecycle_status="needs_manual_review" if severity in ("Critical", "High") else "pending_verification",
+                    lifecycle_status="needs_manual_review"
+                    if severity in ("Critical", "High")
+                    else "pending_verification",
                 )
             )
             existing_titles.add(canonical_title)

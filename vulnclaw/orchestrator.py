@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from vulnclaw.agent.core import AgentCore
-from vulnclaw.agent.constraint_policy import validate_action_constraints
 from vulnclaw.target_state.store import (
     SessionRestoreResult,
     apply_target_state_to_agent,

@@ -12,10 +12,54 @@ def detect_phase(user_input: str) -> Optional[PentestPhase]:
     """Detect pentest phase from user input using keyword matching."""
     input_lower = user_input.lower()
     phase_keywords = {
-        PentestPhase.RECON: ["信息收集", "侦察", "端口扫描", "子域名", "指纹", "目录扫描", "recon", "scan", "端口", "nmap", "收集"],
-        PentestPhase.VULN_DISCOVERY: ["漏洞发现", "漏洞扫描", "有什么漏洞", "cve", "安全检测", "vulnerability", "漏洞", "注入", "xss", "sqli"],
-        PentestPhase.EXPLOITATION: ["利用", "exploit", "poc", "验证漏洞", "执行命令", "rce", "getshell", "拿权限", "打一下", "尝试"],
-        PentestPhase.POST_EXPLOITATION: ["后渗透", "内网", "横向", "提权", "维持", "pivot", "post-exploitation", "隧道", "代理"],
+        PentestPhase.RECON: [
+            "信息收集",
+            "侦察",
+            "端口扫描",
+            "子域名",
+            "指纹",
+            "目录扫描",
+            "recon",
+            "scan",
+            "端口",
+            "nmap",
+            "收集",
+        ],
+        PentestPhase.VULN_DISCOVERY: [
+            "漏洞发现",
+            "漏洞扫描",
+            "有什么漏洞",
+            "cve",
+            "安全检测",
+            "vulnerability",
+            "漏洞",
+            "注入",
+            "xss",
+            "sqli",
+        ],
+        PentestPhase.EXPLOITATION: [
+            "利用",
+            "exploit",
+            "poc",
+            "验证漏洞",
+            "执行命令",
+            "rce",
+            "getshell",
+            "拿权限",
+            "打一下",
+            "尝试",
+        ],
+        PentestPhase.POST_EXPLOITATION: [
+            "后渗透",
+            "内网",
+            "横向",
+            "提权",
+            "维持",
+            "pivot",
+            "post-exploitation",
+            "隧道",
+            "代理",
+        ],
         PentestPhase.REPORTING: ["报告", "report", "总结", "整理", "生成报告"],
     }
     for phase, keywords in phase_keywords.items():
@@ -67,7 +111,9 @@ def extract_task_constraints(user_input: str) -> TaskConstraints:
                 if 0 < port <= 65535 and port not in constraints.blocked_ports:
                     constraints.blocked_ports.append(port)
 
-    if any(token in lowered for token in ["仅做信息收集", "只做信息收集", "recon only", "only recon"]):
+    if any(
+        token in lowered for token in ["仅做信息收集", "只做信息收集", "recon only", "only recon"]
+    ):
         constraints.allowed_actions = ["recon"]
     if any(token in lowered for token in ["不要利用", "禁止利用", "do not exploit", "no exploit"]):
         constraints.blocked_actions.append("exploit")
@@ -75,9 +121,7 @@ def extract_task_constraints(user_input: str) -> TaskConstraints:
     allow_match = re.search(r"only allowed actions:\s*([a-z_,\s-]+)", lowered)
     if allow_match:
         constraints.allowed_actions = [
-            item.strip()
-            for item in allow_match.group(1).split(",")
-            if item.strip()
+            item.strip() for item in allow_match.group(1).split(",") if item.strip()
         ]
 
     block_match = re.search(r"blocked actions:\s*([a-z_,\s-]+)", lowered)
@@ -90,7 +134,10 @@ def extract_task_constraints(user_input: str) -> TaskConstraints:
             ]
         )
 
-    if any(token in lowered for token in ["只测这个路径", "仅测试这个路径", "只测试这个路径", "只测该路径"]):
+    if any(
+        token in lowered
+        for token in ["只测这个路径", "仅测试这个路径", "只测试这个路径", "只测该路径"]
+    ):
         path_match = re.search(r"https?://[^\s]+(/[^\s?#]*)", text)
         if not path_match:
             path_match = re.search(r"(/[A-Za-z0-9._/\-]+)", text)
@@ -141,10 +188,23 @@ def extract_task_constraints(user_input: str) -> TaskConstraints:
 def extract_user_vuln_hint(user_input: str) -> str:
     """Extract explicit vulnerability hints from user input."""
     vuln_keywords = [
-        "SQL注入", "SQLi", "XSS", "RCE", "命令注入",
-        "文件包含", "路径遍历", "LFI", "RFI",
-        "SSRF", "CSRF", "弱口令", "暴力破解",
-        "认证绕过", "未授权", "信息泄露", "敏感信息泄露",
+        "SQL注入",
+        "SQLi",
+        "XSS",
+        "RCE",
+        "命令注入",
+        "文件包含",
+        "路径遍历",
+        "LFI",
+        "RFI",
+        "SSRF",
+        "CSRF",
+        "弱口令",
+        "暴力破解",
+        "认证绕过",
+        "未授权",
+        "信息泄露",
+        "敏感信息泄露",
     ]
     user_lower = user_input.lower()
     found_vulns = [v for v in vuln_keywords if v.lower() in user_lower]

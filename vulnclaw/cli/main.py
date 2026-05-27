@@ -1,11 +1,14 @@
 """VulnClaw CLI main entry point with REPL and sub-commands."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import asyncio
 import os
 import sys
 from typing import Optional
+
 
 def _configure_windows_console() -> None:
     """Force UTF-8 console I/O on Windows for reliable Unicode output."""
@@ -42,11 +45,17 @@ from rich.panel import Panel
 from rich.text import Text
 
 from vulnclaw import __version__
-from vulnclaw.config.settings import load_config, set_config_value, save_config, apply_provider_preset, list_providers
-from vulnclaw.agent.core import strip_think_tags, format_think_tags
 from vulnclaw.agent.input_analysis import extract_task_constraints
+from vulnclaw.agent.think_filter import format_think_tags, strip_think_tags
+from vulnclaw.config.settings import (
+    apply_provider_preset,
+    list_providers,
+    load_config,
+    save_config,
+    set_config_value,
+)
+from vulnclaw.agent.constraint_policy import validate_action_constraints
 from vulnclaw.orchestrator import run_agent_task
-from vulnclaw.orchestrator import validate_action_constraints
 from vulnclaw.repl_runner import run_repl_call
 from vulnclaw.target_state.store import (
     apply_target_state_to_agent,
@@ -56,7 +65,6 @@ from vulnclaw.target_state.store import (
     list_target_snapshots,
     load_target_state,
     rollback_target_state,
-    save_target_state,
 )
 
 app = typer.Typer(
@@ -94,7 +102,7 @@ def _print_banner() -> None:
 def _print_agent_output(output: str, config) -> None:
     """Print agent output with think-tag filtering based on config."""
     from rich.markup import escape as rich_escape
-    from vulnclaw.agent.core import format_think_tags, strip_think_tags
+
     formatted = format_think_tags(output, show=config.session.show_thinking)
     if formatted:
         # LLM output may contain Rich-style brackets like [/TOOL_CALL] which
@@ -110,14 +118,19 @@ def _print_agent_output(output: str, config) -> None:
 
 # 鈹€鈹€ REPL 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-def _prepare_repl_target(agent, requested_target: str, current_target: Optional[str], current_phase: str) -> tuple[str, str, bool]:
+
+def _prepare_repl_target(
+    agent, requested_target: str, current_target: Optional[str], current_phase: str
+) -> tuple[str, str, bool]:
     """Prepare REPL state for a target switch and optionally restore history."""
     target = requested_target.strip()
     if not target:
         return current_target or "", current_phase, False
 
     if current_target and current_target != target:
-        console.print(f"[dim][*] Target switch: {current_target} -> {target}, resetting session context[/]")
+        console.print(
+            f"[dim][*] Target switch: {current_target} -> {target}, resetting session context[/]"
+        )
         agent.reset_context()
         current_phase = agent.session_state.phase.value
 
@@ -156,7 +169,9 @@ def _run_repl() -> None:
     # Initialize agent
     agent = AgentCore(config, mcp_manager)
 
-    console.print("[dim]Enter a natural-language task to start. Type help for commands. Press Ctrl+C to exit.[/]")
+    console.print(
+        "[dim]Enter a natural-language task to start. Type help for commands. Press Ctrl+C to exit.[/]"
+    )
     console.print()
 
     # Track current target
@@ -223,14 +238,18 @@ def _run_repl() -> None:
                 continue
 
             elif cmd_lower.startswith("report"):
-                report_target = user_input[len("report"):].strip() or current_target
+                report_target = user_input[len("report") :].strip() or current_target
                 if not report_target:
-                    console.print("[!] Set a target first with [bold]target <host>[/] or run [bold]report <host>[/].")
+                    console.print(
+                        "[!] Set a target first with [bold]target <host>[/] or run [bold]report <host>[/]."
+                    )
                     continue
 
                 report_path = _generate_report_for_target(
                     report_target,
-                    current_session=agent.session_state if agent.session_state.target == report_target else None,
+                    current_session=agent.session_state
+                    if agent.session_state.target == report_target
+                    else None,
                     report_format=config.session.report_format,
                 )
                 console.print(f"[+] Report generated: [bold]{report_path}[/]")
@@ -238,10 +257,12 @@ def _run_repl() -> None:
 
             elif cmd_lower.startswith("persistent"):
                 # Persistent pentest mode from REPL
-                explicit_target = user_input[len("persistent"):].strip()
+                explicit_target = user_input[len("persistent") :].strip()
                 persistent_target = explicit_target or current_target
                 if not persistent_target:
-                    console.print("[!] Set a target first with [bold]target <host>[/] or run [bold]persistent <host>[/].")
+                    console.print(
+                        "[!] Set a target first with [bold]target <host>[/] or run [bold]persistent <host>[/]."
+                    )
                     continue
 
                 current_target, current_phase, restored_loaded = _prepare_repl_target(
@@ -255,18 +276,21 @@ def _run_repl() -> None:
                     console.print(f"[*] Restored saved target state: [bold]{persistent_target}[/]")
 
                 from vulnclaw.agent.core import PersistentCycleResult
+
                 rounds_per_cycle = config.session.persistent_rounds_per_cycle
                 max_cycles = config.session.persistent_max_cycles
                 auto_report = config.session.persistent_auto_report
 
-                console.print(Panel(
-                    f"Target: [bold]{persistent_target}[/]\n"
-                    f"Rounds per cycle: [bold]{rounds_per_cycle}[/]\n"
-                    f"Max cycles: [bold]{max_cycles}[/]\n"
-                    f"Auto report: {'[green]on[/]' if auto_report else '[yellow]off[/]'}",
-                    title="Persistent Pentest",
-                    border_style="cyan",
-                ))
+                console.print(
+                    Panel(
+                        f"Target: [bold]{persistent_target}[/]\n"
+                        f"Rounds per cycle: [bold]{rounds_per_cycle}[/]\n"
+                        f"Max cycles: [bold]{max_cycles}[/]\n"
+                        f"Auto report: {'[green]on[/]' if auto_report else '[yellow]off[/]'}",
+                        title="Persistent Pentest",
+                        border_style="cyan",
+                    )
+                )
 
                 persistent_prompt = (
                     f"Perform an authorized persistent penetration test against {persistent_target}. "
@@ -286,19 +310,24 @@ def _run_repl() -> None:
                     if result.phase:
                         current_phase = result.phase
 
-                def _on_persistent_cycle(cycle_num: int, cycle_result: PersistentCycleResult) -> None:
+                def _on_persistent_cycle(
+                    cycle_num: int, cycle_result: PersistentCycleResult
+                ) -> None:
                     all_cycle_results.append(cycle_result)
-                    console.print(Panel(
-                        f"Cycle {cycle_num} completed\n"
-                        f"   Total findings: {cycle_result.total_findings}\n"
-                        f"   New findings: {cycle_result.new_findings}\n"
-                        f"   Report: {cycle_result.report_path or 'not generated'}",
-                        title=f"Cycle {cycle_num}",
-                        border_style="green" if cycle_result.new_findings == 0 else "red",
-                    ))
+                    console.print(
+                        Panel(
+                            f"Cycle {cycle_num} completed\n"
+                            f"   Total findings: {cycle_result.total_findings}\n"
+                            f"   New findings: {cycle_result.new_findings}\n"
+                            f"   Report: {cycle_result.report_path or 'not generated'}",
+                            title=f"Cycle {cycle_num}",
+                            border_style="green" if cycle_result.new_findings == 0 else "red",
+                        )
+                    )
                     console.print()
 
                 try:
+
                     async def _run_persistent():
                         return await agent.persistent_pentest(
                             user_input=persistent_prompt,
@@ -333,13 +362,17 @@ def _run_repl() -> None:
 
                 # Summary
                 tf = len(agent.session_state.findings)
-                console.print(f"\n[+] Persistent pentest finished: {len(all_cycle_results)} cycles, {tf} findings")
+                console.print(
+                    f"\n[+] Persistent pentest finished: {len(all_cycle_results)} cycles, {tf} findings"
+                )
                 continue
 
             elif cmd_lower == "think":
                 # Toggle think tag display
                 config.session.show_thinking = not config.session.show_thinking
-                state_str = "[green]shown[/]" if config.session.show_thinking else "[yellow]hidden[/]"
+                state_str = (
+                    "[green]shown[/]" if config.session.show_thinking else "[yellow]hidden[/]"
+                )
                 console.print(f"[*] Thinking visibility: {state_str}")
                 console.print("[dim]Use think on/off for explicit control.[/]")
                 continue
@@ -360,7 +393,9 @@ def _run_repl() -> None:
             # Detect target switch and reset context if the user mentions a new target
             new_target = _extract_target_from_input(user_input)
             if new_target and current_target and new_target != current_target:
-                console.print(f"[dim][*] Target switch: {current_target} -> {new_target}, resetting session context[/]")
+                console.print(
+                    f"[dim][*] Target switch: {current_target} -> {new_target}, resetting session context[/]"
+                )
                 current_target = new_target
                 current_phase = "Recon"
                 agent.reset_context()
@@ -368,7 +403,9 @@ def _run_repl() -> None:
             try:
                 if is_auto_mode:
                     # Autonomous pentest loop
-                    console.print("[dim][*] Entering autonomous pentest mode. Press Ctrl+C to interrupt.[/]")
+                    console.print(
+                        "[dim][*] Entering autonomous pentest mode. Press Ctrl+C to interrupt.[/]"
+                    )
                     console.print()
 
                     async def _run_auto():
@@ -396,16 +433,29 @@ def _run_repl() -> None:
                                 total_findings = len(agent.session_state.findings)
                                 total_steps = len(agent.session_state.executed_steps)
                                 console.print()
-                                console.print(Panel(
-                                    f"[*] Autonomous pentest finished\n"
-                                    f"    Total rounds: {len(results)}\n"
-                                    f"    Steps executed: {total_steps}\n"
-                                    f"    Findings: {total_findings}",
-                                    title="Autonomous Pentest Result",
-                                    border_style="green" if total_findings == 0 else "red",
-                                ))
+                                console.print(
+                                    Panel(
+                                        f"[*] Autonomous pentest finished\n"
+                                        f"    Total rounds: {len(results)}\n"
+                                        f"    Steps executed: {total_steps}\n"
+                                        f"    Findings: {total_findings}",
+                                        title="Autonomous Pentest Result",
+                                        border_style="green" if total_findings == 0 else "red",
+                                    )
+                                )
 
-                                if any(token in user_input.lower() for token in ("输出", "保存", "写到", "导出", "save", "write", "export")):
+                                if any(
+                                    token in user_input.lower()
+                                    for token in (
+                                        "输出",
+                                        "保存",
+                                        "写到",
+                                        "导出",
+                                        "save",
+                                        "write",
+                                        "export",
+                                    )
+                                ):
                                     _auto_save_recon_report(agent, user_input, config)
 
                         await _run_repl_agent_call(agent, call=call, after_result=after_result)
@@ -437,6 +487,7 @@ def _run_repl() -> None:
             except Exception as e:
                 # Escape Rich markup chars in exception message to prevent MarkupError
                 from rich.markup import escape as rich_escape
+
                 console.print(f"[!] Error: {rich_escape(str(e))}")
 
         except KeyboardInterrupt:
@@ -487,15 +538,17 @@ def _print_help() -> None:
 def _print_status(agent, mcp_manager, target, phase, config) -> None:
     """Print current session status."""
     think_state = "[green]shown[/]" if config.session.show_thinking else "[yellow]hidden[/]"
-    console.print(Panel(
-        f"Target: [bold]{target or 'Not set'}[/]\n"
-        f"Phase: [bold]{phase}[/]\n"
-        f"MCP Services: [bold]{mcp_manager.running_count()}[/]\n"
-        f"Available Tools: [bold]{len(mcp_manager.list_available_tools())}[/]\n"
-        f"Thinking: {think_state}",
-        title="Current Status",
-        border_style="green",
-    ))
+    console.print(
+        Panel(
+            f"Target: [bold]{target or 'Not set'}[/]\n"
+            f"Phase: [bold]{phase}[/]\n"
+            f"MCP Services: [bold]{mcp_manager.running_count()}[/]\n"
+            f"Available Tools: [bold]{len(mcp_manager.list_available_tools())}[/]\n"
+            f"Thinking: {think_state}",
+            title="Current Status",
+            border_style="green",
+        )
+    )
 
 
 def _generate_report_for_target(
@@ -505,14 +558,12 @@ def _generate_report_for_target(
     report_format: str = "markdown",
 ) -> str:
     """Generate a report for a target using the best available source data."""
+    from vulnclaw.agent.context import SessionState
     from vulnclaw.report.generator import generate_report, generate_report_from_target_state
     from vulnclaw.target_state.store import load_target_state
-    from vulnclaw.agent.context import SessionState
 
     if current_session is not None and (
-        current_session.findings
-        or current_session.executed_steps
-        or current_session.notes
+        current_session.findings or current_session.executed_steps or current_session.notes
     ):
         path = generate_report(current_session, report_format=report_format)
         return str(path)
@@ -551,7 +602,9 @@ def _append_cli_constraints(
     return f"{prompt} {' '.join(constraints)}."
 
 
-def _append_action_constraints(prompt: str, allow_actions: Optional[str], block_actions: Optional[str]) -> str:
+def _append_action_constraints(
+    prompt: str, allow_actions: Optional[str], block_actions: Optional[str]
+) -> str:
     constraints = []
     if allow_actions:
         constraints.append(f"Only allowed actions: {allow_actions}")
@@ -580,8 +633,11 @@ async def _run_cli_orchestrated_task(
     agent = AgentCore(config, mcp_manager)
 
     try:
+
         def on_restored(restore_result) -> None:
-            console.print(f"[*] Restored saved target state: [bold]{restore_result.target or target}[/]")
+            console.print(
+                f"[*] Restored saved target state: [bold]{restore_result.target or target}[/]"
+            )
 
         return await run_agent_task(
             agent=agent,
@@ -598,20 +654,37 @@ async def _run_cli_orchestrated_task(
 
 # 鈹€鈹€ Sub-commands 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
+
 @app.command()
 def run(
     target: str = typer.Argument(..., help="Target host/IP/URL"),
     scope: str = typer.Option("full", help="Test scope: full, web, api, mobile"),
     output: Optional[str] = typer.Option(None, help="Output report file path"),
-    only_port: Optional[int] = typer.Option(None, "--only-port", help="Restrict testing to a single port"),
-    only_host: Optional[str] = typer.Option(None, "--only-host", help="Restrict testing to a single host"),
-    only_path: Optional[str] = typer.Option(None, "--only-path", help="Restrict testing to a single path"),
-    blocked_host: Optional[str] = typer.Option(None, "--blocked-host", help="Explicitly blocked host"),
-    blocked_path: Optional[str] = typer.Option(None, "--blocked-path", help="Explicitly blocked path"),
-    allow_actions: Optional[str] = typer.Option(None, "--allow-actions", help="Comma-separated allowed actions"),
-    block_actions: Optional[str] = typer.Option(None, "--block-actions", help="Comma-separated blocked actions"),
+    only_port: Optional[int] = typer.Option(
+        None, "--only-port", help="Restrict testing to a single port"
+    ),
+    only_host: Optional[str] = typer.Option(
+        None, "--only-host", help="Restrict testing to a single host"
+    ),
+    only_path: Optional[str] = typer.Option(
+        None, "--only-path", help="Restrict testing to a single path"
+    ),
+    blocked_host: Optional[str] = typer.Option(
+        None, "--blocked-host", help="Explicitly blocked host"
+    ),
+    blocked_path: Optional[str] = typer.Option(
+        None, "--blocked-path", help="Explicitly blocked path"
+    ),
+    allow_actions: Optional[str] = typer.Option(
+        None, "--allow-actions", help="Comma-separated allowed actions"
+    ),
+    block_actions: Optional[str] = typer.Option(
+        None, "--block-actions", help="Comma-separated blocked actions"
+    ),
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
-    snapshot: Optional[str] = typer.Option(None, "--snapshot", help="Resume from a specific target snapshot id"),
+    snapshot: Optional[str] = typer.Option(
+        None, "--snapshot", help="Resume from a specific target snapshot id"
+    ),
 ) -> None:
     """Run a full authorized pentest workflow."""
     config = load_config()
@@ -625,7 +698,9 @@ def run(
         f"Perform an authorized {scope} pentest against {target}. "
         "This target is in scope and explicitly authorized."
     )
-    prompt = _append_cli_constraints(prompt, only_port, only_host, only_path, blocked_host, blocked_path)
+    prompt = _append_cli_constraints(
+        prompt, only_port, only_host, only_path, blocked_host, blocked_path
+    )
     prompt = _append_action_constraints(prompt, allow_actions, block_actions)
     violation = validate_action_constraints("run", extract_task_constraints(prompt))
     if violation is not None:
@@ -638,7 +713,11 @@ def run(
                 prompt,
                 target=target,
                 max_rounds=shared_config.session.max_rounds,
-                on_step=lambda r, res: _print_agent_output(f"[dim]Round {r}[/]: {res.output[:200]}...", shared_config) if res.output else None,
+                on_step=lambda r, res: (
+                    _print_agent_output(f"[dim]Round {r}[/]: {res.output[:200]}...", shared_config)
+                    if res.output
+                    else None
+                ),
             )
 
         result = await _run_cli_orchestrated_task(
@@ -658,18 +737,38 @@ def run(
 @app.command()
 def persistent(
     target: str = typer.Argument(..., help="Target host/IP/URL"),
-    rounds: int = typer.Option(0, "--rounds", "-r", help="Rounds per cycle (0=use config, default 100)"),
+    rounds: int = typer.Option(
+        0, "--rounds", "-r", help="Rounds per cycle (0=use config, default 100)"
+    ),
     cycles: int = typer.Option(0, "--cycles", "-c", help="Max cycles (0=use config, default 10)"),
-    no_report: bool = typer.Option(False, "--no-report", help="Disable auto report after each cycle"),
-    only_port: Optional[int] = typer.Option(None, "--only-port", help="Restrict testing to a single port"),
-    only_host: Optional[str] = typer.Option(None, "--only-host", help="Restrict testing to a single host"),
-    only_path: Optional[str] = typer.Option(None, "--only-path", help="Restrict testing to a single path"),
-    blocked_host: Optional[str] = typer.Option(None, "--blocked-host", help="Explicitly blocked host"),
-    blocked_path: Optional[str] = typer.Option(None, "--blocked-path", help="Explicitly blocked path"),
-    allow_actions: Optional[str] = typer.Option(None, "--allow-actions", help="Comma-separated allowed actions"),
-    block_actions: Optional[str] = typer.Option(None, "--block-actions", help="Comma-separated blocked actions"),
+    no_report: bool = typer.Option(
+        False, "--no-report", help="Disable auto report after each cycle"
+    ),
+    only_port: Optional[int] = typer.Option(
+        None, "--only-port", help="Restrict testing to a single port"
+    ),
+    only_host: Optional[str] = typer.Option(
+        None, "--only-host", help="Restrict testing to a single host"
+    ),
+    only_path: Optional[str] = typer.Option(
+        None, "--only-path", help="Restrict testing to a single path"
+    ),
+    blocked_host: Optional[str] = typer.Option(
+        None, "--blocked-host", help="Explicitly blocked host"
+    ),
+    blocked_path: Optional[str] = typer.Option(
+        None, "--blocked-path", help="Explicitly blocked path"
+    ),
+    allow_actions: Optional[str] = typer.Option(
+        None, "--allow-actions", help="Comma-separated allowed actions"
+    ),
+    block_actions: Optional[str] = typer.Option(
+        None, "--block-actions", help="Comma-separated blocked actions"
+    ),
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
-    snapshot: Optional[str] = typer.Option(None, "--snapshot", help="Resume from a specific target snapshot id"),
+    snapshot: Optional[str] = typer.Option(
+        None, "--snapshot", help="Resume from a specific target snapshot id"
+    ),
 ) -> None:
     """Run a persistent authorized pentest across multiple cycles."""
     from vulnclaw.agent.core import PersistentCycleResult
@@ -684,21 +783,25 @@ def persistent(
     max_cycles = cycles if cycles > 0 else config.session.persistent_max_cycles
     auto_report = not no_report if no_report else config.session.persistent_auto_report
 
-    console.print(Panel(
-        f"Target: [bold]{target}[/]\n"
-        f"Rounds per cycle: [bold]{rounds_per_cycle}[/]\n"
-        f"Max cycles: [bold]{max_cycles}[/] {'(unlimited)' if max_cycles == 0 else ''}\n"
-        f"Auto report: {'[green]on[/]' if auto_report else '[yellow]off[/]'}\n"
-        f"Max total rounds: [bold]{rounds_per_cycle * max_cycles if max_cycles > 0 else 'unlimited'}[/]",
-        title="Persistent Pentest",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel(
+            f"Target: [bold]{target}[/]\n"
+            f"Rounds per cycle: [bold]{rounds_per_cycle}[/]\n"
+            f"Max cycles: [bold]{max_cycles}[/] {'(unlimited)' if max_cycles == 0 else ''}\n"
+            f"Auto report: {'[green]on[/]' if auto_report else '[yellow]off[/]'}\n"
+            f"Max total rounds: [bold]{rounds_per_cycle * max_cycles if max_cycles > 0 else 'unlimited'}[/]",
+            title="Persistent Pentest",
+            border_style="cyan",
+        )
+    )
 
     prompt = (
         f"Perform an authorized persistent penetration test against {target}. "
         "This target is in scope and explicitly authorized."
     )
-    prompt = _append_cli_constraints(prompt, only_port, only_host, only_path, blocked_host, blocked_path)
+    prompt = _append_cli_constraints(
+        prompt, only_port, only_host, only_path, blocked_host, blocked_path
+    )
     prompt = _append_action_constraints(prompt, allow_actions, block_actions)
     violation = validate_action_constraints("persistent", extract_task_constraints(prompt))
     if violation is not None:
@@ -719,15 +822,17 @@ def persistent(
     def _on_cycle_complete(cycle_num: int, cycle_result: PersistentCycleResult) -> None:
         """Callback after each cycle completes."""
         all_cycle_results.append(cycle_result)
-        console.print(Panel(
-            f"Cycle {cycle_num} completed\n"
-            f"   Steps executed: {cycle_result.total_steps}\n"
-            f"   Total findings: {cycle_result.total_findings}\n"
-            f"   New findings: {cycle_result.new_findings}\n"
-            f"   Report: {cycle_result.report_path or 'not generated'}",
-            title=f"Cycle {cycle_num} Result",
-            border_style="green" if cycle_result.new_findings == 0 else "red",
-        ))
+        console.print(
+            Panel(
+                f"Cycle {cycle_num} completed\n"
+                f"   Steps executed: {cycle_result.total_steps}\n"
+                f"   Total findings: {cycle_result.total_findings}\n"
+                f"   New findings: {cycle_result.new_findings}\n"
+                f"   Report: {cycle_result.report_path or 'not generated'}",
+                title=f"Cycle {cycle_num} Result",
+                border_style="green" if cycle_result.new_findings == 0 else "red",
+            )
+        )
         console.print()
 
     async def _run():
@@ -757,23 +862,29 @@ def persistent(
         console.print("\n[!] User interrupted persistent pentest")
         orchestrated = None
 
-    summary = orchestrated.summary if orchestrated else {
-        "findings_count": 0,
-        "executed_steps": 0,
-    }
+    summary = (
+        orchestrated.summary
+        if orchestrated
+        else {
+            "findings_count": 0,
+            "executed_steps": 0,
+        }
+    )
     total_findings = summary["findings_count"]
     total_steps = summary["executed_steps"]
     completed_cycles = len(all_cycle_results)
 
     console.print()
-    console.print(Panel(
-        f"{'Interrupted by user' if interrupted else 'Testing completed'}\n\n"
-        f"  Completed cycles: [bold]{completed_cycles}[/]\n"
-        f"  Steps executed: [bold]{total_steps}[/]\n"
-        f"  Findings: [bold]{total_findings}[/]",
-        title="Persistent Pentest Summary",
-        border_style="red" if total_findings > 0 else "green",
-    ))
+    console.print(
+        Panel(
+            f"{'Interrupted by user' if interrupted else 'Testing completed'}\n\n"
+            f"  Completed cycles: [bold]{completed_cycles}[/]\n"
+            f"  Steps executed: [bold]{total_steps}[/]\n"
+            f"  Findings: [bold]{total_findings}[/]",
+            title="Persistent Pentest Summary",
+            border_style="red" if total_findings > 0 else "green",
+        )
+    )
 
     if auto_report and all_cycle_results:
         console.print("\n[bold]Cycle Reports[/]:")
@@ -785,19 +896,37 @@ def persistent(
 @app.command()
 def recon(
     target: str = typer.Argument(..., help="Target host/IP/URL"),
-    only_port: Optional[int] = typer.Option(None, "--only-port", help="Restrict testing to a single port"),
-    only_host: Optional[str] = typer.Option(None, "--only-host", help="Restrict testing to a single host"),
-    only_path: Optional[str] = typer.Option(None, "--only-path", help="Restrict testing to a single path"),
-    blocked_host: Optional[str] = typer.Option(None, "--blocked-host", help="Explicitly blocked host"),
-    blocked_path: Optional[str] = typer.Option(None, "--blocked-path", help="Explicitly blocked path"),
-    allow_actions: Optional[str] = typer.Option(None, "--allow-actions", help="Comma-separated allowed actions"),
-    block_actions: Optional[str] = typer.Option(None, "--block-actions", help="Comma-separated blocked actions"),
+    only_port: Optional[int] = typer.Option(
+        None, "--only-port", help="Restrict testing to a single port"
+    ),
+    only_host: Optional[str] = typer.Option(
+        None, "--only-host", help="Restrict testing to a single host"
+    ),
+    only_path: Optional[str] = typer.Option(
+        None, "--only-path", help="Restrict testing to a single path"
+    ),
+    blocked_host: Optional[str] = typer.Option(
+        None, "--blocked-host", help="Explicitly blocked host"
+    ),
+    blocked_path: Optional[str] = typer.Option(
+        None, "--blocked-path", help="Explicitly blocked path"
+    ),
+    allow_actions: Optional[str] = typer.Option(
+        None, "--allow-actions", help="Comma-separated allowed actions"
+    ),
+    block_actions: Optional[str] = typer.Option(
+        None, "--block-actions", help="Comma-separated blocked actions"
+    ),
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
-    snapshot: Optional[str] = typer.Option(None, "--snapshot", help="Resume from a specific target snapshot id"),
+    snapshot: Optional[str] = typer.Option(
+        None, "--snapshot", help="Resume from a specific target snapshot id"
+    ),
 ) -> None:
     """Run reconnaissance only."""
     prompt = f"Perform authorized reconnaissance against {target} without exploitation."
-    prompt = _append_cli_constraints(prompt, only_port, only_host, only_path, blocked_host, blocked_path)
+    prompt = _append_cli_constraints(
+        prompt, only_port, only_host, only_path, blocked_host, blocked_path
+    )
     prompt = _append_action_constraints(prompt, allow_actions, block_actions)
     violation = validate_action_constraints("recon", extract_task_constraints(prompt))
     if violation is not None:
@@ -826,20 +955,38 @@ def recon(
 def scan(
     target: str = typer.Argument(..., help="Target host/IP/URL"),
     ports: Optional[str] = typer.Option(None, help="Port range, e.g. 80,443,8080"),
-    only_port: Optional[int] = typer.Option(None, "--only-port", help="Restrict testing to a single port"),
-    only_host: Optional[str] = typer.Option(None, "--only-host", help="Restrict testing to a single host"),
-    only_path: Optional[str] = typer.Option(None, "--only-path", help="Restrict testing to a single path"),
-    blocked_host: Optional[str] = typer.Option(None, "--blocked-host", help="Explicitly blocked host"),
-    blocked_path: Optional[str] = typer.Option(None, "--blocked-path", help="Explicitly blocked path"),
-    allow_actions: Optional[str] = typer.Option(None, "--allow-actions", help="Comma-separated allowed actions"),
-    block_actions: Optional[str] = typer.Option(None, "--block-actions", help="Comma-separated blocked actions"),
+    only_port: Optional[int] = typer.Option(
+        None, "--only-port", help="Restrict testing to a single port"
+    ),
+    only_host: Optional[str] = typer.Option(
+        None, "--only-host", help="Restrict testing to a single host"
+    ),
+    only_path: Optional[str] = typer.Option(
+        None, "--only-path", help="Restrict testing to a single path"
+    ),
+    blocked_host: Optional[str] = typer.Option(
+        None, "--blocked-host", help="Explicitly blocked host"
+    ),
+    blocked_path: Optional[str] = typer.Option(
+        None, "--blocked-path", help="Explicitly blocked path"
+    ),
+    allow_actions: Optional[str] = typer.Option(
+        None, "--allow-actions", help="Comma-separated allowed actions"
+    ),
+    block_actions: Optional[str] = typer.Option(
+        None, "--block-actions", help="Comma-separated blocked actions"
+    ),
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
-    snapshot: Optional[str] = typer.Option(None, "--snapshot", help="Resume from a specific target snapshot id"),
+    snapshot: Optional[str] = typer.Option(
+        None, "--snapshot", help="Resume from a specific target snapshot id"
+    ),
 ) -> None:
     """Run vulnerability scanning only."""
     port_hint = f", focusing on ports {ports}" if ports else ""
     prompt = f"Perform authorized vulnerability scanning against {target}{port_hint} without exploitation."
-    prompt = _append_cli_constraints(prompt, only_port, only_host, only_path, blocked_host, blocked_path)
+    prompt = _append_cli_constraints(
+        prompt, only_port, only_host, only_path, blocked_host, blocked_path
+    )
     prompt = _append_action_constraints(prompt, allow_actions, block_actions)
     violation = validate_action_constraints("scan", extract_task_constraints(prompt))
     if violation is not None:
@@ -869,20 +1016,40 @@ def exploit(
     target: str = typer.Argument(..., help="Target host/IP/URL"),
     cve: Optional[str] = typer.Option(None, help="Specific CVE to exploit"),
     cmd: str = typer.Option("id", help="Command to execute for verification"),
-    only_port: Optional[int] = typer.Option(None, "--only-port", help="Restrict testing to a single port"),
-    only_host: Optional[str] = typer.Option(None, "--only-host", help="Restrict testing to a single host"),
-    only_path: Optional[str] = typer.Option(None, "--only-path", help="Restrict testing to a single path"),
-    blocked_host: Optional[str] = typer.Option(None, "--blocked-host", help="Explicitly blocked host"),
-    blocked_path: Optional[str] = typer.Option(None, "--blocked-path", help="Explicitly blocked path"),
-    allow_actions: Optional[str] = typer.Option(None, "--allow-actions", help="Comma-separated allowed actions"),
-    block_actions: Optional[str] = typer.Option(None, "--block-actions", help="Comma-separated blocked actions"),
+    only_port: Optional[int] = typer.Option(
+        None, "--only-port", help="Restrict testing to a single port"
+    ),
+    only_host: Optional[str] = typer.Option(
+        None, "--only-host", help="Restrict testing to a single host"
+    ),
+    only_path: Optional[str] = typer.Option(
+        None, "--only-path", help="Restrict testing to a single path"
+    ),
+    blocked_host: Optional[str] = typer.Option(
+        None, "--blocked-host", help="Explicitly blocked host"
+    ),
+    blocked_path: Optional[str] = typer.Option(
+        None, "--blocked-path", help="Explicitly blocked path"
+    ),
+    allow_actions: Optional[str] = typer.Option(
+        None, "--allow-actions", help="Comma-separated allowed actions"
+    ),
+    block_actions: Optional[str] = typer.Option(
+        None, "--block-actions", help="Comma-separated blocked actions"
+    ),
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
-    snapshot: Optional[str] = typer.Option(None, "--snapshot", help="Resume from a specific target snapshot id"),
+    snapshot: Optional[str] = typer.Option(
+        None, "--snapshot", help="Resume from a specific target snapshot id"
+    ),
 ) -> None:
     """Run exploitation only."""
     cve_hint = f" using {cve}" if cve else ""
-    prompt = f"Attempt authorized exploitation against {target}{cve_hint} and verify with command: {cmd}"
-    prompt = _append_cli_constraints(prompt, only_port, only_host, only_path, blocked_host, blocked_path)
+    prompt = (
+        f"Attempt authorized exploitation against {target}{cve_hint} and verify with command: {cmd}"
+    )
+    prompt = _append_cli_constraints(
+        prompt, only_port, only_host, only_path, blocked_host, blocked_path
+    )
     prompt = _append_action_constraints(prompt, allow_actions, block_actions)
     violation = validate_action_constraints("exploit", extract_task_constraints(prompt))
     if violation is not None:
@@ -909,12 +1076,17 @@ def exploit(
 
 @app.command()
 def report(
-    session: str = typer.Argument(..., help="Path to session JSON file or target when used with --target"),
-    target_mode: bool = typer.Option(False, "--target", help="Interpret argument as target and generate report from target state"),
+    session: str = typer.Argument(
+        ..., help="Path to session JSON file or target when used with --target"
+    ),
+    target_mode: bool = typer.Option(
+        False, "--target", help="Interpret argument as target and generate report from target state"
+    ),
 ) -> None:
     """Generate a report from a session file or target state."""
     if target_mode:
         from vulnclaw.report.generator import generate_report_from_target_state
+
         state = load_target_state(session)
         if not state:
             err_console.print(f"[!] Target state not found: {session}")
@@ -922,6 +1094,7 @@ def report(
         generate_report_from_target_state(state)
     else:
         from vulnclaw.report.generator import generate_report_from_file
+
         generate_report_from_file(session)
     console.print("[+] Report generated")
 
@@ -939,7 +1112,9 @@ def config_set(
 ) -> None:
     """Set a config value."""
     set_config_value(key, value)
-    console.print(f"[+] Set {key} = {'***' if 'key' in key.lower() or 'pass' in key.lower() else value}")
+    console.print(
+        f"[+] Set {key} = {'***' if 'key' in key.lower() or 'pass' in key.lower() else value}"
+    )
 
 
 @config_app.command("get")
@@ -962,6 +1137,7 @@ def config_get(
 def config_list() -> None:
     """List all configuration values."""
     import yaml as _yaml
+
     config = load_config()
     raw = config.model_dump(mode="json")
     console.print(_yaml.dump(raw, default_flow_style=False, allow_unicode=True))
@@ -969,7 +1145,9 @@ def config_list() -> None:
 
 @config_app.command("provider")
 def config_provider(
-    name: Optional[str] = typer.Argument(None, help="Provider name to switch to (e.g. minimax, deepseek)"),
+    name: Optional[str] = typer.Argument(
+        None, help="Provider name to switch to (e.g. minimax, deepseek)"
+    ),
     list_all: bool = typer.Option(False, "--list", "-l", help="List all available providers"),
 ) -> None:
     """View or switch the configured LLM provider."""
@@ -1015,15 +1193,19 @@ def config_provider(
 
     if not config.llm.api_key:
         console.print()
-        console.print("[yellow]Set an API key first: [bold]vulnclaw config set llm.api_key <your-key>[/][/]")
+        console.print(
+            "[yellow]Set an API key first: [bold]vulnclaw config set llm.api_key <your-key>[/][/]"
+        )
 
 
 # 鈹€鈹€ Init command 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+
 
 @app.command()
 def init() -> None:
     """Initialize VulnClaw config."""
     from vulnclaw.config.settings import ensure_dirs
+
     ensure_dirs()
 
     config = load_config()
@@ -1042,10 +1224,12 @@ def init() -> None:
 
 # 鈹€鈹€ Doctor command 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
+
 @app.command()
 def doctor() -> None:
     """Inspect the VulnClaw runtime environment."""
     import shutil
+
     from vulnclaw.web.services.mcp_service import get_mcp_diagnostics
 
     console.print("[bold]VulnClaw Environment Check[/]")
@@ -1058,6 +1242,7 @@ def doctor() -> None:
     node_path = shutil.which("node")
     if node_path:
         import subprocess
+
         try:
             result = subprocess.run(
                 [node_path, "--version"], capture_output=True, text=True, timeout=5
@@ -1070,15 +1255,21 @@ def doctor() -> None:
 
     # Check npx
     npx_path = shutil.which("npx")
-    console.print(f"  npx: [{'green' if npx_path else 'red'}]{'installed' if npx_path else 'missing'}[/]")
+    console.print(
+        f"  npx: [{'green' if npx_path else 'red'}]{'installed' if npx_path else 'missing'}[/]"
+    )
 
     # Check uvx
     uvx_path = shutil.which("uvx")
-    console.print(f"  uvx: [{'green' if uvx_path else 'yellow'}]{'installed' if uvx_path else 'missing'}[/]")
+    console.print(
+        f"  uvx: [{'green' if uvx_path else 'yellow'}]{'installed' if uvx_path else 'missing'}[/]"
+    )
 
     # Check nmap
     nmap_path = shutil.which("nmap")
-    console.print(f"  nmap: [{'green' if nmap_path else 'yellow'}]{'installed' if nmap_path else 'optional/missing'}[/]")
+    console.print(
+        f"  nmap: [{'green' if nmap_path else 'yellow'}]{'installed' if nmap_path else 'optional/missing'}[/]"
+    )
 
     # Check config
     config = load_config()
@@ -1086,7 +1277,9 @@ def doctor() -> None:
     console.print("[bold]LLM Config[/]:")
     has_key = bool(config.llm.api_key)
     console.print(f"  Provider: [bold cyan]{config.llm.provider}[/]")
-    console.print(f"  API Key: [{'green' if has_key else 'red'}]{'configured' if has_key else 'not set'}[/]")
+    console.print(
+        f"  API Key: [{'green' if has_key else 'red'}]{'configured' if has_key else 'not set'}[/]"
+    )
     console.print(f"  Base URL: [dim]{config.llm.base_url}[/]")
     console.print(f"  Model: [dim]{config.llm.model}[/]")
 
@@ -1109,16 +1302,23 @@ def doctor() -> None:
             label = item.last_error_type or "error"
             console.print(f"    [red]{label}[/]: {item.error}")
 
-
-    console.print("[dim]doctor shows MCP registration state and exposed tools. fetch/memory run in local mode; most other services are still placeholders.[/]")
-    console.print("[yellow]python_execute is a high-risk experimental capability. It is not a strong sandbox; use it only in authorized or controlled environments.[/]")
-    console.print("[dim]The knowledge-base update flow is live; retrieval enhancements can continue independently.[/]")
+    console.print(
+        "[dim]doctor shows MCP registration state and exposed tools. fetch/memory run in local mode; most other services are still placeholders.[/]"
+    )
+    console.print(
+        "[yellow]python_execute is a high-risk experimental capability. It is not a strong sandbox; use it only in authorized or controlled environments.[/]"
+    )
+    console.print(
+        "[dim]The knowledge-base update flow is live; retrieval enhancements can continue independently.[/]"
+    )
 
     console.print()
     if has_key:
         console.print("[green]Environment ready. Run [bold]vulnclaw[/] to start.[/]")
     else:
-        console.print("[yellow]Set an API key first: [bold]vulnclaw config set llm.api_key <key>[/][/]")
+        console.print(
+            "[yellow]Set an API key first: [bold]vulnclaw config set llm.api_key <key>[/][/]"
+        )
 
 
 # 鈹€鈹€ KB command 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -1172,7 +1372,9 @@ def target_state_list(
 @target_state_app.command("preview")
 def target_state_preview_cmd(
     target: str = typer.Argument(..., help="Target host/IP/URL"),
-    snapshot_id: Optional[str] = typer.Option(None, "--snapshot", help="Preview a specific snapshot id"),
+    snapshot_id: Optional[str] = typer.Option(
+        None, "--snapshot", help="Preview a specific snapshot id"
+    ),
 ) -> None:
     """Show a resume preview for the target state."""
     preview = get_target_state_preview(target, snapshot_id=snapshot_id)
@@ -1180,16 +1382,18 @@ def target_state_preview_cmd(
         console.print(f"[-] No target state found: {target}")
         raise typer.Exit(1)
 
-    console.print(Panel(
-        f"Target: [bold]{preview['target']}[/]\n"
-        f"Schema: [bold]v{preview['schema_version']}[/]\n"
-        f"Phase: [bold]{preview['phase'] or 'unknown'}[/]\n"
-        f"Resume strategy: [bold]{preview['resume_strategy'] or 'none'}[/]\n"
-        f"Reason: {preview['resume_reason'] or 'n/a'}\n"
-        f"Findings: {preview['verified_count']} verified / {preview['pending_count']} pending / {preview['findings_count']} total",
-        title="Target Preview",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel(
+            f"Target: [bold]{preview['target']}[/]\n"
+            f"Schema: [bold]v{preview['schema_version']}[/]\n"
+            f"Phase: [bold]{preview['phase'] or 'unknown'}[/]\n"
+            f"Resume strategy: [bold]{preview['resume_strategy'] or 'none'}[/]\n"
+            f"Reason: {preview['resume_reason'] or 'n/a'}\n"
+            f"Findings: {preview['verified_count']} verified / {preview['pending_count']} pending / {preview['findings_count']} total",
+            title="Target Preview",
+            border_style="cyan",
+        )
+    )
 
     if preview.get("priority_targets"):
         console.print("[bold]Priority targets[/]:")
@@ -1209,7 +1413,9 @@ def target_state_preview_cmd(
 def target_state_diff_cmd(
     target: str = typer.Argument(..., help="Target host/IP/URL"),
     from_snapshot_id: str = typer.Argument(..., help="Base snapshot id"),
-    to_snapshot_id: Optional[str] = typer.Option(None, "--to", help="Compare against another snapshot or current state"),
+    to_snapshot_id: Optional[str] = typer.Option(
+        None, "--to", help="Compare against another snapshot or current state"
+    ),
 ) -> None:
     """Show differences between two target-state snapshots."""
     diff = diff_target_state_snapshots(target, from_snapshot_id, to_snapshot_id=to_snapshot_id)
@@ -1217,14 +1423,16 @@ def target_state_diff_cmd(
         console.print(f"[-] Unable to diff target state: {target}")
         raise typer.Exit(1)
 
-    console.print(Panel(
-        f"Target: [bold]{diff['target']}[/]\n"
-        f"From: [bold]{diff['from_snapshot_id']}[/] -> To: [bold]{diff['to_snapshot_id']}[/]\n"
-        f"Schema: v{diff['schema_version_from']} -> v{diff['schema_version_to']}\n"
-        f"Resume strategy: {diff['resume_strategy_from'] or 'none'} -> {diff['resume_strategy_to'] or 'none'}",
-        title="Target Diff",
-        border_style="magenta",
-    ))
+    console.print(
+        Panel(
+            f"Target: [bold]{diff['target']}[/]\n"
+            f"From: [bold]{diff['from_snapshot_id']}[/] -> To: [bold]{diff['to_snapshot_id']}[/]\n"
+            f"Schema: v{diff['schema_version_from']} -> v{diff['schema_version_to']}\n"
+            f"Resume strategy: {diff['resume_strategy_from'] or 'none'} -> {diff['resume_strategy_to'] or 'none'}",
+            title="Target Diff",
+            border_style="magenta",
+        )
+    )
 
     for title, items in (
         ("Added findings", diff.get("added_findings", [])),
@@ -1288,29 +1496,71 @@ def _should_auto_pentest(user_input: str, current_target: Optional[str]) -> bool
 
     # Explicit auto-mode triggers
     auto_keywords = [
-        "渗透测试", "进行渗透", "做渗透", "打一下", "全面测试",
-        "pentest", "full test", "auto",
-        "自主渗透模式", "自主模式",
-        "找出flag", "找到flag", "拿flag", "get flag", "find flag",
-        "解题", "做题", "挑战", "challenge", "ctf",
-        "弱口令", "爆破", "绕过", "bypass", "brute",
-        "搜集", "收集", "信息收集", "侦察", "recon", "reconnaissance",
-        "社工", "osint", "情报", "intelligence",
-        "分析目标", "目标分析", "资产发现", "目录扫描",
-        "探测", "探索", "调查", "investigate", "enumerate",
-        "全面分析", "深度分析", "详细分析", "全面扫描",
-        "子域名", "subdomain",
+        "渗透测试",
+        "进行渗透",
+        "做渗透",
+        "打一下",
+        "全面测试",
+        "pentest",
+        "full test",
+        "auto",
+        "自主渗透模式",
+        "自主模式",
+        "找出flag",
+        "找到flag",
+        "拿flag",
+        "get flag",
+        "find flag",
+        "解题",
+        "做题",
+        "挑战",
+        "challenge",
+        "ctf",
+        "弱口令",
+        "爆破",
+        "绕过",
+        "bypass",
+        "brute",
+        "搜集",
+        "收集",
+        "信息收集",
+        "侦察",
+        "recon",
+        "reconnaissance",
+        "社工",
+        "osint",
+        "情报",
+        "intelligence",
+        "分析目标",
+        "目标分析",
+        "资产发现",
+        "目录扫描",
+        "探测",
+        "探索",
+        "调查",
+        "investigate",
+        "enumerate",
+        "全面分析",
+        "深度分析",
+        "详细分析",
+        "全面扫描",
+        "子域名",
+        "subdomain",
     ]
 
     # Single-step queries should NOT trigger auto mode
     single_step_keywords = [
-        "生成报告", "report",
-        "help", "帮助",
+        "生成报告",
+        "report",
+        "help",
+        "帮助",
     ]
 
     # If it's clearly a single-step query, don't auto-loop
     # But if it also has auto keywords, still go auto (e.g. "收集信息并生成报告")
-    if any(kw in input_lower for kw in single_step_keywords) and not any(kw in input_lower for kw in auto_keywords):
+    if any(kw in input_lower for kw in single_step_keywords) and not any(
+        kw in input_lower for kw in auto_keywords
+    ):
         return False
 
     # If it has auto-mode keywords, trigger auto loop
@@ -1323,9 +1573,18 @@ def _should_auto_pentest(user_input: str, current_target: Optional[str]) -> bool
     has_target = bool(current_target) or bool(_extract_target_from_input(user_input))
     if has_target:
         multi_step_indicators = [
-            "，", "。", "并", "然后",
-            "输出", "保存", "写到", "导出",
-            "所有", "全部", "完整", "详细",
+            "，",
+            "。",
+            "并",
+            "然后",
+            "输出",
+            "保存",
+            "写到",
+            "导出",
+            "所有",
+            "全部",
+            "完整",
+            "详细",
         ]
         if any(ind in input_lower for ind in multi_step_indicators):
             return True
@@ -1336,16 +1595,17 @@ def _should_auto_pentest(user_input: str, current_target: Optional[str]) -> bool
 def _extract_target_from_input(user_input: str) -> Optional[str]:
     """Extract target from user input string."""
     import re
+
     # Try to find URL (with optional port)
-    url_match = re.search(r'(https?://[a-zA-Z0-9][-a-zA-Z0-9.:]*)', user_input)
+    url_match = re.search(r"(https?://[a-zA-Z0-9][-a-zA-Z0-9.:]*)", user_input)
     if url_match:
         return url_match.group(1).rstrip("/")
     # Try to find IP address
-    ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', user_input)
+    ip_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", user_input)
     if ip_match:
         return ip_match.group(1)
     # Try to find domain
-    domain_match = re.search(r'([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,})', user_input)
+    domain_match = re.search(r"([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,})", user_input)
     if domain_match:
         return domain_match.group(1)
     return None
@@ -1369,15 +1629,20 @@ def _auto_save_recon_report(agent, user_input: str, config) -> None:
 
         # Determine output path
         # Check if user specified a path
-        path_match = re.search(r'(?:保存到|写到|输出到|导出到|save to|write to|output to|export to)\s*([^\s,，]+)', user_input, re.IGNORECASE)
+        path_match = re.search(
+            r"(?:保存到|写到|输出到|导出到|save to|write to|output to|export to)\s*([^\s,，]+)",
+            user_input,
+            re.IGNORECASE,
+        )
         if path_match:
             output_path = path_match.group(1)
         else:
-            safe_name = re.sub(r'[^\w]', '_', target)[:30]
-            date_str = datetime.now().strftime('%Y%m%d_%H%M')
+            safe_name = re.sub(r"[^\w]", "_", target)[:30]
+            date_str = datetime.now().strftime("%Y%m%d_%H%M")
             output_path = str(config.session.output_dir / f"{safe_name}_recon_{date_str}.md")
 
         from vulnclaw.report.generator import generate_report
+
         generate_report(
             state,
             output_path,
@@ -1392,41 +1657,57 @@ def _auto_save_recon_report(agent, user_input: str, config) -> None:
 
 @app.command()
 def web(
-    host: str = typer.Option("127.0.0.1", "--host", help="Web server host (default: localhost only)"),
+    host: str = typer.Option(
+        "127.0.0.1", "--host", help="Web server host (default: localhost only)"
+    ),
     port: int = typer.Option(7788, "--port", help="Web server port"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Validate and print launch info without starting the server"),
-    allow_remote: bool = typer.Option(False, "--allow-remote", help="Explicitly allow binding the Web UI to a non-local address"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Validate and print launch info without starting the server"
+    ),
+    allow_remote: bool = typer.Option(
+        False, "--allow-remote", help="Explicitly allow binding the Web UI to a non-local address"
+    ),
 ) -> None:
     """Run the local Web UI."""
     if host != "127.0.0.1":
         if not allow_remote:
-            err_console.print("[!] Refusing to bind the Web UI to a non-local address without --allow-remote.")
+            err_console.print(
+                "[!] Refusing to bind the Web UI to a non-local address without --allow-remote."
+            )
             raise typer.Exit(1)
-        console.print("[yellow]Warning: keep the Web UI bound to 127.0.0.1 unless you know what you're doing.[/]")
+        console.print(
+            "[yellow]Warning: keep the Web UI bound to 127.0.0.1 unless you know what you're doing.[/]"
+        )
 
     from vulnclaw.web.app import FASTAPI_AVAILABLE
 
-    console.print(Panel(
-        f"Host: [bold]{host}[/]\n"
-        f"Port: [bold]{port}[/]\n"
-        f"FastAPI: [{'green' if FASTAPI_AVAILABLE else 'yellow'}]{'installed' if FASTAPI_AVAILABLE else 'missing'}[/]\n"
-        f"URL: [bold]http://{host}:{port}[/]",
-        title="VulnClaw Web UI",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel(
+            f"Host: [bold]{host}[/]\n"
+            f"Port: [bold]{port}[/]\n"
+            f"FastAPI: [{'green' if FASTAPI_AVAILABLE else 'yellow'}]{'installed' if FASTAPI_AVAILABLE else 'missing'}[/]\n"
+            f"URL: [bold]http://{host}:{port}[/]",
+            title="VulnClaw Web UI",
+            border_style="cyan",
+        )
+    )
 
     if dry_run:
         console.print("[green]Web UI dry-run completed.[/]")
         return
 
     if not FASTAPI_AVAILABLE:
-        err_console.print("[!] FastAPI is missing. Install with [bold]pip install vulnclaw[web][/].")
+        err_console.print(
+            "[!] FastAPI is missing. Install with [bold]pip install vulnclaw[web][/]."
+        )
         raise typer.Exit(1)
 
     try:
         import uvicorn
     except ImportError:
-        err_console.print("[!] uvicorn is missing. Install with [bold]pip install vulnclaw[web][/].")
+        err_console.print(
+            "[!] uvicorn is missing. Install with [bold]pip install vulnclaw[web][/]."
+        )
         raise typer.Exit(1)
 
     from vulnclaw.web.app import create_app
@@ -1436,4 +1717,3 @@ def web(
 
 if __name__ == "__main__":
     app()
-

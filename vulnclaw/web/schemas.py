@@ -7,24 +7,35 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-
 TaskCommand = Literal["run", "recon", "scan", "exploit", "persistent"]
 TaskStatus = Literal["pending", "restoring", "running", "completed", "failed", "stopped"]
 
 
 class TaskOptions(BaseModel):
     max_rounds: Optional[int] = Field(default=None, description="Override for autonomous rounds")
-    rounds_per_cycle: Optional[int] = Field(default=None, description="Persistent mode rounds per cycle")
+    rounds_per_cycle: Optional[int] = Field(
+        default=None, description="Persistent mode rounds per cycle"
+    )
     max_cycles: Optional[int] = Field(default=None, description="Persistent mode max cycles")
     cve: Optional[str] = Field(default=None, description="Exploit command CVE hint")
     cmd: Optional[str] = Field(default=None, description="Exploit command execution hint")
-    only_port: Optional[int] = Field(default=None, description="Restrict task scope to a single port")
-    only_host: Optional[str] = Field(default=None, description="Restrict task scope to a single host")
-    only_path: Optional[str] = Field(default=None, description="Restrict task scope to a single path")
+    only_port: Optional[int] = Field(
+        default=None, description="Restrict task scope to a single port"
+    )
+    only_host: Optional[str] = Field(
+        default=None, description="Restrict task scope to a single host"
+    )
+    only_path: Optional[str] = Field(
+        default=None, description="Restrict task scope to a single path"
+    )
     blocked_host: Optional[str] = Field(default=None, description="Explicitly blocked host")
     blocked_path: Optional[str] = Field(default=None, description="Explicitly blocked path")
-    allow_actions: Optional[list[str]] = Field(default=None, description="Explicit allow-list for task actions")
-    block_actions: Optional[list[str]] = Field(default=None, description="Explicit block-list for task actions")
+    allow_actions: Optional[list[str]] = Field(
+        default=None, description="Explicit allow-list for task actions"
+    )
+    block_actions: Optional[list[str]] = Field(
+        default=None, description="Explicit block-list for task actions"
+    )
 
 
 class TaskCreateRequest(BaseModel):

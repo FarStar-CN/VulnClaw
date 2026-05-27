@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 
 def test_verify_dist_artifacts_accepts_matching_version(tmp_path) -> None:
     from scripts.verify_dist_artifacts import verify_dist_artifacts

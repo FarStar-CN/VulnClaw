@@ -42,7 +42,9 @@ class VulnerabilityFinding(BaseModel):
 
     # ★ 漏洞验证状态追踪
     verified: bool = Field(default=False, description="是否已通过 PoC 验证")
-    verification_status: str = Field(default="pending", description="验证状态: pending/verified/rejected")
+    verification_status: str = Field(
+        default="pending", description="验证状态: pending/verified/rejected"
+    )
     verified_at: Optional[str] = Field(default=None, description="验证时间")
     verification_note: str = Field(default="", description="验证备注/排除原因")
 
@@ -57,8 +59,8 @@ class VulnerabilityFinding(BaseModel):
             if not self.evidence and not self.vuln_type and not self.remediation:
                 self.title = f"[未验证] {self.title}"
                 self.description = (
-                    f"(⚠️ 此漏洞缺少验证证据/vuln_type/修复建议三字段，"
-                    f"LLM 上报时未附实际测试结果。请补充证据后再作为正式漏洞。)"
+                    "(⚠️ 此漏洞缺少验证证据/vuln_type/修复建议三字段，"
+                    "LLM 上报时未附实际测试结果。请补充证据后再作为正式漏洞。)"
                     + (f" {self.description}" if self.description else "")
                 )
 
@@ -137,6 +139,7 @@ class VulnerabilityFinding(BaseModel):
     def mark_verified(self, note: str = "", evidence_level: str = "L4") -> None:
         """标记漏洞为已验证."""
         from datetime import datetime
+
         self.verified = True
         self.verification_status = "verified"
         self.lifecycle_status = "verified"
@@ -147,6 +150,7 @@ class VulnerabilityFinding(BaseModel):
     def mark_rejected(self, reason: str, evidence_level: str = "L3") -> None:
         """标记漏洞为已拒绝（误报）."""
         from datetime import datetime
+
         self.verified = False
         self.verification_status = "rejected"
         self.lifecycle_status = "rejected"
@@ -157,10 +161,11 @@ class VulnerabilityFinding(BaseModel):
 
 class StepStatus(str, Enum):
     """步骤执行状态."""
-    SUCCESS = "success"    # 成功
-    FAILURE = "failure"    # 失败
-    SKIPPED = "skipped"    # 跳过
-    INFO = "info"          # 信息收集
+
+    SUCCESS = "success"  # 成功
+    FAILURE = "failure"  # 失败
+    SKIPPED = "skipped"  # 跳过
+    INFO = "info"  # 信息收集
 
 
 class StepRecord(BaseModel):
@@ -288,14 +293,16 @@ class SessionState(BaseModel):
     notes: list[str] = Field(default_factory=list)
     # ★ Confirmed facts vs unverified assumptions — critical for CTF reasoning
     confirmed_facts: list[str] = Field(default_factory=list, description="已通过工具验证确认的事实")
-    unverified_assumptions: list[str] = Field(default_factory=list, description="推理中基于但未验证的假设")
+    unverified_assumptions: list[str] = Field(
+        default_factory=list, description="推理中基于但未验证的假设"
+    )
     # ★ Recon dimension completion tracking — prevent premature [DONE] in info gathering
     recon_dimensions_completed: dict[str, bool] = Field(
         default_factory=lambda: {
-            "server": False,    # 维度一：服务器信息（端口/真实IP/OS/中间件/数据库）
-            "website": False,   # 维度二：网站信息（架构/指纹/WAF/敏感目录/源码泄露/旁站/C段）
-            "domain": False,    # 维度三：域名信息（WHOIS/ICP备案/子域名/DNS/证书透明度）
-            "personnel": False, # 维度四：人员信息（条件触发 — 仅明确社工需求时激活）
+            "server": False,  # 维度一：服务器信息（端口/真实IP/OS/中间件/数据库）
+            "website": False,  # 维度二：网站信息（架构/指纹/WAF/敏感目录/源码泄露/旁站/C段）
+            "domain": False,  # 维度三：域名信息（WHOIS/ICP备案/子域名/DNS/证书透明度）
+            "personnel": False,  # 维度四：人员信息（条件触发 — 仅明确社工需求时激活）
         },
         description="信息收集四维模型完成度追踪",
     )
@@ -485,14 +492,14 @@ class SessionState(BaseModel):
                 "actions": list(set(r.action for r in records)),
                 "success_count": len([r for r in records if r.status == StepStatus.SUCCESS]),
                 "failure_count": len([r for r in records if r.status == StepStatus.FAILURE]),
-                "key_results": [r.to_brief() for r in records if r.status == StepStatus.SUCCESS][:5],
+                "key_results": [r.to_brief() for r in records if r.status == StepStatus.SUCCESS][
+                    :5
+                ],
             }
 
         # 提取关键发现
         key_findings = [
-            r.to_brief()
-            for r in self.step_records
-            if r.status == StepStatus.SUCCESS and r.result
+            r.to_brief() for r in self.step_records if r.status == StepStatus.SUCCESS and r.result
         ][:10]
 
         return {
@@ -510,17 +517,34 @@ class SessionState(BaseModel):
 
         # 关键词模式
         DISCOVERY_KEYWORDS = [
-            "发现", "漏洞", "端口", "服务", "路径", "泄露",
-            "确认", "验证", "成功", "连接", "可访问",
-            "CVE", "flag", "敏感",
+            "发现",
+            "漏洞",
+            "端口",
+            "服务",
+            "路径",
+            "泄露",
+            "确认",
+            "验证",
+            "成功",
+            "连接",
+            "可访问",
+            "CVE",
+            "flag",
+            "敏感",
         ]
         FAILURE_KEYWORDS = [
-            "失败", "错误", "超时", "拒绝", "拦截", "无法", "404", "502", "503",
-            "不存在", "失败", "连接失败",
-        ]
-        ACTION_KEYWORDS = [
-            "扫描", "探测", "测试", "枚举", "检查", "分析",
-            "尝试", "验证", "利用", "访问",
+            "失败",
+            "错误",
+            "超时",
+            "拒绝",
+            "拦截",
+            "无法",
+            "404",
+            "502",
+            "503",
+            "不存在",
+            "失败",
+            "连接失败",
         ]
 
         phases: dict[str, dict] = {}
@@ -529,8 +553,8 @@ class SessionState(BaseModel):
 
         for i, step in enumerate(self.executed_steps):
             # 提取 Round 号
-            round_match = re.search(r'Round\s*(\d+)', step)
-            round_num = int(round_match.group(1)) if round_match else i + 1
+            round_match = re.search(r"Round\s*(\d+)", step)
+            int(round_match.group(1)) if round_match else i + 1
 
             # 判定成功/失败
             has_failure = any(kw in step for kw in FAILURE_KEYWORDS)
@@ -599,19 +623,20 @@ class SessionState(BaseModel):
     def _extract_action(self, step: str) -> str:
         """从步骤文本中提取简短动作描述."""
         import re
+
         # 优先提取明确的动作词
         action_patterns = [
-            r'尝试[^\s，。]+',
-            r'测试[^\s，。]+',
-            r'扫描[^\s，。]+',
-            r'探测[^\s，。]+',
-            r'枚举[^\s，。]+',
-            r'验证[^\s，。]+',
-            r'利用[^\s，。]+',
-            r'检查[^\s，。]+',
-            r'分析[^\s，。]+',
-            r'访问[^\s，。]+',
-            r'连接[^\s，。]+',
+            r"尝试[^\s，。]+",
+            r"测试[^\s，。]+",
+            r"扫描[^\s，。]+",
+            r"探测[^\s，。]+",
+            r"枚举[^\s，。]+",
+            r"验证[^\s，。]+",
+            r"利用[^\s，。]+",
+            r"检查[^\s，。]+",
+            r"分析[^\s，。]+",
+            r"访问[^\s，。]+",
+            r"连接[^\s，。]+",
         ]
         for pattern in action_patterns:
             match = re.search(pattern, step)
@@ -620,43 +645,44 @@ class SessionState(BaseModel):
                 return action
 
         # 回退：提取第一个有意义的短句（去除 Round 号和思考标签）
-        clean = re.sub(r'Round\s*\d+:', '', step)
-        clean = re.sub(r'<think>.*?</think>', '', clean)
+        clean = re.sub(r"Round\s*\d+:", "", step)
+        clean = re.sub(r"<think>.*?</think>", "", clean)
         clean = clean.strip()[:40]
         return clean if clean else "执行步骤"
 
     def _extract_result(self, step: str) -> str:
         """从步骤文本中提取结果摘要."""
         import re
+
         # 提取发现类结果
         discovery_patterns = [
-            r'发现[^\s，。；]+',
-            r'确认[^\s，。；]+',
-            r'漏洞[^\s，。；]+',
-            r'端口[^\s，。；]+',
-            r'路径[^\s，。；]+',
-            r'连接[^\s，。；]+',
-            r'返回[^\s，。；]+',
-            r'可访问[^\s，。；]+',
-            r'成功[^\s，。；]+',
+            r"发现[^\s，。；]+",
+            r"确认[^\s，。；]+",
+            r"漏洞[^\s，。；]+",
+            r"端口[^\s，。；]+",
+            r"路径[^\s，。；]+",
+            r"连接[^\s，。；]+",
+            r"返回[^\s，。；]+",
+            r"可访问[^\s，。；]+",
+            r"成功[^\s，。；]+",
         ]
         for pattern in discovery_patterns:
             match = re.search(pattern, step)
             if match:
                 result = match.group(0)[:50]
                 # 去除思考标签内容
-                result = re.sub(r'<think>.*?</think>', '', result)
+                result = re.sub(r"<think>.*?</think>", "", result)
                 return result.strip()
 
         # 提取失败原因
         failure_patterns = [
-            r'失败[^\s，。；]+',
-            r'错误[^\s，。；]+',
-            r'超时[^\s，。；]+',
-            r'拒绝[^\s，。；]+',
-            r'拦截[^\s，。；]+',
-            r'无法[^\s，。；]+',
-            r'404[^\s，。；]+',
+            r"失败[^\s，。；]+",
+            r"错误[^\s，。；]+",
+            r"超时[^\s，。；]+",
+            r"拒绝[^\s，。；]+",
+            r"拦截[^\s，。；]+",
+            r"无法[^\s，。；]+",
+            r"404[^\s，。；]+",
         ]
         for pattern in failure_patterns:
             match = re.search(pattern, step)
@@ -667,7 +693,6 @@ class SessionState(BaseModel):
 
     def _guess_phase(self, step: str) -> str:
         """根据步骤内容猜测所属阶段."""
-        import re
         # 阶段切换标记
         if "阶段切换" in step or "进入" in step:
             if "信息收集" in step or "Recon" in step:
@@ -701,11 +726,15 @@ class SessionState(BaseModel):
     def add_note(self, note: str) -> None:
         """Add a session note, filtering out code/symbol-heavy noise."""
         import re as _re
+
         # Reject notes that are primarily code/symbols — these pollute evidence extraction
         # and create fake URLs/paths in findings.
         # Count Chinese characters vs code symbols
-        chinese = _re.findall(r'[\u4e00-\u9fff]', note)
-        code_symbols = _re.findall(r'[{}()=+*/<>\-\\[\\]|;|import |def |return |print\(|requests\.|socket\.|re\.|sys\.]', note)
+        chinese = _re.findall(r"[\u4e00-\u9fff]", note)
+        code_symbols = _re.findall(
+            r"[{}()=+*/<>\-\\[\\]|;|import |def |return |print\(|requests\.|socket\.|re\.|sys\.]",
+            note,
+        )
         if len(note) > 20 and len(code_symbols) > len(chinese) * 0.5:
             # Too much code, skip it
             return
@@ -759,8 +788,11 @@ class SessionState(BaseModel):
                 continue  # Skip inactive dimension 4
             name = dim_names.get(dim, dim)
             parts.append(f"{'✅' if completed else '❌'} {name}")
-        incomplete = [dim for dim, done in self.recon_dimensions_completed.items()
-                      if (dim != "personnel" or self.recon_dimension4_active) and not done]
+        incomplete = [
+            dim
+            for dim, done in self.recon_dimensions_completed.items()
+            if (dim != "personnel" or self.recon_dimension4_active) and not done
+        ]
         status = " | ".join(parts)
         if incomplete:
             status += f"\n→ 还有 {len(incomplete)} 个维度未检查，继续收集，不要标记 [DONE]"
@@ -783,6 +815,7 @@ class SessionState(BaseModel):
         """Save session state to JSON file."""
         if path is None:
             from vulnclaw.config.settings import SESSIONS_DIR
+
             safe_target = (self.target or "unknown").replace("/", "_").replace(":", "_")
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = SESSIONS_DIR / f"{timestamp}_{safe_target}.json"
@@ -851,10 +884,12 @@ class ContextManager:
 
         self.messages = []
         if summary:
-            self.messages.append({
-                "role": "system",
-                "content": f"[之前的会话摘要]\n{summary}",
-            })
+            self.messages.append(
+                {
+                    "role": "system",
+                    "content": f"[之前的会话摘要]\n{summary}",
+                }
+            )
         self.messages.extend(recent)
 
     @staticmethod
@@ -875,18 +910,51 @@ class ContextManager:
             # Extract lines that look like findings/discoveries
             for line in content.split("\n"):
                 stripped = line.strip()
-                if any(marker in stripped for marker in [
-                    "[+]", "[!]", "[-]", "发现", "漏洞", "flag", "CVE",
-                    "端口", "开放", "服务", "路径", "泄露", "注入",
-                    "Status:", "Headers:", "Body",
-                    # ★ Negative/failure markers — critical for CTF to avoid repeating
-                    "失败", "无效", "没有", "返回相同", "被拦截",
-                    "未成功", "不存在", "错误", "404", "timeout",
-                    # ★ Confirmed fact markers — verified by actual tool output
-                    "已确认", "确认", "验证成功", "verified", "confirmed",
-                    # ★ Assumption markers — things the LLM assumed but didn't verify
-                    "假设", "应该", "可能", "推测", "猜测", "估计",
-                ]):
+                if any(
+                    marker in stripped
+                    for marker in [
+                        "[+]",
+                        "[!]",
+                        "[-]",
+                        "发现",
+                        "漏洞",
+                        "flag",
+                        "CVE",
+                        "端口",
+                        "开放",
+                        "服务",
+                        "路径",
+                        "泄露",
+                        "注入",
+                        "Status:",
+                        "Headers:",
+                        "Body",
+                        # ★ Negative/failure markers — critical for CTF to avoid repeating
+                        "失败",
+                        "无效",
+                        "没有",
+                        "返回相同",
+                        "被拦截",
+                        "未成功",
+                        "不存在",
+                        "错误",
+                        "404",
+                        "timeout",
+                        # ★ Confirmed fact markers — verified by actual tool output
+                        "已确认",
+                        "确认",
+                        "验证成功",
+                        "verified",
+                        "confirmed",
+                        # ★ Assumption markers — things the LLM assumed but didn't verify
+                        "假设",
+                        "应该",
+                        "可能",
+                        "推测",
+                        "猜测",
+                        "估计",
+                    ]
+                ):
                     key_parts.append(stripped[:200])
 
         if not key_parts:

@@ -100,7 +100,9 @@ def build_chat_completion_kwargs(
     return kwargs
 
 
-async def _call_with_persistent_retries(agent: Any, request_fn, stage_label: str) -> tuple[Any, int]:
+async def _call_with_persistent_retries(
+    agent: Any, request_fn, stage_label: str
+) -> tuple[Any, int]:
     """Keep retrying retriable LLM calls until success or manual interruption.
 
     Returns:
@@ -147,7 +149,9 @@ def _prepend_retry_notice(text: str, retry_attempts: int) -> str:
     return f"[LLM恢复] 本轮在第 {retry_attempts} 次重连后恢复。\n{text}"
 
 
-def _format_tool_results_fallback(tool_results: list[dict[str, Any]], skipped_info: list[str]) -> str:
+def _format_tool_results_fallback(
+    tool_results: list[dict[str, Any]], skipped_info: list[str]
+) -> str:
     """Build a plain-text fallback summary when provider tool-summary format is incompatible."""
     parts = ["[tool results processed] 当前提供商不兼容标准工具总结回传，已降级为纯文本结果摘要："]
     for item in tool_results:
@@ -207,6 +211,7 @@ async def call_llm_auto(agent: Any, system_prompt: str, round_context: str) -> s
         for tc in tool_results:
             if not isinstance(tc, dict) or "tool_call" not in tc:
                 import sys
+
                 print(f"[!] 跳过异常工具结果: {type(tc).__name__} {str(tc)[:100]}", file=sys.stderr)
                 continue
             executed_tcs.append(tc["tool_call"])
@@ -230,11 +235,13 @@ async def call_llm_auto(agent: Any, system_prompt: str, round_context: str) -> s
 
         for tool_result in tool_results:
             if isinstance(tool_result, dict) and "tool_call_id" in tool_result:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_result["tool_call_id"],
-                    "content": tool_result.get("content", ""),
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_result["tool_call_id"],
+                        "content": tool_result.get("content", ""),
+                    }
+                )
 
         tool_summary_parts = []
         for tc in executed_tcs:
@@ -248,7 +255,11 @@ async def call_llm_auto(agent: Any, system_prompt: str, round_context: str) -> s
             if len(content) > 1000:
                 content = content[:500] + "\n...[中间省略]...\n" + content[-500:]
             tool_summary_parts.append(f"工具结果: {content}")
-            if isinstance(tr, dict) and isinstance(tr.get("structured_content"), dict) and tr["structured_content"]:
+            if (
+                isinstance(tr, dict)
+                and isinstance(tr.get("structured_content"), dict)
+                and tr["structured_content"]
+            ):
                 structured = json.dumps(tr["structured_content"], ensure_ascii=False)
                 if len(structured) > 1000:
                     structured = structured[:500] + "\n...[中间省略]...\n" + structured[-500:]

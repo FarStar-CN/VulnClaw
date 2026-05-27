@@ -56,7 +56,8 @@ def build_resume_plan(raw: dict[str, Any]) -> dict[str, Any]:
             ),
             "recommended_phase": PentestPhase.VULN_DISCOVERY.value,
             "priority_findings": [_brief_finding(f, finding_meta) for f in pending_sorted[:5]],
-            "priority_targets": _infer_priority_targets(pending_sorted) or recon_priority_assets[:5],
+            "priority_targets": _infer_priority_targets(pending_sorted)
+            or recon_priority_assets[:5],
             "priority_recon_assets": recon_priority_assets[:5],
             "blocked_targets": blocked_targets[:5],
             "failed_targets": _top_failed_targets(failed_targets),
@@ -85,7 +86,8 @@ def build_resume_plan(raw: dict[str, Any]) -> dict[str, Any]:
             ),
             "recommended_phase": PentestPhase.EXPLOITATION.value,
             "priority_findings": [_brief_finding(f, finding_meta) for f in verified_sorted[:5]],
-            "priority_targets": _infer_priority_targets(verified_sorted) or recon_priority_assets[:5],
+            "priority_targets": _infer_priority_targets(verified_sorted)
+            or recon_priority_assets[:5],
             "priority_recon_assets": recon_priority_assets[:5],
             "blocked_targets": blocked_targets[:5],
             "failed_targets": _top_failed_targets(failed_targets),
@@ -164,7 +166,9 @@ def compute_finding_confidence(meta: dict[str, Any]) -> float:
 
     confidence = base + min(max(observation_count - 1, 0), 4) * 0.04
 
-    age_days = _age_days(last_verified_at if status == "verified" and last_verified_at else last_seen_at)
+    age_days = _age_days(
+        last_verified_at if status == "verified" and last_verified_at else last_seen_at
+    )
     if status == "pending":
         confidence -= age_days * 0.02
     elif status == "verified":
@@ -189,11 +193,19 @@ def compute_recon_asset_confidence(meta: dict[str, Any]) -> float:
     confidence = base + min(max(observation_count - 1, 0), 4) * 0.05
     value_lower = value.lower()
 
-    if category == "subdomains" and any(token in value_lower for token in ("api", "admin", "vpn", "oa", "mail", "jw", "jwc", "zsw")):
+    if category == "subdomains" and any(
+        token in value_lower for token in ("api", "admin", "vpn", "oa", "mail", "jw", "jwc", "zsw")
+    ):
         confidence += 0.04
-    elif category == "paths" and any(token in value_lower for token in ("admin", "api", "login", "upload", "download", "search", "news", "jwc", "vpn")):
+    elif category == "paths" and any(
+        token in value_lower
+        for token in ("admin", "api", "login", "upload", "download", "search", "news", "jwc", "vpn")
+    ):
         confidence += 0.05
-    elif category == "params" and any(token in value_lower for token in ("id", "file", "path", "q", "search", "wd", "keyword", "page", "cid")):
+    elif category == "params" and any(
+        token in value_lower
+        for token in ("id", "file", "path", "q", "search", "wd", "keyword", "page", "cid")
+    ):
         confidence += 0.04
 
     age_days = _age_days(last_seen_at)
@@ -211,7 +223,9 @@ def _lookup_confidence(finding: dict[str, Any], finding_meta: dict[str, Any]) ->
 
 
 def _finding_key(finding: dict[str, Any]) -> str:
-    return finding.get("finding_id") or f"{finding.get('title', '')}::{finding.get('vuln_type', '')}"
+    return (
+        finding.get("finding_id") or f"{finding.get('title', '')}::{finding.get('vuln_type', '')}"
+    )
 
 
 def _brief_finding(finding: dict[str, Any], finding_meta: dict[str, Any]) -> str:

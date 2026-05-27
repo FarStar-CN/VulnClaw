@@ -15,7 +15,12 @@ from vulnclaw.target_state.store import (
     load_target_state,
     rollback_target_state,
 )
-from vulnclaw.web.schemas import TargetPreviewView, TargetSnapshotView, TargetStateDiffView, TargetView
+from vulnclaw.web.schemas import (
+    TargetPreviewView,
+    TargetSnapshotView,
+    TargetStateDiffView,
+    TargetView,
+)
 
 
 def list_targets(limit: int = 20) -> list[TargetView]:
@@ -55,7 +60,9 @@ def get_preview(target: str, snapshot_id: str | None = None) -> TargetPreviewVie
     return TargetPreviewView(**raw)
 
 
-def get_diff(target: str, from_snapshot_id: str, to_snapshot_id: str | None = None) -> TargetStateDiffView | None:
+def get_diff(
+    target: str, from_snapshot_id: str, to_snapshot_id: str | None = None
+) -> TargetStateDiffView | None:
     """Return a diff between two snapshots, or a snapshot and current state."""
     raw = diff_target_state_snapshots(target, from_snapshot_id, to_snapshot_id=to_snapshot_id)
     if not raw:
@@ -74,7 +81,14 @@ def clear_target(target: str) -> bool:
 
 
 def _build_target_view(raw: dict) -> TargetView:
-    session = SessionState(**{k: v for k, v in raw.items() if k not in {"resume_meta", "resume_summary", "finding_meta", "recon_meta", "runtime_meta"}})
+    session = SessionState(
+        **{
+            k: v
+            for k, v in raw.items()
+            if k
+            not in {"resume_meta", "resume_summary", "finding_meta", "recon_meta", "runtime_meta"}
+        }
+    )
     resume_meta = raw.get("resume_meta", {})
     return TargetView(
         target=session.target or resume_meta.get("target", "unknown"),
@@ -83,16 +97,22 @@ def _build_target_view(raw: dict) -> TargetView:
         findings_count=len(session.findings),
         verified_count=len(session.get_verified_findings()),
         pending_count=len(session.get_pending_findings()),
-        candidate_count=len(session.get_candidate_findings()) if hasattr(session, "get_candidate_findings") else 0,
+        candidate_count=len(session.get_candidate_findings())
+        if hasattr(session, "get_candidate_findings")
+        else 0,
         pending_verification_count=(
             len(session.get_pending_verification_findings())
             if hasattr(session, "get_pending_verification_findings")
             else 0
         ),
-        manual_review_count=len(session.get_manual_review_findings()) if hasattr(session, "get_manual_review_findings") else 0,
+        manual_review_count=len(session.get_manual_review_findings())
+        if hasattr(session, "get_manual_review_findings")
+        else 0,
         resume_strategy=resume_meta.get("resume_strategy", ""),
         resume_reason=resume_meta.get("resume_strategy_reason", ""),
-        constraints=session.task_constraints.model_dump(mode="json") if hasattr(session, "task_constraints") else {},
+        constraints=session.task_constraints.model_dump(mode="json")
+        if hasattr(session, "task_constraints")
+        else {},
         constraint_violations=list(getattr(session, "constraint_violations", [])),
         constraint_violation_events=[
             item.model_dump(mode="json") if hasattr(item, "model_dump") else item

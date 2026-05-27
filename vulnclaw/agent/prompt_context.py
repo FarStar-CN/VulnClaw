@@ -9,7 +9,11 @@ def build_round_context(agent: Any, round_num: int, max_rounds: int) -> str:
     """Build context string for the current round in auto loop."""
     state = agent.context.state
     constraints_summary = ""
-    constraints_block = state.get_constraints_prompt_block() if hasattr(state, "get_constraints_prompt_block") else ""
+    constraints_block = (
+        state.get_constraints_prompt_block()
+        if hasattr(state, "get_constraints_prompt_block")
+        else ""
+    )
     if constraints_block:
         constraints_summary = f"\n\n{constraints_block}"
 
@@ -17,15 +21,17 @@ def build_round_context(agent: Any, round_num: int, max_rounds: int) -> str:
     if state.findings:
         findings_summary = f"\n已发现漏洞: {len(state.findings)} 个"
         for finding in state.findings[-5:]:
-            findings_summary += f"\n  - [{finding.severity}] {finding.title}: {finding.evidence[:100]}"
+            findings_summary += (
+                f"\n  - [{finding.severity}] {finding.title}: {finding.evidence[:100]}"
+            )
 
     user_hint_directive = ""
     if round_num <= agent.runtime.user_vuln_hint_rounds and agent.runtime.user_vuln_hint:
         user_hint_directive = (
-            f"\n\n{'='*50}\n"
+            f"\n\n{'=' * 50}\n"
             f"【用户明确提示 — 第 {round_num}/{agent.runtime.user_vuln_hint_rounds} 轮】\n"
             f"{agent.runtime.user_vuln_hint}\n"
-            f"{'='*50}\n"
+            f"{'=' * 50}\n"
         )
         agent.runtime.user_vuln_hint_rounds -= 1
 
@@ -40,16 +46,32 @@ def build_round_context(agent: Any, round_num: int, max_rounds: int) -> str:
     if state.executed_steps:
         failed_attempts = []
         failure_markers = [
-            "失败", "没有", "返回相同", "被拦截", "404", "no",
-            "未成功", "无效", "error", "failed", "still",
-            "未发现", "无结果", "timeout", "禁止", "denied",
-            "不存在", "无法", "不能", "不对",
+            "失败",
+            "没有",
+            "返回相同",
+            "被拦截",
+            "404",
+            "no",
+            "未成功",
+            "无效",
+            "error",
+            "failed",
+            "still",
+            "未发现",
+            "无结果",
+            "timeout",
+            "禁止",
+            "denied",
+            "不存在",
+            "无法",
+            "不能",
+            "不对",
         ]
         for step in state.executed_steps:
             if any(marker in step.lower() for marker in failure_markers):
                 failed_attempts.append(step[:150])
         if failed_attempts:
-            failed_summary = f"\n失败历史（不要重复这些操作）:"
+            failed_summary = "\n失败历史（不要重复这些操作）:"
             for failure in failed_attempts[-10:]:
                 failed_summary += f"\n  ❌ {failure}"
 
@@ -86,7 +108,9 @@ def build_round_context(agent: Any, round_num: int, max_rounds: int) -> str:
         if len(recent) >= 5:
             recent_text = " ".join(recent).lower()
             stuck_indicators = ["get=", "post=", "payload", "参数", "尝试"]
-            stuck_count = sum(1 for indicator in stuck_indicators if recent_text.count(indicator) >= 3)
+            stuck_count = sum(
+                1 for indicator in stuck_indicators if recent_text.count(indicator) >= 3
+            )
             if stuck_count >= 1:
                 path_warning = (
                     "\n\n⚠️ 你已经在当前路径上尝试了多轮但没有突破。"
@@ -188,16 +212,16 @@ def build_round_context(agent: Any, round_num: int, max_rounds: int) -> str:
     is_ctf = agent.runtime.is_ctf_mode
     if is_ctf and not claimed_flag:
         ctf_mode_warning = (
-            f"\n\n🔴 CTF 解题模式 — 你的任务是找到 flag 并验证。"
-            f"\n当前你还没有找到任何 flag，禁止标记 [DONE]。"
-            f"\n请分析已有信息，选择最有可能的攻击路径继续推进。"
-            f"\n如果当前路径受阻，尝试切换到其他路径。"
+            "\n\n🔴 CTF 解题模式 — 你的任务是找到 flag 并验证。"
+            "\n当前你还没有找到任何 flag，禁止标记 [DONE]。"
+            "\n请分析已有信息，选择最有可能的攻击路径继续推进。"
+            "\n如果当前路径受阻，尝试切换到其他路径。"
         )
     elif is_ctf and claimed_flag and not flag_verified:
         ctf_mode_warning = (
-            f"\n\n🔴 CTF 解题模式 — 你声称找到了 flag 但未验证。"
-            f"\n必须用工具验证 flag 的真实性后才能标记 [DONE]。"
-            f"\n如果验证失败，必须继续寻找正确的 flag。"
+            "\n\n🔴 CTF 解题模式 — 你声称找到了 flag 但未验证。"
+            "\n必须用工具验证 flag 的真实性后才能标记 [DONE]。"
+            "\n如果验证失败，必须继续寻找正确的 flag。"
         )
 
     recon_dim_status = ""
@@ -273,7 +297,9 @@ async def generate_attack_summary(agent: Any) -> str:
     state = agent.context.state
 
     steps = state.executed_steps[-30:] if state.executed_steps else []
-    steps_text = "\n".join(f"{i+1}. {step}" for i, step in enumerate(steps)) if steps else "（无步骤记录）"
+    steps_text = (
+        "\n".join(f"{i + 1}. {step}" for i, step in enumerate(steps)) if steps else "（无步骤记录）"
+    )
 
     notes = state.notes[-20:] if state.notes else []
     notes_text = "\n".join(f"- {note}" for note in notes) if notes else "（无观察记录）"

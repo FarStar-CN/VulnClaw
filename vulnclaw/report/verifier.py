@@ -12,8 +12,6 @@
 
 from __future__ import annotations
 
-import json
-import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -28,27 +26,27 @@ from vulnclaw.agent.context import VulnerabilityFinding
 class VerificationStatus(str, Enum):
     """漏洞验证状态."""
 
-    PENDING = "pending"      # 待验证
-    VERIFIED = "verified"    # 验证通过
-    REJECTED = "rejected"    # 验证失败/误报
-    SKIPPED = "skipped"     # 跳过验证（如已确认的事实）
+    PENDING = "pending"  # 待验证
+    VERIFIED = "verified"  # 验证通过
+    REJECTED = "rejected"  # 验证失败/误报
+    SKIPPED = "skipped"  # 跳过验证（如已确认的事实）
 
 
 class VerificationResult(str, Enum):
     """验证结果详情."""
 
     # Verified outcomes
-    VULN_CONFIRMED = "vuln_confirmed"           # 漏洞确认
-    SENSITIVE_DATA_EXPOSED = "sensitive_data"   # 敏感数据泄露
-    SECURITY_BYPASS = "security_bypass"         # 安全限制绕过
+    VULN_CONFIRMED = "vuln_confirmed"  # 漏洞确认
+    SENSITIVE_DATA_EXPOSED = "sensitive_data"  # 敏感数据泄露
+    SECURITY_BYPASS = "security_bypass"  # 安全限制绕过
 
     # Rejected outcomes
-    FALSE_POSITIVE = "false_positive"           # 误报
-    NO_RESPONSE_DIFF = "no_response_diff"      # 响应无差异
-    PARAM_INVALID = "param_invalid"             # 参数无效
-    NORMAL_RESPONSE = "normal_response"        # 正常响应
-    TIMEOUT = "timeout"                         # 超时
-    ERROR_403_404 = "error_403_404"            # 403/404 正常拒绝
+    FALSE_POSITIVE = "false_positive"  # 误报
+    NO_RESPONSE_DIFF = "no_response_diff"  # 响应无差异
+    PARAM_INVALID = "param_invalid"  # 参数无效
+    NORMAL_RESPONSE = "normal_response"  # 正常响应
+    TIMEOUT = "timeout"  # 超时
+    ERROR_403_404 = "error_403_404"  # 403/404 正常拒绝
 
 
 @dataclass
@@ -325,12 +323,10 @@ except Exception as e:
             template = template.replace(placeholder, value)
         return template
 
-
-
     @classmethod
     def _generic_template(cls) -> str:
         """生成通用 PoC 模板."""
-        return '''
+        return """
 import requests
 
 target = "{target}"
@@ -348,7 +344,7 @@ try:
 
 except Exception as e:
     print(f"[ERROR] {{e}}")
-'''
+"""
 
     @classmethod
     def _guess_payload(cls, finding: VulnerabilityFinding) -> str:

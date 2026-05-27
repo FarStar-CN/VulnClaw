@@ -6,7 +6,7 @@ from vulnclaw.report.generator import (
     generate_report,
     generate_report_from_file,
 )
-from vulnclaw.report.poc_builder import generate_single_poc, generate_pocs
+from vulnclaw.report.poc_builder import generate_pocs, generate_single_poc
 from vulnclaw.report.verifier import (
     PoCGenerator,
     VerificationResult,

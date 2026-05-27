@@ -18,7 +18,9 @@ async def handle_tool_calls(agent: Any, message: Any) -> str:
     return "\n".join(results)
 
 
-async def handle_tool_calls_with_results(agent: Any, message: Any) -> tuple[list[dict[str, Any]], list[str]]:
+async def handle_tool_calls_with_results(
+    agent: Any, message: Any
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Handle tool calls with deduplication and rate limiting."""
     max_calls_per_round = 10
 
@@ -90,7 +92,7 @@ def safe_parse_tool_args(arguments: str | None) -> dict[str, Any]:
     try:
         return json.loads(arguments)
     except json.JSONDecodeError:
-        for suffix in ['"}', '"}]', '"}}', '"}}]', '"]', '}']:
+        for suffix in ['"}', '"}]', '"}}', '"}}]', '"]', "}"]:
             try:
                 return json.loads(arguments + suffix)
             except json.JSONDecodeError:
