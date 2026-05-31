@@ -1,5 +1,7 @@
 """VulnClaw CLI module tests for main.py."""
 
+import io
+
 import pytest
 from typer.testing import CliRunner
 
@@ -19,6 +21,7 @@ class TestCLI:
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
         assert "VulnClaw" in result.output or "vulnclaw" in result.output.lower()
+        assert "TUI" in result.output
 
     def test_cli_version(self, runner):
         from vulnclaw import __version__
@@ -34,6 +37,8 @@ class TestCLI:
         result = runner.invoke(app, ["init"])
         # Should not crash
         assert result.exit_code == 0
+        assert "vulnclaw" in result.output
+        assert "vulnclaw tui" in result.output
 
     def test_cli_doctor(self, runner):
         from vulnclaw.cli.main import app
@@ -43,6 +48,7 @@ class TestCLI:
         assert result.exit_code == 0
         assert "Registered:" in result.output
         assert "Tools:" in result.output
+        assert "vulnclaw tui" in result.output or "Set an API key first" in result.output
 
     def test_cli_config_list(self, runner):
         from vulnclaw.cli.main import app
@@ -194,7 +200,7 @@ class TestCLI:
 
         result = runner.invoke(
             app,
-            [],
+            ["repl"],
             input="target https://old.example\npersistent https://new.example\nexit\n",
         )
 
@@ -240,7 +246,7 @@ class TestCLI:
 
         result = runner.invoke(
             app,
-            [],
+            ["repl"],
             input="target https://example.com\nreport https://example.com\nexit\n",
         )
 
@@ -460,7 +466,7 @@ class TestCLI:
 
         result = runner.invoke(
             app,
-            [],
+            ["repl"],
             input="persistent https://example.com\nexit\n",
         )
 
@@ -543,13 +549,279 @@ class TestCLI:
         # kb info might not exist in all versions, just verify no crash
         assert result.exit_code in (0, 2)
 
-    def test_cli_no_args(self, runner):
-        """Running with no args should show help or enter REPL mode."""
+    def test_cli_no_args(self, runner, monkeypatch):
+        """Running with no args should open the original CLI/REPL by default."""
+        import vulnclaw.cli.main as cli_main
         from vulnclaw.cli.main import app
 
+        called = []
+        monkeypatch.setattr(cli_main, "_run_repl", lambda: called.append("repl"))
+
         result = runner.invoke(app, [])
-        # Should not crash
         assert result.exit_code == 0
+        assert called == ["repl"]
+
+    def test_repl_command_starts_classic_repl(self, runner, monkeypatch):
+        import vulnclaw.cli.main as cli_main
+        from vulnclaw.cli.main import app
+
+        called = []
+        monkeypatch.setattr(cli_main, "_run_repl", lambda: called.append("repl"))
+
+        result = runner.invoke(app, ["repl"])
+        assert result.exit_code == 0
+        assert called == ["repl"]
+
+    def test_tui_once_renders_workbench(self, runner):
+        from vulnclaw.cli.main import app
+
+        result = runner.invoke(app, ["tui", "--once"])
+        assert result.exit_code == 0
+        assert "VulnClaw TUI" in result.output
+        assert "授权目标" in result.output
+        assert "运行概览" in result.output
+        assert "未选择目标" in result.output
+        assert "安全边界" in result.output
+        assert "操作菜单" in result.output
+
+    def test_tui_once_renders_target_overview(self, runner, monkeypatch):
+        import vulnclaw.cli.tui as tui_mod
+        from vulnclaw.cli.main import app
+
+        monkeypatch.setattr(
+            tui_mod,
+            "get_target_state_preview",
+            lambda target: {
+                "target": target,
+                "phase": "scanning",
+                "findings_count": 3,
+                "verified_count": 1,
+                "pending_count": 2,
+                "last_command": "scan",
+                "constraints": {
+                    "allowed_ports": [443],
+                    "allowed_paths": ["/admin"],
+                    "strict_mode": True,
+                },
+                "constraint_violations": ["blocked port 80"],
+            },
+        )
+        monkeypatch.setattr(
+            tui_mod,
+            "list_target_snapshots",
+            lambda target: [{"snapshot_id": "snap_a"}, {"snapshot_id": "snap_b"}],
+        )
+
+        result = runner.invoke(app, ["tui", "--once", "--target", "https://example.com"])
+        assert result.exit_code == 0
+        assert "2 个快照" in result.output
+        assert "3 个风险" in result.output
+        assert "限定端口: 443" in result.output
+        assert "限定路径: /admin" in result.output
+        assert "严格模式" in result.output
+        assert "1 次" in result.output
+
+    def test_tui_once_accepts_prefilled_target(self, runner):
+        from vulnclaw.cli.main import app
+
+        result = runner.invoke(
+            app,
+            [
+                "tui",
+                "--once",
+                "--target",
+                "https://example.com",
+                "--mode",
+                "quick",
+                "--only-port",
+                "443",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "https://example.com" in result.output
+        assert "快速摸底" in result.output
+        assert "443" in result.output
+
+    def test_tui_dry_run_renders_launch_summary(self, runner):
+        from vulnclaw.cli.main import app
+
+        result = runner.invoke(
+            app,
+            [
+                "tui",
+                "--dry-run",
+                "--target",
+                "https://example.com",
+                "--mode",
+                "deep",
+                "--only-host",
+                "example.com",
+                "--only-port",
+                "443",
+                "--only-path",
+                "/admin",
+                "--blocked-host",
+                "staging.example.com",
+                "--block-actions",
+                "post_exploitation",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "启动摘要" in result.output
+        assert "vulnclaw scan https://example.com" in result.output
+        assert "--only-port 443" in result.output
+        assert "--only-path /admin" in result.output
+        assert "--blocked-host staging.example.com" in result.output
+
+    def test_tui_rejects_unknown_mode(self, runner):
+        from vulnclaw.cli.main import app
+
+        result = runner.invoke(app, ["tui", "--mode", "unknown", "--dry-run"])
+        assert result.exit_code == 1
+        assert "Unknown TUI mode" in result.output
+
+    def test_tui_interactive_launch_builds_task_draft(self, runner, monkeypatch):
+        import vulnclaw.cli.tui as tui_mod
+        from vulnclaw.cli.main import app
+
+        launched = []
+
+        def fake_run_tui(*, launcher=None, once=False, initial_state=None):
+            state = tui_mod.TuiState(
+                target="https://example.com",
+                mode="quick",
+                only_port="443",
+                only_path="/admin",
+                blocked_host="staging.example.com",
+            )
+            draft = tui_mod._draft_from_state(state)
+            launched.append(draft)
+
+        monkeypatch.setattr(tui_mod, "run_tui", fake_run_tui)
+
+        result = runner.invoke(app, ["tui"])
+        assert result.exit_code == 0
+        assert launched
+        assert launched[0].command == "recon"
+        assert launched[0].target == "https://example.com"
+        assert launched[0].only_port == 443
+        assert launched[0].only_path == "/admin"
+        assert launched[0].blocked_host == "staging.example.com"
+        assert launched[0].allow_actions == ("recon",)
+
+    def test_tui_scope_prompt_updates_action_constraints(self, monkeypatch):
+        import vulnclaw.cli.tui as tui_mod
+
+        answers = iter(
+            [
+                "example.com",
+                "443",
+                "/admin",
+                "staging.example.com",
+                "/logout",
+                "recon,scan",
+                "exploit,post_exploitation",
+            ]
+        )
+        monkeypatch.setattr(tui_mod.Prompt, "ask", lambda *args, **kwargs: next(answers))
+        monkeypatch.setattr(tui_mod.Confirm, "ask", lambda *args, **kwargs: False)
+
+        state = tui_mod.TuiState(target="https://example.com")
+        tui_mod._prompt_scope(state)
+        draft = tui_mod.build_task_draft(state)
+
+        assert state.only_host == "example.com"
+        assert state.only_port == "443"
+        assert state.only_path == "/admin"
+        assert state.blocked_host == "staging.example.com"
+        assert state.blocked_path == "/logout"
+        assert state.allow_actions == ["recon", "scan"]
+        assert state.block_actions == ["exploit", "post_exploitation"]
+        assert state.resume is False
+        assert draft.allow_actions == ("recon", "scan")
+        assert draft.block_actions == ("exploit", "post_exploitation")
+        assert "--allow-actions recon,scan" in draft.command_line
+        assert "--block-actions exploit,post_exploitation" in draft.command_line
+
+    def test_tui_runtime_diagnostic_panel_renders_environment_summary(self, monkeypatch):
+        import vulnclaw.cli.tui as tui_mod
+        from vulnclaw.config.schema import VulnClawConfig
+
+        config = VulnClawConfig()
+        config.llm.api_key = "test-key"
+        config.llm.provider = "openai"
+        config.llm.model = "gpt-test"
+
+        monkeypatch.setattr(tui_mod, "_command_version", lambda *args: "v20.0.0")
+        monkeypatch.setattr(tui_mod.shutil, "which", lambda command: f"/usr/bin/{command}")
+
+        class DummyMCPDiagnostics:
+            total_services = 3
+            running_services = 1
+            local_services = 2
+            placeholder_services = 1
+            tool_count = 5
+
+        def fake_get_mcp_diagnostics():
+            return DummyMCPDiagnostics()
+
+        import vulnclaw.web.services.mcp_service as mcp_service
+
+        monkeypatch.setattr(mcp_service, "get_mcp_diagnostics", fake_get_mcp_diagnostics)
+        rendered = tui_mod.Console(
+            file=io.StringIO(),
+            record=True,
+            width=100,
+            force_terminal=False,
+            color_system=None,
+        )
+        rendered.print(tui_mod.build_runtime_diagnostic_panel(config))
+        output = rendered.export_text()
+
+        assert "环境诊断" in output
+        assert "v20.0.0" in output
+        assert "openai" in output
+        assert "gpt-test" in output
+        assert "已配置" in output
+        assert "3 registered" in output
+        assert "5" in output
+
+    def test_tui_llm_config_prompt_saves_provider_and_api_key(self, monkeypatch):
+        import vulnclaw.cli.tui as tui_mod
+        from vulnclaw.config.schema import VulnClawConfig
+
+        config = VulnClawConfig()
+        answers = iter(
+            [
+                "deepseek",
+                "https://api.deepseek.com/v1",
+                "deepseek-chat",
+                "sk-test",
+                "",
+            ]
+        )
+        saved = []
+
+        monkeypatch.setattr(tui_mod.Prompt, "ask", lambda *args, **kwargs: next(answers))
+        monkeypatch.setattr(tui_mod, "save_config", lambda cfg: saved.append(cfg))
+
+        screen = tui_mod.Console(
+            file=io.StringIO(),
+            record=True,
+            width=100,
+            force_terminal=False,
+            color_system=None,
+        )
+        updated = tui_mod._prompt_llm_config(screen, config)
+        output = screen.export_text()
+
+        assert updated.llm.provider == "deepseek"
+        assert updated.llm.base_url == "https://api.deepseek.com/v1"
+        assert updated.llm.model == "deepseek-chat"
+        assert updated.llm.api_key == "sk-test"
+        assert saved and saved[0] is updated
+        assert "模型/API 配置已保存" in output
+        assert "API Key: 已更新" in output
 
 
 class TestCLISubCommands:
@@ -581,4 +853,10 @@ class TestCLISubCommands:
         from vulnclaw.cli.main import app
 
         result = runner.invoke(app, ["report", "--help"])
+        assert result.exit_code == 0
+
+    def test_repl_help(self, runner):
+        from vulnclaw.cli.main import app
+
+        result = runner.invoke(app, ["repl", "--help"])
         assert result.exit_code == 0

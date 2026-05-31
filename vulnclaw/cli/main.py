@@ -69,7 +69,7 @@ from vulnclaw.target_state.store import (
 
 app = typer.Typer(
     name="vulnclaw",
-    help="VulnClaw - AI-powered penetration testing CLI",
+    help="VulnClaw - AI-powered penetration testing CLI (run 'vulnclaw tui' for the TUI workbench)",
     no_args_is_help=False,
     add_completion=False,
 )
@@ -1238,7 +1238,8 @@ def init() -> None:
     console.print("[bold]Next steps[/]:")
     console.print("  1. Choose a provider: [bold]vulnclaw config provider minimax[/]")
     console.print("  2. Set an API key:   [bold]vulnclaw config set llm.api_key <your-key>[/]")
-    console.print("  3. Start the REPL:   [bold]vulnclaw[/]")
+    console.print("  3. Start the CLI:    [bold]vulnclaw[/]")
+    console.print("  4. Open the TUI:     [bold]vulnclaw tui[/]")
 
 
 # 鈹€鈹€ Doctor command 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -1632,7 +1633,7 @@ def _extract_target_from_input(user_input: str) -> Optional[str]:
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context) -> None:
-    """VulnClaw CLI entry point."""
+    """Open the classic CLI/REPL by default."""
     if ctx.invoked_subcommand is None:
         _run_repl()
 
@@ -1672,6 +1673,112 @@ def _auto_save_recon_report(agent, user_input: str, config) -> None:
 
     except Exception as e:
         console.print(f"\n[!] Failed to auto-save report: {e}")
+
+
+@app.command()
+def repl() -> None:
+    """Start the classic natural-language REPL."""
+    _run_repl()
+
+
+@app.command()
+def tui(
+    target: Optional[str] = typer.Option(
+        None,
+        "--target",
+        "-t",
+        help="Pre-fill the authorized target for the TUI.",
+    ),
+    mode: str = typer.Option(
+        "standard",
+        "--mode",
+        "-m",
+        help="Pre-fill check mode: quick, standard, deep, continuous.",
+    ),
+    only_port: Optional[int] = typer.Option(
+        None,
+        "--only-port",
+        help="Pre-fill a single allowed test port.",
+    ),
+    only_host: Optional[str] = typer.Option(
+        None,
+        "--only-host",
+        help="Pre-fill a single allowed host.",
+    ),
+    only_path: Optional[str] = typer.Option(
+        None,
+        "--only-path",
+        help="Pre-fill a single allowed path.",
+    ),
+    blocked_host: Optional[str] = typer.Option(
+        None,
+        "--blocked-host",
+        help="Pre-fill an explicitly blocked host.",
+    ),
+    blocked_path: Optional[str] = typer.Option(
+        None,
+        "--blocked-path",
+        help="Pre-fill an explicitly blocked path.",
+    ),
+    allow_actions: Optional[str] = typer.Option(
+        None,
+        "--allow-actions",
+        help="Pre-fill comma-separated allowed actions.",
+    ),
+    block_actions: Optional[str] = typer.Option(
+        None,
+        "--block-actions",
+        help="Pre-fill comma-separated blocked actions.",
+    ),
+    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume target history."),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Render the launch summary and exit without starting a task.",
+    ),
+    once: bool = typer.Option(
+        False,
+        "--once",
+        help="Render the TUI dashboard once and exit (useful for smoke tests).",
+    ),
+) -> None:
+    """Open the terminal UI workbench."""
+    from vulnclaw.cli.tui import (
+        MODES,
+        build_state_from_options,
+        build_task_draft,
+        render_task_summary,
+        run_tui,
+    )
+
+    if mode not in MODES:
+        err_console.print("[!] Unknown TUI mode. Use one of: quick, standard, deep, continuous")
+        raise typer.Exit(1)
+
+    state = build_state_from_options(
+        target=target or "",
+        mode=mode,  # type: ignore[arg-type]
+        only_host=only_host or "",
+        only_port=only_port,
+        only_path=only_path or "",
+        blocked_host=blocked_host or "",
+        blocked_path=blocked_path or "",
+        allow_actions=allow_actions,
+        block_actions=block_actions,
+        resume=resume,
+    )
+
+    if dry_run:
+        console.out(render_task_summary(build_task_draft(state)), end="")
+        return
+
+    if once and target:
+        from vulnclaw.cli.tui import render_tui_home
+
+        console.out(render_tui_home(state), end="")
+        return
+
+    run_tui(once=once, initial_state=state)
 
 
 @app.command()

@@ -91,8 +91,11 @@ vulnclaw config set llm.model your-model-name
 # 2. Set API Key
 vulnclaw config set llm.api_key sk-your-key-here
 
-# 3. Launch!
+# 3. Default: open the original CLI / REPL
 vulnclaw
+
+# 4. Optional: open the TUI workbench
+vulnclaw tui
 ```
 
 ### Environment Check
@@ -149,9 +152,11 @@ $ vulnclaw --help
    scan          🔎 Vulnerability scanning
    exploit       💥 Exploitation phase
    report        📝 Generate report from session JSON
+   repl          💬 Start the classic REPL
    config        ⚙️  Manage config (set/get/list/provider)
    init          🔧 Initialize configuration
    doctor        🏥  Check runtime environment
+   tui           🖥️  Open the terminal UI workbench
    web           🌐 Launch local Web UI
 ```
 
@@ -159,7 +164,9 @@ $ vulnclaw --help
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `vulnclaw` | Launch REPL interactive shell (default, no args) | `vulnclaw` |
+| `vulnclaw` | Open the original CLI / REPL by default | `vulnclaw` |
+| `vulnclaw tui` | Explicitly open the terminal UI workbench | `vulnclaw tui` / `vulnclaw tui --target target.com` |
+| `vulnclaw repl` | Start the classic REPL interactive shell | `vulnclaw repl` |
 | `vulnclaw run <target>` | Full pentest in one shot | `vulnclaw run 192.168.1.1` |
 | `vulnclaw persistent <target>` | Persistent pentesting | `vulnclaw persistent 192.168.1.1` |
 | `vulnclaw recon <target>` | Reconnaissance only | `vulnclaw recon target.com` |
@@ -173,6 +180,20 @@ $ vulnclaw --help
 | `vulnclaw init` | Initialize config files | `vulnclaw init` |
 | `vulnclaw doctor` | Check runtime environment | `vulnclaw doctor` |
 | `vulnclaw web` | Launch local Web UI | `vulnclaw web` / `vulnclaw web --port 8080` |
+
+### TUI Workbench
+
+`vulnclaw tui` is the optional terminal UI workbench entry. It shows the authorized target, check mode, runtime overview, safety boundary, command preview, target history, report entry, and inline environment diagnostics before a task starts.
+
+```bash
+vulnclaw tui
+vulnclaw tui --target https://target.example --mode quick --only-port 443
+vulnclaw tui --dry-run --target https://target.example --mode deep --only-path /admin
+```
+
+The default `vulnclaw` command still opens the original CLI / REPL. The TUI opens only when users explicitly run `vulnclaw tui`.
+The runtime overview reads the selected target's snapshots, finding counts, persisted constraints, and blocked constraint violations so users can confirm context before continuing.
+The TUI "Set testing scope" flow can edit allowed actions and blocked actions directly, for example allowing only `recon,scan` or blocking `exploit,post_exploitation`.
 
 ### Provider Configuration
 
@@ -191,13 +212,65 @@ vulnclaw config set llm.api_key sk-your-key
 
 ## Usage
 
-### Mode 1: REPL Interactive Mode (Recommended)
+### Mode 1: Original CLI / REPL Interactive Mode (Default)
 
 ```bash
 $ vulnclaw
 ```
 
-Enter the 🦞 interactive shell and chat in natural language:
+No-args startup opens the original 🦞 interactive shell for natural-language use:
+
+```text
+🦞 vulnclaw> pentest 192.168.1.100 — this is my authorized lab
+
+[*] Entering autonomous pentest mode. Press Ctrl+C to interrupt at any time.
+── Round 1 ──
+  [+] Target: 192.168.1.100
+  [+] Open ports: 22, 80, 443, 8080
+```
+
+### Mode 2: TUI Workbench (Explicit)
+
+```bash
+$ vulnclaw tui
+```
+
+The TUI shows target, mode, runtime overview, and safety boundary before launching a task:
+
+```text
+VulnClaw TUI Workbench
+
+Authorized target    https://example.com
+Check mode           Quick recon / recon
+Runtime overview     history snapshots, findings, persisted constraints
+Safety boundary      only port 443, block exploit/persistent/post_exploitation
+
+1 Set authorized target
+2 Choose check mode
+3 Set testing scope
+4 Start authorized security check
+8 Model/API settings
+```
+
+Common launch examples:
+
+```bash
+vulnclaw tui
+vulnclaw tui --target https://target.example --mode quick --only-port 443
+vulnclaw tui --dry-run --target https://target.example --mode deep --only-path /admin
+```
+
+Menu item 3, "Set testing scope", edits host, port, path, exclusions, allowed actions, and blocked actions. These boundaries are shown in the pre-launch confirmation and passed into the actual task command.
+Menu item 7, "Environment diagnostics", shows Python, Node/npx/uvx/nmap, LLM configuration, and MCP service/tool summaries inside the TUI. Run `vulnclaw doctor` only when you need the full details.
+Menu item 8, "Model/API settings", switches Provider, Base URL, Model, and API Key directly in the workbench. Saved changes are used by the current TUI session immediately.
+
+### Mode 3: Classic REPL Subcommand
+
+```bash
+$ vulnclaw repl
+```
+
+Enter the classic 🦞 interactive shell and chat in natural language:
 
 ```
 🦞 vulnclaw> pentest 192.168.1.100 — this is my authorized lab
@@ -218,7 +291,7 @@ Enter the 🦞 interactive shell and chat in natural language:
 [+] PoC saved: ./pocs/CVE-202X-XXXX.py
 ```
 
-#### REPL Built-in Commands
+#### Classic REPL Built-in Commands
 
 | Command             | Description                                             |
 | ------------------- | ------------------------------------------------------- |
@@ -297,6 +370,9 @@ For long-running deep penetration. VulnClaw runs in **cyclic loops**:
 vulnclaw persistent 192.168.1.100              # default: 100 rounds/cycle × 10 cycles
 vulnclaw persistent 192.168.1.100 -r 200 -c 5  # 200 rounds/cycle × 5 cycles
 vulnclaw persistent 192.168.1.100 --no-report   # disable auto-report
+
+# TUI mode
+vulnclaw tui --target 192.168.1.100 --mode continuous
 
 # REPL mode
 🦞 vulnclaw> target 192.168.1.100
@@ -382,7 +458,7 @@ vulnclaw config provider minimax   # one-command switch
 
 | Module              | File                                                  | Description                                        |
 | ------------------- | ----------------------------------------------------- | -------------------------------------------------- |
-| **CLI Entry**       | `cli/main.py`                                        | Typer REPL + 9 subcommands (incl. persistent)      |
+| **CLI/TUI Entry**   | `cli/main.py` + `cli/tui.py`                         | Typer commands + default original CLI/REPL + explicit TUI |
 | **Agent Core**      | `agent/core.py`                                      | AgentCore coordination entrypoint (after the refactor it mainly keeps thin coordination responsibilities) |
 | **Dynamic Prompts** | `agent/prompts.py`                                   | Base identity + core contract + skills + MCP tools  |
 | **Prompt Assembly** | `agent/system_prompt.py` + `prompt_context.py`       | System prompt / round context / attack summary assembly |
