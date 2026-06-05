@@ -636,6 +636,18 @@ Unauthorized penetration testing is illegal. The author assumes no liability for
 
 ---
 
+## Join the Community
+
+Connect with security enthusiasts to share, learn, and grow together.
+
+| Product Experience Group | Developer Group |
+|:--:|:--:|
+| Join discussions and get the latest product updates and usage tips | Join us for open-source contributions and deep technical discussions |
+| ![VulnClaw Product Experience Group](assets/VulnClaw产品体验交流群.jpg) | ![VulnClaw Developer Group](assets/VulnClaw开发者群聊.png) |
+| **QQ Group: 680166726** | **QQ Group: 1065858551** |
+
+---
+
 <div align="center">
 
 > 🦞 **VulnClaw** — Every pentest should follow a process.
