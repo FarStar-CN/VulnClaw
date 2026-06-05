@@ -109,7 +109,7 @@ async def _call_with_persistent_retries(
     Returns:
         (response, retry_attempts)
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     retry_attempts = 0
 
     while True:

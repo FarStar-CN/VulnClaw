@@ -52,8 +52,8 @@ VulnClaw 自动执行：
 ## 特性
 
 - **自然语言驱动** — 用人话描述渗透意图，自动识别阶段和工具
-- **8 个 LLM Provider** — OpenAI / MiniMax / DeepSeek / 智谱 / Moonshot / 千问 / SiliconFlow，一键切换
-- **MCP 工具链** — 已内置 11 个 MCP 服务配置和 23 个工具定义；当前 `fetch` / `memory` 以稳定的 `local` 模式运行，其余 MCP 集成多仍处于预览或占位阶段，待完整 session 生命周期管理落地后再逐步恢复真实协议接入
+- **13 个 LLM Provider** — OpenAI / MiniMax / DeepSeek / 智谱 / Moonshot / 千问 / SiliconFlow / 豆包 / 百川 / 阶跃星辰 / 商汤 / 零一万物，一键切换
+- **MCP 工具链** — 已内置 12 个 MCP 服务配置和 23 个工具定义；当前 `fetch` / `memory` 以稳定的 `local` 模式运行，其余 MCP 集成多仍处于预览或占位阶段，待完整 session 生命周期管理落地后再逐步恢复真实协议接入
 - **AI Agent 核心** — OpenAI 兼容协议 + Tool Calling + 自主渗透循环
 - **20 个渗透 Skill** — 7 核心 + 13 专项 Skill（含 CTF Web/Crypto/Misc + osint-recon），含 138 个参考文档
 - **编解码/加解密工具** — 29 种操作（Base64/Hex/URL/AES/JWT/Morse 等），LLM 可精确调用，不再靠猜测
@@ -417,16 +417,21 @@ vulnclaw config provider --list    # 查看所有提供商
 vulnclaw config provider minimax   # 一键切换
 ```
 
-| 提供商      | 命令                   | 默认模型         |
-| ----------- | ---------------------- | ---------------- |
-| OpenAI      | `provider openai`      | gpt-4o           |
-| MiniMax     | `provider minimax`     | MiniMax-M2.7     |
-| DeepSeek    | `provider deepseek`    | deepseek-chat    |
-| 智谱 GLM    | `provider zhipu`       | glm-4-plus       |
-| Moonshot    | `provider moonshot`    | moonshot-v1-128k |
-| 通义千问    | `provider qwen`        | qwen-max         |
-| SiliconFlow | `provider siliconflow` | DeepSeek-V3      |
-| 自定义      | `provider custom`      | 手动填写         |
+| 提供商      | 命令                   | 默认模型              |
+| ----------- | ---------------------- | --------------------- |
+| OpenAI      | `provider openai`      | gpt-4o                |
+| MiniMax     | `provider minimax`     | MiniMax-M3            |
+| DeepSeek    | `provider deepseek`    | deepseek-v4-pro       |
+| 智谱 GLM    | `provider zhipu`       | glm-4.7               |
+| Kimi        | `provider moonshot`    | kimi-k2.6             |
+| 通义千问    | `provider qwen`        | qwen3-max             |
+| SiliconFlow | `provider siliconflow` | DeepSeek-V4-Flash     |
+| 豆包        | `provider doubao`      | Doubao-Seed-2.0-Pro   |
+| 百川        | `provider baichuan`    | Baichuan4-Turbo       |
+| 阶跃星辰    | `provider stepfun`     | step-3.5-flash        |
+| 商汤        | `provider sensetime`   | SenseNova-6.7-Flash-Lite |
+| 零一万物    | `provider yi`          | yi-lightning          |
+| 自定义      | `provider custom`      | 手动填写              |
 
 ---
 
@@ -493,7 +498,7 @@ vulnclaw config provider minimax   # 一键切换
 | context7            | 1      | 代码上下文检索         | P1     |
 | everything-search   | 1      | 本地文件搜索           | P2     |
 
-> 共 11 个 MCP 服务、23 个工具定义。另有 3 个内置 Agent 工具（`load_skill_reference` + `crypto_decode` + `python_execute`），无需 MCP 即可调用。
+> 共 12 个 MCP 服务、23 个工具定义。另有 3 个内置 Agent 工具（`load_skill_reference` + `crypto_decode` + `python_execute`），无需 MCP 即可调用。
 >
 > 当前 `fetch` / `memory` 以 `local` 模式稳定运行；其余服务多为 `preview / placeholder`。后续会通过独立的 session 生命周期管理层逐步恢复并扩展真实 MCP 协议接入。
 

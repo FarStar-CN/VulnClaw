@@ -252,7 +252,7 @@ class TestMCPLifecycleManager:
         manager = MCPLifecycleManager(config)
         # Call with unknown tool name
         try:
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 manager.call_tool("nonexistent_tool", {})
             )
         except Exception:

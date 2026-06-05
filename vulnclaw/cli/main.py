@@ -800,7 +800,7 @@ def persistent(
     # Resolve parameters (CLI override -> config defaults)
     rounds_per_cycle = rounds if rounds > 0 else config.session.persistent_rounds_per_cycle
     max_cycles = cycles if cycles > 0 else config.session.persistent_max_cycles
-    auto_report = not no_report if no_report else config.session.persistent_auto_report
+    auto_report = config.session.persistent_auto_report and not no_report
 
     console.print(
         Panel(

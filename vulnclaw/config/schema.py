@@ -21,6 +21,11 @@ class LLMProvider(str, Enum):
     MOONSHOT = "moonshot"
     QWEN = "qwen"
     SILICONFLOW = "siliconflow"
+    DOUBAO = "doubao"
+    BAICHUAN = "baichuan"
+    STEPFUN = "stepfun"
+    SENSETIME = "sensetime"
+    YI = "yi"
     CUSTOM = "custom"
 
 
@@ -33,33 +38,58 @@ PROVIDER_PRESETS: dict[LLMProvider, dict[str, str]] = {
     },
     LLMProvider.MINIMAX: {
         "base_url": "https://api.minimaxi.com/v1",
-        "default_model": "MiniMax-M2.7",
+        "default_model": "MiniMax-M3",
         "label": "MiniMax",
     },
     LLMProvider.DEEPSEEK: {
-        "base_url": "https://api.deepseek.com/v1",
-        "default_model": "deepseek-chat",
+        "base_url": "https://api.deepseek.com",
+        "default_model": "deepseek-v4-pro",
         "label": "DeepSeek",
     },
     LLMProvider.ZHIPU: {
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "default_model": "glm-4-plus",
+        "default_model": "glm-4.7",
         "label": "智谱 GLM",
     },
     LLMProvider.MOONSHOT: {
         "base_url": "https://api.moonshot.cn/v1",
-        "default_model": "moonshot-v1-128k",
-        "label": "Moonshot (月之暗面)",
+        "default_model": "kimi-k2.6",
+        "label": "Kimi (月之暗面)",
     },
     LLMProvider.QWEN: {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "default_model": "qwen-max",
+        "default_model": "qwen3-max",
         "label": "通义千问",
     },
     LLMProvider.SILICONFLOW: {
         "base_url": "https://api.siliconflow.cn/v1",
-        "default_model": "deepseek-ai/DeepSeek-V3",
+        "default_model": "deepseek-ai/DeepSeek-V4-Flash",
         "label": "SiliconFlow",
+    },
+    LLMProvider.DOUBAO: {
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "default_model": "Doubao-Seed-2.0-Pro",
+        "label": "豆包 (字节跳动)",
+    },
+    LLMProvider.BAICHUAN: {
+        "base_url": "https://api.baichuan-ai.com/v1",
+        "default_model": "Baichuan4-Turbo",
+        "label": "百川",
+    },
+    LLMProvider.STEPFUN: {
+        "base_url": "https://api.stepfun.com/v1",
+        "default_model": "step-3.5-flash",
+        "label": "阶跃星辰",
+    },
+    LLMProvider.SENSETIME: {
+        "base_url": "https://api.sensenova.cn/v1",
+        "default_model": "SenseNova-6.7-Flash-Lite",
+        "label": "商汤 (日日新)",
+    },
+    LLMProvider.YI: {
+        "base_url": "https://api.lingyiwanwu.com/v1",
+        "default_model": "yi-lightning",
+        "label": "零一万物 (Yi)",
     },
     LLMProvider.CUSTOM: {
         "base_url": "",
@@ -74,7 +104,7 @@ class LLMConfig(BaseModel):
 
     provider: str = Field(
         default="openai",
-        description="LLM provider name (openai/minimax/deepseek/zhipu/moonshot/qwen/siliconflow/custom)",
+        description="LLM provider name (openai/minimax/deepseek/zhipu/moonshot/qwen/siliconflow/doubao/baichuan/stepfun/sensetime/yi/custom)",
     )
     api_key: str = Field(default="", description="API key for the chosen provider")
     base_url: str = Field(

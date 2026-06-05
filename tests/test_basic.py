@@ -5,9 +5,18 @@ import pytest
 
 def test_import_vulnclaw():
     """Test that the main package can be imported."""
+    import tomllib
+    from pathlib import Path
+
     import vulnclaw
 
-    assert vulnclaw.__version__ == "0.2.8"
+    # Read version from pyproject.toml to avoid hardcoding
+    pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
+    with open(pyproject_path, "rb") as f:
+        pyproject = tomllib.load(f)
+    expected_version = pyproject["project"]["version"]
+
+    assert vulnclaw.__version__ == expected_version
 
 
 def test_all_submodules_importable():

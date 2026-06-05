@@ -9,6 +9,5 @@ vulnclaw/__init__.py
 vulnclaw/web/app.py
 README.md
 README_EN.md
-VulnClaw_升级开发需求文档.md
 tests/test_basic.py
 tests/test_release_workflow.py
