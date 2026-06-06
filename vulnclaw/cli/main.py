@@ -55,6 +55,7 @@ from vulnclaw.config.settings import (
     save_config,
     set_config_value,
 )
+from vulnclaw.i18n import _
 from vulnclaw.orchestrator import run_agent_task
 from vulnclaw.repl_runner import run_repl_call
 from vulnclaw.target_state.store import (
@@ -153,25 +154,21 @@ def _run_repl() -> None:
 
     config = load_config()
     if not config.llm.api_key:
-        console.print(
-            "[!] No LLM API key detected. Run [bold]vulnclaw config set llm.api_key <your-key>[/] first."
-        )
-        console.print("    Choose a provider: [bold]vulnclaw config provider <name>[/]")
-        console.print("    Or set env var: [bold]VULNCLAW_LLM_API_KEY[/]")
+        console.print(_("cli.no_api_key"))
+        console.print(_("cli.choose_provider"))
+        console.print(_("cli.set_env_var"))
         console.print()
-        console.print("[dim]Starting in offline mode: local tools only, no AI reasoning.[/]")
+        console.print(_("cli.offline_mode"))
 
     # Initialize MCP lifecycle manager
     mcp_manager = MCPLifecycleManager(config)
     started = mcp_manager.start_enabled_servers()
-    console.print(f"[*] MCP toolchain: {started} services registered")
+    console.print(_("cli.mcp_registered", count=started))
 
     # Initialize agent
     agent = AgentCore(config, mcp_manager)
 
-    console.print(
-        "[dim]Enter a natural-language task to start. Type help for commands. Press Ctrl+C to exit.[/]"
-    )
+    console.print(_("cli.welcome"))
     console.print()
 
     # Track current target
@@ -197,7 +194,7 @@ def _run_repl() -> None:
             cmd_lower = user_input.lower()
 
             if cmd_lower in ("exit", "quit", "q"):
-                console.print("[dim]Bye![/]")
+                console.print(_("cli.bye"))
                 break
 
             elif cmd_lower == "help":
@@ -216,33 +213,31 @@ def _run_repl() -> None:
                     current_phase,
                 )
                 if restored_loaded:
-                    console.print(f"[+] Restored saved target state: [bold]{current_target}[/]")
-                console.print(f"[+] Target set: [bold]{current_target}[/]")
+                    console.print(_("cli.target_restored", target=current_target))
+                console.print(_("cli.target_set", target=current_target))
                 continue
 
             elif cmd_lower == "clear":
                 current_target = None
                 current_phase = "Ready"
                 agent.reset_context()
-                console.print("[*] Conversation cleared")
+                console.print(_("cli.conversation_cleared"))
                 continue
 
             elif cmd_lower == "tools":
                 tools = mcp_manager.list_available_tools()
                 if tools:
-                    console.print("[*] Available MCP tools:")
+                    console.print(_("cli.available_tools"))
                     for tool in tools:
                         console.print(f"  - {tool}")
                 else:
-                    console.print("[-] No MCP tools available")
+                    console.print(_("cli.no_tools"))
                 continue
 
             elif cmd_lower.startswith("report"):
                 report_target = user_input[len("report") :].strip() or current_target
                 if not report_target:
-                    console.print(
-                        "[!] Set a target first with [bold]target <host>[/] or run [bold]report <host>[/]."
-                    )
+                    console.print(_("cli.no_target_for_report"))
                     continue
 
                 report_path = _generate_report_for_target(
@@ -252,11 +247,10 @@ def _run_repl() -> None:
                     else None,
                     report_format=config.session.report_format,
                 )
-                console.print(f"[+] Report generated: [bold]{report_path}[/]")
+                console.print(_("cli.report_generated", path=report_path))
                 continue
 
             elif cmd_lower.startswith("persistent"):
-                # Persistent pentest mode from REPL
                 explicit_target = user_input[len("persistent") :].strip()
                 persistent_target = explicit_target or current_target
                 if not persistent_target:
@@ -273,7 +267,7 @@ def _run_repl() -> None:
                 )
                 persistent_target = current_target
                 if restored_loaded:
-                    console.print(f"[*] Restored saved target state: [bold]{persistent_target}[/]")
+                    console.print(_("cli.target_restored", target=persistent_target))
 
                 from vulnclaw.agent.core import PersistentCycleResult
 
@@ -374,17 +368,17 @@ def _run_repl() -> None:
                     "[green]shown[/]" if config.session.show_thinking else "[yellow]hidden[/]"
                 )
                 console.print(f"[*] Thinking visibility: {state_str}")
-                console.print("[dim]Use think on/off for explicit control.[/]")
+                console.print(_("cli.thinking_toggle_hint"))
                 continue
 
             elif cmd_lower == "think on":
                 config.session.show_thinking = True
-                console.print("[*] Thinking visibility: [green]shown[/]")
+                console.print(_("cli.thinking_shown"))
                 continue
 
             elif cmd_lower == "think off":
                 config.session.show_thinking = False
-                console.print("[*] Thinking visibility: [yellow]hidden[/]")
+                console.print(_("cli.thinking_hidden"))
                 continue
 
             # Route to agent and detect whether this should be an autonomous loop
@@ -393,9 +387,7 @@ def _run_repl() -> None:
             # Detect target switch and reset context if the user mentions a new target
             new_target = _extract_target_from_input(user_input)
             if new_target and current_target and new_target != current_target:
-                console.print(
-                    f"[dim][*] Target switch: {current_target} -> {new_target}, resetting session context[/]"
-                )
+                console.print(_("cli.target_switch", from_target=current_target, to_target=new_target))
                 current_target = new_target
                 current_phase = "Recon"
                 agent.reset_context()
@@ -403,9 +395,7 @@ def _run_repl() -> None:
             try:
                 if is_auto_mode:
                     # Autonomous pentest loop
-                    console.print(
-                        "[dim][*] Entering autonomous pentest mode. Press Ctrl+C to interrupt.[/]"
-                    )
+                    console.print(_("cli.enter_auto_mode"))
                     console.print()
 
                     async def _run_auto():
@@ -435,11 +425,11 @@ def _run_repl() -> None:
                                 console.print()
                                 console.print(
                                     Panel(
-                                        f"[*] Autonomous pentest finished\n"
-                                        f"    Total rounds: {len(results)}\n"
-                                        f"    Steps executed: {total_steps}\n"
-                                        f"    Findings: {total_findings}",
-                                        title="Autonomous Pentest Result",
+                                        f"{_('auto_pentest.finished')}\n"
+                                        f"{_('auto_pentest.rounds', rounds=len(results))}\n"
+                                        f"{_('auto_pentest.steps', steps=total_steps)}\n"
+                                        f"{_('auto_pentest.findings', findings=total_findings)}",
+                                        title=_("auto_pentest.title"),
                                         border_style="green" if total_findings == 0 else "red",
                                     )
                                 )
@@ -483,15 +473,15 @@ def _run_repl() -> None:
                     asyncio.run(_run_agent())
 
             except KeyboardInterrupt:
-                console.print("\n[!] Interrupted by user")
+                console.print(f"\n{_('cli.interrupted')}")
             except Exception as e:
                 # Escape Rich markup chars in exception message to prevent MarkupError
                 from rich.markup import escape as rich_escape
 
-                console.print(f"[!] Error: {rich_escape(str(e))}")
+                console.print(_("cli.error", msg=rich_escape(str(e))))
 
         except KeyboardInterrupt:
-            console.print("\n[dim]Press Ctrl+C again or type exit to leave the REPL.[/]")
+            console.print(f"\n{_('cli.press_again')}")
         except EOFError:
             break
 
@@ -502,37 +492,37 @@ def _run_repl() -> None:
 
 def _print_help() -> None:
     """Print REPL help."""
-    help_text = """
- [bold]Built-in Commands[/]:
-  [cyan]target <host>[/]      Set the active target
-  [cyan]status[/]             Show current status
-  [cyan]tools[/]              List available MCP tools
-  [cyan]report <host>[/]      Generate a report from the current/selected target
-  [cyan]think[/]              Toggle thinking visibility
-  [cyan]think on/off[/]       Explicitly show or hide thinking
-  [cyan]persistent[/]         Start persistent testing for the current target
-  [cyan]persistent <host>[/]  Start persistent testing for a specific target
-  [cyan]clear[/]              Clear the current session
-  [cyan]help[/]               Show this help
-  [cyan]exit / quit[/]        Exit the REPL
+    help_text = f"""
+ [bold]{_("help.commands")}[/]:
+  {_("help.target")}
+  {_("help.status")}
+  {_("help.tools")}
+  {_("help.report")}
+  {_("help.think")}
+  {_("help.think_on_off")}
+  {_("help.persistent")}
+  {_("help.persistent_host")}
+  {_("help.clear")}
+  {_("help.help")}
+  {_("help.exit")}
 
- [bold]Autonomous Mode[/]:
-  [dim]Enter a natural-language task that includes a target and VulnClaw will run autonomously.[/]
-  [dim]Example: Perform a pentest against www.example.com[/]
+ [bold]{_("help.auto_mode")}[/]:
+  {_("help.auto_mode_desc")}
+  {_("help.auto_mode_example")}
 
- [bold]Persistent Mode[/]:
-  [dim]Runs multi-round autonomous testing, generates reports, and continues across cycles.[/]
-  [dim]CLI: vulnclaw persistent <target> --rounds 100 --cycles 10[/]
-  [dim]REPL: persistent or persistent <host>[/]
+ [bold]{_("help.persistent_mode")}[/]:
+  {_("help.persistent_mode_desc")}
+  {_("help.persistent_cli")}
+  {_("help.persistent_repl")}
 
- [bold]Examples[/]:
-  [dim]Perform a pentest against 192.168.1.100[/]
-  [dim]Scan the target for open ports[/]
-  [dim]Look for vulnerabilities[/]
-  [dim]Try to exploit CVE-202X-XXXX[/]
-  [dim]Generate a pentest report[/]
+ [bold]{_("help.examples")}[/]:
+  {_("help.example_pentest")}
+  {_("help.example_scan")}
+  {_("help.example_vuln")}
+  {_("help.example_exploit")}
+  {_("help.example_report")}
 """
-    console.print(Panel(help_text, title="VulnClaw Help", border_style="cyan"))
+    console.print(Panel(help_text, title=_("help.title"), border_style="cyan"))
 
 
 def _print_status(agent, mcp_manager, target, phase, config) -> None:
@@ -540,12 +530,12 @@ def _print_status(agent, mcp_manager, target, phase, config) -> None:
     think_state = "[green]shown[/]" if config.session.show_thinking else "[yellow]hidden[/]"
     console.print(
         Panel(
-            f"Target: [bold]{target or 'Not set'}[/]\n"
-            f"Phase: [bold]{phase}[/]\n"
-            f"MCP Services: [bold]{mcp_manager.running_count()}[/]\n"
-            f"Available Tools: [bold]{len(mcp_manager.list_available_tools())}[/]\n"
-            f"Thinking: {think_state}",
-            title="Current Status",
+            f"{_('status.target', target=target or 'Not set')}\n"
+            f"{_('status.phase', phase=phase)}\n"
+            f"{_('status.mcp_services', count=mcp_manager.running_count())}\n"
+            f"{_('status.tools', count=len(mcp_manager.list_available_tools()))}\n"
+            f"{_('status.thinking', state=think_state)}",
+            title=_("status.title"),
             border_style="green",
         )
     )
