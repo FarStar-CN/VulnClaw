@@ -175,6 +175,7 @@ def _run_repl() -> None:
     current_target: Optional[str] = None
     current_phase: str = "Ready"
     exit_requested = False
+    auto_mode_active = False
 
     while True:
         try:
@@ -183,6 +184,8 @@ def _run_repl() -> None:
             if current_target:
                 prompt_parts.append(f"[bold cyan]{current_target}[/]")
             prompt_parts.append(f"[dim]{current_phase}[/]")
+            if auto_mode_active:
+                prompt_parts.append("[bold yellow]AUTO[/]")
             prompt_str = " | ".join(prompt_parts) if prompt_parts else "vulnclaw"
 
             # Read input
@@ -382,8 +385,18 @@ def _run_repl() -> None:
                 console.print(_("cli.thinking_hidden"))
                 continue
 
-            # Route to agent and detect whether this should be an autonomous loop
-            is_auto_mode = _should_auto_pentest(user_input, current_target)
+            # Handle auto mode persistence: exit auto mode on explicit commands
+            if auto_mode_active and user_input.lower().strip() in (
+                "chat", "manual", "exit auto", "单轮", "手动",
+            ):
+                auto_mode_active = False
+                console.print(_("cli.auto_mode_exited"))
+                is_auto_mode = False
+            elif auto_mode_active:
+                is_auto_mode = True
+            else:
+                # Route to agent and detect whether this should be an autonomous loop
+                is_auto_mode = _should_auto_pentest(user_input, current_target)
 
             # Detect target switch and reset context if the user mentions a new target
             new_target = _extract_target_from_input(user_input)
@@ -392,6 +405,8 @@ def _run_repl() -> None:
                 current_target = new_target
                 current_phase = "Recon"
                 agent.reset_context()
+                # Reset auto mode on target switch
+                auto_mode_active = False
 
             try:
                 if is_auto_mode:
@@ -452,6 +467,8 @@ def _run_repl() -> None:
                         await _run_repl_agent_call(agent, call=call, after_result=after_result)
 
                     asyncio.run(_run_auto())
+                    auto_mode_active = True
+                    console.print(_("cli.auto_mode_hint"))
 
                 else:
                     # Single-turn chat
@@ -474,7 +491,12 @@ def _run_repl() -> None:
                     asyncio.run(_run_agent())
 
             except KeyboardInterrupt:
-                console.print(f"\n{_('cli.interrupted')}")
+                if is_auto_mode:
+                    auto_mode_active = False
+                    console.print()
+                    console.print(_("cli.interrupted"))
+                else:
+                    console.print(f"\n{_('cli.interrupted')}")
             except Exception as e:
                 # Escape Rich markup chars in exception message to prevent MarkupError
                 from rich.markup import escape as rich_escape
@@ -508,12 +530,14 @@ def _print_help() -> None:
   {_("help.persistent")}
   {_("help.persistent_host")}
   {_("help.clear")}
+  {_("help.chat")}
   {_("help.help")}
   {_("help.exit")}
 
  [bold]{_("help.auto_mode")}[/]:
   {_("help.auto_mode_desc")}
   {_("help.auto_mode_example")}
+  {_("help.auto_mode_stays")}
 
  [bold]{_("help.persistent_mode")}[/]:
   {_("help.persistent_mode_desc")}
