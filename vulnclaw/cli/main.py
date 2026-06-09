@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from typing import Optional
 
 
@@ -235,6 +236,9 @@ def _run_repl() -> None:
     current_target: Optional[str] = None
     current_phase: str = "Ready"
     exit_requested = False
+    auto_mode_active = False
+    _last_ctrlc_time = 0.0
+    last_auto_input: str = ""
 
     while True:
         try:
@@ -243,13 +247,19 @@ def _run_repl() -> None:
             if current_target:
                 prompt_parts.append(f"[bold cyan]{current_target}[/]")
             prompt_parts.append(f"[dim]{current_phase}[/]")
+            if auto_mode_active:
+                prompt_parts.append("[bold yellow]AUTO[/]")
             prompt_str = " | ".join(prompt_parts) if prompt_parts else "vulnclaw"
 
             # Read input
             user_input = console.input(f"vulnclaw {prompt_str}> ").strip()
 
             if not user_input:
-                continue
+                if last_auto_input:
+                    user_input = last_auto_input
+                    console.print(f"[dim]↻ Resuming auto pentest: {last_auto_input[:60]}...[/]")
+                else:
+                    continue
 
             # Handle built-in commands
             cmd_lower = user_input.lower()
@@ -281,6 +291,8 @@ def _run_repl() -> None:
             elif cmd_lower == "clear":
                 current_target = None
                 current_phase = "Ready"
+                auto_mode_active = False
+                last_auto_input = ""
                 agent.reset_context()
                 console.print(_("cli.conversation_cleared"))
                 continue
@@ -444,8 +456,19 @@ def _run_repl() -> None:
                 console.print(_("cli.thinking_hidden"))
                 continue
 
-            # Route to agent and detect whether this should be an autonomous loop
-            is_auto_mode = _should_auto_pentest(user_input, current_target)
+            # Handle auto mode persistence: exit auto mode on explicit commands
+            if auto_mode_active and user_input.lower().strip() in (
+                "chat", "manual", "exit auto", "单轮", "手动",
+            ):
+                auto_mode_active = False
+                last_auto_input = ""
+                console.print(_("cli.auto_mode_exited"))
+                is_auto_mode = False
+            elif auto_mode_active:
+                is_auto_mode = True
+            else:
+                # Route to agent and detect whether this should be an autonomous loop
+                is_auto_mode = _should_auto_pentest(user_input, current_target)
 
             # Detect target switch and reset context if the user mentions a new target
             new_target = _extract_target_from_input(user_input)
@@ -454,6 +477,13 @@ def _run_repl() -> None:
                 current_target = new_target
                 current_phase = "Recon"
                 agent.reset_context()
+                # Reset auto mode on target switch
+                auto_mode_active = False
+                last_auto_input = ""
+
+            # Save last auto input for resume on empty Enter
+            if is_auto_mode:
+                last_auto_input = user_input
 
             try:
                 if is_auto_mode:
@@ -516,6 +546,8 @@ def _run_repl() -> None:
                         await _run_repl_agent_call(agent, call=call, after_result=after_result)
 
                     asyncio.run(_run_auto())
+                    auto_mode_active = True
+                    console.print(_("cli.auto_mode_hint"))
 
                 else:
                     # Single-turn chat
@@ -539,7 +571,13 @@ def _run_repl() -> None:
                     asyncio.run(_run_agent())
 
             except KeyboardInterrupt:
-                console.print(f"\n{_('cli.interrupted')}")
+                if is_auto_mode:
+                    auto_mode_active = False
+                    console.print()
+                    console.print(_("cli.interrupted"))
+                    console.print(_("cli.auto_resume_hint"))
+                else:
+                    console.print(f"\n{_('cli.interrupted')}")
             except Exception as e:
                 # Escape Rich markup chars in exception message to prevent MarkupError
                 from rich.markup import escape as rich_escape
@@ -547,15 +585,20 @@ def _run_repl() -> None:
                 console.print(_("cli.error", msg=rich_escape(str(e))))
 
         except KeyboardInterrupt:
-            if exit_requested:
+            now = time.monotonic()
+            if exit_requested and (now - _last_ctrlc_time) < 3.0:
                 console.print(_("cli.bye"))
                 break
             exit_requested = True
+            _last_ctrlc_time = now
             console.print(f"\n{_('cli.press_again')}")
         except EOFError:
             break
 
-    # Cleanup
+    # Cleanup — suppress SIGINT to prevent re-trigger during threading shutdown
+    import signal
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     mcp_manager.stop_all()
     console.print("[dim]MCP services stopped.[/]")
 
@@ -573,12 +616,14 @@ def _print_help() -> None:
   {_("help.persistent")}
   {_("help.persistent_host")}
   {_("help.clear")}
+  {_("help.chat")}
   {_("help.help")}
   {_("help.exit")}
 
  [bold]{_("help.auto_mode")}[/]:
   {_("help.auto_mode_desc")}
   {_("help.auto_mode_example")}
+  {_("help.auto_mode_stays")}
 
  [bold]{_("help.persistent_mode")}[/]:
   {_("help.persistent_mode_desc")}
@@ -728,6 +773,9 @@ async def _run_cli_orchestrated_task(
             runner=lambda shared_agent: runner(shared_agent, config),
         )
     finally:
+        import signal
+
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         mcp_manager.stop_all()
 
 
@@ -1660,8 +1708,6 @@ def _should_auto_pentest(user_input: str, current_target: Optional[str]) -> bool
     has_target = bool(current_target) or bool(_extract_target_from_input(user_input))
     if has_target:
         multi_step_indicators = [
-            "，",
-            "。",
             "并",
             "然后",
             "输出",

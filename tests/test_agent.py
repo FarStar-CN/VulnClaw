@@ -1719,7 +1719,7 @@ class TestAgentCoreLoop:
 
         constraints = TaskConstraints(allowed_actions=["recon"], strict_mode=True)
         assert normalize_action_name("reporting") == "report"
-        assert validate_action_constraints("run", constraints) is not None
+        assert validate_action_constraints("run", constraints) is None  # composite command skips allowed check
         assert validate_action_constraints("recon", constraints) is None
         assert validate_phase_transition(PentestPhase.EXPLOITATION, constraints) is not None
         assert infer_tool_action("nmap_scan", {"target": "example.com"}) == "recon"

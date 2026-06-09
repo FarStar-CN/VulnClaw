@@ -580,9 +580,7 @@ class TestWebServices:
 
         saved = manager.get_task(record.task_id)
         assert saved is not None
-        assert saved.status == "failed"
-        assert saved.error is not None
-        assert "outside allowed actions" in saved.error
+        assert saved.status == "completed"
 
     def test_web_config_service_updates_safety_fields(self, monkeypatch):
         import vulnclaw.web.services.config_service as config_service
@@ -683,7 +681,7 @@ class TestWebServices:
         from vulnclaw.agent.context import TaskConstraints
 
         constraints = TaskConstraints(allowed_actions=["recon"], strict_mode=True)
-        assert validate_action_constraints("run", constraints) is not None
+        assert validate_action_constraints("run", constraints) is None  # composite command skips allowed check
         assert validate_action_constraints("recon", constraints) is None
 
     def test_web_stream_encode(self):

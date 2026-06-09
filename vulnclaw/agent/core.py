@@ -22,7 +22,7 @@ from vulnclaw.agent.builtin_tools import (
     parse_nmap_xml,
     validate_scan_target,
 )
-from vulnclaw.agent.context import ContextManager, PentestPhase, SessionState
+from vulnclaw.agent.context import ContextManager, PentestPhase, SessionState, TaskConstraints
 from vulnclaw.agent.ctf_mode import detect_flag_claim
 from vulnclaw.agent.finding_parser import FindingParser
 from vulnclaw.agent.input_analysis import (
@@ -269,6 +269,9 @@ class AgentCore:
         Chat mode is for quick Q&A and simple single-step queries.
         """
         result = AgentResult()
+
+        # Chat mode is free-form — don't inherit constraints from previous sessions
+        self.context.state.task_constraints = TaskConstraints()
 
         # Detect target and phase from input
         detected_target = target or self._detect_target(user_input)

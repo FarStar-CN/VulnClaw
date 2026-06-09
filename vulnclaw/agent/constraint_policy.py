@@ -39,6 +39,13 @@ def validate_action_constraints(action: str, constraints: TaskConstraints) -> st
     allowed = [normalize_action_name(item) for item in constraints.allowed_actions]
     blocked = [normalize_action_name(item) for item in constraints.blocked_actions]
 
+    # Composite commands (run, persistent) include all phases;
+    # fine-grained enforcement happens inside the loop via phase/tool checks.
+    if normalized in ("run", "persistent"):
+        if normalized in blocked:
+            return f"constraint_violation: command '{normalized}' is blocked by task constraints"
+        return None
+
     if allowed and normalized not in allowed:
         return f"constraint_violation: command '{normalized}' is outside allowed actions [{', '.join(allowed)}]"
 

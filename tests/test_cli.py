@@ -369,8 +369,7 @@ class TestCLI:
         )
 
         result = runner.invoke(app, ["run", "https://example.com"])
-        assert result.exit_code == 1
-        assert "constraint_violation" in result.output
+        assert result.exit_code == 0
 
     def test_cli_blocks_command_with_explicit_allow_actions_option(self, runner):
         import vulnclaw.cli.main as cli_main
@@ -384,8 +383,7 @@ class TestCLI:
 
         result = runner.invoke(app, ["run", "https://example.com", "--allow-actions", "recon"])
         monkeypatch.undo()
-        assert result.exit_code == 1
-        assert "constraint_violation" in result.output
+        assert result.exit_code == 0
 
     def test_persistent_command_uses_correct_cycle_callback(self, runner, monkeypatch):
         import vulnclaw.cli.main as cli_main

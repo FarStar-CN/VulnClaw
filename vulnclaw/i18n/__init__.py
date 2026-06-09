@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any, Optional
 
@@ -13,6 +14,7 @@ class I18nLoader:
     def __init__(self, lang: str = "zh") -> None:
         self.lang = lang
         self.translations: dict[str, str] = {}
+        self.logger = logging.getLogger(__name__)
         self._load_translations()
 
     def _get_lang_dir(self) -> str:
@@ -31,7 +33,12 @@ class I18nLoader:
             try:
                 with open(fallback_file, "r", encoding="utf-8") as f:
                     self.translations = json.load(f)
-            except Exception:
+            except (FileNotFoundError, json.JSONDecodeError, PermissionError, OSError) as e:
+                self.logger.warning(
+                    "Failed to load fallback translation file '%s': %s. "
+                    "Translations will be empty.",
+                    fallback_file, type(e).__name__,
+                )
                 self.translations = {}
 
     def t(self, key: str, **kwargs: Any) -> str:
