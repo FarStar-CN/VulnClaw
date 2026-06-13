@@ -112,7 +112,7 @@ def infer_tool_action(tool_name: str, args: dict[str, object]) -> str:
             return "exploit"
         return "scan"
 
-    if normalized_tool in {"crypto_decode", "load_skill_reference"}:
+    if normalized_tool in {"crypto_decode", "load_skill_reference", "brute_force_login"}:
         return "scan"
 
     return "scan"
