@@ -294,13 +294,13 @@ async def call_llm_auto(
                 "工具总结",
             )
             final_text = extract_response(response2.choices[0].message)
-            agent.context.add_assistant_message(final_text)
+            # 上下文已由 loop_controller L55 / core.py L385 写入，避免重复
             return _prepend_retry_notice(final_text, retry_attempts + second_retry_attempts)
         except Exception as e2:
             error_text = str(e2).lower()
             if _is_non_retriable_llm_error(error_text):
                 fallback = _format_tool_results_fallback(tool_results, skipped_info)
-                agent.context.add_assistant_message(fallback)
+                # 同上: 不在此写入上下文
                 return fallback
             return f"[tool results processed] 继续分析错误: {e2}"
 
@@ -595,7 +595,7 @@ async def call_llm_auto_stream(
                     if reasoning_buffer:
                         full_text += f"<thinking>\n{reasoning_buffer}\n</thinking>\n"
 
-                    agent.context.add_assistant_message(full_text)
+                    # 上下文由 loop_controller L55 写入，不在此重复添加
                     stream_sink.on_stream_end()
                     return full_text
 
@@ -603,11 +603,11 @@ async def call_llm_auto_stream(
                     error_text = str(e2).lower()
                     if _is_non_retriable_llm_error(error_text):
                         fallback = _format_tool_results_fallback(tool_results, skipped_info)
-                        agent.context.add_assistant_message(fallback)
+                        # 同上: 不在此写入上下文
                         return fallback
                     return f"[tool results processed] 继续分析错误: {e2}"
 
-        agent.context.add_assistant_message(full_text)
+        # 上下文已由调用方写入，不在此重复添加
         return full_text
 
     except (NotImplementedError, ValueError, Exception) as e:

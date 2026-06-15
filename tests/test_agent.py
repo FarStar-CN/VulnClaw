@@ -1624,7 +1624,8 @@ class TestAgentCoreLoop:
 
         result = await llm_client.call_llm_auto(DummyAgent(), "sys", "round")
         assert result == "followup ok"
-        assert saved_messages == ["followup ok"]
+        # call_llm_auto 不再自己写入上下文，由 caller（loop_controller L55）统一添加
+        assert saved_messages == []
 
     @pytest.mark.asyncio
     async def test_auto_pentest_stops_on_done_signal(self, monkeypatch):

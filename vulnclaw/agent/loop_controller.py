@@ -193,6 +193,9 @@ async def persistent_pentest(
     auto_report: bool = True,
     on_cycle_step: Callable[[int, int, AgentResult], None] | None = None,
     on_cycle_complete: Callable[[int, PersistentCycleResult], None] | None = None,
+    *,
+    # stream_sink 由 core.py 透传入，传给 agent.auto_pentest() 实现流式输出
+    stream_sink: Any = None,
 ) -> list[PersistentCycleResult]:
     cycle_results: list[PersistentCycleResult] = []
 
@@ -240,6 +243,8 @@ async def persistent_pentest(
                 target=agent.context.state.target,
                 max_rounds=rounds_per_cycle,
                 on_step=_make_step_callback(cycle_num),
+                # 透传 stream_sink，使 persistent 模式也支持流式输出
+                stream_sink=stream_sink,
             )
             cycle_results_list = results if results else cycle_results_list
         except KeyboardInterrupt:

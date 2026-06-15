@@ -342,6 +342,9 @@ class AgentCore:
         auto_report: bool = True,
         on_cycle_step: Optional[Callable[[int, int, AgentResult], None]] = None,
         on_cycle_complete: Optional[Callable[[int, "PersistentCycleResult"], None]] = None,
+        *,
+        # stream_sink 由 main.py 传入，逐级透传到 call_llm_auto_stream 实现流式输出
+        stream_sink: Optional["StreamSink"] = None,
     ) -> list["PersistentCycleResult"]:
         """Persistent penetration test — runs cycles of auto_pentest until stopped."""
         return await run_persistent_pentest(
@@ -353,6 +356,7 @@ class AgentCore:
             auto_report,
             on_cycle_step,
             on_cycle_complete,
+            stream_sink=stream_sink,
         )
 
     def _detect_phase_from_output(self, output: str) -> Optional[PentestPhase]:
