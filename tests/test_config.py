@@ -119,6 +119,13 @@ class TestVulnClawConfig:
         # Should have 4 builtin servers (fetch, memory, chrome-devtools, burp)
         assert len(BUILTIN_MCP_SERVERS) == 4
 
+    def test_burp_uses_sse_transport(self):
+        from vulnclaw.config.schema import BUILTIN_MCP_SERVERS
+
+        transport = BUILTIN_MCP_SERVERS["burp"]["transport"]
+        assert transport["type"] == "sse"
+        assert transport["url"] == "http://127.0.0.1:9876"
+
     def test_provider_presets(self):
         from vulnclaw.config.schema import PROVIDER_PRESETS
 
@@ -187,6 +194,14 @@ class TestSettingsLoad:
         from vulnclaw.config.settings import set_config_value
 
         set_config_value("llm.temperature", "0.1")  # Should not crash
+
+    def test_set_config_mcp_server_field(self):
+        from vulnclaw.config.settings import load_config, set_config_value
+
+        set_config_value("mcp.servers.chrome-devtools.enabled", "true")
+
+        config = load_config()
+        assert config.mcp.servers["chrome-devtools"].enabled is True
 
     def test_apply_provider_preset(self):
         from vulnclaw.config.schema import VulnClawConfig

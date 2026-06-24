@@ -386,12 +386,18 @@ class TestMCPLifecycleManager:
         assert "navigate" not in tools
 
     def test_burp_attach_success_registers_runtime_tools(self):
+        import vulnclaw.mcp.lifecycle as lifecycle_mod
         from vulnclaw.config.schema import BUILTIN_MCP_SERVERS, MCPServerConfig, VulnClawConfig
         from vulnclaw.mcp.lifecycle import MCPLifecycleManager
 
         manager = MCPLifecycleManager(VulnClawConfig())
         manager.registry.register_server("burp")
-        manager._probe_stdio_server = MagicMock(
+        old_session = lifecycle_mod.ClientSession
+        old_sse = lifecycle_mod.sse_client
+        lifecycle_mod.ClientSession = object
+        lifecycle_mod.sse_client = object
+        manager._check_http_reachable = MagicMock(return_value=True)
+        manager._probe_sse_server = MagicMock(
             return_value=(
                 True,
                 "ok",
@@ -407,11 +413,15 @@ class TestMCPLifecycleManager:
                 ],
             )
         )
-        cfg = MCPServerConfig(**BUILTIN_MCP_SERVERS["burp"])
-        assert manager._start_server("burp", cfg) is True
-        tools = manager.registry.get_server_tools("burp")
-        assert "runtime_send_http1_request" in tools
-        assert "send_http1_request" not in tools
+        try:
+            cfg = MCPServerConfig(**BUILTIN_MCP_SERVERS["burp"])
+            assert manager._start_server("burp", cfg) is True
+            tools = manager.registry.get_server_tools("burp")
+            assert "runtime_send_http1_request" in tools
+            assert "send_http1_request" not in tools
+        finally:
+            lifecycle_mod.ClientSession = old_session
+            lifecycle_mod.sse_client = old_sse
 
     def test_sse_placeholder_records_invalid_url_error(self):
         from vulnclaw.config.schema import MCPServerConfig, MCPTransportConfig, VulnClawConfig

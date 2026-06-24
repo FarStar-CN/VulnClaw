@@ -27,10 +27,32 @@ try:
 except ImportError:  # pragma: no cover - optional runtime dependency
     streamablehttp_client = None
 
+try:
+    from mcp.client.sse import sse_client
+except ImportError:  # pragma: no cover - optional runtime dependency
+    sse_client = None
+
 # Transport type aliases that map to the MCP Streamable HTTP client.
 HTTP_TRANSPORT_TYPES = frozenset(
     {"streamable-http", "streamable_http", "streamablehttp", "http"}
 )
+SSE_TRANSPORT_TYPES = frozenset({"sse", "sse-client", "sse_client", "sseclient"})
+
+_BENIGN_SHUTDOWN_KEYWORDS = (
+    "cancel scope",
+    "generator didn't stop",
+)
+
+
+def _is_benign_shutdown_exception(exc: BaseException) -> bool:
+    if hasattr(exc, "exceptions"):
+        subs = list(getattr(exc, "exceptions", []))
+        return bool(subs) and all(_is_benign_shutdown_exception(sub) for sub in subs)
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        if any(kw in msg for kw in _BENIGN_SHUTDOWN_KEYWORDS):
+            return True
+    return isinstance(exc, (GeneratorExit, asyncio.CancelledError))
 
 
 class MCPLifecycleManager:
@@ -57,6 +79,7 @@ class MCPLifecycleManager:
         self._processes: dict[str, subprocess.Popen] = {}
         self._mcp_clients: dict[str, Any] = {}  # Server attach capability cache
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_exception_handler_loop: asyncio.AbstractEventLoop | None = None
         self._task_constraints: Any = None
 
     async def __aenter__(self) -> MCPLifecycleManager:
@@ -186,6 +209,33 @@ class MCPLifecycleManager:
             "suggestion": suggestion,
         }
 
+    def _install_loop_exception_handler(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._loop_exception_handler_loop is loop:
+            return
+
+        original_handler = loop.get_exception_handler()
+
+        def _handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+            exc = context.get("exception")
+            if exc is not None and _is_benign_shutdown_exception(exc):
+                return
+            msg = str(context.get("message", "")).lower()
+            if msg and any(kw in msg for kw in _BENIGN_SHUTDOWN_KEYWORDS):
+                return
+            if "async_generator" in msg and "closing" in msg:
+                return
+            if original_handler is not None:
+                original_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
+
+        loop.set_exception_handler(_handler)
+        self._loop_exception_handler_loop = loop
+
     def start_enabled_servers(self) -> int:
         """Start all enabled MCP servers.
 
@@ -193,6 +243,7 @@ class MCPLifecycleManager:
         """
         with suppress(RuntimeError):
             self._loop = asyncio.get_running_loop()
+        self._install_loop_exception_handler()
         started = 0
         for name, server_config in self.config.mcp.servers.items():
             if server_config.enabled:
@@ -235,13 +286,18 @@ class MCPLifecycleManager:
                 self._register_known_tools(name)
             return True
 
-        if transport.type == "sse":
+        if transport.type in SSE_TRANSPORT_TYPES:
+            self.registry.set_server_health(name, HealthStatus.STARTING.value)
             attached = self._try_attach_sse_client(name, config)
             self.registry.set_server_attach_result(name, attempted=True, succeeded=attached)
             self.registry.set_server_running(name, running=attached)
             self.registry.set_server_execution_mode(name, "sse" if attached else "placeholder")
-            self.registry.set_server_health(name, "healthy" if attached else "degraded")
-            self._register_known_tools(name)
+            self.registry.set_server_health(
+                name,
+                HealthStatus.HEALTHY.value if attached else HealthStatus.DEGRADED.value,
+            )
+            if not attached:
+                self._register_known_tools(name)
             return True
 
         if transport.type in HTTP_TRANSPORT_TYPES:
@@ -316,9 +372,7 @@ class MCPLifecycleManager:
         return command == "npm" and any(arg in {"exec", "x"} for arg in args)
 
     def _try_attach_sse_client(self, name: str, config: MCPServerConfig) -> bool:
-        """Attempt a minimal SSE reachability/config validation before fallback."""
-        from urllib.parse import urlparse
-
+        """Validate an SSE MCP server and register discovered tools when possible."""
         url = config.transport.url or ""
         if not url:
             self.registry.set_server_error(
@@ -332,8 +386,33 @@ class MCPLifecycleManager:
                 name, f"invalid SSE url: {url}", error_type="config_error"
             )
             return False
+        if ClientSession is None or sse_client is None:
+            self.registry.set_server_error(
+                name, "MCP Python SDK is not installed", error_type="sdk_unavailable"
+            )
+            return False
 
-        return False
+        reachable = self._check_http_reachable(url, self._startup_timeout_seconds(config))
+        if not reachable:
+            self.registry.set_server_error(
+                name, f"sse server unreachable at {url}", error_type="attach_failed"
+            )
+            return False
+
+        ok, details, tools = self._probe_sse_server(config)
+        if not ok:
+            self.registry.set_server_error(
+                name, details or "sse attach probe failed", error_type="attach_failed"
+            )
+            self._register_known_tools(name)
+            return False
+
+        self._mcp_clients[name] = {"kind": "sse-lazy", "config": config}
+        if tools:
+            self._register_runtime_tools(name, tools)
+        else:
+            self._register_known_tools(name)
+        return True
 
     def _try_attach_http_client(self, name: str, config: MCPServerConfig) -> bool:
         """Validate a Streamable HTTP MCP server and mark it for lazy connection.
@@ -385,9 +464,8 @@ class MCPLifecycleManager:
         try:
             import httpx
 
-            httpx.get(url, timeout=min(timeout_s, 10), verify=False)
-            # Any response (even 400/405) means the server is alive
-            return True
+            with httpx.stream("GET", url, timeout=min(timeout_s, 10), verify=False) as response:
+                return response.status_code < 500
         except Exception:
             return False
 
@@ -425,6 +503,34 @@ class MCPLifecycleManager:
                     detail = "; ".join(str(s) for s in subs)
             if "already connected" in detail.lower():
                 detail += " (请重启 MCP 服务或关闭旧客户端连接)"
+            return False, detail, []
+
+    def _probe_sse_server(
+        self, config: MCPServerConfig
+    ) -> tuple[bool, str, list[dict[str, Any]]]:
+        timeout_s = self._startup_timeout_seconds(config)
+        return self._run_probe(self._async_probe_sse_server(config), timeout_s)
+
+    async def _async_probe_sse_server(
+        self, config: MCPServerConfig
+    ) -> tuple[bool, str, list[dict[str, Any]]]:
+        url = config.transport.url or ""
+        read_s = self._tool_timeout_seconds(config)
+        try:
+            async with sse_client(url) as (read_stream, write_stream):
+                async with ClientSession(
+                    read_stream, write_stream, read_timeout_seconds=timedelta(seconds=read_s)
+                ) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+                    tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
+                    return True, f"initialized with {len(tool_defs)} tools", tool_defs
+        except BaseException as exc:
+            detail = str(exc)
+            if hasattr(exc, "exceptions"):
+                subs = list(getattr(exc, "exceptions", []))
+                if subs:
+                    detail = "; ".join(str(s) for s in subs)
             return False, detail, []
 
     def _run_probe(
@@ -638,8 +744,15 @@ class MCPLifecycleManager:
             read_stream, write_stream, read_timeout_seconds=timedelta(seconds=timeout_s)
         )
         # 进入 ClientSession 上下文以启动 _receive_loop；否则后续调用读不到响应而卡死。
-        await session.__aenter__()
-        await session.initialize()
+        try:
+            await session.__aenter__()
+            await session.initialize()
+        except BaseException:
+            with suppress(Exception):
+                await session.__aexit__(None, None, None)
+            with suppress(Exception):
+                await cm.__aexit__(None, None, None)
+            raise
 
         self._mcp_clients[server_name] = {
             "kind": "persistent-stdio",
@@ -736,6 +849,75 @@ class MCPLifecycleManager:
         self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
         return session
 
+    async def _get_or_create_persistent_sse_session(self, server_name: str) -> Any:
+        """Create and cache a persistent SSE MCP session for the current loop."""
+        if sse_client is None or ClientSession is None:
+            raise RuntimeError("MCP Python SDK is not installed")
+        self._install_loop_exception_handler()
+
+        client_meta = self._mcp_clients.get(server_name)
+        current_loop = asyncio.get_running_loop()
+
+        if isinstance(client_meta, dict) and client_meta.get("kind") == "persistent-sse":
+            if client_meta.get("loop") is current_loop and client_meta.get("session") is not None:
+                return client_meta["session"]
+
+        config = None
+        if isinstance(client_meta, dict):
+            config = client_meta.get("config")
+        if config is None:
+            config = self.config.mcp.servers.get(server_name)
+        if config is None:
+            raise RuntimeError(f"missing MCP config for server {server_name}")
+
+        url = config.transport.url or ""
+        if not url:
+            raise RuntimeError(f"sse transport for {server_name} is missing url")
+        read_s = self._tool_timeout_seconds(config)
+
+        cm = None
+        session = None
+        try:
+            cm = sse_client(url)
+            read_stream, write_stream = await cm.__aenter__()
+            session = ClientSession(
+                read_stream, write_stream, read_timeout_seconds=timedelta(seconds=read_s)
+            )
+            await session.__aenter__()
+            await session.initialize()
+        except BaseException as exc:
+            if session is not None:
+                with suppress(Exception):
+                    await session.__aexit__(None, None, None)
+            if cm is not None:
+                with suppress(Exception):
+                    await cm.__aexit__(None, None, None)
+            detail = str(exc)
+            if hasattr(exc, "exceptions"):
+                subs = list(getattr(exc, "exceptions", []))
+                if subs:
+                    detail = "; ".join(str(s) for s in subs)
+            raise RuntimeError(f"sse session for {server_name} failed: {detail}") from None
+
+        try:
+            tools = await session.list_tools()
+            tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
+            if tool_defs:
+                self._register_runtime_tools(server_name, tool_defs)
+        except Exception:
+            pass
+
+        self._mcp_clients[server_name] = {
+            "kind": "persistent-sse",
+            "config": config,
+            "loop": current_loop,
+            "session": session,
+            "context_manager": cm,
+        }
+        self.registry.set_server_running(server_name, running=True)
+        self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
+        return session
+
     async def _get_or_create_session(self, server_name: str) -> Any:
         """Return a persistent MCP session, dispatching by the server's transport type."""
         config = self.config.mcp.servers.get(server_name)
@@ -745,6 +927,8 @@ class MCPLifecycleManager:
         transport_type = (
             config.transport.type if config and config.transport else ""
         ).lower()
+        if transport_type in SSE_TRANSPORT_TYPES:
+            return await self._get_or_create_persistent_sse_session(server_name)
         if transport_type in HTTP_TRANSPORT_TYPES:
             return await self._get_or_create_persistent_http_session(server_name)
         return await self._get_or_create_persistent_stdio_session(server_name)
@@ -760,6 +944,8 @@ class MCPLifecycleManager:
         ttype = (config.transport.type or "").lower()
         if ttype in HTTP_TRANSPORT_TYPES:
             return streamablehttp_client is not None and ClientSession is not None
+        if ttype in SSE_TRANSPORT_TYPES:
+            return sse_client is not None and ClientSession is not None
         if ttype == "stdio":
             return stdio_client is not None and ClientSession is not None
         return False
@@ -833,7 +1019,11 @@ class MCPLifecycleManager:
     def _is_persistent_session(client_meta: Any) -> bool:
         if not isinstance(client_meta, dict):
             return False
-        return client_meta.get("kind") in ("persistent-stdio", "persistent-http")
+        return client_meta.get("kind") in (
+            "persistent-stdio",
+            "persistent-http",
+            "persistent-sse",
+        )
 
     async def _aclose_session_meta(self, client_meta: Any) -> None:
         """Exit a persistent session then its transport context manager (order matters)."""
@@ -843,14 +1033,16 @@ class MCPLifecycleManager:
         if session is not None:
             try:
                 await session.__aexit__(None, None, None)
-            except BaseException:
-                pass
+            except BaseException as exc:
+                if not _is_benign_shutdown_exception(exc):
+                    raise
         cm = client_meta.get("context_manager")
         if cm is not None:
             try:
                 await cm.__aexit__(None, None, None)
-            except BaseException:
-                pass
+            except BaseException as exc:
+                if not _is_benign_shutdown_exception(exc):
+                    raise
 
     async def _teardown_server(self, server_name: str) -> None:
         """Close any cached session and kill any tracked process for a server."""
@@ -1083,8 +1275,8 @@ class MCPLifecycleManager:
                     },
                 },
                 {
-                    "name": "get_proxy_history",
-                    "description": "Get proxy history from Burp",
+                    "name": "get_proxy_http_history",
+                    "description": "Get items within the proxy HTTP history",
                     "inputSchema": {"type": "object", "properties": {}},
                 },
             ],
@@ -1160,7 +1352,11 @@ class MCPLifecycleManager:
     async def astop_server(self, name: str) -> None:
         """Stop a single MCP server from within an event loop."""
         self.registry.set_server_health(name, HealthStatus.STOPPING.value)
-        await self._teardown_server(name)
+        try:
+            await self._teardown_server(name)
+        except BaseException as exc:
+            if not _is_benign_shutdown_exception(exc):
+                raise
         self.registry.set_server_running(name, running=False)
         self.registry.set_server_health(name, HealthStatus.UNKNOWN.value)
 
@@ -1174,12 +1370,14 @@ class MCPLifecycleManager:
             self.registry.set_server_running(name, running=False)
 
     async def astop_all(self) -> None:
-        """Stop all running MCP servers in parallel from within an event loop."""
+        """Stop all running MCP servers from within an event loop."""
         names = set(self._processes.keys()) | set(self.registry.get_running_servers())
-        if names:
-            await asyncio.gather(
-                *(self.astop_server(name) for name in names), return_exceptions=True
-            )
+        for name in names:
+            try:
+                await self.astop_server(name)
+            except BaseException as exc:
+                if not _is_benign_shutdown_exception(exc):
+                    raise
 
         for name in self.registry.get_running_servers():
             self.registry.set_server_running(name, running=False)

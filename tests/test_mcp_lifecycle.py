@@ -371,6 +371,14 @@ def _http_server_config(name: str = "streamable-mcp-server") -> MCPServerConfig:
     )
 
 
+def _sse_server_config(name: str = "burp") -> MCPServerConfig:
+    return MCPServerConfig(
+        name=name,
+        enabled=True,
+        transport={"type": "sse", "url": "http://127.0.0.1:9876"},
+    )
+
+
 class TestStreamableHttp:
     def test_attach_success_registers_known_tools(self, monkeypatch):
         import vulnclaw.mcp.lifecycle as _mod
@@ -452,6 +460,106 @@ class TestStreamableHttp:
         assert result["ok"] is True
         assert result["server"] == "streamable-mcp-server"
         assert "do_thing" in str(result["content"])
+
+
+class TestSseMcp:
+    def test_burp_attach_success_registers_runtime_tools(self, monkeypatch):
+        import vulnclaw.mcp.lifecycle as _mod
+
+        m = _manager()
+        cfg = _sse_server_config()
+        m.config.mcp.servers["burp"] = cfg
+        m.registry.register_server("burp")
+
+        monkeypatch.setattr(_mod, "ClientSession", object)
+        monkeypatch.setattr(_mod, "sse_client", object)
+        monkeypatch.setattr(m, "_check_http_reachable", lambda url, timeout: True)
+        monkeypatch.setattr(
+            m,
+            "_probe_sse_server",
+            lambda config: (
+                True,
+                "ok",
+                [
+                    {
+                        "name": "get_proxy_http_history",
+                        "description": "",
+                        "inputSchema": {"type": "object"},
+                    }
+                ],
+            ),
+        )
+
+        assert m._start_server("burp", cfg) is True
+        state = m.registry.get_all_servers()["burp"]
+        assert state.running is True
+        assert state.execution_mode == "sse"
+        assert state.health_status == HealthStatus.HEALTHY.value
+        assert "get_proxy_http_history" in m.list_available_tools()
+
+    async def test_get_or_create_session_dispatches_sse(self, monkeypatch):
+        m = _manager()
+        m.config.mcp.servers["burp"] = _sse_server_config()
+        sentinel = object()
+
+        async def fake_sse(name):
+            assert name == "burp"
+            return sentinel
+
+        monkeypatch.setattr(m, "_get_or_create_persistent_sse_session", fake_sse)
+        got = await m._get_or_create_session("burp")
+        assert got is sentinel
+
+    async def test_call_tool_routes_sse_server(self, monkeypatch):
+        import vulnclaw.mcp.lifecycle as _mod
+
+        m = _manager()
+        m.config.mcp.servers["burp"] = _sse_server_config()
+        m.registry.register_server("burp")
+        m.registry.register_tool(
+            "burp",
+            {
+                "name": "get_proxy_http_history",
+                "description": "",
+                "inputSchema": {"type": "object"},
+            },
+        )
+        m.registry.set_server_execution_mode("burp", "sse")
+
+        monkeypatch.setattr(_mod, "ClientSession", object)
+        monkeypatch.setattr(_mod, "sse_client", object)
+
+        class DummySession:
+            async def call_tool(self, tool_name, arguments=None):
+                return {"echo": tool_name, "args": arguments}
+
+        async def fake_sse(name):
+            return DummySession()
+
+        monkeypatch.setattr(m, "_get_or_create_persistent_sse_session", fake_sse)
+
+        result = await m.call_tool("get_proxy_http_history", {})
+        assert result["ok"] is True
+        assert result["server"] == "burp"
+        assert "get_proxy_http_history" in str(result["content"])
+
+    async def test_sse_shutdown_noise_is_ignored(self):
+        m = _manager()
+        m.registry.register_server("burp")
+        m.registry.set_server_running("burp", running=True)
+
+        class BadSession:
+            async def __aexit__(self, exc_type, exc, tb):
+                raise RuntimeError("Attempted to exit cancel scope in a different task")
+
+        m._mcp_clients["burp"] = {
+            "kind": "persistent-sse",
+            "session": BadSession(),
+            "context_manager": None,
+        }
+
+        await m.astop_server("burp")
+        assert m.registry.get_all_servers()["burp"].running is False
 
 
 def test_smoke_event_loop_isolation():

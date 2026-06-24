@@ -26,7 +26,7 @@ INTENT_TOOL_MAP: dict[str, list[dict[str, Any]]] = {
     ],
     # Burp Suite
     "抓包|查看请求|拦截请求|proxy": [
-        {"tool": "get_proxy_history", "server": "burp"},
+        {"tool": "get_proxy_http_history", "server": "burp"},
     ],
     "修改数据包|重放|replay|篡改": [
         {"tool": "send_http1_request", "server": "burp"},

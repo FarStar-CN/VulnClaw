@@ -352,11 +352,10 @@ BUILTIN_MCP_SERVERS: dict[str, dict[str, Any]] = {
         "name": "burp",
         "enabled": False,
         "priority": 0,
-        "description": "Burp Suite proxy integration for HTTP interception",
+        "description": "Burp Suite proxy integration for HTTP interception via SSE",
         "transport": {
-            "type": "stdio",
-            "command": "java",
-            "args": ["-jar", "mcp-proxy.jar", "--sse-url", "http://127.0.0.1:9876"],
+            "type": "sse",
+            "url": "http://127.0.0.1:9876",
         },
     },
 }

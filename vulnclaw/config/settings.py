@@ -108,7 +108,7 @@ def set_config_value(key: str, value: str) -> None:
     parts = key.split(".")
     obj: Any = config
     for part in parts[:-1]:
-        obj = getattr(obj, part)
+        obj = obj[part] if isinstance(obj, dict) else getattr(obj, part)
     field_name = parts[-1]
 
     # Type coercion based on field annotation
@@ -123,7 +123,10 @@ def set_config_value(key: str, value: str) -> None:
         elif annotation is bool:
             value = value.lower() in ("true", "1", "yes")
 
-    setattr(obj, field_name, value)
+    if isinstance(obj, dict):
+        obj[field_name] = value
+    else:
+        setattr(obj, field_name, value)
     save_config(config)
 
 
