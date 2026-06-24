@@ -373,11 +373,6 @@ class MCPLifecycleManager:
 
     def _try_attach_sse_client(self, name: str, config: MCPServerConfig) -> bool:
         """Validate an SSE MCP server and register discovered tools when possible."""
-        if ClientSession is None or sse_client is None:
-            self.registry.set_server_error(
-                name, "MCP Python SDK is not installed", error_type="sdk_unavailable"
-            )
-            return False
         url = config.transport.url or ""
         if not url:
             self.registry.set_server_error(
@@ -389,6 +384,11 @@ class MCPLifecycleManager:
         if not parsed.scheme or not parsed.netloc:
             self.registry.set_server_error(
                 name, f"invalid SSE url: {url}", error_type="config_error"
+            )
+            return False
+        if ClientSession is None or sse_client is None:
+            self.registry.set_server_error(
+                name, "MCP Python SDK is not installed", error_type="sdk_unavailable"
             )
             return False
 
