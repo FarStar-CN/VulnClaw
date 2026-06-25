@@ -157,6 +157,28 @@ class KnowledgeStore:
 
         return results
 
+    def iter_all_entries(self) -> list[dict[str, Any]]:
+        """Load and return every knowledge entry across all categories.
+
+        Each returned dict is the full entry data with an extra `_category`
+        field. Entries that fail to load are skipped. Used by keyword-based
+        retrieval which needs the full corpus in memory.
+        """
+        entries: list[dict[str, Any]] = []
+        for cat, metas in self._index.items():
+            for entry_meta in metas:
+                filepath = entry_meta.get("file")
+                if not filepath or not Path(filepath).exists():
+                    continue
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    continue
+                data["_category"] = cat
+                entries.append(data)
+        return entries
+
     def list_categories(self) -> list[str]:
         """List all knowledge categories."""
         return list(self._index.keys())

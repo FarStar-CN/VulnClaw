@@ -10,9 +10,74 @@ from vulnclaw.agent.constraint_policy import validate_phase_transition
 from vulnclaw.agent.context import PentestPhase
 from vulnclaw.agent.ctf_mode import update_ctf_state
 from vulnclaw.agent.llm_client import call_llm_auto
+from vulnclaw.agent.reasoning_state import (
+    ConstraintCategory,
+    ConstraintSeverity,
+    PathStatus,
+)
+from vulnclaw.agent.reflexion import FailureCategory, classify_failure
 from vulnclaw.agent.runtime_state import AgentResult, PersistentCycleResult
 
 RECON_MIN_ROUNDS = 8
+
+
+def _reasoning_enabled(agent: Any) -> bool:
+    return getattr(getattr(agent.config, "session", None), "reasoning_state_enabled", True)
+
+
+def _sync_reasoning_path(agent: Any, path_name: str, *, success: bool) -> None:
+    """把识别到的攻击路径落进结构化推理状态，并刷新优先级。"""
+    if not path_name or not _reasoning_enabled(agent):
+        return
+    reasoning = getattr(agent.context.state, "reasoning", None)
+    if reasoning is None or not hasattr(reasoning, "add_path"):
+        return
+    existing = next((p for p in reasoning.paths if p.name == path_name), None)
+    if existing is None:
+        existing = reasoning.add_path(path_name, steps=[], priority=1)
+    if success:
+        existing.status = PathStatus.SUCCESS
+        existing.result = "取得进展"
+    elif existing.status != PathStatus.SUCCESS:
+        existing.status = PathStatus.FAILED
+    reasoning.auto_prioritize()
+
+
+def _sync_reasoning_constraint(agent: Any, path_name: str, category: FailureCategory) -> None:
+    """把识别到的障碍（WAF/过滤等）落进结构化推理状态，描述保持稳定以便去重。"""
+    if not _reasoning_enabled(agent):
+        return
+    reasoning = getattr(agent.context.state, "reasoning", None)
+    if reasoning is None or not hasattr(reasoning, "add_constraint"):
+        return
+    mapping = {
+        FailureCategory.ENV_CONSTRAINT: ConstraintCategory.WAF,
+        FailureCategory.PARAM_ERROR: ConstraintCategory.FILTER,
+    }
+    category_value = mapping.get(category)
+    if category_value is None:
+        return
+    reasoning.add_constraint(
+        description=f"{path_name or '当前路径'} 被 {category_value.value} 阻断",
+        category=category_value,
+        severity=ConstraintSeverity.HIGH,
+        source="auto_pentest",
+    )
+
+
+def _configure_reflexion(agent: Any) -> None:
+    reflexion = getattr(agent.runtime, "reflexion", None)
+    session = getattr(agent.config, "session", None)
+    if not reflexion or not session:
+        return
+
+    for attr, config_attr in (
+        ("max_same_vuln_fails", "reflexion_max_same_vuln_fails"),
+        ("max_total_no_progress", "reflexion_max_total_no_progress"),
+        ("escalation_max_level", "escalation_max_level"),
+    ):
+        if hasattr(reflexion, attr) and hasattr(session, config_attr):
+            setattr(reflexion, attr, getattr(session, config_attr))
 
 
 async def auto_pentest(
@@ -36,6 +101,7 @@ async def auto_pentest(
 
     agent.context.add_user_message(user_input)
     agent._reset_runtime_state(user_input=user_input, detected_phase=detected_phase)
+    _configure_reflexion(agent)
 
     for round_num in range(1, max_rounds + 1):
         result = AgentResult()
@@ -149,12 +215,42 @@ async def auto_pentest(
             agent.runtime.last_notes_count = current_notes
             agent.runtime.last_steps_count = current_steps
 
+            detected_path = agent._detect_attack_path(response_text)
+            reflexion = getattr(agent.runtime, "reflexion", None)
+            reflexion_on = getattr(agent.config.session, "reflexion_enabled", True) and hasattr(
+                reflexion, "record_attempt"
+            )
+            failure_category = None if has_new_progress else classify_failure(response_text)
+            if reflexion_on:
+                reflexion.record_attempt(
+                    path=detected_path or agent.runtime.current_attack_path or "unknown",
+                    success=has_new_progress,
+                    category=failure_category,
+                    details=response_text[:200],
+                    vuln_type=detected_path or "",
+                )
+
+            # 把攻击路径与障碍同步进结构化推理状态
+            _sync_reasoning_path(agent, detected_path, success=has_new_progress)
+            if failure_category is not None:
+                _sync_reasoning_constraint(agent, detected_path, failure_category)
+
             if not has_new_progress and not agent.runtime.path_switch_forced:
-                detected_path = agent._detect_attack_path(response_text)
                 if detected_path:
                     if detected_path == agent.runtime.current_attack_path:
                         agent.runtime.same_path_fail_count += 1
                     else:
+                        # 卡住后切换了攻击路径 = 一次反思事件，记录以闭合升级环
+                        if (
+                            reflexion_on
+                            and agent.runtime.current_attack_path
+                            and reflexion.should_reflect()
+                        ):
+                            reflexion.record_reflection(
+                                old_path=agent.runtime.current_attack_path,
+                                new_path=detected_path,
+                                reasoning=response_text[:200],
+                            )
                         agent.runtime.current_attack_path = detected_path
                         agent.runtime.same_path_fail_count = 0
                         agent.runtime.path_switch_forced = False
@@ -181,6 +277,11 @@ async def auto_pentest(
         if not result.should_continue:
             break
 
+    # 把本周期反思记忆写回 SessionState 快照，供下个周期/同目标恢复时复用
+    if hasattr(agent, "_save_reflexion_snapshot"):
+        agent._save_reflexion_snapshot()
+        agent.context.state.save()
+
     return results
 
 
@@ -193,6 +294,9 @@ async def persistent_pentest(
     auto_report: bool = True,
     on_cycle_step: Callable[[int, int, AgentResult], None] | None = None,
     on_cycle_complete: Callable[[int, PersistentCycleResult], None] | None = None,
+    *,
+    # stream_sink 由 core.py 透传入，传给 agent.auto_pentest() 实现流式输出
+    stream_sink: Any = None,
 ) -> list[PersistentCycleResult]:
     cycle_results: list[PersistentCycleResult] = []
 
@@ -240,6 +344,8 @@ async def persistent_pentest(
                 target=agent.context.state.target,
                 max_rounds=rounds_per_cycle,
                 on_step=_make_step_callback(cycle_num),
+                # 透传 stream_sink，使 persistent 模式也支持流式输出
+                stream_sink=stream_sink,
             )
             cycle_results_list = results if results else cycle_results_list
         except KeyboardInterrupt:

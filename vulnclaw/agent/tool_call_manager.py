@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import sys
 from typing import Any
+
+# Default concurrency cap used when the agent config does not specify one.
+DEFAULT_TOOL_MAX_CONCURRENT = 5
 
 
 async def handle_tool_calls(agent: Any, message: Any) -> str:
@@ -56,36 +61,76 @@ async def handle_tool_calls_with_results(
                 f"[跳过] {sc['func_name']}({str(sc['func_args'])[:100]}) — 本轮已达上限，下轮继续"
             )
 
-    results: list[dict[str, Any]] = []
-    for item in to_execute:
-        tool_call = item["tool_call"]
-        func_name = item["func_name"]
-        func_args = item["func_args"]
-        try:
-            tool_result = await agent._execute_mcp_tool(func_name, func_args)
-            structured_content = None
-            if getattr(agent, "mcp_manager", None):
-                try:
-                    raw_result = await agent.mcp_manager.call_tool(func_name, func_args)
-                    if isinstance(raw_result, dict):
-                        structured_content = raw_result.get("structured_content")
-                except Exception:
-                    structured_content = None
-            results.append(
-                {
-                    "tool_call": tool_call,
-                    "tool_call_id": tool_call.id,
-                    "content": f"[tool:{func_name}] {tool_result}",
-                    "structured_content": structured_content,
-                }
-            )
-        except Exception as e:
-            import sys
+    parallel, max_concurrent = _resolve_parallel_settings(agent)
 
-            print(f"[!] 工具执行失败 {func_name}: {e}", file=sys.stderr)
-            continue
+    if parallel and max_concurrent > 1 and len(to_execute) > 1:
+        executed = await _execute_parallel(agent, to_execute, max_concurrent)
+    else:
+        executed = [await _execute_single(agent, item) for item in to_execute]
+
+    # Drop failed calls (preserves legacy behavior) while keeping original order.
+    results = [r for r in executed if r is not None]
 
     return results, skipped_info
+
+
+def _resolve_parallel_settings(agent: Any) -> tuple[bool, int]:
+    """Read tool parallelization settings from the agent config with safe defaults."""
+    safety = getattr(getattr(agent, "config", None), "safety", None)
+    if safety is None:
+        return True, DEFAULT_TOOL_MAX_CONCURRENT
+    parallel = bool(getattr(safety, "tool_parallel", True))
+    max_concurrent = int(getattr(safety, "tool_max_concurrent", DEFAULT_TOOL_MAX_CONCURRENT) or 1)
+    if max_concurrent < 1:
+        max_concurrent = 1
+    return parallel, max_concurrent
+
+
+async def _execute_parallel(
+    agent: Any, to_execute: list[dict[str, Any]], max_concurrent: int
+) -> list[dict[str, Any] | None]:
+    """Run independent tool calls concurrently, capped by a semaphore.
+
+    Each call is isolated: an exception in one does not affect the others, and
+    the returned list preserves the original ``to_execute`` ordering.
+    """
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def _guarded(item: dict[str, Any]) -> dict[str, Any] | None:
+        async with semaphore:
+            return await _execute_single(agent, item)
+
+    return await asyncio.gather(*(_guarded(item) for item in to_execute))
+
+
+async def _execute_single(agent: Any, item: dict[str, Any]) -> dict[str, Any] | None:
+    """Execute one tool call with isolated error handling.
+
+    Returns a result dict on success, or ``None`` when the call raised — matching
+    the legacy behavior of dropping failed calls from the result set.
+    """
+    tool_call = item["tool_call"]
+    func_name = item["func_name"]
+    func_args = item["func_args"]
+    try:
+        tool_result = await agent._execute_mcp_tool(func_name, func_args)
+        structured_content = None
+        if getattr(agent, "mcp_manager", None):
+            try:
+                raw_result = await agent.mcp_manager.call_tool(func_name, func_args)
+                if isinstance(raw_result, dict):
+                    structured_content = raw_result.get("structured_content")
+            except Exception:
+                structured_content = None
+        return {
+            "tool_call": tool_call,
+            "tool_call_id": tool_call.id,
+            "content": f"[tool:{func_name}] {tool_result}",
+            "structured_content": structured_content,
+        }
+    except Exception as e:
+        print(f"[!] 工具执行失败 {func_name}: {e}", file=sys.stderr)
+        return None
 
 
 def safe_parse_tool_args(arguments: str | None) -> dict[str, Any]:

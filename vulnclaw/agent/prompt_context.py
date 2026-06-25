@@ -17,6 +17,31 @@ def build_round_context(agent: Any, round_num: int, max_rounds: int) -> str:
     if constraints_block:
         constraints_summary = f"\n\n{constraints_block}"
 
+    reasoning_summary = ""
+    session_config = getattr(agent.config, "session", None)
+    reasoning_enabled = getattr(session_config, "reasoning_state_enabled", True)
+    if reasoning_enabled:
+        reasoning = getattr(state, "reasoning", None)
+        reasoning_block = (
+            reasoning.to_prompt_block()
+            if hasattr(reasoning, "to_prompt_block")
+            else ""
+        )
+        if reasoning_block:
+            reasoning_summary = f"\n\n{reasoning_block}"
+
+    reflexion_summary = ""
+    reflexion_enabled = getattr(session_config, "reflexion_enabled", True)
+    reflexion = getattr(agent.runtime, "reflexion", None)
+    if reflexion_enabled and hasattr(reflexion, "to_prompt_block"):
+        reflexion_block = reflexion.to_prompt_block()
+        if reflexion_block:
+            reflexion_summary = f"\n\n{reflexion_block}"
+        if hasattr(reflexion, "to_reflection_prompt"):
+            reflection_block = reflexion.to_reflection_prompt()
+            if reflection_block:
+                reflexion_summary += f"\n\n{reflection_block}"
+
     findings_summary = ""
     if state.findings:
         findings_summary = f"\n已发现漏洞: {len(state.findings)} 个"
@@ -119,7 +144,7 @@ def build_round_context(agent: Any, round_num: int, max_rounds: int) -> str:
                 )
 
     path_switch_warning = ""
-    if same_path_fails >= 3:
+    if not reflexion_enabled and same_path_fails >= 3:
         path_switch_warning = (
             f"\n\n🔴 路径切换强制指令：你已经在同一条攻击路径上失败了 {same_path_fails} 次！"
             f"\n你必须立即执行以下步骤："
@@ -268,6 +293,8 @@ def build_round_context(agent: Any, round_num: int, max_rounds: int) -> str:
         f"\n当前阶段: {state.phase.value}"
         f"\n输出目录: {agent.config.session.output_dir.resolve()}"
         f"{constraints_summary}"
+        f"{reasoning_summary}"
+        f"{reflexion_summary}"
         f"{user_hint_directive}"
         f"{findings_summary}"
         f"{facts_summary}"

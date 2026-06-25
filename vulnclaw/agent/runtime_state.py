@@ -3,9 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from vulnclaw.agent.context import TaskConstraints
+
+try:
+    from vulnclaw.agent.reflexion import ReflexionEngine
+except ImportError:
+    ReflexionEngine = None
+
+
+def _create_reflexion_engine() -> Any:
+    if ReflexionEngine is None:
+        return None
+    try:
+        return ReflexionEngine()
+    except TypeError:
+        return None
 
 
 @dataclass
@@ -41,6 +55,7 @@ class RuntimeState:
     user_vuln_hint: str = ""
     user_vuln_hint_rounds: int = 0
     task_constraints: TaskConstraints = field(default_factory=TaskConstraints)
+    reflexion: Any = field(default_factory=_create_reflexion_engine)
 
     claimed_flag: Optional[str] = None
     flag_verified: bool = False

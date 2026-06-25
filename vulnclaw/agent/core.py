@@ -43,13 +43,15 @@ from vulnclaw.agent.skill_context import get_active_skill_context
 from vulnclaw.agent.system_prompt import build_dynamic_system_prompt
 from vulnclaw.agent.tool_call_manager import safe_parse_tool_args
 from vulnclaw.config.schema import VulnClawConfig
+from vulnclaw.config.settings import make_openai_client
 from vulnclaw.target_state.store import save_target_state
 
 # Optional KB integration — gracefully degrade if KB data is unavailable
 try:
-    from vulnclaw.kb.retriever import KnowledgeRetriever
+    from vulnclaw.kb.retriever import KnowledgeRetriever, RetrieverStatus
 except Exception:
     KnowledgeRetriever = None
+    RetrieverStatus = None
 
 
 class AgentCore:
@@ -64,7 +66,38 @@ class AgentCore:
         self._reset_runtime_state()
         # Optional KB retriever — lazily initialized on first use
         self._kb_retriever: Any = None
+        self._kb_context_cache: dict[Any, str] = {}
         self._finding_parser = FindingParser(self.context, self.runtime)
+        self._report_kb_status()
+
+    def _report_kb_status(self) -> None:
+        """Print the knowledge-base backend status once at startup."""
+        if KnowledgeRetriever is None:
+            return
+        try:
+            self._kb_retriever = KnowledgeRetriever()
+            status = self._kb_retriever.get_status()
+        except Exception:
+            return
+
+        try:
+            from rich.console import Console
+
+            console = Console()
+        except Exception:
+            return
+
+        if RetrieverStatus is None:
+            return
+        if status == RetrieverStatus.CHROMADB_ACTIVE:
+            console.print("[green]✓ 知识库已启用 (ChromaDB)[/green]")
+        elif status == RetrieverStatus.KEYWORD_FALLBACK:
+            console.print(
+                "[yellow]⚠ 知识库已降级为关键词模式 "
+                "(chromadb 未安装，运行 pip install vulnclaw[kb] 启用语义搜索)[/yellow]"
+            )
+        else:
+            console.print("[red]✗ 知识库已禁用 (无可用数据)[/red]")
 
     def _maybe_auto_save_session(self) -> None:
         """Persist session state when auto-save is enabled."""
@@ -153,13 +186,53 @@ class AgentCore:
         # Re-bind finding parser to the new runtime object
         self._finding_parser = FindingParser(self.context, self.runtime)
 
+        # 跨周期恢复反思记忆（persistent 模式）：保留失败路径/历史/归因，重置本周期 stuck 计数
+        self._restore_reflexion_history()
+
+    # ── Reflexion 跨周期持久化 ───────────────────────────────────────
+    _REFLEXION_ATTEMPT_MEMORY = 50  # 跨周期最多携带的 attempt 条数，限制内存与归因开销
+
+    def _restore_reflexion_history(self) -> None:
+        """从 SessionState 快照恢复反思的记忆部分，但重置每周期 stuck 计数。"""
+        if not getattr(self.config.session, "reflexion_enabled", True):
+            return
+        snapshot = getattr(self.context.state, "reflexion_snapshot", None)
+        reflexion = getattr(self.runtime, "reflexion", None)
+        if not snapshot or reflexion is None:
+            return
+        try:
+            from vulnclaw.agent.reflexion import ReflexionState
+
+            restored = ReflexionState.model_validate(snapshot)
+        except Exception:
+            return
+        # 记忆：失败路径 / 归因素材 / 最近 attempts / 已知障碍
+        reflexion.state.failed_paths = restored.failed_paths
+        reflexion.state.constraints = restored.constraints
+        reflexion.state.attempts = restored.attempts[-self._REFLEXION_ATTEMPT_MEMORY :]
+        reflexion.state.last_vuln_type = restored.last_vuln_type
+        # 每周期重置：连败计数 / 同类失败计数 / 升级驱动（reflections）
+        reflexion.state.consecutive_failures = 0
+        reflexion.state.vuln_type_fail_count = 0
+        reflexion.state.reflections = []
+
+    def _save_reflexion_snapshot(self) -> None:
+        """把当前反思状态写回 SessionState 快照，供下个周期/同目标恢复时复用。"""
+        if not getattr(self.config.session, "reflexion_enabled", True):
+            return
+        reflexion = getattr(self.runtime, "reflexion", None)
+        if reflexion is None:
+            return
+        try:
+            self.context.state.reflexion_snapshot = reflexion.state.model_dump(mode="json")
+        except Exception:
+            pass
+
     def _get_client(self):
         """Lazy-initialize OpenAI client."""
         if self._client is None:
             try:
-                from openai import OpenAI
-
-                self._client = OpenAI(
+                self._client = make_openai_client(
                     api_key=self.config.llm.api_key,
                     base_url=self.config.llm.base_url,
                 )
@@ -331,6 +404,44 @@ class AgentCore:
         """Build context string for the current round in auto loop."""
         return build_round_context(self, round_num, max_rounds)
 
+    # ── 目标驱动求解循环（黑板图 OODA，无固定轮数）──────────────────
+
+    async def solve(
+        self,
+        user_input: str,
+        target: Optional[str] = None,
+        *,
+        goal: Optional[str] = None,
+        max_steps: int = 40,
+        max_intents: int = 3,
+        max_tool_rounds: int = 4,
+        stream_sink: Optional["StreamSink"] = None,
+        on_event: Optional[Callable[[str, dict], None]] = None,
+    ) -> Any:
+        """以「目标达成 / 探索前沿耗尽 / 安全预算」为终止条件求解，而非固定轮数。"""
+        from vulnclaw.agent.solver import solve as run_solve
+
+        detected_target = target or self._detect_target(user_input)
+        if detected_target:
+            self.context.state.target = detected_target
+        self._reset_runtime_state(user_input=user_input)
+        self.context.add_user_message(user_input)
+
+        resolved_goal = goal or user_input
+        origin = detected_target or self.context.state.target or user_input
+        max_parallel = getattr(self.config.session, "solve_max_parallel", 1)
+        return await run_solve(
+            self,
+            origin=origin,
+            goal=resolved_goal,
+            max_steps=max_steps,
+            max_intents=max_intents,
+            max_tool_rounds=max_tool_rounds,
+            max_parallel=max_parallel,
+            stream_sink=stream_sink,
+            on_event=on_event,
+        )
+
     # ── Persistent pentest loop ──────────────────────────────────────
 
     async def persistent_pentest(
@@ -342,6 +453,9 @@ class AgentCore:
         auto_report: bool = True,
         on_cycle_step: Optional[Callable[[int, int, AgentResult], None]] = None,
         on_cycle_complete: Optional[Callable[[int, "PersistentCycleResult"], None]] = None,
+        *,
+        # stream_sink 由 main.py 传入，逐级透传到 call_llm_auto_stream 实现流式输出
+        stream_sink: Optional["StreamSink"] = None,
     ) -> list["PersistentCycleResult"]:
         """Persistent penetration test — runs cycles of auto_pentest until stopped."""
         return await run_persistent_pentest(
@@ -353,6 +467,7 @@ class AgentCore:
             auto_report,
             on_cycle_step,
             on_cycle_complete,
+            stream_sink=stream_sink,
         )
 
     def _detect_phase_from_output(self, output: str) -> Optional[PentestPhase]:

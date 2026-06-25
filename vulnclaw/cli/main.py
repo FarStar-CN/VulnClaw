@@ -178,6 +178,45 @@ def _print_agent_output(output: str, config) -> None:
             console.print("[dim](LLM returned only hidden reasoning and no visible answer.)[/dim]")
 
 
+def _make_solve_event_printer(target_console):
+    """Return an on_event callback that prints solve-engine progress live."""
+
+    def on_event(kind: str, payload: dict) -> None:
+        if kind == "reason":
+            decision = payload.get("decision") or {}
+            complete_flag = decision.get("complete")
+            if complete_flag is not None and complete_flag is not False:
+                # 完成声明留给校验后的 completed / complete_rejected 事件输出，
+                # 避免「先打目标达成、后被拒绝」的错位
+                pass
+            elif decision.get("intents"):
+                target_console.print(
+                    f"[cyan]◆ Reason:[/cyan] 提出 {len(decision['intents'])} 个新探索方向"
+                )
+            else:
+                target_console.print("[dim]◆ Reason: 暂不新增方向[/dim]")
+        elif kind == "completed":
+            target_console.print("[green]✓ Reason: 目标达成[/green]")
+        elif kind == "explore_start":
+            target_console.print(
+                f"[yellow]▶ Explore {payload['intent_id']}:[/yellow] {payload['description'][:90]}"
+            )
+        elif kind == "conclude":
+            target_console.print(
+                f"[green]＋ Fact {payload.get('fact', '')}:[/green] {payload.get('desc', '')[:90]}"
+            )
+        elif kind == "hallucination":
+            target_console.print(
+                f"[red]⚠ 幻觉拦截 {payload['intent_id']}:[/red] 声称的 flag 无真实证据，已拒绝"
+            )
+        elif kind == "complete_rejected":
+            target_console.print(f"[red]⚠ 拒绝完成:[/red] {payload.get('reason', '')[:90]}")
+        elif kind == "abandon":
+            target_console.print(f"[red]✗ 放弃 {payload['intent_id']}[/red]")
+
+    return on_event
+
+
 # 鈹€鈹€ REPL 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
@@ -225,6 +264,12 @@ def _run_repl() -> None:
     mcp_manager = MCPLifecycleManager(config)
     started = mcp_manager.start_enabled_servers()
     console.print(_("cli.mcp_registered", count=started))
+    # Report any servers that failed to attach so the user knows immediately
+    for srv_name, srv_state in mcp_manager.registry.get_all_servers().items():
+        if srv_state.health_status in ("degraded", "unavailable") and srv_state.execution_mode in ("placeholder",):
+            err_msg = getattr(srv_state, "error", "") or ""
+            if err_msg:
+                console.print(f"[yellow]  ⚠ {srv_name}: {err_msg[:120]}[/yellow]")
 
     # Initialize agent
     agent = AgentCore(config, mcp_manager)
@@ -368,8 +413,7 @@ def _run_repl() -> None:
 
                 def _on_persistent_step(round_num: int, cycle_num: int, result) -> None:
                     console.print(f"[dim]-- Cycle {cycle_num} | Round {round_num} --[/]")
-                    if result.output:
-                        _print_agent_output(result.output, config)
+                    # TerminalStreamSink 已实时流式显示，回调不重复打印
                     console.print()
                     nonlocal current_target, current_phase
                     if result.target:
@@ -491,14 +535,49 @@ def _run_repl() -> None:
                     console.print(_("cli.enter_auto_mode"))
                     console.print()
 
+                    # 默认走目标驱动 solve 引擎；engine=rounds 时回退到旧固定轮数循环
+                    if getattr(config.session, "engine", "solve") == "solve":
+                        async def _run_auto():
+                            sink = TerminalStreamSink(console, config.session.show_thinking)
+
+                            async def call():
+                                return await agent.solve(
+                                    user_input,
+                                    target=current_target,
+                                    max_steps=config.session.solve_max_steps,
+                                    max_intents=config.session.solve_max_intents,
+                                    max_tool_rounds=config.session.solve_max_tool_rounds,
+                                    stream_sink=sink,
+                                    on_event=_make_solve_event_printer(console),
+                                )
+
+                            async def after_result(result):
+                                board = agent.context.state.board.get_summary()
+                                done = board.get("completed")
+                                console.print()
+                                console.print(
+                                    Panel(
+                                        f"{'✅ 目标达成' if done else '⊘ 未达成'} — "
+                                        f"facts={board.get('facts', 0)} intents={board.get('intents', 0)}\n"
+                                        f"原因: {board.get('complete_reason') or '探索结束'}",
+                                        title="Solve",
+                                        border_style="green" if done else "yellow",
+                                    )
+                                )
+
+                            await _run_repl_agent_call(agent, call=call, after_result=after_result)
+
+                        asyncio.run(_run_auto())
+                        auto_mode_active = True
+                        console.print(_("cli.auto_mode_hint"))
+                        continue
+
                     async def _run_auto():
                         sink = TerminalStreamSink(console, config.session.show_thinking)
                         async def call():
                             def on_step(round_num, result):
                                 nonlocal current_target, current_phase
                                 console.print(f"[dim]-- Round {round_num} --[/]")
-                                if result.output:
-                                    _print_agent_output(result.output, config)
                                 console.print()
                                 if result.target:
                                     current_target = result.target
@@ -563,8 +642,9 @@ def _run_repl() -> None:
                                     current_target = result.target
                                 if result.phase:
                                     current_phase = result.phase
-                                if result.output:
-                                    _print_agent_output(result.output, config)
+                                # 注释掉: 流式输出已通过 TerminalStreamSink 实时显示，无需重复打印
+                                # if result.output:
+                                #     _print_agent_output(result.output, config)
 
                         await _run_repl_agent_call(agent, call=call, after_result=after_result)
 
@@ -838,9 +918,24 @@ def run(
         err_console.print(f"[!] {violation}")
         raise typer.Exit(1)
 
+    board_holder: dict = {}
+
     async def _run():
         async def runner(agent, shared_config):
             sink = TerminalStreamSink(console, shared_config.session.show_thinking)
+            # 默认走目标驱动 solve 引擎；engine=rounds 时回退到旧的固定轮数循环
+            if getattr(shared_config.session, "engine", "solve") == "solve":
+                result = await agent.solve(
+                    task_prompt,
+                    target=target,
+                    max_steps=shared_config.session.solve_max_steps,
+                    max_intents=shared_config.session.solve_max_intents,
+                    max_tool_rounds=shared_config.session.solve_max_tool_rounds,
+                    stream_sink=sink,
+                    on_event=_make_solve_event_printer(console),
+                )
+                board_holder["board"] = agent.context.state.board.get_summary()
+                return result
             return await agent.auto_pentest(
                 task_prompt,
                 target=target,
@@ -863,8 +958,87 @@ def run(
         return result
 
     orchestrated = asyncio.run(_run())
-    total_findings = orchestrated.summary["findings_count"]
-    console.print(_("cli.pentest_finished", findings=total_findings))
+    if board_holder.get("board"):
+        board = board_holder["board"]
+        status = "✅ 目标达成" if board.get("completed") else "⊘ 未达成"
+        console.print(
+            f"\n[bold]{status}[/bold] — facts={board.get('facts', 0)} "
+            f"intents={board.get('intents', 0)} 原因: {board.get('complete_reason') or '探索结束'}"
+        )
+    else:
+        total_findings = orchestrated.summary["findings_count"]
+        console.print(_("cli.pentest_finished", findings=total_findings))
+
+
+@app.command()
+def solve(
+    target: str = typer.Argument(..., help="Target host/IP/URL"),
+    goal: Optional[str] = typer.Option(
+        None, "--goal", help="Success condition, e.g. 'capture the flag' / 'get a shell'"
+    ),
+    prompt: Optional[str] = typer.Option(
+        None, "--prompt", help="Custom task description (overrides auto-generated)"
+    ),
+    max_steps: int = typer.Option(
+        40, "--max-steps", help="Safety cap on explore steps (NOT a fixed workflow length)"
+    ),
+    max_intents: int = typer.Option(3, "--max-intents", help="Max new intents per reason step"),
+    max_tool_rounds: int = typer.Option(
+        4, "--max-tool-rounds", help="Max tool-calling rounds per intent exploration"
+    ),
+    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
+    snapshot: Optional[str] = typer.Option(None, "--snapshot", help="Resume from a snapshot id"),
+) -> None:
+    """Goal-driven solve loop — runs until the goal is met or the exploration frontier is exhausted.
+
+    Unlike `run`, this has no fixed round count. It searches a Fact/Intent graph
+    from the target toward the goal and stops on success or when no path remains.
+    """
+    config = load_config()
+    if not config.llm.api_key:
+        err_console.print("[!] Configure an LLM API key first.")
+        raise typer.Exit(1)
+
+    resolved_goal = goal or "找到 flag / 拿到 shell / 确认并验证高价值漏洞"
+    task_prompt = prompt or (
+        f"对 {target} 进行授权渗透测试。这是明确授权、在范围内的目标。目标(goal)：{resolved_goal}。"
+    )
+    console.print(f"[*] Target: [bold]{target}[/] | Goal: [bold]{resolved_goal}[/]")
+
+    on_event = _make_solve_event_printer(console)
+    holder: dict = {}
+
+    async def _run():
+        async def runner(agent, shared_config):
+            sink = TerminalStreamSink(console, shared_config.session.show_thinking)
+            result = await agent.solve(
+                task_prompt,
+                target=target,
+                goal=resolved_goal,
+                max_steps=max_steps,
+                max_intents=max_intents,
+                max_tool_rounds=max_tool_rounds,
+                stream_sink=sink,
+                on_event=on_event,
+            )
+            holder["board"] = agent.context.state.board.get_summary()
+            return result
+
+        return await _run_cli_orchestrated_task(
+            command="solve",
+            target=target,
+            resume=resume,
+            snapshot=snapshot,
+            runner=runner,
+        )
+
+    asyncio.run(_run())
+    board = holder.get("board") or {}
+    status = "✅ 目标达成" if board.get("completed") else "⊘ 未达成"
+    console.print(
+        f"\n[bold]{status}[/bold] — facts={board.get('facts', 0)} "
+        f"intents={board.get('intents', 0)} 原因: {board.get('complete_reason') or '探索结束'}"
+    )
 
 
 @app.command()
@@ -952,8 +1126,7 @@ def persistent(
     def _on_cycle_step(round_num: int, cycle_num: int, result) -> None:
         """Real-time output for each step within a cycle."""
         console.print(f"[dim]-- Cycle {cycle_num} | Round {round_num} --[/]")
-        if result.output:
-            _print_agent_output(result.output, config)
+        # TerminalStreamSink 已实时流式显示，回调不重复打印
         console.print()
 
     def _on_cycle_complete(cycle_num: int, cycle_result: PersistentCycleResult) -> None:
@@ -1079,10 +1252,8 @@ def recon(
     async def _run():
         async def runner(agent, _config):
             sink = TerminalStreamSink(console, _config.session.show_thinking)
-            result = await agent.chat(task_prompt, target=target, stream_sink=sink)
-            if result and result.output:
-                console.print(result.output)
-            return result
+            # TerminalStreamSink 已实时流式显示，不重复 console.print
+            return await agent.chat(task_prompt, target=target, stream_sink=sink)
 
         await _run_cli_orchestrated_task(
             command="recon",
@@ -1144,10 +1315,8 @@ def scan(
     async def _run():
         async def runner(agent, _config):
             sink = TerminalStreamSink(console, _config.session.show_thinking)
-            result = await agent.chat(task_prompt, target=target, stream_sink=sink)
-            if result and result.output:
-                console.print(result.output)
-            return result
+            # TerminalStreamSink 已实时流式显示，不重复 console.print
+            return await agent.chat(task_prompt, target=target, stream_sink=sink)
 
         await _run_cli_orchestrated_task(
             command="scan",
@@ -1212,10 +1381,8 @@ def exploit(
     async def _run():
         async def runner(agent, _config):
             sink = TerminalStreamSink(console, _config.session.show_thinking)
-            result = await agent.chat(task_prompt, target=target, stream_sink=sink)
-            if result and result.output:
-                console.print(result.output)
-            return result
+            # TerminalStreamSink 已实时流式显示，不重复 console.print
+            return await agent.chat(task_prompt, target=target, stream_sink=sink)
 
         await _run_cli_orchestrated_task(
             command="exploit",
@@ -1484,6 +1651,181 @@ app.add_typer(kb_app, name="kb")
 target_state_app = typer.Typer(help="Manage target history state")
 app.add_typer(target_state_app, name="target-state")
 
+plugins_app = typer.Typer(help="Inspect and run vulnerability detection plugins")
+app.add_typer(plugins_app, name="plugins")
+
+
+def _parse_kv_options(pairs: Optional[list[str]]) -> dict[str, object]:
+    """把 --option key=value（可重复）解析为 dict，value 优先按 JSON 解析。"""
+    import json as _json
+
+    options: dict[str, object] = {}
+    for pair in pairs or []:
+        if "=" not in pair:
+            raise typer.BadParameter(f"Expected key=value, got: {pair}")
+        key, _, raw = pair.partition("=")
+        key = key.strip()
+        raw = raw.strip()
+        try:
+            options[key] = _json.loads(raw)
+        except (ValueError, TypeError):
+            options[key] = raw
+    return options
+
+
+@plugins_app.command("list")
+def plugins_list(
+    stage: Optional[str] = typer.Option(None, "--stage", help="Filter by stage"),
+    tag: Optional[str] = typer.Option(None, "--tag", help="Filter by tag"),
+) -> None:
+    """List registered detection plugins."""
+    from rich.table import Table
+
+    from vulnclaw.plugins import registry
+
+    plugin_classes = registry.list()
+    if stage:
+        try:
+            plugin_classes = registry.by_stage(stage)
+        except ValueError:
+            err_console.print(f"[!] Unknown stage: {stage}")
+            raise typer.Exit(1) from None
+    if tag:
+        tag_set = {p.plugin_id for p in registry.by_tag(tag)}
+        plugin_classes = [p for p in plugin_classes if p.plugin_id in tag_set]
+
+    if not plugin_classes:
+        console.print("[yellow]No plugins match the filter.[/yellow]")
+        return
+
+    table = Table(title="VulnClaw Plugins", show_lines=False)
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Name")
+    table.add_column("Stages")
+    table.add_column("Risk")
+    table.add_column("Destructive", justify="center")
+    for plugin_cls in sorted(plugin_classes, key=lambda p: p.plugin_id):
+        meta = plugin_cls.metadata()
+        table.add_row(
+            meta["plugin_id"],
+            meta["name"],
+            ", ".join(meta["stages"]),
+            meta["default_risk"],
+            "⚠️" if meta["destructive"] else "-",
+        )
+    console.print(table)
+
+
+@plugins_app.command("info")
+def plugins_info(plugin_id: str = typer.Argument(..., help="Plugin id")) -> None:
+    """Show full metadata for a single plugin."""
+    import json as _json
+
+    from vulnclaw.plugins import registry
+
+    plugin_cls = registry.get(plugin_id)
+    if plugin_cls is None:
+        err_console.print(f"[!] Plugin not found: {plugin_id}")
+        raise typer.Exit(1)
+    console.print_json(_json.dumps(plugin_cls.metadata(), ensure_ascii=False))
+
+
+@plugins_app.command("run")
+def plugins_run(
+    plugin_id: str = typer.Argument(..., help="Plugin id to run"),
+    target: str = typer.Option("", "--target", help="Target host/IP/URL"),
+    stage: str = typer.Option("discovery", "--stage", help="Plugin stage"),
+    option: Optional[list[str]] = typer.Option(
+        None, "--option", "-o", help="Plugin option key=value (repeatable, value parsed as JSON)"
+    ),
+    input_file: Optional[str] = typer.Option(
+        None, "--input", help="JSON file merged into plugin options"
+    ),
+    allow_destructive: bool = typer.Option(
+        False, "--allow-destructive", help="Permit destructive plugins"
+    ),
+    session_file: Optional[str] = typer.Option(
+        None, "--session", help="Merge findings into this SessionState JSON and save it"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw PluginResult as JSON"),
+) -> None:
+    """Run a plugin against supplied data (builtin plugins only analyze provided input)."""
+    import json as _json
+    from pathlib import Path
+
+    from rich.table import Table
+
+    from vulnclaw.plugins import PluginContext, PluginStage, create_builtin_runtime
+    from vulnclaw.plugins.integration import merge_plugin_results_into_session
+
+    try:
+        stage_value = PluginStage(stage)
+    except ValueError:
+        err_console.print(f"[!] Unknown stage: {stage}")
+        raise typer.Exit(1) from None
+
+    options = _parse_kv_options(option)
+    if input_file:
+        path = Path(input_file)
+        if not path.exists():
+            err_console.print(f"[!] Input file not found: {input_file}")
+            raise typer.Exit(1)
+        try:
+            payload = _json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:
+            err_console.print(f"[!] Failed to read input file: {exc}")
+            raise typer.Exit(1) from None
+        if isinstance(payload, dict):
+            options.update(payload)
+        else:
+            options["input"] = payload
+
+    config = load_config()
+    runtime = create_builtin_runtime(config)
+    context = PluginContext(
+        target=target,
+        stage=stage_value,
+        options=options,
+        allow_destructive=allow_destructive,
+    )
+
+    result = asyncio.run(runtime.execute(plugin_id, context))
+
+    if as_json:
+        console.print_json(result.model_dump_json())
+    else:
+        if result.skipped:
+            console.print(f"[yellow]⊘ Skipped[/yellow] ({result.error_type}): {result.error}")
+        elif result.error:
+            console.print(f"[red]✗ Error[/red] ({result.error_type}): {result.error}")
+        for message in result.messages:
+            console.print(f"  [dim]{message}[/dim]")
+        if result.findings:
+            table = Table(title=f"{plugin_id} findings", show_lines=True)
+            table.add_column("Risk", style="magenta", no_wrap=True)
+            table.add_column("Title")
+            table.add_column("Type")
+            table.add_column("Confidence", justify="right")
+            for finding in result.findings:
+                table.add_row(
+                    finding.risk.value,
+                    finding.title,
+                    finding.vuln_type or "-",
+                    f"{finding.confidence:.2f}",
+                )
+            console.print(table)
+        elif not result.error:
+            console.print("[green]✓[/green] Plugin ran; no findings.")
+
+    if session_file:
+        session_path = Path(session_file)
+        from vulnclaw.agent.context import SessionState
+
+        session = SessionState.load(session_path) if session_path.exists() else SessionState()
+        added = merge_plugin_results_into_session(session, result)
+        session.save(session_path)
+        console.print(f"[+] Merged {added} finding(s) into {session_file}")
+
 
 @kb_app.command("update")
 def kb_update() -> None:
@@ -1504,6 +1846,40 @@ def kb_update() -> None:
 
     console.print(f"[+] Knowledge base updated: +{delta} entries")
     console.print(f"    Categories: {category_summary or 'empty'}")
+
+
+@kb_app.command("status")
+def kb_status() -> None:
+    """Show the knowledge base retrieval backend status."""
+    from vulnclaw.kb.retriever import KnowledgeRetriever, RetrieverStatus
+    from vulnclaw.kb.store import KnowledgeStore
+
+    store = KnowledgeStore()
+    retriever = KnowledgeRetriever(store=store)
+    status = retriever.get_status()
+    detail = retriever.get_status_detail()
+    stats = store.get_stats()
+    total = sum(stats.values())
+    category_summary = ", ".join(f"{cat}={count}" for cat, count in sorted(stats.items()))
+
+    if status == RetrieverStatus.CHROMADB_ACTIVE:
+        line = "[green]✓ 知识库已启用 (ChromaDB 语义检索)[/green]"
+    elif status == RetrieverStatus.KEYWORD_FALLBACK:
+        line = "[yellow]⚠ 知识库已降级为关键词模式 (chromadb 未安装)[/yellow]"
+    else:
+        line = "[red]✗ 知识库已禁用 (无可用数据)[/red]"
+
+    console.print(
+        Panel(
+            f"{line}\n"
+            f"Backend: [bold]{status.value}[/]\n"
+            f"Detail: {detail or 'n/a'}\n"
+            f"Entries: [bold]{total}[/] ({category_summary or 'empty'})\n"
+            f"语义搜索: 运行 [bold]pip install vulnclaw\\[kb][/] 启用 ChromaDB",
+            title="KB Status",
+            border_style="cyan",
+        )
+    )
 
 
 @target_state_app.command("list")
@@ -1758,7 +2134,7 @@ def _extract_target_from_input(user_input: str) -> Optional[str]:
     if ip_match:
         return ip_match.group(1)
     # Try to find domain
-    domain_match = re.search(r"([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,})", user_input)
+    domain_match = re.search(r"([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)+)", user_input)
     if domain_match:
         return domain_match.group(1)
     return None

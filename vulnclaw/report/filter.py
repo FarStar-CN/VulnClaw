@@ -298,6 +298,24 @@ def filter_report_content(content: str) -> str:
     return ReportContentFilter.filter(content)
 
 
+def deduplicate_report_findings(findings: list, threshold: float = 0.75) -> list:
+    """Semantically deduplicate a list of VulnerabilityFinding before rendering.
+
+    报告层的语义去重：在 SessionState 精确去重之外，再做一层语义合并，
+    确保报告里不会出现同一漏洞的多个不同表述。保留证据更充分的一方。
+
+    Args:
+        findings: VulnerabilityFinding 列表。
+        threshold: 相似度阈值，默认 0.75。
+
+    Returns:
+        去重后的列表，保持首次出现顺序。
+    """
+    from vulnclaw.agent.finding_similarity import deduplicate_findings
+
+    return deduplicate_findings(findings, threshold=threshold)
+
+
 def extract_findings_section(content: str) -> Optional[str]:
     """从报告中提取漏洞列表部分.
 

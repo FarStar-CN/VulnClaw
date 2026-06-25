@@ -104,12 +104,25 @@ class TestSessionState:
         state.add_note("Interesting endpoint found")
         assert len(state.notes) == 1
 
+    def test_add_confirmed_fact_updates_reasoning(self):
+        from vulnclaw.agent.context import SessionState
+
+        state = SessionState()
+        state.add_confirmed_fact("CVE-2024-1234 confirmed on https://example.com")
+        state.add_confirmed_fact("CVE-2024-1234 confirmed on https://example.com")
+
+        assert state.confirmed_facts == ["CVE-2024-1234 confirmed on https://example.com"]
+        assert len(state.reasoning.facts) == 1
+        assert state.reasoning.facts[0].key == "cve"
+        assert state.reasoning.facts[0].confidence == 0.99
+
     def test_save_and_load(self, tmp_path):
         from vulnclaw.agent.context import PentestPhase, SessionState, VulnerabilityFinding
 
         state = SessionState(target="192.168.1.100")
         state.advance_phase(PentestPhase.RECON)
         state.add_finding(VulnerabilityFinding(title="SQLi", severity="Critical"))
+        state.add_confirmed_fact("port 80 open")
 
         save_path = tmp_path / "session.json"
         returned_path = state.save(save_path)
@@ -121,6 +134,7 @@ class TestSessionState:
         assert len(loaded.findings) == 1
         # Critical severity without evidence gets [未验证] prefix
         assert "SQLi" in loaded.findings[0].title
+        assert loaded.reasoning.facts[0].value == "port 80 open"
 
     def test_multiple_findings(self):
         from vulnclaw.agent.context import SessionState, VulnerabilityFinding
@@ -1624,7 +1638,8 @@ class TestAgentCoreLoop:
 
         result = await llm_client.call_llm_auto(DummyAgent(), "sys", "round")
         assert result == "followup ok"
-        assert saved_messages == ["followup ok"]
+        # call_llm_auto 不再自己写入上下文，由 caller（loop_controller L55）统一添加
+        assert saved_messages == []
 
     @pytest.mark.asyncio
     async def test_auto_pentest_stops_on_done_signal(self, monkeypatch):

@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+
+
+class HealthStatus(str, Enum):
+    """Health states for an MCP server."""
+
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+    STARTING = "starting"
+    STOPPING = "stopping"
+    UNKNOWN = "unknown"
 
 
 class MCPToolSchema(BaseModel):
@@ -36,6 +48,12 @@ class MCPServerState(BaseModel):
     call_count: int = 0
     success_count: int = 0
     failure_count: int = 0
+    total_latency_ms: float = 0.0
+    avg_latency_ms: float = 0.0
+    restart_count: int = 0
+    last_restart_time: str | None = None
+    # Sliding window of recent call outcomes (True=success) used for health scoring.
+    recent_outcomes: list[bool] = Field(default_factory=list)
 
 
 class MCPRegistry:
@@ -91,18 +109,92 @@ class MCPRegistry:
             self._servers[name].last_error_type = error_type
             self._servers[name].health_status = "degraded"
 
-    def record_tool_call(self, name: str, success: bool) -> None:
-        """Record per-server tool call statistics."""
-        if name in self._servers:
-            self._servers[name].call_count += 1
-            if success:
-                self._servers[name].success_count += 1
-                if self._servers[name].health_status == "unknown":
-                    self._servers[name].health_status = "healthy"
-            else:
-                self._servers[name].failure_count += 1
-                if self._servers[name].health_status == "unknown":
-                    self._servers[name].health_status = "degraded"
+    HEALTH_WINDOW_SIZE = 20
+
+    def record_tool_call(
+        self, name: str, success: bool, latency_ms: float | None = None
+    ) -> None:
+        """Record per-server tool call statistics and update the health window."""
+        if name not in self._servers:
+            return
+        state = self._servers[name]
+        state.call_count += 1
+        if success:
+            state.success_count += 1
+            if state.health_status == "unknown":
+                state.health_status = "healthy"
+        else:
+            state.failure_count += 1
+            if state.health_status == "unknown":
+                state.health_status = "degraded"
+
+        if latency_ms is not None and latency_ms >= 0:
+            state.total_latency_ms += latency_ms
+        if state.call_count > 0:
+            state.avg_latency_ms = state.total_latency_ms / state.call_count
+
+        state.recent_outcomes.append(bool(success))
+        if len(state.recent_outcomes) > self.HEALTH_WINDOW_SIZE:
+            state.recent_outcomes = state.recent_outcomes[-self.HEALTH_WINDOW_SIZE :]
+
+    def set_last_call_latency(self, name: str, latency_ms: float) -> None:
+        """Attribute latency to the most recent call and refresh the average."""
+        state = self._servers.get(name)
+        if state is None or latency_ms < 0:
+            return
+        state.total_latency_ms += latency_ms
+        if state.call_count > 0:
+            state.avg_latency_ms = state.total_latency_ms / state.call_count
+
+    def record_restart(self, name: str) -> None:
+        """Record that a server was restarted."""
+        if name not in self._servers:
+            return
+        from datetime import datetime
+
+        self._servers[name].restart_count += 1
+        self._servers[name].last_restart_time = datetime.now().isoformat()
+
+    def recent_success_rate(self, name: str) -> float | None:
+        """Return success rate over the recent call window, or None if no calls yet."""
+        state = self._servers.get(name)
+        if state is None or not state.recent_outcomes:
+            return None
+        return sum(1 for ok in state.recent_outcomes if ok) / len(state.recent_outcomes)
+
+    def get_server_stats(self, name: str) -> dict[str, Any]:
+        """Return a runtime statistics snapshot for a server."""
+        state = self._servers.get(name)
+        if state is None:
+            return {}
+
+        uptime_seconds: float | None = None
+        if state.running and state.started_at:
+            from datetime import datetime
+
+            try:
+                started = datetime.fromisoformat(state.started_at)
+                uptime_seconds = max(0.0, (datetime.now() - started).total_seconds())
+            except ValueError:
+                uptime_seconds = None
+
+        return {
+            "name": state.name,
+            "running": state.running,
+            "health_status": state.health_status,
+            "execution_mode": state.execution_mode,
+            "call_count": state.call_count,
+            "success_count": state.success_count,
+            "failure_count": state.failure_count,
+            "avg_latency_ms": round(state.avg_latency_ms, 2),
+            "recent_success_rate": self.recent_success_rate(name),
+            "restart_count": state.restart_count,
+            "last_restart_time": state.last_restart_time,
+            "started_at": state.started_at,
+            "uptime_seconds": uptime_seconds,
+            "error": state.error,
+            "last_error_type": state.last_error_type,
+        }
 
     def register_tool(self, server_name: str, tool_schema: dict[str, Any]) -> None:
         """Register a tool from an MCP server."""

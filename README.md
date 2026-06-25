@@ -51,10 +51,15 @@ VulnClaw 自动执行：
 
 ## 特性
 
+- **目标驱动求解引擎（默认）** — 抛弃固定轮数工作流，以「目标达成 / 探索前沿耗尽 / 安全预算」为终止条件，自动收敛
+- **黑板图状态空间搜索** — 把渗透建模为从 origin 向 goal 的搜索：Fact（已确认事实）+ Intent（探索方向），结构上杜绝"原地打转"
+- **证据级反幻觉闸门** — 声称的 flag/结论必须在真实工具输出里逐字符出现才被采信，杜绝凭空编造 flag 的假胜利
 - **自然语言驱动** — 用人话描述渗透意图，自动识别阶段和工具
 - **13 个 LLM Provider** — OpenAI / MiniMax / DeepSeek / 智谱 / Moonshot / 千问 / SiliconFlow / 豆包 / 百川 / 阶跃星辰 / 商汤 / 零一万物，一键切换
-- **MCP 工具链** — 已内置 12 个 MCP 服务配置和 23 个工具定义；当前 `fetch` / `memory` 以稳定的 `local` 模式运行，其余 MCP 集成多仍处于预览或占位阶段，待完整 session 生命周期管理落地后再逐步恢复真实协议接入
+- **MCP 工具链** — 4 个 MCP 服务：`fetch` / `memory` 本地实现开箱即用，`chrome-devtools` / `burp` 对接外部 MCP 服务实现浏览器自动化和 HTTP 抓包重放
 - **AI Agent 核心** — OpenAI 兼容协议 + Tool Calling + 自主渗透循环
+- **结构化推理 + 自适应反思** — 已知事实/约束/攻击链结构化沉淀；失败自动归类并按 L0-L4 渐进升级 payload 绕过策略
+- **漏洞检测插件体系** — 低耦合插件运行时 + 内置只读 Web 插件，结果自动汇入报告链路（`vulnclaw plugins`）
 - **21 个渗透 Skill** — 7 核心 + 14 专项 Skill（含 CTF Web/Crypto/Misc、osint-recon、secknowledge-skill），含 180 个参考文档
 - **编解码/加解密工具** — 29 种操作（Base64/Hex/URL/AES/JWT/Morse 等），LLM 可精确调用，不再靠猜测
 - **Python 代码执行** — 内置 `python_execute` 工具，适合 payload 构造和响应解析；当前仍属高风险实验能力，不应视为强隔离沙箱
@@ -64,6 +69,54 @@ VulnClaw 自动执行：
 - **自动报告 & PoC** — 生成结构化 Markdown 报告和可运行的 Python PoC 脚本
 - **Web UI 模式** — `vulnclaw web` 启动本地 Web 界面，浏览器操作渗透测试全流程，默认 `127.0.0.1:7788`
 - **安全知识库** — 已内置知识库模块与基础种子数据，CLI 可维护；检索增强正在逐步接入主流程
+
+---
+
+## 架构升级：从「固定轮数工作流」到「目标驱动求解」
+
+旧版自主渗透是**固定轮数循环**（跑满 N 轮才停），在弱模型上容易陷入"反复请求同一页面、嘴上说要测注入却不发包"的死循环。新版把渗透重构为**状态空间搜索**，这是本次重构的核心。
+
+### 黑板图 + OODA 求解循环（默认引擎 `solve`）
+
+把渗透看作从 **origin**（目标）向 **goal**（拿到 flag / shell / 确认高危漏洞）的有向搜索，用两个原语驱动：
+
+| 原语 | 含义 |
+|------|------|
+| **Fact** | 已被真实工具输出证实的客观事实（探索的落脚点） |
+| **Intent** | 声明的探索方向（尚未执行的一步），从 Fact 出发，结论后产出新 Fact |
+
+循环结构（`vulnclaw/agent/solver.py`）：
+
+```
+REASON（读全图）→ 目标达成? / 提出新探索方向 / 不提出
+        │
+EXPLORE（领一个 Intent）→ 用工具实际执行 → 把确认的结论写回为一个 Fact
+        │
+终止：目标达成 / 探索前沿耗尽（Reason 不再提方向）/ 触达安全预算
+```
+
+**为什么结构上杜绝打转**：一旦"首页是登录框"成为一个 Fact，Reason 就不会再提"去看首页"，而是提"测 SQL 注入"；每个 Intent 领取一次、结论一次即标记 `concluded`/`abandoned`，**不可能重复**。终止由目标驱动，不再是数死轮数。
+
+### 证据级反幻觉闸门
+
+弱模型常凭空编造 flag。新引擎在 `solve()` 里录制**所有真实工具输出**（HTTP 响应体、`python_execute` 输出）作为唯一可信证据：
+
+- **结论闸门**：Explore 结论里声称的 flag，若未在真实工具输出里逐字符出现 → 判定幻觉、丢弃、标记 `[未验证]`。
+- **完成闸门**：Reason 宣布"目标达成"时，若目标要 flag 但真实输出里从无 flag → 拒绝完成、继续探索。
+- **即时收敛**：一旦拿到经证据验证的 flag，立即完成，不再空跑验证轮。
+
+> 这套机制对弱模型尤其友好：旧的固定轮数循环容易在重复请求里空转，而「目标驱动 + 证据反幻觉」会逼着 Agent 用真实工具输出一步步逼近目标，并拒绝任何无证据支撑的「完成」。
+
+### 结构化推理 + 自适应反思
+
+- **推理状态层**（`reasoning_state.py`）：已知事实（带置信度）、推理障碍（WAF/过滤等）、候选攻击链，结构化沉淀并注入提示词。
+- **反思引擎**（`reflexion.py`）：失败自动归类（环境限制/路径错误/参数错误/信息不足），按 **L0-L4 渐进升级** payload 绕过策略（原始 → URL 编码 → 双写注释 → Unicode/hex → 多层混淆/换攻击面），persistent 模式跨周期保留失败记忆。
+
+### 漏洞检测插件体系
+
+低耦合插件运行时（`vulnclaw/plugins/`）+ 内置只读 Web 插件（安全响应头 / JWT / JS 端点分析），插件结果可去重合并进 `SessionState.findings` 进入报告链路。
+
+> 切回旧的固定轮数引擎：`vulnclaw config set session.engine rounds`
 
 ---
 
@@ -170,7 +223,8 @@ $ vulnclaw --help
 | `vulnclaw` | 默认打开原 CLI / REPL 交互界面 | `vulnclaw` |
 | `vulnclaw tui` | 显式打开终端图形化工作台 | `vulnclaw tui` / `vulnclaw tui --target target.com` |
 | `vulnclaw repl` | 启动经典 REPL 交互界面 | `vulnclaw repl` |
-| `vulnclaw run <target>` | 一键全流程渗透测试 | `vulnclaw run 192.168.1.1` |
+| `vulnclaw solve <target>` | 目标驱动求解（无固定轮数，拿到目标即停） | `vulnclaw solve target.com --goal "拿到flag"` |
+| `vulnclaw run <target>` | 一键全流程渗透（默认走 solve 引擎） | `vulnclaw run 192.168.1.1` |
 | `vulnclaw persistent <target>` | 持续性渗透（100轮/周期） | `vulnclaw persistent 192.168.1.1` |
 | `vulnclaw recon <target>` | 仅信息收集（不利用漏洞） | `vulnclaw recon target.com` |
 | `vulnclaw scan <target>` | 漏洞扫描阶段 | `vulnclaw scan target.com --ports 80,443` |
@@ -182,6 +236,9 @@ $ vulnclaw --help
 | `vulnclaw config provider <name>` | 切换 LLM 提供商 | `vulnclaw config provider minimax` |
 | `vulnclaw init` | 初始化配置文件 | `vulnclaw init` |
 | `vulnclaw doctor` | 检查运行环境 | `vulnclaw doctor` |
+| `vulnclaw plugins list` | 列出漏洞检测插件 | `vulnclaw plugins list --stage discovery` |
+| `vulnclaw plugins info <id>` | 查看插件元信息 | `vulnclaw plugins info builtin.web.headers` |
+| `vulnclaw plugins run <id>` | 运行插件（仅分析传入数据） | `vulnclaw plugins run builtin.web.headers --input headers.json --session s.json` |
 | `vulnclaw web` | 启动本地 Web UI | `vulnclaw web` / `vulnclaw web --port 8080` |
 
 ### TUI 工作台
@@ -451,7 +508,7 @@ vulnclaw config provider minimax   # 一键切换
 │               └─────┬──────┘                │
 │               ┌─────▼──────┐                │
 │               │ MCP 编排层  │                │
-│               │ (11 服务)  │                │
+│               │ (4 服务)   │                │
 │               └─────┬──────┘                │
 │               ┌─────▼──────┐                │
 │               │ 安全知识库  │                │
@@ -465,6 +522,9 @@ vulnclaw config provider minimax   # 一键切换
 | -------------- | ------------------------------------------------ | --------------------------------------------- |
 | **CLI/TUI 入口** | `cli/main.py` + `cli/tui.py`                   | Typer 命令 + 默认原 CLI/REPL + 显式 TUI       |
 | **Agent 核心** | `agent/core.py`                                  | AgentCore 协调入口（核心重构后主要保留少量协调职责） |
+| **求解引擎（默认）** | `agent/solver.py` + `agent/blackboard.py`  | 目标驱动 OODA 循环 + Fact/Intent 黑板图 + 证据级反幻觉闸门 |
+| **推理 / 反思**   | `agent/reasoning_state.py` + `reflexion.py`   | 结构化事实/约束/攻击链 + 失败归类与 L0-L4 升级 |
+| **插件体系**   | `plugins/`（registry/runtime/web）                | 低耦合漏洞检测插件运行时 + 内置只读 Web 插件   |
 | **动态提示词** | `agent/prompts.py`                               | 基础身份 + 核心契约 + Skill + MCP 工具列表    |
 | **Prompt 组装** | `agent/system_prompt.py` + `prompt_context.py`  | system prompt / round context / attack summary 组装 |
 | **输入分析**   | `agent/input_analysis.py`                        | 目标识别、阶段识别、用户漏洞提示提取          |
@@ -483,24 +543,81 @@ vulnclaw config provider minimax   # 一键切换
 
 ## MCP 工具链
 
-| MCP 服务            | 工具数 | 用途                   | 优先级 |
-| ------------------- | ------ | ---------------------- | ------ |
-| fetch               | 1      | HTTP 请求、API 测试    | P0     |
-| memory              | 2      | 上下文记忆、状态持久化 | P0     |
-| chrome-devtools     | 4      | 浏览器自动化           | P0     |
-| js-reverse          | 2      | JS 逆向工程            | P0     |
-| burp                | 2      | HTTP 抓包、重放        | P0     |
-| frida-mcp           | 2      | 移动端 Hook            | P1     |
-| adb-mcp             | 3      | 安卓设备控制           | P1     |
-| jadx                | 2      | APK 反编译             | P1     |
-| ida-pro-mcp         | 2      | 二进制逆向             | P1     |
-| sequential-thinking | 1      | 复杂推理链             | P1     |
-| context7            | 1      | 代码上下文检索         | P1     |
-| everything-search   | 1      | 本地文件搜索           | P2     |
+| MCP 服务 | 工具数 | 模式 | 用途 | 状态 |
+|---|---|---|---|---|
+| fetch | 1 | 本地 (httpx) | HTTP 请求、API 测试 | 开箱即用 |
+| memory | 2 | 本地 (JSON) | 上下文记忆、状态持久化 | 开箱即用 |
+| chrome-devtools | 31+ | stdio MCP | 浏览器自动化、截图、JS 执行 | 需部署 |
+| burp | 多个 | stdio MCP | HTTP 抓包、重放、漏洞扫描 | 需部署 |
 
-> 共 12 个 MCP 服务、23 个工具定义。另有 3 个内置 Agent 工具（`load_skill_reference` + `crypto_decode` + `python_execute`），无需 MCP 即可调用。
->
-> 当前 `fetch` / `memory` 以 `local` 模式稳定运行；其余服务多为 `preview / placeholder`。后续会通过独立的 session 生命周期管理层逐步恢复并扩展真实 MCP 协议接入。
+> 另有 5 个内置 Agent 工具（`python_execute` + `nmap_scan` + `crypto_decode` + `brute_force_login` + `load_skill_reference`），无需 MCP 即可调用。
+
+### Chrome DevTools MCP 部署
+
+[仓库: ChromeDevTools/chrome-devtools-mcp](https://github.com/ChromeDevTools/chrome-devtools-mcp) — 31+ 工具，覆盖点击/表单/截图/JS执行/网络监控/性能分析
+
+**前置条件**: Node.js LTS (v20+) + Chrome 浏览器
+
+```bash
+# Step 1: 启动 Chrome 远程调试
+# Windows
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir=C:\tmp\chrome-debug
+# Linux/Mac
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug
+
+# Step 2: 启用 VulnClaw 配置（自动通过 npx 拉取，无需手动安装）
+vulnclaw config set mcp.servers.chrome-devtools.enabled true
+```
+
+VulnClaw 配置已内置 `npx -y chrome-devtools-mcp@latest`，启用后自动连接。如需指定 Chrome 调试地址，编辑 `~/.vulnclaw/config.yaml`：
+
+```yaml
+mcp:
+  servers:
+    chrome-devtools:
+      enabled: true
+      transport:
+        type: stdio
+        command: npx
+        args: ["-y", "chrome-devtools-mcp@latest", "--browser-url=http://127.0.0.1:9222"]
+```
+
+### Burp Suite MCP 部署
+
+[仓库: PortSwigger/mcp-server](https://github.com/PortSwigger/mcp-server) — 官方 MCP 扩展，支持 SSE + Stdio 协议
+
+**前置条件**: Java 11+ + Burp Suite Professional
+
+```bash
+# Step 1: 克隆并构建
+git clone https://github.com/PortSwigger/mcp-server.git burp-mcp
+cd burp-mcp
+./gradlew embedProxyJar    # Windows: gradlew.bat embedProxyJar
+# 产物: build/libs/burp-mcp-all.jar
+
+# Step 2: 加载到 Burp Suite
+# Burp → Extensions → Add → Type: Java → 选择 burp-mcp-all.jar
+
+# Step 3: 在 Burp 的 MCP 标签页勾选 "Enabled"（默认监听 127.0.0.1:9876）
+
+# Step 4: 启用 VulnClaw 配置
+vulnclaw config set mcp.servers.burp.enabled true
+```
+
+建议将 JAR 复制到固定位置并更新配置：
+
+```yaml
+mcp:
+  servers:
+    burp:
+      enabled: true
+      transport:
+        type: stdio
+        command: java
+        args: ["-jar", "~/.vulnclaw/tools/burp-mcp-all.jar", "--sse-url", "http://127.0.0.1:9876"]
+```
+
+> 详细部署说明参见 [docs/mcp-deployment.md](docs/mcp-deployment.md)
 
 ---
 
@@ -578,7 +695,11 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程（也可在
 | `llm.model`              | 按 provider | 模型名称，可自定义                   |
 | `llm.temperature`        | 0.1    | 采样温度                                 |
 | `llm.max_tokens`         | 4096   | 单次最大输出 token                       |
-| `session.max_rounds`     | 15     | 自主渗透循环最大轮数（建议 10-50）       |
+| `session.engine`         | solve  | 自主引擎：`solve`（目标驱动，默认）/ `rounds`（旧固定轮数） |
+| `session.solve_max_steps` | 40    | solve 探索步数安全上限（兜底，非固定工作流长度） |
+| `session.solve_max_intents` | 3   | 每次 Reason 最多提出的新探索方向数        |
+| `session.solve_max_tool_rounds` | 6 | 每个 Intent 探索的最大工具调用轮数        |
+| `session.max_rounds`     | 15     | 旧 `rounds` 引擎的最大轮数（建议 10-50）  |
 | `session.output_dir`     | ./vulnclaw-output | 报告输出目录                    |
 | `session.report_format`  | markdown | 报告格式（markdown / html）            |
 | `session.poc_language`   | python | PoC 生成语言（python / bash）            |
@@ -596,12 +717,50 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程（也可在
 | `VULNCLAW_LLM_API_KEY`        | API Key                |
 | `VULNCLAW_LLM_BASE_URL`       | API 基础 URL           |
 | `VULNCLAW_LLM_MODEL`          | 模型名称               |
-| `VULNCLAW_SESSION__MAX_ROUNDS`| 自主渗透最大轮数       |
-| `VULNCLAW_SESSION__STALE_ROUNDS_THRESHOLD` | 死循环检测阈值 |
+| `VULNCLAW_SESSION_MAX_ROUNDS`| 自主渗透最大轮数       |
+| `VULNCLAW_SESSION_STALE_ROUNDS_THRESHOLD` | 死循环检测阈值 |
+| `VULNCLAW_SESSION_REASONING_STATE_ENABLED` | 结构化推理状态开关 |
+| `VULNCLAW_SESSION_REFLEXION_ENABLED` | 自适应反思引擎开关 |
+| `VULNCLAW_SESSION_REFLEXION_MAX_SAME_VULN_FAILS` | 同类漏洞连败触发反思阈值 |
+| `VULNCLAW_SESSION_ESCALATION_MAX_LEVEL` | Payload 升级上限（0-4） |
+| `VULNCLAW_SESSION_PLUGIN_RUNTIME_ENABLED` | 插件运行时开关 |
+| `VULNCLAW_SESSION_PLUGIN_MAX_REQUESTS_PER_TARGET` | 单目标插件请求预算 |
 
 优先级：**环境变量 > 配置文件 > 内置默认值**
 
 配置文件位于 `~/.vulnclaw/config.yaml`。
+
+---
+
+## 更新日志
+
+### v0.4.1
+
+**并行探索 + 记忆引擎 + 信息收集工具链 + MCP streamable-http**
+
+- **多 intent 并行探索** — solve 引擎支持同时探索多个方向（默认 max_parallel=3），单个方向异常不影响其他，每个 intent 有独立的证据缓冲区和工具调用记录。
+- **agent 记忆引擎** — blackboard 新增工具调用日志（跨 intent 可见），reason 阶段显式列出已放弃方向并禁止重复提出，explore 上下文带"已执行工具"摘要；checkpoint 机制在图状态没变时跳过 reason 避免空转；已放弃方向做 Jaccard 去重兜底。
+- **conclude 判定优化** — 放宽了"有进展"的标准（发现新接口、确认未授权都算推进），不再轻易丢弃有价值的发现；最后一步注入 conclude override 指令防止空转；证据兜底防止 conclude 误判丢弃实际有数据返回的探索。
+- **完成判定否定闸门** — 模型在 complete 字段里写"未达到完成标准"等否定结论时不会再被误判为已完成；显式要求 complete=true 布尔值 + evidence fact 引用。
+- **JS 信息收集（js_recon）** — 抓取页面及全部 JS 文件，提取 API 路径 / 关联域名 / 硬编码密钥；动态发现 PascalCase 实体名并与 base path + CRUD 动词排列组合推断隐藏接口；收集到的接口自动做 GET+POST 未授权探测。
+- **未授权探测（unauth_test）** — 批量无凭据请求，按状态码/响应体/内容类型判定；支持有/无 token 差分对比确认未授权；自动跳过 delete/save/sms 等破坏性接口。
+- **目录枚举（dir_enum）** — 并发字典爆破，带 404 基线与全局伪装 200 识别（随机路径返回 200 自动停止），状态码与响应长度过滤。
+- **空间测绘（space_search）** — FOFA / Hunter / Quake / Shodan / ZoomEye / 0.zone 六引擎统一查询，engine=all 时并发查询所有已配置 key 的引擎。
+- **子域名枚举（subdomain_enum）** — 空间测绘被动聚合 + 内置字典 DNS 爆破，自动去重。
+- **MCP streamable-http 支持** — 支持 Chrome DevTools MCP 等 HTTP 传输的 MCP 服务器；惰性连接（启动时不占 session slot）；首次调用时自动建连 + 工具发现；连接失败降级为 service_unavailable 不影响 solve 循环。
+- **Chrome MCP 工具名修正** — 占位工具改为真实 Chrome MCP 工具名（chrome_navigate / chrome_read_page / chrome_pentest_* 等）。
+- 工具返回 undefined 标记为失败而非静默成功；fact_seq / intent_seq session 恢复后正确续接；新增 ReconConfig 配置区块与 solve_max_parallel 配置项。
+
+### v0.4.0
+
+**核心：自主引擎从「固定轮数工作流」重构为「目标驱动求解」**
+
+- **新增目标驱动求解引擎（默认）** — 基于 Fact/Intent 黑板图的 OODA 循环，以「目标达成 / 探索前沿耗尽 / 安全预算」为终止条件，结构上杜绝"原地打转"；新增 `vulnclaw solve` 命令，`run`/REPL 自主模式默认改走该引擎（`session.engine=rounds` 可回退旧逻辑）。
+- **新增证据级反幻觉闸门** — 录制所有真实工具输出作为唯一可信证据；声称的 flag/完成必须在真实输出里逐字符出现才被采信，否则判定幻觉并继续探索；拿到验证过的 flag 即时收敛。
+- **新增结构化推理 + 自适应反思** — 已知事实（带置信度）/约束/攻击链结构化沉淀并注入提示词；失败自动归类并按 L0–L4 渐进升级 payload 绕过策略，persistent 模式跨周期保留失败记忆。
+- **新增漏洞检测插件体系** — 低耦合插件运行时 + 内置只读 Web 插件（安全响应头 / JWT / JS 端点），结果可去重合并进 findings 与报告链路；新增 `vulnclaw plugins list/info/run` 命令。
+- **修复 #45 工具被误约束** — 动作约束不再把 HTTP 方法（OPTIONS/POST）或使用 `requests` 误判为「利用」；只有实际攻击载荷（SQLi/RCE/路径穿越等）才算 exploit；`load_skill_reference`/`crypto_decode` 等纯本地工具豁免范围约束。
+- 新增 `session.engine` / `solve_*` / `reflexion_*` / `plugin_*` 等配置项，均支持环境变量注入。
 
 ---
 

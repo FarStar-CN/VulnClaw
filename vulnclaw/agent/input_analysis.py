@@ -76,7 +76,7 @@ def detect_target(user_input: str) -> Optional[str]:
     for pattern in (
         r"(https?://[a-zA-Z0-9][-a-zA-Z0-9.:]*)",
         r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-        r"([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,})",
+        r"([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)+)",
     ):
         match = re.search(pattern, user_input)
         if match:

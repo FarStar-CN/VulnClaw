@@ -200,9 +200,10 @@ def generate_report(
     Pending, candidate, and rejected findings remain in summary/governance views.
     """
     from vulnclaw import __version__
+    from vulnclaw.report.filter import deduplicate_report_findings
 
     all_findings = session.findings
-    verified_findings = session.get_verified_findings()
+    verified_findings = deduplicate_report_findings(session.get_verified_findings())
     pending_findings = session.get_pending_findings()
     rejected_findings = session.get_rejected_findings()
     candidate_findings = (
@@ -499,16 +500,14 @@ CYCLE_REPORT_TEMPLATE = """\
 def _generate_attack_summary_from_session(session: SessionState) -> str:
     """Generate a readable attack-path summary using VulnClaw's configured LLM."""
     try:
-        from openai import OpenAI
-
         from vulnclaw.agent.think_filter import strip_think_tags
-        from vulnclaw.config.settings import load_config
+        from vulnclaw.config.settings import load_config, make_openai_client
 
         config = load_config()
         if not config.llm.api_key:
             return ""
 
-        client = OpenAI(
+        client = make_openai_client(
             api_key=config.llm.api_key,
             base_url=config.llm.base_url,
         )
@@ -604,10 +603,11 @@ def generate_persistent_cycle_report(
         Path to the generated report file.
     """
     from vulnclaw import __version__
+    from vulnclaw.report.filter import deduplicate_report_findings
 
     # ★ 包含所有 findings（包括 pending 和 confirmed，不只是 verified）
     all_findings = session.findings
-    verified_findings = session.get_verified_findings()
+    verified_findings = deduplicate_report_findings(session.get_verified_findings())
     manual_review_findings = (
         session.get_manual_review_findings()
         if hasattr(session, "get_manual_review_findings")

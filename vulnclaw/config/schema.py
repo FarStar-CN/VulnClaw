@@ -113,6 +113,9 @@ class LLMConfig(BaseModel):
     )
     model: str = Field(default="gpt-4o", description="Model name to use (auto-filled by provider)")
     max_tokens: int = Field(default=4096, description="Max tokens per response")
+    max_context_tokens: int = Field(
+        default=128000, description="Max context window tokens before sliding-window truncation"
+    )
     temperature: float = Field(default=0.1, description="Sampling temperature")
     reasoning_effort: str = Field(
         default="high", description="Reasoning effort level (OpenAI o-series only)"
@@ -122,11 +125,13 @@ class LLMConfig(BaseModel):
 class MCPTransportConfig(BaseModel):
     """MCP server transport configuration."""
 
-    type: str = Field(description="Transport type: stdio, sse")
+    type: str = Field(description="Transport type: stdio, sse, streamable-http")
     command: str | None = Field(default=None, description="Command to start the server (stdio)")
     args: list[str] | None = Field(default=None, description="Command arguments")
-    url: str | None = Field(default=None, description="Server URL (sse)")
-    env: dict[str, str] | None = Field(default=None, description="Environment variables")
+    url: str | None = Field(default=None, description="Server URL (sse / streamable-http)")
+    env: dict[str, str] | None = Field(
+        default=None, description="Environment variables (stdio) / HTTP headers (streamable-http)"
+    )
     startup_timeout: int = Field(default=30000, description="Startup timeout in ms")
     tool_timeout: int = Field(default=300000, description="Tool call timeout in ms")
 
@@ -145,6 +150,35 @@ class MCPServersConfig(BaseModel):
     """All MCP servers configuration."""
 
     servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+
+
+class ReconConfig(BaseModel):
+    """Information-gathering configuration: space-mapping API keys + recon knobs.
+
+    Keys are read here OR from environment variables (FOFA_KEY, HUNTER_KEY,
+    QUAKE_KEY, ZOOMEYE_KEY, SHODAN_KEY, ZEROZONE_KEY) — never hard-coded. Put real
+    keys in ~/.vulnclaw/config.yaml (gitignored), not in source.
+    """
+
+    fofa_email: str = Field(default="", description="FOFA account email")
+    fofa_key: str = Field(default="", description="FOFA API key")
+    hunter_key: str = Field(default="", description="Hunter (奇安信鹰图) API key")
+    quake_key: str = Field(default="", description="Quake (360) API token")
+    zoomeye_key: str = Field(default="", description="ZoomEye (钟馗之眼) API key")
+    shodan_key: str = Field(default="", description="Shodan API key")
+    zerozone_key: str = Field(default="", description="零零信安 0.zone API key")
+    http_timeout: float = Field(default=15.0, description="Per-request HTTP timeout (s)")
+    max_concurrency: int = Field(default=20, description="Max concurrent recon requests")
+    space_size: int = Field(default=100, description="Default result size per space-mapping query")
+    dir_wordlist_path: str = Field(
+        default="", description="Optional path to a custom directory-bruteforce wordlist"
+    )
+    dir_max_requests: int = Field(
+        default=1500, description="Hard cap on requests per directory-enumeration call"
+    )
+    js_max_files: int = Field(
+        default=30, description="Max JavaScript files fetched per js_recon call"
+    )
 
 
 class SafetyConfig(BaseModel):
@@ -178,6 +212,14 @@ class SafetyConfig(BaseModel):
         default=True,
         description="Write python_execute audit records to the local config directory",
     )
+    tool_parallel: bool = Field(
+        default=True,
+        description="Execute independent tool calls in a single LLM turn concurrently",
+    )
+    tool_max_concurrent: int = Field(
+        default=5,
+        description="Max number of tool calls executed concurrently per round (1=serial)",
+    )
 
 
 class SessionConfig(BaseModel):
@@ -190,6 +232,21 @@ class SessionConfig(BaseModel):
     )
     poc_language: str = Field(default="python", description="Default PoC language: python, bash")
     max_rounds: int = Field(default=15, description="Max autonomous pentest rounds (1-100)")
+    # Autonomous engine: "solve" = goal-driven OODA (default), "rounds" = legacy fixed-round loop
+    engine: str = Field(
+        default="solve", description="Autonomous engine: solve (goal-driven) or rounds (legacy)"
+    )
+    # Solve-engine knobs
+    solve_max_steps: int = Field(
+        default=40, description="Safety cap on solve explore steps (not a fixed workflow length)"
+    )
+    solve_max_intents: int = Field(default=3, description="Max new intents per reason step")
+    solve_max_tool_rounds: int = Field(
+        default=6, description="Max tool-calling rounds per intent exploration"
+    )
+    solve_max_parallel: int = Field(
+        default=3, description="Max intents explored concurrently per solve batch (1=serial)"
+    )
     show_thinking: bool = Field(
         default=False, description="Show LLM thinking/reasoning output (default: off)"
     )
@@ -212,7 +269,33 @@ class SessionConfig(BaseModel):
     language: str = Field(
         default="auto", description="UI language: auto, zh, en"
     )
-
+    reasoning_state_enabled: bool = Field(
+        default=True, description="Enable reasoning state tracking"
+    )
+    reflexion_enabled: bool = Field(
+        default=True, description="Enable reflexion feedback loop"
+    )
+    reflexion_max_same_vuln_fails: int = Field(
+        default=2, description="Max repeated failures for the same vulnerability"
+    )
+    reflexion_max_total_no_progress: int = Field(
+        default=5, description="Max total rounds without progress before reflexion"
+    )
+    escalation_max_level: int = Field(
+        default=4, description="Max escalation level"
+    )
+    plugin_runtime_enabled: bool = Field(
+        default=True, description="Enable plugin runtime"
+    )
+    plugin_default_timeout: int = Field(
+        default=10, description="Default plugin timeout in seconds"
+    )
+    plugin_max_requests_per_target: int = Field(
+        default=30, description="Max plugin requests per target"
+    )
+    evidence_min_report_level: str = Field(
+        default="L4", description="Minimum evidence level for report inclusion"
+    )
 
 class VulnClawConfig(BaseModel):
     """Top-level VulnClaw configuration."""
@@ -221,6 +304,7 @@ class VulnClawConfig(BaseModel):
     mcp: MCPServersConfig = Field(default_factory=MCPServersConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    recon: ReconConfig = Field(default_factory=ReconConfig)
 
     model_config = ConfigDict(
         env_prefix="VULNCLAW_",
@@ -264,102 +348,14 @@ BUILTIN_MCP_SERVERS: dict[str, dict[str, Any]] = {
             "args": ["-y", "chrome-devtools-mcp@latest"],
         },
     },
-    "js-reverse": {
-        "name": "js-reverse",
-        "enabled": False,
-        "priority": 0,
-        "description": "JavaScript reverse engineering with anti-detection",
-        "transport": {
-            "type": "stdio",
-            "command": "npx",
-            "args": ["js-reverse-mcp"],
-        },
-    },
     "burp": {
         "name": "burp",
         "enabled": False,
         "priority": 0,
-        "description": "Burp Suite proxy integration for HTTP interception",
-        "transport": {
-            "type": "stdio",
-            "command": "java",
-            "args": ["-jar", "mcp-proxy.jar", "--sse-url", "http://127.0.0.1:9876"],
-        },
-    },
-    "frida-mcp": {
-        "name": "frida-mcp",
-        "enabled": False,
-        "priority": 1,
-        "description": "Frida dynamic instrumentation for mobile pentest",
-        "transport": {
-            "type": "stdio",
-            "command": "python",
-            "args": ["frida_mcp.py"],
-        },
-    },
-    "adb-mcp": {
-        "name": "adb-mcp",
-        "enabled": False,
-        "priority": 1,
-        "description": "ADB device control for Android pentest",
-        "transport": {
-            "type": "stdio",
-            "command": "python",
-            "args": ["adb-mcp/server.py"],
-        },
-    },
-    "jadx": {
-        "name": "jadx",
-        "enabled": False,
-        "priority": 1,
-        "description": "APK decompilation via JADX",
+        "description": "Burp Suite proxy integration for HTTP interception via SSE",
         "transport": {
             "type": "sse",
-            "url": "http://localhost:8651/mcp",
-        },
-    },
-    "ida-pro-mcp": {
-        "name": "ida-pro-mcp",
-        "enabled": False,
-        "priority": 1,
-        "description": "IDA Pro reverse engineering assistant",
-        "transport": {
-            "type": "stdio",
-            "command": "python",
-            "args": ["ida_pro_mcp/server.py"],
-        },
-    },
-    "sequential-thinking": {
-        "name": "sequential-thinking",
-        "enabled": False,
-        "priority": 1,
-        "description": "Complex reasoning chain for multi-step analysis",
-        "transport": {
-            "type": "stdio",
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
-        },
-    },
-    "context7": {
-        "name": "context7",
-        "enabled": False,
-        "priority": 1,
-        "description": "Code & documentation context retrieval",
-        "transport": {
-            "type": "stdio",
-            "command": "npx",
-            "args": ["-y", "@upstash/context7-mcp"],
-        },
-    },
-    "everything-search": {
-        "name": "everything-search",
-        "enabled": False,
-        "priority": 2,
-        "description": "Local file search (Windows Everything integration)",
-        "transport": {
-            "type": "stdio",
-            "command": "node",
-            "args": ["everything-mcp/index.js"],
+            "url": "http://127.0.0.1:9876",
         },
     },
 }

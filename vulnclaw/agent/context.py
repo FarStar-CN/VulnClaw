@@ -11,6 +11,9 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from vulnclaw.agent.blackboard import Blackboard
+from vulnclaw.agent.reasoning_state import ReasoningState
+
 
 class PentestPhase(str, Enum):
     """Penetration test phases."""
@@ -284,6 +287,11 @@ class SessionState(BaseModel):
     task_constraints: TaskConstraints = Field(default_factory=TaskConstraints)
     constraint_violations: list[str] = Field(default_factory=list)
     constraint_violation_events: list[ConstraintViolationEvent] = Field(default_factory=list)
+    reasoning: ReasoningState = Field(default_factory=ReasoningState)
+    # 目标驱动求解引擎的黑板图（Fact/Intent），随会话持久化
+    board: Blackboard = Field(default_factory=Blackboard)
+    # 反思引擎跨周期记忆快照（persistent 模式），存为 dict 以避免与 reflexion 模块循环导入
+    reflexion_snapshot: dict[str, Any] = Field(default_factory=dict)
     findings: list[VulnerabilityFinding] = Field(default_factory=list)
     recon_data: dict[str, Any] = Field(default_factory=dict)
     # ★ 原始步骤日志（向后兼容）
@@ -311,8 +319,17 @@ class SessionState(BaseModel):
     # ★ 漏洞去重追踪（PrivateAttr 不受 Pydantic 字段命名限制）
     _finding_ids_cache: set[str] = PrivateAttr(default_factory=set)
 
+    # 语义去重相似度阈值（高于此值视为同一漏洞的不同表述）
+    semantic_dedup_threshold: float = Field(
+        default=0.75, description="语义去重的相似度阈值（0-1）"
+    )
+
     def add_finding(self, finding: VulnerabilityFinding) -> bool:
         """Add a vulnerability finding with deduplication.
+
+        去重分两层：
+            1. finding_id 精确 hash 匹配（快）
+            2. 语义相似度匹配（捕获"同一漏洞不同表述"），命中后保留证据更强者
 
         Returns:
             True if finding was added, False if duplicate (skipped).
@@ -323,10 +340,31 @@ class SessionState(BaseModel):
         if not finding.finding_id:
             finding.finding_id = finding._generate_finding_id()
 
-        # 检查是否重复
+        # 第一层：finding_id 精确去重
         if finding.finding_id in self._finding_ids_cache:
             print(f"[DEDUP] 跳过重复漏洞: {finding.title} (ID: {finding.finding_id})")
             return False
+
+        # 第二层：语义相似度去重
+        from vulnclaw.agent.finding_similarity import (
+            _evidence_strength,
+            finding_similarity,
+        )
+
+        for idx, existing in enumerate(self.findings):
+            if finding_similarity(finding, existing) >= self.semantic_dedup_threshold:
+                # 命中语义重复：保留证据更强者
+                if _evidence_strength(finding) > _evidence_strength(existing):
+                    print(
+                        f"[DEDUP-SEM] 语义重复，替换为证据更强的漏洞: "
+                        f"{finding.title} 取代 {existing.title}"
+                    )
+                    self._finding_ids_cache.discard(existing.finding_id)
+                    self._finding_ids_cache.add(finding.finding_id)
+                    self.findings[idx] = finding
+                else:
+                    print(f"[DEDUP-SEM] 跳过语义重复漏洞: {finding.title}")
+                return False
 
         # 添加到追踪集合和列表
         self._finding_ids_cache.add(finding.finding_id)
@@ -747,6 +785,27 @@ class SessionState(BaseModel):
         """Add a confirmed fact (verified by tool output)."""
         if fact and fact not in self.confirmed_facts:
             self.confirmed_facts.append(fact)
+        if fact:
+            self.reasoning.add_fact(
+                key=self._fact_key_from_text(fact),
+                value=fact,
+                source="confirmed_fact",
+                confidence=0.9,
+            )
+
+    def _fact_key_from_text(self, fact: str) -> str:
+        text = fact.lower()
+        if "cve-" in text:
+            return "cve"
+        if "http://" in text or "https://" in text:
+            return "url"
+        if "port" in text or "端口" in fact:
+            return "port"
+        if "server" in text or "x-powered-by" in text:
+            return "service"
+        if "waf" in text:
+            return "waf"
+        return "confirmed_fact"
 
     def add_assumption(self, assumption: str) -> None:
         """Add an unverified assumption."""

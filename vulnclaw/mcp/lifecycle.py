@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import time
 from contextlib import suppress
+from datetime import timedelta
 from typing import Any
 from urllib.parse import urlparse
 
 from vulnclaw.agent.builtin_tools import infer_port_from_url
 from vulnclaw.config.schema import MCPServerConfig, VulnClawConfig
-from vulnclaw.mcp.registry import MCPRegistry
+from vulnclaw.mcp.registry import HealthStatus, MCPRegistry
 
 try:
     from mcp import ClientSession, StdioServerParameters
@@ -20,6 +22,38 @@ except ImportError:  # pragma: no cover - optional runtime dependency
     StdioServerParameters = None
     stdio_client = None
 
+try:
+    from mcp.client.streamable_http import streamablehttp_client
+except ImportError:  # pragma: no cover - optional runtime dependency
+    streamablehttp_client = None
+
+try:
+    from mcp.client.sse import sse_client
+except ImportError:  # pragma: no cover - optional runtime dependency
+    sse_client = None
+
+# Transport type aliases that map to the MCP Streamable HTTP client.
+HTTP_TRANSPORT_TYPES = frozenset(
+    {"streamable-http", "streamable_http", "streamablehttp", "http"}
+)
+SSE_TRANSPORT_TYPES = frozenset({"sse", "sse-client", "sse_client", "sseclient"})
+
+_BENIGN_SHUTDOWN_KEYWORDS = (
+    "cancel scope",
+    "generator didn't stop",
+)
+
+
+def _is_benign_shutdown_exception(exc: BaseException) -> bool:
+    if hasattr(exc, "exceptions"):
+        subs = list(getattr(exc, "exceptions", []))
+        return bool(subs) and all(_is_benign_shutdown_exception(sub) for sub in subs)
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        if any(kw in msg for kw in _BENIGN_SHUTDOWN_KEYWORDS):
+            return True
+    return isinstance(exc, (GeneratorExit, asyncio.CancelledError))
+
 
 class MCPLifecycleManager:
     """Manages the lifecycle of MCP servers: start, stop, health check.
@@ -28,13 +62,32 @@ class MCPLifecycleManager:
     In later versions, this will use the Python MCP SDK for proper protocol handling.
     """
 
+    # Auto-restart policy.
+    MAX_RESTART_ATTEMPTS = 3
+    RESTART_BACKOFF_BASE = 1.0  # seconds; attempt N waits BASE * 2**(N-1)
+
+    # Graceful stop policy.
+    TERMINATE_GRACE_SECONDS = 5.0
+
+    # Health-score thresholds on the recent success-rate window.
+    HEALTHY_RATE = 0.9
+    DEGRADED_RATE = 0.5
+
     def __init__(self, config: VulnClawConfig) -> None:
         self.config = config
         self.registry = MCPRegistry()
         self._processes: dict[str, subprocess.Popen] = {}
         self._mcp_clients: dict[str, Any] = {}  # Server attach capability cache
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_exception_handler_loop: asyncio.AbstractEventLoop | None = None
         self._task_constraints: Any = None
+
+    async def __aenter__(self) -> MCPLifecycleManager:
+        self.start_enabled_servers()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        await self.astop_all()
 
     def set_task_constraints(self, constraints: Any) -> None:
         """Attach current task constraints for tool-level enforcement."""
@@ -156,6 +209,33 @@ class MCPLifecycleManager:
             "suggestion": suggestion,
         }
 
+    def _install_loop_exception_handler(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._loop_exception_handler_loop is loop:
+            return
+
+        original_handler = loop.get_exception_handler()
+
+        def _handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+            exc = context.get("exception")
+            if exc is not None and _is_benign_shutdown_exception(exc):
+                return
+            msg = str(context.get("message", "")).lower()
+            if msg and any(kw in msg for kw in _BENIGN_SHUTDOWN_KEYWORDS):
+                return
+            if "async_generator" in msg and "closing" in msg:
+                return
+            if original_handler is not None:
+                original_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
+
+        loop.set_exception_handler(_handler)
+        self._loop_exception_handler_loop = loop
+
     def start_enabled_servers(self) -> int:
         """Start all enabled MCP servers.
 
@@ -163,6 +243,7 @@ class MCPLifecycleManager:
         """
         with suppress(RuntimeError):
             self._loop = asyncio.get_running_loop()
+        self._install_loop_exception_handler()
         started = 0
         for name, server_config in self.config.mcp.servers.items():
             if server_config.enabled:
@@ -192,22 +273,46 @@ class MCPLifecycleManager:
             return True
 
         if transport.type == "stdio":
+            self.registry.set_server_health(name, HealthStatus.STARTING.value)
             attached = self._try_attach_stdio_client(name, config)
             self.registry.set_server_attach_result(name, attempted=True, succeeded=attached)
             self.registry.set_server_running(name, running=attached)
             self.registry.set_server_execution_mode(name, "sdk" if attached else "placeholder")
-            self.registry.set_server_health(name, "healthy" if attached else "degraded")
+            self.registry.set_server_health(
+                name,
+                HealthStatus.HEALTHY.value if attached else HealthStatus.DEGRADED.value,
+            )
             if not attached:
                 self._register_known_tools(name)
             return True
 
-        if transport.type == "sse":
+        if transport.type in SSE_TRANSPORT_TYPES:
+            self.registry.set_server_health(name, HealthStatus.STARTING.value)
             attached = self._try_attach_sse_client(name, config)
             self.registry.set_server_attach_result(name, attempted=True, succeeded=attached)
             self.registry.set_server_running(name, running=attached)
             self.registry.set_server_execution_mode(name, "sse" if attached else "placeholder")
-            self.registry.set_server_health(name, "healthy" if attached else "degraded")
-            self._register_known_tools(name)
+            self.registry.set_server_health(
+                name,
+                HealthStatus.HEALTHY.value if attached else HealthStatus.DEGRADED.value,
+            )
+            if not attached:
+                self._register_known_tools(name)
+            return True
+
+        if transport.type in HTTP_TRANSPORT_TYPES:
+            self.registry.set_server_health(name, HealthStatus.STARTING.value)
+            attached = self._try_attach_http_client(name, config)
+            self.registry.set_server_attach_result(name, attempted=True, succeeded=attached)
+            self.registry.set_server_running(name, running=attached)
+            self.registry.set_server_execution_mode(name, "http" if attached else "placeholder")
+            self.registry.set_server_health(
+                name,
+                HealthStatus.HEALTHY.value if attached else HealthStatus.DEGRADED.value,
+            )
+            # 探测失败时回退到静态已知工具，至少让 LLM 能看到工具名
+            if not attached:
+                self._register_known_tools(name)
             return True
 
         self.registry.set_server_health(name, "unavailable")
@@ -229,14 +334,6 @@ class MCPLifecycleManager:
         if not transport.command:
             self.registry.set_server_error(
                 name, "stdio transport is missing command", error_type="config_error"
-            )
-            return False
-
-        if name not in {"chrome-devtools", "burp"}:
-            self.registry.set_server_error(
-                name,
-                "stdio attach not implemented for this server yet",
-                error_type="unsupported_mode",
             )
             return False
 
@@ -275,9 +372,7 @@ class MCPLifecycleManager:
         return command == "npm" and any(arg in {"exec", "x"} for arg in args)
 
     def _try_attach_sse_client(self, name: str, config: MCPServerConfig) -> bool:
-        """Attempt a minimal SSE reachability/config validation before fallback."""
-        from urllib.parse import urlparse
-
+        """Validate an SSE MCP server and register discovered tools when possible."""
         url = config.transport.url or ""
         if not url:
             self.registry.set_server_error(
@@ -291,27 +386,218 @@ class MCPLifecycleManager:
                 name, f"invalid SSE url: {url}", error_type="config_error"
             )
             return False
+        if ClientSession is None or sse_client is None:
+            self.registry.set_server_error(
+                name, "MCP Python SDK is not installed", error_type="sdk_unavailable"
+            )
+            return False
 
-        return False
+        reachable = self._check_http_reachable(url, self._startup_timeout_seconds(config))
+        if not reachable:
+            self.registry.set_server_error(
+                name, f"sse server unreachable at {url}", error_type="attach_failed"
+            )
+            return False
 
-    def _probe_stdio_server(
+        ok, details, tools = self._probe_sse_server(config)
+        if not ok:
+            self.registry.set_server_error(
+                name, details or "sse attach probe failed", error_type="attach_failed"
+            )
+            self._register_known_tools(name)
+            return False
+
+        self._mcp_clients[name] = {"kind": "sse-lazy", "config": config}
+        if tools:
+            self._register_runtime_tools(name, tools)
+        else:
+            self._register_known_tools(name)
+        return True
+
+    def _try_attach_http_client(self, name: str, config: MCPServerConfig) -> bool:
+        """Validate a Streamable HTTP MCP server and mark it for lazy connection.
+
+        Many HTTP MCP servers (Chrome DevTools, etc.) only support **one concurrent
+        session**.  If we probe (connect + initialize + list_tools + disconnect) at
+        startup, the server may not release the session cleanly, causing the real
+        persistent session created on the first tool call to fail with
+        "Already connected to a transport".
+
+        To avoid this, we only validate the URL and do a lightweight HTTP reachability
+        check here.  The real MCP session (with tool discovery) is created lazily by
+        ``_get_or_create_persistent_http_session`` on the first actual tool call.
+        """
+        if ClientSession is None or streamablehttp_client is None:
+            self.registry.set_server_error(
+                name, "MCP Python SDK is not installed", error_type="sdk_unavailable"
+            )
+            return False
+
+        url = config.transport.url or ""
+        if not url:
+            self.registry.set_server_error(
+                name, "streamable-http transport is missing url", error_type="config_error"
+            )
+            return False
+
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            self.registry.set_server_error(
+                name, f"invalid streamable-http url: {url}", error_type="config_error"
+            )
+            return False
+
+        # Lightweight reachability check (no MCP session, no session slot consumed)
+        reachable = self._check_http_reachable(url, self._startup_timeout_seconds(config))
+        if not reachable:
+            self.registry.set_server_error(
+                name, f"streamable-http server unreachable at {url}", error_type="attach_failed"
+            )
+            return False
+
+        self._mcp_clients[name] = {"kind": "http-lazy", "config": config}
+        self._register_known_tools(name)
+        return True
+
+    def _check_http_reachable(self, url: str, timeout_s: float) -> bool:
+        """Quick HTTP GET to verify the server is up (no MCP protocol, no session)."""
+        try:
+            import httpx
+
+            with httpx.stream("GET", url, timeout=min(timeout_s, 10), verify=False) as response:
+                return response.status_code < 500
+        except Exception:
+            return False
+
+    def _probe_http_server(
         self, config: MCPServerConfig
     ) -> tuple[bool, str, list[dict[str, Any]]]:
-        """Run a one-shot stdio MCP probe to validate the server can initialize."""
+        """One-shot Streamable HTTP probe with a hard timeout (never hangs)."""
+        timeout_s = self._startup_timeout_seconds(config)
+        return self._run_probe(self._async_probe_http_server(config), timeout_s)
+
+    async def _async_probe_http_server(
+        self, config: MCPServerConfig
+    ) -> tuple[bool, str, list[dict[str, Any]]]:
+        url = config.transport.url or ""
+        headers = config.transport.env or None
+        connect_s = self._startup_timeout_seconds(config)
+        read_s = self._tool_timeout_seconds(config)
+        try:
+            async with streamablehttp_client(
+                url, headers=headers, timeout=connect_s, sse_read_timeout=read_s
+            ) as (read_stream, write_stream, _get_session_id):
+                async with ClientSession(
+                    read_stream, write_stream, read_timeout_seconds=timedelta(seconds=read_s)
+                ) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+                    tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
+                    return True, f"initialized with {len(tool_defs)} tools", tool_defs
+        except BaseException as exc:
+            # 从 ExceptionGroup 中提取根因（anyio TaskGroup 把真实异常包了一层）
+            detail = str(exc)
+            if hasattr(exc, "exceptions"):
+                subs = list(getattr(exc, "exceptions", []))
+                if subs:
+                    detail = "; ".join(str(s) for s in subs)
+            if "already connected" in detail.lower():
+                detail += " (请重启 MCP 服务或关闭旧客户端连接)"
+            return False, detail, []
+
+    def _probe_sse_server(
+        self, config: MCPServerConfig
+    ) -> tuple[bool, str, list[dict[str, Any]]]:
+        timeout_s = self._startup_timeout_seconds(config)
+        return self._run_probe(self._async_probe_sse_server(config), timeout_s)
+
+    async def _async_probe_sse_server(
+        self, config: MCPServerConfig
+    ) -> tuple[bool, str, list[dict[str, Any]]]:
+        url = config.transport.url or ""
+        read_s = self._tool_timeout_seconds(config)
+        try:
+            async with sse_client(url) as (read_stream, write_stream):
+                async with ClientSession(
+                    read_stream, write_stream, read_timeout_seconds=timedelta(seconds=read_s)
+                ) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+                    tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
+                    return True, f"initialized with {len(tool_defs)} tools", tool_defs
+        except BaseException as exc:
+            detail = str(exc)
+            if hasattr(exc, "exceptions"):
+                subs = list(getattr(exc, "exceptions", []))
+                if subs:
+                    detail = "; ".join(str(s) for s in subs)
+            return False, detail, []
+
+    def _run_probe(
+        self, coro: Any, timeout_s: float
+    ) -> tuple[bool, str, list[dict[str, Any]]]:
+        """Run an async probe, handling both 'no loop' and 'loop already running' cases.
+
+        When called from within an active event loop (e.g. VulnClaw's REPL under
+        asyncio.run), ``asyncio.run()`` would fail.  We fall back to creating a
+        *new* event loop on a background thread so the probe can complete without
+        blocking the caller's loop.
+        """
+        import concurrent.futures
+
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
 
-        if loop and loop.is_running():
-            return False, "stdio probe skipped because an event loop is already running", []
+        if loop is None or not loop.is_running():
+            try:
+                return asyncio.run(asyncio.wait_for(coro, timeout=timeout_s))
+            except asyncio.TimeoutError:
+                return False, f"probe timed out after {timeout_s:.0f}s", []
+            except Exception as exc:
+                return False, str(exc), []
+
+        # A loop is already running — run the probe on a worker thread with its
+        # own event loop so we don't deadlock the caller.
+        def _in_thread():
+            return asyncio.run(asyncio.wait_for(coro, timeout=timeout_s))
 
         try:
-            return asyncio.run(self._async_probe_stdio_server(config))
-        except RuntimeError as exc:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_in_thread)
+                return future.result(timeout=timeout_s + 5)
+        except asyncio.TimeoutError:
+            return False, f"probe timed out after {timeout_s:.0f}s", []
+        except Exception as exc:
             return False, str(exc), []
-        except Exception as exc:  # pragma: no cover - defensive
-            return False, str(exc), []
+
+    def _probe_stdio_server(
+        self, config: MCPServerConfig
+    ) -> tuple[bool, str, list[dict[str, Any]]]:
+        """Run a one-shot stdio MCP probe to validate the server can initialize."""
+        timeout_s = self._startup_timeout_seconds(config)
+        return self._run_probe(self._async_probe_stdio_server(config), timeout_s)
+
+    @staticmethod
+    def _startup_timeout_seconds(config: MCPServerConfig) -> float:
+        """Resolve the startup timeout (config is in ms) to seconds, defaulting to 30s."""
+        raw = getattr(config.transport, "startup_timeout", None)
+        if not raw or raw <= 0:
+            return 30.0
+        return float(raw) / 1000.0
+
+    @staticmethod
+    def _tool_timeout_seconds(config: MCPServerConfig) -> float:
+        """Resolve the per-call tool timeout (config is in ms) to seconds, defaulting to 300s.
+
+        This bounds how long a single tool call waits for the server's (possibly
+        streamed) response, so a silent server can never deadlock the agent.
+        """
+        raw = getattr(config.transport, "tool_timeout", None)
+        if not raw or raw <= 0:
+            return 300.0
+        return float(raw) / 1000.0
 
     async def _async_probe_stdio_server(
         self, config: MCPServerConfig
@@ -325,11 +611,12 @@ class MCPLifecycleManager:
 
         try:
             async with stdio_client(server) as (read_stream, write_stream):
-                session = ClientSession(read_stream, write_stream)
-                await session.initialize()
-                tools = await session.list_tools()
-                tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
-                return True, f"initialized with {len(tool_defs)} tools", tool_defs
+                # async with ClientSession 启动 _receive_loop，否则 initialize() 不会有人读响应而卡死。
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+                    tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
+                    return True, f"initialized with {len(tool_defs)} tools", tool_defs
         except Exception as exc:
             return False, str(exc), []
 
@@ -416,11 +703,15 @@ class MCPLifecycleManager:
             env=transport.env,
         )
 
+        timeout_s = self._tool_timeout_seconds(config)
         async with stdio_client(server) as (read_stream, write_stream):
-            session = ClientSession(read_stream, write_stream)
-            await session.initialize()
-            result = await session.call_tool(tool_name, arguments=arguments)
-            return result
+            async with ClientSession(
+                read_stream, write_stream, read_timeout_seconds=timedelta(seconds=timeout_s)
+            ) as session:
+                await session.initialize()
+                return await asyncio.wait_for(
+                    session.call_tool(tool_name, arguments=arguments), timeout=timeout_s
+                )
 
     async def _get_or_create_persistent_stdio_session(self, server_name: str) -> Any:
         """Create and cache a persistent stdio-backed MCP session for the current loop."""
@@ -445,11 +736,23 @@ class MCPLifecycleManager:
             args=transport.args or [],
             env=transport.env,
         )
+        timeout_s = self._tool_timeout_seconds(config)
 
         cm = stdio_client(server)
         read_stream, write_stream = await cm.__aenter__()
-        session = ClientSession(read_stream, write_stream)
-        await session.initialize()
+        session = ClientSession(
+            read_stream, write_stream, read_timeout_seconds=timedelta(seconds=timeout_s)
+        )
+        # 进入 ClientSession 上下文以启动 _receive_loop；否则后续调用读不到响应而卡死。
+        try:
+            await session.__aenter__()
+            await session.initialize()
+        except BaseException:
+            with suppress(Exception):
+                await session.__aexit__(None, None, None)
+            with suppress(Exception):
+                await cm.__aexit__(None, None, None)
+            raise
 
         self._mcp_clients[server_name] = {
             "kind": "persistent-stdio",
@@ -459,6 +762,329 @@ class MCPLifecycleManager:
             "context_manager": cm,
         }
         return session
+
+    async def _get_or_create_persistent_http_session(self, server_name: str) -> Any:
+        """Create and cache a persistent Streamable HTTP MCP session for the current loop.
+
+        First call establishes the session AND discovers real tools (replacing the
+        static placeholders registered at startup).  Subsequent calls in the same
+        event loop return the cached session.
+
+        If the connect/initialize fails (e.g. "Already connected"), the error is
+        raised to the caller so the tool_call_manager can handle it as a service
+        error — it never crashes the entire solve loop.
+        """
+        if streamablehttp_client is None or ClientSession is None:
+            raise RuntimeError("MCP Python SDK is not installed")
+
+        client_meta = self._mcp_clients.get(server_name)
+        current_loop = asyncio.get_running_loop()
+
+        if isinstance(client_meta, dict) and client_meta.get("kind") == "persistent-http":
+            if client_meta.get("loop") is current_loop and client_meta.get("session") is not None:
+                return client_meta["session"]
+
+        config = None
+        if isinstance(client_meta, dict):
+            config = client_meta.get("config")
+        if config is None:
+            config = self.config.mcp.servers.get(server_name)
+        if config is None:
+            raise RuntimeError(f"missing MCP config for server {server_name}")
+
+        url = config.transport.url or ""
+        if not url:
+            raise RuntimeError(f"streamable-http transport for {server_name} is missing url")
+        headers = config.transport.env or None
+        connect_s = self._startup_timeout_seconds(config)
+        read_s = self._tool_timeout_seconds(config)
+
+        cm = None
+        session = None
+        try:
+            cm = streamablehttp_client(
+                url, headers=headers, timeout=connect_s, sse_read_timeout=read_s
+            )
+            read_stream, write_stream, _get_session_id = await cm.__aenter__()
+            session = ClientSession(
+                read_stream, write_stream, read_timeout_seconds=timedelta(seconds=read_s)
+            )
+            await session.__aenter__()
+            await session.initialize()
+        except BaseException as exc:
+            # Clean up partial state
+            if session is not None:
+                with suppress(Exception):
+                    await session.__aexit__(None, None, None)
+            if cm is not None:
+                with suppress(Exception):
+                    await cm.__aexit__(None, None, None)
+            # Extract root cause from ExceptionGroup
+            detail = str(exc)
+            if hasattr(exc, "exceptions"):
+                subs = list(getattr(exc, "exceptions", []))
+                if subs:
+                    detail = "; ".join(str(s) for s in subs)
+            raise RuntimeError(
+                f"streamable-http session for {server_name} failed: {detail}"
+            ) from None
+
+        # 首次连接时发现真实工具并替换启动时注册的静态占位工具
+        try:
+            tools = await session.list_tools()
+            tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
+            if tool_defs:
+                self._register_runtime_tools(server_name, tool_defs)
+        except Exception:
+            pass
+
+        self._mcp_clients[server_name] = {
+            "kind": "persistent-http",
+            "config": config,
+            "loop": current_loop,
+            "session": session,
+            "context_manager": cm,
+        }
+        self.registry.set_server_running(server_name, running=True)
+        self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
+        return session
+
+    async def _get_or_create_persistent_sse_session(self, server_name: str) -> Any:
+        """Create and cache a persistent SSE MCP session for the current loop."""
+        if sse_client is None or ClientSession is None:
+            raise RuntimeError("MCP Python SDK is not installed")
+        self._install_loop_exception_handler()
+
+        client_meta = self._mcp_clients.get(server_name)
+        current_loop = asyncio.get_running_loop()
+
+        if isinstance(client_meta, dict) and client_meta.get("kind") == "persistent-sse":
+            if client_meta.get("loop") is current_loop and client_meta.get("session") is not None:
+                return client_meta["session"]
+
+        config = None
+        if isinstance(client_meta, dict):
+            config = client_meta.get("config")
+        if config is None:
+            config = self.config.mcp.servers.get(server_name)
+        if config is None:
+            raise RuntimeError(f"missing MCP config for server {server_name}")
+
+        url = config.transport.url or ""
+        if not url:
+            raise RuntimeError(f"sse transport for {server_name} is missing url")
+        read_s = self._tool_timeout_seconds(config)
+
+        cm = None
+        session = None
+        try:
+            cm = sse_client(url)
+            read_stream, write_stream = await cm.__aenter__()
+            session = ClientSession(
+                read_stream, write_stream, read_timeout_seconds=timedelta(seconds=read_s)
+            )
+            await session.__aenter__()
+            await session.initialize()
+        except BaseException as exc:
+            if session is not None:
+                with suppress(Exception):
+                    await session.__aexit__(None, None, None)
+            if cm is not None:
+                with suppress(Exception):
+                    await cm.__aexit__(None, None, None)
+            detail = str(exc)
+            if hasattr(exc, "exceptions"):
+                subs = list(getattr(exc, "exceptions", []))
+                if subs:
+                    detail = "; ".join(str(s) for s in subs)
+            raise RuntimeError(f"sse session for {server_name} failed: {detail}") from None
+
+        try:
+            tools = await session.list_tools()
+            tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
+            if tool_defs:
+                self._register_runtime_tools(server_name, tool_defs)
+        except Exception:
+            pass
+
+        self._mcp_clients[server_name] = {
+            "kind": "persistent-sse",
+            "config": config,
+            "loop": current_loop,
+            "session": session,
+            "context_manager": cm,
+        }
+        self.registry.set_server_running(server_name, running=True)
+        self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
+        return session
+
+    async def _get_or_create_session(self, server_name: str) -> Any:
+        """Return a persistent MCP session, dispatching by the server's transport type."""
+        config = self.config.mcp.servers.get(server_name)
+        client_meta = self._mcp_clients.get(server_name)
+        if config is None and isinstance(client_meta, dict):
+            config = client_meta.get("config")
+        transport_type = (
+            config.transport.type if config and config.transport else ""
+        ).lower()
+        if transport_type in SSE_TRANSPORT_TYPES:
+            return await self._get_or_create_persistent_sse_session(server_name)
+        if transport_type in HTTP_TRANSPORT_TYPES:
+            return await self._get_or_create_persistent_http_session(server_name)
+        return await self._get_or_create_persistent_stdio_session(server_name)
+
+    def _is_sdk_attachable(self, server_name: str) -> bool:
+        """Whether this server can be driven over a real MCP SDK transport."""
+        config = self.config.mcp.servers.get(server_name)
+        client_meta = self._mcp_clients.get(server_name)
+        if config is None and isinstance(client_meta, dict):
+            config = client_meta.get("config")
+        if config is None or config.transport is None:
+            return False
+        ttype = (config.transport.type or "").lower()
+        if ttype in HTTP_TRANSPORT_TYPES:
+            return streamablehttp_client is not None and ClientSession is not None
+        if ttype in SSE_TRANSPORT_TYPES:
+            return sse_client is not None and ClientSession is not None
+        if ttype == "stdio":
+            return stdio_client is not None and ClientSession is not None
+        return False
+
+    def _is_process_alive(self, server_name: str) -> bool:
+        """Return True if the server's tracked subprocess (if any) is still running.
+
+        Servers without a tracked OS process (local fetch/memory, persistent stdio
+        sessions whose process is owned by the SDK context manager) are treated as
+        alive; their failures surface through call errors instead.
+        """
+        proc = self._processes.get(server_name)
+        if proc is None:
+            return True
+        return proc.poll() is None
+
+    async def _restart_server(self, server_name: str) -> bool:
+        """Restart a crashed server with exponential backoff (max 3 attempts).
+
+        Returns True if the server was brought back to a running/attached state.
+        """
+        config = self.config.mcp.servers.get(server_name)
+        if config is None:
+            self.registry.set_server_error(
+                server_name, "missing config for restart", error_type="config_error"
+            )
+            self.registry.set_server_health(server_name, HealthStatus.UNAVAILABLE.value)
+            return False
+
+        # Tear down any stale session/process before re-attaching.
+        await self._teardown_server(server_name)
+
+        for attempt in range(1, self.MAX_RESTART_ATTEMPTS + 1):
+            if attempt > 1:
+                backoff = self.RESTART_BACKOFF_BASE * (2 ** (attempt - 2))
+                await asyncio.sleep(backoff)
+
+            self.registry.record_restart(server_name)
+            self.registry.set_server_health(server_name, HealthStatus.STARTING.value)
+            try:
+                started = self._start_server(server_name, config)
+            except Exception as exc:
+                self.registry.set_server_error(
+                    server_name, str(exc), error_type="restart_error"
+                )
+                continue
+
+            if started and self._is_server_back_up(server_name):
+                return True
+
+        self.registry.set_server_health(server_name, HealthStatus.UNAVAILABLE.value)
+        return False
+
+    def _is_server_back_up(self, server_name: str) -> bool:
+        """A server is back up if it is attached/running, or runs in local mode.
+
+        Local servers (fetch/memory) are never marked ``running`` because they
+        have no backing process, so a healthy local execution mode counts as up.
+        """
+        state = self.registry.get_all_servers().get(server_name)
+        if state is None:
+            return False
+        if state.running:
+            return True
+        return (
+            state.execution_mode == "local"
+            and state.health_status == HealthStatus.HEALTHY.value
+        )
+
+    @staticmethod
+    def _is_persistent_session(client_meta: Any) -> bool:
+        if not isinstance(client_meta, dict):
+            return False
+        return client_meta.get("kind") in (
+            "persistent-stdio",
+            "persistent-http",
+            "persistent-sse",
+        )
+
+    async def _aclose_session_meta(self, client_meta: Any) -> None:
+        """Exit a persistent session then its transport context manager (order matters)."""
+        if not self._is_persistent_session(client_meta):
+            return
+        session = client_meta.get("session")
+        if session is not None:
+            try:
+                await session.__aexit__(None, None, None)
+            except BaseException as exc:
+                if not _is_benign_shutdown_exception(exc):
+                    raise
+        cm = client_meta.get("context_manager")
+        if cm is not None:
+            try:
+                await cm.__aexit__(None, None, None)
+            except BaseException as exc:
+                if not _is_benign_shutdown_exception(exc):
+                    raise
+
+    async def _teardown_server(self, server_name: str) -> None:
+        """Close any cached session and kill any tracked process for a server."""
+        client_meta = self._mcp_clients.pop(server_name, None)
+        await self._aclose_session_meta(client_meta)
+
+        proc = self._processes.pop(server_name, None)
+        if proc is not None:
+            await self._terminate_process(proc)
+
+    async def health_check(self, server_name: str) -> HealthStatus:
+        """Evaluate and update a server's health from its recent success rate.
+
+        >90% success → healthy, 50-90% → degraded, <50% → unavailable.
+        Servers with no recorded calls keep their current lifecycle status
+        (starting/healthy/degraded) rather than being forced to a verdict.
+        """
+        state = self.registry.get_all_servers().get(server_name)
+        if state is None:
+            return HealthStatus.UNKNOWN
+
+        # A dead subprocess is unavailable regardless of past success.
+        if not self._is_process_alive(server_name):
+            self.registry.set_server_health(server_name, HealthStatus.UNAVAILABLE.value)
+            return HealthStatus.UNAVAILABLE
+
+        rate = self.registry.recent_success_rate(server_name)
+        if rate is None:
+            try:
+                return HealthStatus(state.health_status)
+            except ValueError:
+                return HealthStatus.UNKNOWN
+
+        if rate > self.HEALTHY_RATE:
+            status = HealthStatus.HEALTHY
+        elif rate >= self.DEGRADED_RATE:
+            status = HealthStatus.DEGRADED
+        else:
+            status = HealthStatus.UNAVAILABLE
+
+        self.registry.set_server_health(server_name, status.value)
+        return status
 
     def _register_known_tools(self, server_name: str) -> None:
         """Register known tools for a server based on its type.
@@ -514,18 +1140,8 @@ class MCPLifecycleManager:
             ],
             "chrome-devtools": [
                 {
-                    "name": "new_page",
-                    "description": "Open a new browser page",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "url": {"type": "string", "description": "URL to navigate to"},
-                        },
-                    },
-                },
-                {
-                    "name": "navigate",
-                    "description": "Navigate to a URL in the current page",
+                    "name": "chrome_navigate",
+                    "description": "Navigate Chrome to a URL. After navigating, use chrome_read_page or chrome_get_web_content to read the page content.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -535,52 +1151,111 @@ class MCPLifecycleManager:
                     },
                 },
                 {
-                    "name": "screenshot",
+                    "name": "chrome_read_page",
+                    "description": "Read the current page content (HTML, text, links, forms). Use this AFTER chrome_navigate to get page data.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "format": {"type": "string", "description": "Output format: text, html, links, forms", "default": "text"},
+                        },
+                    },
+                },
+                {
+                    "name": "chrome_screenshot",
                     "description": "Take a screenshot of the current page",
                     "inputSchema": {"type": "object", "properties": {}},
                 },
                 {
-                    "name": "evaluate_js",
-                    "description": "Evaluate JavaScript in the browser",
+                    "name": "chrome_javascript",
+                    "description": "Execute JavaScript in the browser and return the result",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "expression": {
-                                "type": "string",
-                                "description": "JS expression to evaluate",
-                            },
+                            "code": {"type": "string", "description": "JavaScript code to execute"},
                         },
-                        "required": ["expression"],
+                        "required": ["code"],
                     },
                 },
-            ],
-            "js-reverse": [
                 {
-                    "name": "analyze_js",
-                    "description": "Analyze JavaScript code for security-relevant patterns",
+                    "name": "chrome_get_web_content",
+                    "description": "Get structured web content from the current page (headings, links, images, meta tags)",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "url": {
-                                "type": "string",
-                                "description": "URL of the JS file to analyze",
-                            },
-                            "code": {"type": "string", "description": "Raw JS code to analyze"},
+                            "url": {"type": "string", "description": "URL to get content from (optional, uses current page if omitted)"},
                         },
                     },
                 },
                 {
-                    "name": "extract_endpoints",
-                    "description": "Extract API endpoints from JavaScript",
+                    "name": "chrome_console",
+                    "description": "Get browser console messages (errors, warnings, logs)",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+                {
+                    "name": "chrome_network_request",
+                    "description": "Send an HTTP request through the browser context (with cookies/session)",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "url": {
-                                "type": "string",
-                                "description": "URL of the page to extract endpoints from",
-                            },
+                            "url": {"type": "string", "description": "URL"},
+                            "method": {"type": "string", "description": "HTTP method"},
+                            "headers": {"type": "object", "description": "Headers"},
+                            "body": {"type": "string", "description": "Request body"},
                         },
                         "required": ["url"],
+                    },
+                },
+                {
+                    "name": "chrome_click_element",
+                    "description": "Click an element on the page by CSS selector or text",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "selector": {"type": "string", "description": "CSS selector or text to click"},
+                        },
+                        "required": ["selector"],
+                    },
+                },
+                {
+                    "name": "chrome_fill_or_select",
+                    "description": "Fill in a form field or select an option",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "selector": {"type": "string", "description": "CSS selector of the input"},
+                            "value": {"type": "string", "description": "Value to fill"},
+                        },
+                        "required": ["selector", "value"],
+                    },
+                },
+                {
+                    "name": "chrome_pentest_http",
+                    "description": "Analyze HTTP security: CORS, CSP, HSTS, cookie flags, security headers",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "url": {"type": "string", "description": "URL to analyze"},
+                        },
+                    },
+                },
+                {
+                    "name": "chrome_pentest_js_analyze",
+                    "description": "Analyze JavaScript for security issues: eval, innerHTML, postMessage, secrets",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+                {
+                    "name": "chrome_pentest_cookies",
+                    "description": "Analyze cookies for security: HttpOnly, Secure, SameSite flags",
+                    "inputSchema": {"type": "object", "properties": {}},
+                },
+                {
+                    "name": "chrome_pentest_headers",
+                    "description": "Check HTTP response security headers",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "url": {"type": "string", "description": "URL to check"},
+                        },
                     },
                 },
             ],
@@ -600,172 +1275,9 @@ class MCPLifecycleManager:
                     },
                 },
                 {
-                    "name": "get_proxy_history",
-                    "description": "Get proxy history from Burp",
+                    "name": "get_proxy_http_history",
+                    "description": "Get items within the proxy HTTP history",
                     "inputSchema": {"type": "object", "properties": {}},
-                },
-            ],
-            "frida-mcp": [
-                {
-                    "name": "frida_attach",
-                    "description": "Attach Frida to a running process",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "process": {"type": "string", "description": "Process name or PID"},
-                            "script": {"type": "string", "description": "Frida script to inject"},
-                        },
-                        "required": ["process", "script"],
-                    },
-                },
-                {
-                    "name": "frida_spawn",
-                    "description": "Spawn an app with Frida attached",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "package": {"type": "string", "description": "App package name"},
-                            "script": {"type": "string", "description": "Frida script to inject"},
-                        },
-                        "required": ["package", "script"],
-                    },
-                },
-            ],
-            "adb-mcp": [
-                {
-                    "name": "adb_tap",
-                    "description": "Tap on screen coordinates via ADB",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "x": {"type": "integer", "description": "X coordinate"},
-                            "y": {"type": "integer", "description": "Y coordinate"},
-                        },
-                        "required": ["x", "y"],
-                    },
-                },
-                {
-                    "name": "adb_screenshot",
-                    "description": "Take a screenshot via ADB",
-                    "inputSchema": {"type": "object", "properties": {}},
-                },
-                {
-                    "name": "adb_shell",
-                    "description": "Execute shell command on Android device",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "command": {
-                                "type": "string",
-                                "description": "Shell command to execute",
-                            },
-                        },
-                        "required": ["command"],
-                    },
-                },
-            ],
-            "jadx": [
-                {
-                    "name": "decompile",
-                    "description": "Decompile an APK file",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "apk_path": {"type": "string", "description": "Path to APK file"},
-                        },
-                        "required": ["apk_path"],
-                    },
-                },
-                {
-                    "name": "get_source",
-                    "description": "Get decompiled source code for a class",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "class_name": {
-                                "type": "string",
-                                "description": "Fully qualified class name",
-                            },
-                        },
-                        "required": ["class_name"],
-                    },
-                },
-            ],
-            "ida-pro-mcp": [
-                {
-                    "name": "decompile_function",
-                    "description": "Decompile a function in IDA Pro",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "address": {"type": "string", "description": "Function address"},
-                        },
-                        "required": ["address"],
-                    },
-                },
-                {
-                    "name": "get_xrefs",
-                    "description": "Get cross-references to an address",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "address": {
-                                "type": "string",
-                                "description": "Address to find xrefs for",
-                            },
-                        },
-                        "required": ["address"],
-                    },
-                },
-            ],
-            "sequential-thinking": [
-                {
-                    "name": "sequential_thinking",
-                    "description": "Use structured sequential thinking for complex analysis",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "thought": {"type": "string", "description": "Current thought step"},
-                            "next_step": {
-                                "type": "string",
-                                "description": "What to think about next",
-                            },
-                        },
-                        "required": ["thought"],
-                    },
-                },
-            ],
-            "context7": [
-                {
-                    "name": "resolve_library_id",
-                    "description": "Resolve a library name to its context7 ID",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "library_name": {
-                                "type": "string",
-                                "description": "Name of the library",
-                            },
-                        },
-                        "required": ["library_name"],
-                    },
-                },
-            ],
-            "everything-search": [
-                {
-                    "name": "search_files",
-                    "description": "Search for files on the local system",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Search query"},
-                            "max_results": {
-                                "type": "integer",
-                                "description": "Max results to return",
-                            },
-                        },
-                        "required": ["query"],
-                    },
                 },
             ],
         }
@@ -774,37 +1286,98 @@ class MCPLifecycleManager:
         for tool in tools:
             self.registry.register_tool(server_name, tool)
 
+    def _graceful_terminate(self, proc: subprocess.Popen) -> None:
+        """Synchronously stop a process: terminate, wait, then kill if still alive.
+
+        On Windows there is no SIGTERM; subprocess.terminate() maps to
+        TerminateProcess, so we use it directly rather than os.kill(SIGTERM).
+        """
+        if proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=self.TERMINATE_GRACE_SECONDS)
+            return
+        except Exception:
+            pass
+        try:
+            proc.kill()
+            proc.wait(timeout=self.TERMINATE_GRACE_SECONDS)
+        except Exception:
+            pass
+
+    async def _terminate_process(self, proc: subprocess.Popen) -> None:
+        """Async wrapper: terminate, wait up to grace, then kill — without blocking the loop."""
+        if proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+        deadline = time.monotonic() + self.TERMINATE_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return
+            await asyncio.sleep(0.05)
+
+        with suppress(Exception):
+            proc.kill()
+
     def stop_server(self, name: str) -> None:
-        """Stop a single MCP server."""
+        """Stop a single MCP server (synchronous; safe to call without a running loop)."""
+        self.registry.set_server_health(name, HealthStatus.STOPPING.value)
         client_meta = self._mcp_clients.pop(name, None)
-        if isinstance(client_meta, dict) and client_meta.get("kind") == "persistent-stdio":
-            cm = client_meta.get("context_manager")
+        if self._is_persistent_session(client_meta):
             loop = client_meta.get("loop")
-            if cm is not None and loop is not None and not loop.is_closed():
+            if loop is not None and not loop.is_closed():
                 try:
-                    future = asyncio.run_coroutine_threadsafe(cm.__aexit__(None, None, None), loop)
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._aclose_session_meta(client_meta), loop
+                    )
                     future.result(timeout=5)
                 except Exception:
                     pass
 
-        if name in self._processes:
-            try:
-                self._processes[name].terminate()
-                self._processes[name].wait(timeout=5)
-            except Exception:
-                try:
-                    self._processes[name].kill()
-                except Exception:
-                    pass
-            del self._processes[name]
+        proc = self._processes.pop(name, None)
+        if proc is not None:
+            self._graceful_terminate(proc)
 
         self.registry.set_server_running(name, running=False)
-        self.registry.set_server_health(name, "unknown")
+        self.registry.set_server_health(name, HealthStatus.UNKNOWN.value)
+
+    async def astop_server(self, name: str) -> None:
+        """Stop a single MCP server from within an event loop."""
+        self.registry.set_server_health(name, HealthStatus.STOPPING.value)
+        try:
+            await self._teardown_server(name)
+        except BaseException as exc:
+            if not _is_benign_shutdown_exception(exc):
+                raise
+        self.registry.set_server_running(name, running=False)
+        self.registry.set_server_health(name, HealthStatus.UNKNOWN.value)
 
     def stop_all(self) -> None:
-        """Stop all running MCP servers."""
-        for name in list(self._processes.keys()):
+        """Stop all running MCP servers (synchronous)."""
+        names = set(self._processes.keys()) | set(self.registry.get_running_servers())
+        for name in names:
             self.stop_server(name)
+
+        for name in self.registry.get_running_servers():
+            self.registry.set_server_running(name, running=False)
+
+    async def astop_all(self) -> None:
+        """Stop all running MCP servers from within an event loop."""
+        names = set(self._processes.keys()) | set(self.registry.get_running_servers())
+        for name in names:
+            try:
+                await self.astop_server(name)
+            except BaseException as exc:
+                if not _is_benign_shutdown_exception(exc):
+                    raise
 
         for name in self.registry.get_running_servers():
             self.registry.set_server_running(name, running=False)
@@ -841,9 +1414,28 @@ class MCPLifecycleManager:
         if not server_name:
             raise ValueError(f"Unknown tool: {tool_name}")
 
+        # Liveness gate: if a tracked subprocess died, attempt a bounded restart
+        # before dispatching the call.
+        if server_name in self._processes and not self._is_process_alive(server_name):
+            await self._restart_server(server_name)
+
         server_state = self.registry.get_all_servers().get(server_name)
         mode = server_state.execution_mode if server_state else "unknown"
 
+        call_started = time.monotonic()
+        try:
+            return await self._dispatch_call_tool(server_name, tool_name, arguments, mode)
+        finally:
+            latency_ms = (time.monotonic() - call_started) * 1000.0
+            self.registry.set_last_call_latency(server_name, latency_ms)
+
+    async def _dispatch_call_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        mode: str,
+    ) -> Any:
         try:
             if server_name == "fetch" and tool_name == "fetch":
                 violation = self._check_fetch_constraints(arguments)
@@ -930,6 +1522,39 @@ class MCPLifecycleManager:
                         suggestion="Start the Burp MCP service and verify the proxy integration is ready.",
                     )
 
+            # 通用路径：任何经 SDK attach 成功的 stdio/streamable-http 服务（如自定义
+            # streamable-mcp-server）都走真实会话调用，而不是回落到 unsupported。
+            if self._is_sdk_attachable(server_name):
+                try:
+                    content, structured = await self._call_attached_server(
+                        server_name, tool_name, arguments
+                    )
+                    self.registry.record_tool_call(server_name, success=True)
+                    self.registry.set_server_health(server_name, "healthy")
+                    return self._tool_result(
+                        ok=True,
+                        server=server_name,
+                        tool=tool_name,
+                        execution_mode=mode,
+                        content=content,
+                        structured_content=structured,
+                    )
+                except Exception as exc:
+                    message = str(exc)
+                    self.registry.record_tool_call(server_name, success=False)
+                    self.registry.set_server_error(
+                        server_name, message, error_type="service_unavailable"
+                    )
+                    return self._tool_result(
+                        ok=False,
+                        server=server_name,
+                        tool=tool_name,
+                        execution_mode=mode,
+                        error_type="service_unavailable",
+                        message=message,
+                        suggestion="Verify the MCP server is reachable and the tool name/args are valid.",
+                    )
+
             message = (
                 f"MCP tool '{tool_name}' is registered in {mode} mode but is not executable yet."
             )
@@ -1002,22 +1627,29 @@ class MCPLifecycleManager:
             return str(value) if value else "[-] 未找到"
         return "[!] 未知 memory 工具"
 
+    async def _call_attached_server(
+        self, server_name: str, tool_name: str, args: dict
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Call a tool on an attached SDK server (stdio or streamable-http).
+
+        The call is bounded by the server's tool_timeout so a silent/streaming
+        server can never deadlock the agent loop.
+        """
+        session = await self._get_or_create_session(server_name)
+        config = self.config.mcp.servers.get(server_name)
+        timeout_s = self._tool_timeout_seconds(config) if config else 300.0
+        result = await asyncio.wait_for(
+            session.call_tool(tool_name, arguments=args), timeout=timeout_s
+        )
+        rendered, structured, is_error = self._render_mcp_call_result(result)
+        if is_error:
+            raise RuntimeError(rendered or f"{server_name} call returned an error")
+        return rendered, structured
+
     async def _call_chrome(self, tool_name: str, args: dict) -> tuple[str, dict[str, Any] | None]:
         """Execute a Chrome DevTools tool call."""
-        session = await self._get_or_create_persistent_stdio_session("chrome-devtools")
-        result = await session.call_tool(tool_name, arguments=args)
-        rendered, _, is_error = self._render_mcp_call_result(result)
-        if is_error:
-            raise RuntimeError(rendered or "chrome-devtools call returned an error")
-        _, structured, _ = self._render_mcp_call_result(result)
-        return rendered, structured
+        return await self._call_attached_server("chrome-devtools", tool_name, args)
 
     async def _call_burp(self, tool_name: str, args: dict) -> tuple[str, dict[str, Any] | None]:
         """Execute a Burp Suite tool call."""
-        session = await self._get_or_create_persistent_stdio_session("burp")
-        result = await session.call_tool(tool_name, arguments=args)
-        rendered, _, is_error = self._render_mcp_call_result(result)
-        if is_error:
-            raise RuntimeError(rendered or "burp call returned an error")
-        _, structured, _ = self._render_mcp_call_result(result)
-        return rendered, structured
+        return await self._call_attached_server("burp", tool_name, args)

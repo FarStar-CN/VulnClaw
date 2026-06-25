@@ -126,6 +126,24 @@ async def execute_mcp_tool(agent: Any, tool_name: str, args: dict[str, Any]) -> 
         except Exception as e:
             return f"[!] 加密工具执行错误: {e}"
 
+    if tool_name == "brute_force_login":
+        return await execute_brute_force(agent, args)
+
+    if tool_name in {"space_search", "subdomain_enum", "js_recon", "dir_enum", "unauth_test"}:
+        from vulnclaw.agent import recon_tools
+
+        dispatch = {
+            "space_search": recon_tools.execute_space_search,
+            "subdomain_enum": recon_tools.execute_subdomain_enum,
+            "js_recon": recon_tools.execute_js_recon,
+            "dir_enum": recon_tools.execute_dir_enum,
+            "unauth_test": recon_tools.execute_unauth_test,
+        }
+        try:
+            return await dispatch[tool_name](agent, args)
+        except Exception as e:
+            return f"[!] 工具执行错误 ({tool_name}): {e}"
+
     if not agent.mcp_manager:
         return f"[!] MCP 管理器未初始化，无法执行工具: {tool_name}"
 
@@ -153,7 +171,10 @@ async def execute_mcp_tool(agent: Any, tool_name: str, args: dict[str, Any]) -> 
                 return f"[{error_type}] {message}\n[suggestion] {suggestion}".strip()
             return f"[{error_type}] {message}".strip()
 
-        return str(result)
+        text = str(result)
+        if text.strip() in ("undefined", "null", "None"):
+            return f"[!] 工具 {tool_name} 返回空结果 (undefined)，调用可能失败"
+        return text
     except Exception as e:
         return f"[!] 工具执行错误 ({tool_name}): {e}"
 
@@ -391,6 +412,224 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                         },
                     },
                     "required": ["target"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "brute_force_login",
+                "description": (
+                    "对登录表单进行密码爆破。自动管理 Session Cookie、"
+                    "自动提取和更新 CSRF Token、判断登录成功/失败。"
+                    "单次调用内完成所有密码尝试，返回每个密码的结果。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "登录页面 URL",
+                        },
+                        "username_field": {
+                            "type": "string",
+                            "description": "用户名字段名，如 'username'",
+                        },
+                        "password_field": {
+                            "type": "string",
+                            "description": "密码字段名，如 'password'",
+                        },
+                        "csrf_field": {
+                            "type": "string",
+                            "description": "CSRF token 字段名，如 'user_token'",
+                        },
+                        "username": {
+                            "type": "string",
+                            "description": "要爆破的用户名",
+                        },
+                        "passwords": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "要尝试的密码列表（最多 20 个）",
+                        },
+                        "success_keyword": {
+                            "type": "string",
+                            "description": "登录成功后页面出现的特征词，如 'Welcome'、'Dashboard'",
+                        },
+                        "failure_keyword": {
+                            "type": "string",
+                            "description": "登录失败后页面出现的特征词，如 'Login failed'",
+                        },
+                        "submit_action": {
+                            "type": "string",
+                            "description": "表单提交的目标 URL（可选，不指定则从表单 action 属性提取）",
+                        },
+                        "extra_data": {
+                            "type": "object",
+                            "description": "额外表单字段，如 {\"Login\": \"Login\"}",
+                        },
+                    },
+                    "required": ["url", "password_field", "passwords"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "space_search",
+                "description": (
+                    "空间测绘资产搜索（FOFA/Hunter/Quake/Shodan/ZoomEye/0.zone 零零信安）。"
+                    "信息收集阶段用于被动发现目标资产、IP、端口、子域、标题、组件指纹，不直接接触目标。"
+                    "给 domain 自动按各引擎语法构造 domain 查询；也可传完整 query 语法。"
+                    "engine=all 时并发查询所有已配置 key 的引擎。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "engine": {
+                            "type": "string",
+                            "description": "fofa/hunter/quake/shodan/zoomeye/zerozone/all，默认 fofa",
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "引擎原生查询语法，如 'domain=\"x.com\"'、'app=\"Struts2\"'（可选）",
+                        },
+                        "domain": {
+                            "type": "string",
+                            "description": "目标主域名，自动构造各引擎 domain 查询（query 未给时使用）",
+                        },
+                        "size": {"type": "integer", "description": "返回条数，默认 100"},
+                    },
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "subdomain_enum",
+                "description": (
+                    "子域名枚举。先用已配置的空间测绘引擎被动聚合，再用内置小字典做 DNS 解析爆破，"
+                    "返回去重后的存活子域名列表。优先于 python_execute 自己写爆破。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "domain": {"type": "string", "description": "主域名，如 nju.edu.cn"},
+                        "brute": {
+                            "type": "boolean",
+                            "description": "是否启用内置字典 DNS 爆破（默认 true）",
+                        },
+                    },
+                    "required": ["domain"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "js_recon",
+                "description": (
+                    "JS 信息收集（参考 URLFinder）。抓取目标页面及其引用的全部 .js 文件，"
+                    "提取 API 接口/路径、关联域名、绝对 URL，以及疑似硬编码密钥（AK/SK、token、JWT、私钥等）。"
+                    "默认 auto_probe=true：自动对收集到的同源接口逐个做未授权访问探测（仅安全 GET，跳过破坏性接口）。"
+                    "信息收集阶段优先调用，用真实提取的端点反哺后续测试，而非凭空猜接口。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "目标页面 URL"},
+                        "max_js": {
+                            "type": "integer",
+                            "description": "最多抓取的 JS 文件数（默认 30）",
+                        },
+                        "auto_probe": {
+                            "type": "boolean",
+                            "description": "是否自动对收集到的接口做未授权探测（默认 true）",
+                        },
+                        "auth_header": {
+                            "type": "string",
+                            "description": "可选鉴权头做差分对比，如 'Authorization: Bearer xxx'，验证无 token 是否也能拿到数据",
+                        },
+                    },
+                    "required": ["url"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "unauth_test",
+                "description": (
+                    "未授权访问探测。对一批接口（通常来自 js_recon 收集的端点）逐个无凭据请求，"
+                    "按状态码/响应体/内容类型判定：⚠疑似未授权(返回数据) / ✓已鉴权拦截 / ↪跳转登录 / —不存在。"
+                    "提供 auth_header 时做有/无 token 差分对比，无 token 也能拿到同样数据则判定 🔴未授权确认。"
+                    "严守读写分离：仅发安全 GET，自动跳过 delete/update/sms 等破坏性接口，不批量遍历 ID。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "base_url": {"type": "string", "description": "目标基础 URL（确定同源范围）"},
+                        "endpoints": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "待测接口路径/URL 列表（来自 js_recon 的接口/路径）",
+                        },
+                        "auth_header": {
+                            "type": "string",
+                            "description": "可选鉴权头做差分，如 'Authorization: Bearer xxx' 或 'Cookie: session=...'",
+                        },
+                        "max_endpoints": {
+                            "type": "integer",
+                            "description": "最多探测的接口数（默认 60）",
+                        },
+                    },
+                    "required": ["base_url", "endpoints"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "dir_enum",
+                "description": (
+                    "目录/文件枚举（参考 dirsearch）。并发字典爆破，自带 404 基线与全局伪装响应识别"
+                    "（随机路径返回 200 即判定伪装并停止）、状态码与响应长度过滤。"
+                    "仅做安全的 GET 探测，不碰 delete/update 等破坏性路径。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "目标基础 URL，如 https://x.com/"},
+                        "extensions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "扩展名展开，如 ['php','jsp','bak','zip']（可选）",
+                        },
+                        "wordlist": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "追加的自定义路径（基于命名规律的启发式字典，可选）",
+                        },
+                    },
+                    "required": ["url"],
                 },
             },
         }
@@ -804,3 +1043,231 @@ async def execute_python(agent: Any, args: dict[str, Any]) -> str:
             agent, purpose=purpose, code=code, mode=mode, outcome="error", blocked_reason=str(e)
         )
         return f"[!] Python execution error: {e}"
+
+
+def _sync_cookies_to_shared_jar(
+    agent: Any, cookies: list[tuple[str, str, str, str]]
+) -> None:
+    """Copy session cookies into the agent's shared _fetch_cookies jar.
+
+    This allows the ``fetch`` tool (which uses ``_fetch_cookies``) to
+    immediately use the authenticated session obtained by
+    ``brute_force_login`` without requiring a separate re-login.
+    """
+    if not agent or not cookies:
+        return
+    mcp = getattr(agent, "mcp_manager", None)
+    if not mcp:
+        return
+    try:
+        import httpx
+
+        jar = getattr(mcp, "_fetch_cookies", None)
+        if jar is None:
+            jar = httpx.Cookies()
+            mcp._fetch_cookies = jar
+        for name, value, domain, path in cookies:
+            if name and value:
+                jar.set(name, value, domain=domain or "", path=path or "/")
+    except Exception:
+        pass
+
+
+async def execute_brute_force(agent: Any, args: dict[str, Any]) -> str:
+    """Execute a login brute-force with automatic CSRF/session management.
+
+    Handles the full flow in one call:
+    GET login page → extract CSRF + session → POST passwords → detect result
+    """
+    import asyncio
+    import re
+    import time
+
+    url = str(args.get("url", "") or "").strip()
+    password_field = str(args.get("password_field", "") or "").strip()
+    csrf_field = str(args.get("csrf_field", "") or "").strip()
+    username_field = str(args.get("username_field", "") or "").strip()
+    username = str(args.get("username", "") or "").strip()
+    passwords = args.get("passwords", [])
+    success_keyword = str(args.get("success_keyword", "") or "").strip()
+    failure_keyword = str(args.get("failure_keyword", "") or "").strip()
+    submit_action = str(args.get("submit_action", "") or "").strip()
+    extra_data = args.get("extra_data", {}) or {}
+    submit_url = submit_action or url
+
+    if not url or not password_field or not passwords:
+        return "[!] 缺少必需参数: url, password_field, passwords"
+
+    if not isinstance(passwords, list) or not passwords:
+        return "[!] passwords 必须是非空列表"
+
+    passwords = passwords[:20]
+    total = len(passwords)
+
+    try:
+        import httpx
+    except ImportError:
+        return "[!] httpx 未安装，无法执行爆破"
+
+    def extract_csrf(html: str, field_name: str) -> str | None:
+        """Extract CSRF token from HTML input field."""
+        if not field_name:
+            return None
+        pattern = re.compile(
+            rf'name=["\']{re.escape(field_name)}["\'][^>]*value=["\']([^"\']+)',
+            re.IGNORECASE,
+        )
+        m = pattern.search(html)
+        if m:
+            return m.group(1)
+        # Try alternative: value before name
+        pattern2 = re.compile(
+            rf'value=["\']([^"\']+)[^>]*name=["\']{re.escape(field_name)}',
+            re.IGNORECASE,
+        )
+        m = pattern2.search(html)
+        return m.group(1) if m else None
+
+    results: list[str] = []
+    start_time = time.time()
+    attempts = 0
+    found_password: str | None = None
+
+    # Collect cookies from the internal client so we can sync them
+    # back to the shared _fetch_cookies jar after a successful login.
+    session_cookies: list[tuple[str, str, str, str]] = []  # name, value, domain, path
+
+    async with httpx.AsyncClient(
+        verify=False,
+        timeout=30.0,
+        follow_redirects=True,
+    ) as client:
+        # Step 1: Get login page for initial CSRF and session
+        try:
+            resp = await asyncio.wait_for(
+                client.get(url),
+                timeout=30.0,
+            )
+            html = resp.text
+        except Exception as e:
+            return f"[!] 获取登录页失败: {e}"
+
+        csrf_token = extract_csrf(html, csrf_field)
+        if csrf_token is None and csrf_field:
+            results.append(f"[!] 警告: 未在登录页找到 CSRF 字段 '{csrf_field}'")
+
+        # Auto-detect submit button values from login page HTML.
+        # Many forms (DVWA, etc.) check isset($_POST['SubmitButtonName'])
+        # before processing authentication. Without the button's name=value,
+        # the server skips auth and just re-renders the page.
+        auto_fields: dict[str, str] = {}
+        for input_match in re.finditer(
+            r'<(?:input|button)\s[^>]*type=["\']submit["\'][^>]*>',
+            html,
+            re.IGNORECASE,
+        ):
+            tag = input_match.group()
+            name_m = re.search(r'name\s*=\s*["\']([^"\']+)["\']', tag, re.IGNORECASE)
+            val_m = re.search(r'value\s*=\s*["\']([^"\']*)["\']', tag, re.IGNORECASE)
+            if name_m:
+                auto_fields[name_m.group(1)] = val_m.group(1) if val_m else name_m.group(1)
+
+        # Step 2: Try each password
+        for i, password in enumerate(passwords, 1):
+            form_data: dict[str, str] = {}
+            if username_field and username:
+                form_data[username_field] = username
+            form_data[password_field] = password
+            if csrf_token and csrf_field:
+                form_data[csrf_field] = csrf_token
+            # Auto-detected submit buttons come first so they can be
+            # overridden by explicit extra_data if needed.
+            form_data.update(auto_fields)
+            form_data.update({k: str(v) for k, v in extra_data.items()})
+
+            try:
+                resp = await asyncio.wait_for(
+                    client.post(submit_url, data=form_data),
+                    timeout=30.0,
+                )
+                attempts += 1
+                response_html = resp.text
+                status = resp.status_code
+
+                # Determine success or failure
+                is_success = False
+                reason = ""
+                csrf_markers = ["csrf token is incorrect", "csrf token mismatch",
+                                "token mismatch", "invalid token"]
+
+                if success_keyword and success_keyword.lower() in response_html.lower():
+                    is_success = True
+                    reason = f"'{success_keyword}'"
+                elif failure_keyword and failure_keyword.lower() in response_html.lower():
+                    is_success = False
+                    reason = f"'{failure_keyword}'"
+                elif any(m in response_html.lower() for m in csrf_markers):
+                    is_success = False
+                    reason = "CSRF token 错误（已自动同步新 token）"
+                elif status == 302:
+                    is_success = True
+                    reason = "Status 302 (redirect)"
+                elif "logout" in response_html.lower() or "welcome" in response_html.lower():
+                    is_success = True
+                    reason = "检测到已登录状态"
+                else:
+                    # Include a short snippet from the response so the model
+                    # can diagnose what the server actually returned.
+                    snippet = response_html.strip()[:200].replace("\n", " ")
+                    is_success = False
+                    reason = snippet
+
+                prefix = "[✓]" if is_success else "[✗]"
+                pw_preview = password[:40].replace("\n", "\\n")
+                results.append(f"{prefix} {pw_preview} → {'成功' if is_success else '失败'} ({reason})")
+
+                # Extract new CSRF from response for next attempt
+                new_token = extract_csrf(response_html, csrf_field)
+                if new_token:
+                    csrf_token = new_token
+
+                # Stop early on success if keyword matched
+                if is_success and success_keyword:
+                    found_password = password
+                    break
+
+            except Exception as e:
+                pw_preview = password[:30].replace("\n", "\\n")
+                results.append(f"[!] {pw_preview} → 请求失败: {e}")
+                continue
+
+        # Save cookies from the internal client for potential sharing with
+        # the fetch tool's cookie jar.
+        try:
+            for cookie in client.cookies.jar:
+                session_cookies.append(
+                    (cookie.name, cookie.value, cookie.domain, cookie.path)
+                )
+        except Exception:
+            pass
+
+    elapsed = time.time() - start_time
+
+    # Sync session cookies to the shared _fetch_cookies jar so that
+    # subsequent `fetch` calls from the agent are already authenticated.
+    if found_password and session_cookies:
+        _sync_cookies_to_shared_jar(agent, session_cookies)
+
+    summary = [
+        f"[+] 爆破完成 — {url}",
+        f"    用户: {username or '(未指定)'}",
+        "",
+        "    结果:",
+    ]
+    for r in results:
+        summary.append(f"    {r}")
+    summary.append("")
+    summary.append(f"    耗时: {elapsed:.1f}s")
+    summary.append(f"    尝试: {attempts}/{total}")
+
+    return "\n".join(summary)

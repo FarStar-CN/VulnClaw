@@ -26,36 +26,10 @@ INTENT_TOOL_MAP: dict[str, list[dict[str, Any]]] = {
     ],
     # Burp Suite
     "抓包|查看请求|拦截请求|proxy": [
-        {"tool": "get_proxy_history", "server": "burp"},
+        {"tool": "get_proxy_http_history", "server": "burp"},
     ],
     "修改数据包|重放|replay|篡改": [
         {"tool": "send_http1_request", "server": "burp"},
-    ],
-    # JS reverse
-    "分析js|js逆向|js逻辑|extract endpoints": [
-        {"tool": "analyze_js", "server": "js-reverse"},
-        {"tool": "extract_endpoints", "server": "js-reverse"},
-    ],
-    # Frida
-    "hook|插桩|frida|动态调试|hook函数": [
-        {"tool": "frida_attach", "server": "frida-mcp"},
-        {"tool": "frida_spawn", "server": "frida-mcp"},
-    ],
-    # ADB
-    "控制手机|点击屏幕|adb|安卓操作": [
-        {"tool": "adb_tap", "server": "adb-mcp"},
-        {"tool": "adb_shell", "server": "adb-mcp"},
-        {"tool": "adb_screenshot", "server": "adb-mcp"},
-    ],
-    # JADX
-    "反编译apk|apk源码|jadx": [
-        {"tool": "decompile", "server": "jadx"},
-        {"tool": "get_source", "server": "jadx"},
-    ],
-    # IDA Pro
-    "逆向二进制|ida|反编译函数|二进制分析": [
-        {"tool": "decompile_function", "server": "ida-pro-mcp"},
-        {"tool": "get_xrefs", "server": "ida-pro-mcp"},
     ],
     # Memory
     "记住|记录|save memory": [
@@ -112,17 +86,12 @@ class MCPRouter:
             ],
             "漏洞发现": [
                 {"tool": "fetch", "server": "fetch", "reason": "发送漏洞探测请求"},
-                {"tool": "analyze_js", "server": "js-reverse", "reason": "分析 JS 寻找漏洞"},
-                {"tool": "extract_endpoints", "server": "js-reverse", "reason": "提取 API 端点"},
+                {"tool": "send_http1_request", "server": "burp", "reason": "通过代理构造检测请求"},
             ],
             "漏洞利用": [
                 {"tool": "send_http1_request", "server": "burp", "reason": "构造利用请求"},
                 {"tool": "fetch", "server": "fetch", "reason": "发送利用 payload"},
                 {"tool": "evaluate_js", "server": "chrome-devtools", "reason": "浏览器内利用"},
-            ],
-            "后渗透": [
-                {"tool": "adb_shell", "server": "adb-mcp", "reason": "设备命令执行"},
-                {"tool": "frida_attach", "server": "frida-mcp", "reason": "动态 Hook"},
             ],
         }
 

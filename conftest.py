@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import os
 import tempfile
-from uuid import uuid4
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
-
 
 TEST_ROOT = Path(__file__).resolve().parent / ".test-tmp"
 TEST_ROOT.mkdir(parents=True, exist_ok=True)

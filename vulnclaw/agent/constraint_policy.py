@@ -69,9 +69,56 @@ def validate_phase_transition(
     return f"{violation} (phase transition to {next_phase.value})"
 
 
+# 纯本地/知识类工具：不与目标交互，不纳入「动作范围」约束
+LOCAL_META_TOOLS = {"load_skill_reference", "crypto_decode"}
+
+# 真正代表「利用」意图的攻击载荷特征——与传输方式（HTTP 方法/网络库）无关
+EXPLOIT_PAYLOAD_MARKERS = [
+    "union select",
+    " or 1=1",
+    "'or'",
+    "../",
+    "..\\",
+    "<script",
+    "cmd=",
+    "php://",
+    "data://",
+    "extractvalue(",
+    "updatexml(",
+    "load_file(",
+    "into outfile",
+    "{{",  # SSTI
+    "${",  # SSTI/EL
+    "%00",
+    "/etc/passwd",
+    "/bin/sh",
+    "bash -i",
+    "nc -e",
+    "powershell -e",
+]
+
+# python_execute 中代表本地命令执行/反弹 shell 的特征
+PYTHON_EXPLOIT_MARKERS = [
+    "os.system",
+    "subprocess",
+    "pty.spawn",
+    "/bin/sh",
+    "bash -i",
+    "nc -e",
+    "reverse_shell",
+]
+
+
 def infer_tool_action(tool_name: str, args: dict[str, object]) -> str:
-    """Infer the effective action class of a tool invocation."""
+    """Infer the effective action class of a tool invocation.
+
+    关键原则：只有「实际攻击载荷」才推断为 exploit；HTTP 方法、是否用 requests/urllib
+    等传输细节不构成利用意图（recon/scan 阶段本就需要发 POST/OPTIONS、用 requests 探测）。
+    """
     normalized_tool = (tool_name or "").strip().lower()
+
+    if normalized_tool in LOCAL_META_TOOLS:
+        return "recon"  # 仅本地操作，配合 validate_tool_action 豁免
 
     if normalized_tool == "nmap_scan":
         return "recon"
@@ -80,39 +127,23 @@ def infer_tool_action(tool_name: str, args: dict[str, object]) -> str:
         url = str(args.get("url", "") or "").lower()
         method = str(args.get("method", "GET") or "GET").upper()
         body = str(args.get("body", "") or "").lower()
-        suspicious_markers = [
-            "union select",
-            " or 1=1",
-            "../",
-            "<script",
-            "cmd=",
-            "php://",
-            "extractvalue(",
-            "whoami",
-        ]
-        if method != "GET" or any(marker in url or marker in body for marker in suspicious_markers):
+        if any(marker in url or marker in body for marker in EXPLOIT_PAYLOAD_MARKERS):
             return "exploit"
-        return "recon"
+        # 方法本身不代表利用：GET/HEAD/OPTIONS 属侦察，其它（POST 测表单等）属扫描
+        if method in ("GET", "HEAD", "OPTIONS"):
+            return "recon"
+        return "scan"
 
     if normalized_tool == "python_execute":
         code = str(args.get("code", "") or "").lower()
-        if any(
-            marker in code
-            for marker in [
-                "requests.",
-                "httpx.",
-                "urllib",
-                "socket.",
-                "whoami",
-                "extractvalue(",
-                "../",
-                "<script",
-            ]
-        ):
+        if any(marker in code for marker in EXPLOIT_PAYLOAD_MARKERS + PYTHON_EXPLOIT_MARKERS):
             return "exploit"
-        return "scan"
+        # 用 requests/httpx/urllib/socket 做 HTTP 探测属扫描，而非利用
+        if any(m in code for m in ("requests.", "httpx.", "urllib", "http.client", "socket")):
+            return "scan"
+        return "recon"
 
-    if normalized_tool in {"crypto_decode", "load_skill_reference"}:
+    if normalized_tool == "brute_force_login":
         return "scan"
 
     return "scan"
@@ -122,6 +153,9 @@ def validate_tool_action(
     tool_name: str, args: dict[str, object], constraints: TaskConstraints
 ) -> str | None:
     """Return a constraint violation when a tool invocation implies a blocked action."""
+    # 纯本地/知识类工具不受动作范围约束（加载文档、编解码不触碰目标）
+    if (tool_name or "").strip().lower() in LOCAL_META_TOOLS:
+        return None
     inferred = infer_tool_action(tool_name, args)
     violation = validate_action_constraints(inferred, constraints)
     if violation is None:

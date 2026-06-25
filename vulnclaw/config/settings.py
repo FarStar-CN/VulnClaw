@@ -30,12 +30,30 @@ KB_DIR = CONFIG_DIR / "kb"
 SKILLS_DIR = CONFIG_DIR / "skills"
 WEB_TASKS_FILE = CONFIG_DIR / "web_tasks.json"
 PYTHON_EXECUTE_AUDIT_FILE = CONFIG_DIR / "python_execute_audit.jsonl"
+DEFAULT_OPENAI_USER_AGENT = "Mozilla/5.0"
 
 
 def ensure_dirs() -> None:
     """Create VulnClaw config directories if they don't exist."""
     for d in [CONFIG_DIR, SESSIONS_DIR, TARGETS_DIR, KB_DIR, SKILLS_DIR]:
         d.mkdir(parents=True, exist_ok=True)
+
+
+def openai_default_headers() -> dict[str, str]:
+    return {"User-Agent": os.environ.get("VULNCLAW_LLM_USER_AGENT", DEFAULT_OPENAI_USER_AGENT)}
+
+
+def make_openai_client(api_key: str, base_url: str, timeout: float | None = None):
+    from openai import OpenAI
+
+    kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "default_headers": openai_default_headers(),
+    }
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return OpenAI(**kwargs)
 
 
 # ── Load / Save ────────────────────────────────────────────────────
@@ -90,7 +108,7 @@ def set_config_value(key: str, value: str) -> None:
     parts = key.split(".")
     obj: Any = config
     for part in parts[:-1]:
-        obj = getattr(obj, part)
+        obj = obj[part] if isinstance(obj, dict) else getattr(obj, part)
     field_name = parts[-1]
 
     # Type coercion based on field annotation
@@ -105,7 +123,10 @@ def set_config_value(key: str, value: str) -> None:
         elif annotation is bool:
             value = value.lower() in ("true", "1", "yes")
 
-    setattr(obj, field_name, value)
+    if isinstance(obj, dict):
+        obj[field_name] = value
+    else:
+        setattr(obj, field_name, value)
     save_config(config)
 
 
@@ -159,7 +180,7 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
     """Overlay environment variables onto config.
 
     Supported env vars (prefix VULNCLAW_):
-        LLM:        API_KEY, BASE_URL, MODEL, PROVIDER, MAX_TOKENS, TEMPERATURE
+        LLM:        API_KEY, BASE_URL, MODEL, PROVIDER, MAX_TOKENS, MAX_CONTEXT_TOKENS, TEMPERATURE
         Session:    OUTPUT_DIR, AUTO_SAVE, REPORT_FORMAT, MAX_ROUNDS, SHOW_THINKING
         Safety:     PYTHON_EXECUTE_ENABLED, PYTHON_EXECUTE_RESTRICTED, PYTHON_EXECUTE_MODE,
                     PYTHON_EXECUTE_MAX_LINES, PYTHON_EXECUTE_SHOW_WARNING,
@@ -177,6 +198,9 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
     if v := os.environ.get("VULNCLAW_LLM_MAX_TOKENS"):
         with suppress(ValueError):
             config.llm.max_tokens = int(v)
+    if v := os.environ.get("VULNCLAW_LLM_MAX_CONTEXT_TOKENS"):
+        with suppress(ValueError):
+            config.llm.max_context_tokens = int(v)
     if v := os.environ.get("VULNCLAW_LLM_TEMPERATURE"):
         with suppress(ValueError):
             config.llm.temperature = float(v)
@@ -193,6 +217,35 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
             config.session.max_rounds = int(v)
     if v := os.environ.get("VULNCLAW_SESSION_SHOW_THINKING"):
         config.session.show_thinking = v.lower() in ("1", "true", "yes", "on")
+    if v := os.environ.get("VULNCLAW_SESSION_STALE_ROUNDS_THRESHOLD"):
+        with suppress(ValueError):
+            config.session.stale_rounds_threshold = int(v)
+
+    # ── Session: 推理状态 / 反思引擎 / 插件运行时 ──────────────
+    _truthy = ("1", "true", "yes", "on")
+    if v := os.environ.get("VULNCLAW_SESSION_REASONING_STATE_ENABLED"):
+        config.session.reasoning_state_enabled = v.lower() in _truthy
+    if v := os.environ.get("VULNCLAW_SESSION_REFLEXION_ENABLED"):
+        config.session.reflexion_enabled = v.lower() in _truthy
+    if v := os.environ.get("VULNCLAW_SESSION_REFLEXION_MAX_SAME_VULN_FAILS"):
+        with suppress(ValueError):
+            config.session.reflexion_max_same_vuln_fails = int(v)
+    if v := os.environ.get("VULNCLAW_SESSION_REFLEXION_MAX_TOTAL_NO_PROGRESS"):
+        with suppress(ValueError):
+            config.session.reflexion_max_total_no_progress = int(v)
+    if v := os.environ.get("VULNCLAW_SESSION_ESCALATION_MAX_LEVEL"):
+        with suppress(ValueError):
+            config.session.escalation_max_level = int(v)
+    if v := os.environ.get("VULNCLAW_SESSION_PLUGIN_RUNTIME_ENABLED"):
+        config.session.plugin_runtime_enabled = v.lower() in _truthy
+    if v := os.environ.get("VULNCLAW_SESSION_PLUGIN_DEFAULT_TIMEOUT"):
+        with suppress(ValueError):
+            config.session.plugin_default_timeout = int(v)
+    if v := os.environ.get("VULNCLAW_SESSION_PLUGIN_MAX_REQUESTS_PER_TARGET"):
+        with suppress(ValueError):
+            config.session.plugin_max_requests_per_target = int(v)
+    if v := os.environ.get("VULNCLAW_SESSION_EVIDENCE_MIN_REPORT_LEVEL"):
+        config.session.evidence_min_report_level = v
 
     # ── Safety ───────────────────────────────────────────────────────
     if v := os.environ.get("VULNCLAW_SAFETY_PYTHON_EXECUTE_ENABLED"):
@@ -211,6 +264,23 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
             config.safety.python_execute_max_output_chars = int(v)
     if v := os.environ.get("VULNCLAW_SAFETY_PYTHON_EXECUTE_AUDIT_ENABLED"):
         config.safety.python_execute_audit_enabled = v.lower() in ("1", "true", "yes", "on")
+
+    # ── Recon: space-mapping API keys ────────────────────────────────
+    # Accept both the short form (FOFA_KEY) and the prefixed form
+    # (VULNCLAW_RECON_FOFA_KEY); short form wins if both are set.
+    for field, names in {
+        "fofa_email": ("FOFA_EMAIL", "VULNCLAW_RECON_FOFA_EMAIL"),
+        "fofa_key": ("FOFA_KEY", "VULNCLAW_RECON_FOFA_KEY"),
+        "hunter_key": ("HUNTER_KEY", "VULNCLAW_RECON_HUNTER_KEY"),
+        "quake_key": ("QUAKE_KEY", "VULNCLAW_RECON_QUAKE_KEY"),
+        "zoomeye_key": ("ZOOMEYE_KEY", "VULNCLAW_RECON_ZOOMEYE_KEY"),
+        "shodan_key": ("SHODAN_KEY", "VULNCLAW_RECON_SHODAN_KEY"),
+        "zerozone_key": ("ZEROZONE_KEY", "VULNCLAW_RECON_ZEROZONE_KEY"),
+    }.items():
+        for env_name in names:
+            if v := os.environ.get(env_name):
+                setattr(config.recon, field, v)
+                break
 
     return config
 
@@ -286,3 +356,49 @@ def list_providers() -> list[dict[str, str]]:
             }
         )
     return result
+
+
+def fetch_provider_models(base_url: str, api_key: str, timeout: float = 10.0) -> list[str]:
+    """Fetch available models from a provider's OpenAI-compatible API.
+
+    Uses the OpenAI SDK's ``client.models.list()`` endpoint.
+    Returns a sorted list of model ID strings.  Returns an empty list
+    on any error (network, auth, timeout, etc.).
+    """
+    if not base_url or not api_key:
+        return []
+    try:
+        client = make_openai_client(api_key=api_key, base_url=base_url, timeout=timeout)
+        models_page = client.models.list()
+        model_ids = [m.id for m in models_page if m.id]
+        return sorted(model_ids)
+    except Exception:
+        return []
+
+
+def fetch_provider_models_async(
+    base_url: str,
+    api_key: str,
+    timeout: float = 10.0,
+    on_result: Any = None,
+):
+    """Fetch provider models in a background thread.
+
+    Calls ``fetch_provider_models()`` in a daemon thread.  When the
+    fetch completes, *on_result* (if provided) is called with the
+    model list on the **calling** thread via ``app.call_later()``-style
+    scheduling — the caller is responsible for arranging thread-safe
+    delivery (e.g. by passing a lambda that uses ``call_later``).
+
+    Returns the ``Thread`` object so callers can track or join it.
+    """
+    import threading
+
+    def _worker() -> None:
+        models = fetch_provider_models(base_url, api_key, timeout)
+        if on_result is not None:
+            on_result(models)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return t
