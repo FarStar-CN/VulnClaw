@@ -134,6 +134,27 @@ cd VulnClaw
 pip install -e .
 ```
 
+### Docker 运行（可选）
+
+镜像已内置 Web UI 以及默认 MCP 服务所需的运行时（`npx` / `uvx`），所有状态（配置、会话、目标、报告）持久化到 `/data` 数据卷。
+
+```bash
+cp .env.example .env          # 填入 VULNCLAW_LLM_API_KEY 等
+docker compose up --build      # 构建镜像并启动 Web UI
+# 打开 http://127.0.0.1:7788
+```
+
+也可用纯 docker 运行某条 CLI 命令：
+
+```bash
+docker run --rm -it \
+  -e VULNCLAW_LLM_API_KEY=sk-your-key-here \
+  -v vulnclaw-data:/data \
+  vulnclaw:latest scan <target>
+```
+
+> ⚠️ 容器内的 `localhost` 指向容器自身。扫描宿主机服务请使用 `host.docker.internal`，扫描其它容器请共享网络并用容器名访问。详见 [DOCKER.md](DOCKER.md)。
+
 ### 四步启动
 
 ```bash
