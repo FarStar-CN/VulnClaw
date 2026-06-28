@@ -138,25 +138,46 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _oauth_token_request(token_url: str, form: dict[str, str]) -> dict[str, Any]:
+def _oauth_token_request(token_url: str, form: dict[str, str], *, attempts: int = 4) -> dict[str, Any]:
+    """POST a token request, retrying transient network/TLS/5xx failures.
+
+    The OAuth endpoints can be reached over flaky TLS (e.g. intermittent
+    ``SSL: UNEXPECTED_EOF_WHILE_READING``). 4xx responses (other than 429) are
+    permanent and fail fast; network errors and 5xx/429 are retried with backoff.
+    The authorization code is single-use but valid for minutes, so a few quick
+    retries within one login call are safe.
+    """
     data = urllib.parse.urlencode(form).encode("utf-8")
-    req = urllib.request.Request(
-        token_url,
-        data=data,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-            body = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:300] if hasattr(exc, "read") else str(exc)
-        raise OAuthError(f"OAuth token 请求失败 HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise OAuthError(f"OAuth token 端点无法访问: {exc}") from exc
+    body: str | None = None
+    last_exc: Exception | None = None
+    for i in range(attempts):
+        req = urllib.request.Request(
+            token_url,
+            data=data,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+                body = resp.read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 and 400 <= exc.code < 500:
+                detail = exc.read().decode("utf-8", "replace")[:300] if hasattr(exc, "read") else str(exc)
+                raise OAuthError(f"OAuth token 请求失败 HTTP {exc.code}: {detail}") from exc
+            last_exc = exc  # 5xx / 429 → retry
+        except urllib.error.URLError as exc:
+            last_exc = exc  # network / TLS → retry
+        if i < attempts - 1:
+            time.sleep(1.5 * (i + 1))
+
+    if body is None:
+        raise OAuthError(
+            f"OAuth token 端点无法访问（重试 {attempts} 次后失败 / failed after {attempts} retries）: {last_exc}"
+        )
     try:
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
