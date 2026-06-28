@@ -195,6 +195,33 @@ class TestBuiltinMcpExecution:
         assert "constraint_violation" in result
         assert "Host example.com" in result
 
+    async def test_execute_python_allows_in_scope_host_with_port(self):
+        import vulnclaw.agent.builtin_tools as builtin_tools
+
+        agent = DummyAgent()
+        agent.session_state.task_constraints.allowed_hosts = ["localhost"]
+        agent.session_state.task_constraints.strict_mode = True
+
+        result = await builtin_tools.execute_python(
+            agent,
+            {"code": "import requests\nrequests.get('http://localhost:3000/home')"},
+        )
+        assert "constraint_violation" not in result
+
+    async def test_execute_python_blocks_out_of_scope_host_with_port(self):
+        import vulnclaw.agent.builtin_tools as builtin_tools
+
+        agent = DummyAgent()
+        agent.session_state.task_constraints.allowed_hosts = ["localhost"]
+        agent.session_state.task_constraints.strict_mode = True
+
+        result = await builtin_tools.execute_python(
+            agent,
+            {"code": "import requests\nrequests.get('http://evil.example:8080/x')"},
+        )
+        assert "constraint_violation" in result
+        assert "Host evil.example" in result
+
     async def test_execute_nmap_blocks_out_of_scope_port(self):
         import vulnclaw.agent.builtin_tools as builtin_tools
 
