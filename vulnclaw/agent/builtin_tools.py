@@ -896,10 +896,15 @@ async def execute_python(agent: Any, args: dict[str, Any]) -> str:
         return "[!] Code is empty; nothing executed"
 
     url_matches = re.findall(r"https?://([a-zA-Z0-9._:-]+)(/[^\s'\"`]*)?", code)
-    for host, path in url_matches:
+    for raw_host, path in url_matches:
+        # Strip the port before the scope check so an in-scope target referenced
+        # with a port (e.g. localhost:3000) is not falsely flagged out of scope.
+        # The fetch tool already compares against urlparse().hostname (no port);
+        # this keeps python_execute consistent with that behavior.
+        host = raw_host.split(":", 1)[0].lower()
         host_violation = enforce_host_path_constraints(
             agent,
-            host=host.lower(),
+            host=host,
             path=(path or "").rstrip("/"),
             target=host,
         )
