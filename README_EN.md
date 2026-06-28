@@ -90,6 +90,8 @@ vulnclaw config set llm.model your-model-name
 
 # 2. Set API Key
 vulnclaw config set llm.api_key sk-your-key-here
+#    — or sign in with a ChatGPT subscription instead of a key:
+#      vulnclaw login   (browser sign-in; see docs/keyless-auth.md, note the ToS caveat)
 
 # 3. Default: open the original CLI / REPL
 vulnclaw
@@ -116,7 +118,8 @@ Sample output:
 
 LLM Config:
   Provider: openai
-  API Key: set
+  Auth Mode: static
+  Credentials: configured
   Base URL: https://api.openai.com/v1
   Model: gpt-4o
 
@@ -573,7 +576,9 @@ vulnclaw config set session.show_thinking false  # hide thinking process (also i
 | Option                                  | Default        | Description                                      |
 | --------------------------------------- | -------------- | ------------------------------------------------ |
 | `llm.provider`                         | openai         | LLM provider (8 built-in + custom)              |
-| `llm.api_key`                          | empty          | API key                                          |
+| `llm.api_key`                          | empty          | API key (auth_mode=static)                       |
+| `llm.auth_mode`                        | static         | `static` (api_key) or `oauth` (`vulnclaw login`) |
+| `llm.chatgpt_auto_proxy`               | false          | Auto-start built-in ChatGPT-backend bridge proxy |
 | `llm.base_url`                         | per provider   | API base URL, customizable                       |
 | `llm.model`                            | per provider   | Model name, customizable                        |
 | `llm.temperature`                      | 0.1            | Sampling temperature                             |
@@ -594,6 +599,8 @@ vulnclaw config set session.show_thinking false  # hide thinking process (also i
 | ----------------------------------------------- | ---------------------- |
 | `VULNCLAW_LLM_PROVIDER`                       | LLM provider name      |
 | `VULNCLAW_LLM_API_KEY`                        | API key                |
+| `VULNCLAW_LLM_AUTH_MODE`                      | static / oauth         |
+| `VULNCLAW_LLM_CHATGPT_AUTO_PROXY`             | Built-in ChatGPT proxy |
 | `VULNCLAW_LLM_BASE_URL`                       | API base URL           |
 | `VULNCLAW_LLM_MODEL`                          | Model name             |
 | `VULNCLAW_SESSION__MAX_ROUNDS`                | Max autonomous rounds  |

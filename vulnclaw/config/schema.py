@@ -106,7 +106,28 @@ class LLMConfig(BaseModel):
         default="openai",
         description="LLM provider name (openai/minimax/deepseek/zhipu/moonshot/qwen/siliconflow/doubao/baichuan/stepfun/sensetime/yi/custom)",
     )
-    api_key: str = Field(default="", description="API key for the chosen provider")
+    api_key: str = Field(default="", description="Static API key for the chosen provider (auth_mode=static)")
+    auth_mode: str = Field(
+        default="static",
+        description="Credential mode: static (api_key) or oauth (browser sign-in via `vulnclaw login`).",
+    )
+    # ── OAuth (auth_mode=oauth) ─────────────────────────────────────────
+    # Tokens are obtained by `vulnclaw login` and refreshed silently. These two
+    # endpoints are set automatically by the login flow.
+    oauth_token_url: str = Field(
+        default="", description="OAuth token endpoint (code/refresh exchange)"
+    )
+    oauth_client_id: str = Field(
+        default="", description="OAuth client_id used for token exchange/refresh"
+    )
+    chatgpt_auto_proxy: bool = Field(
+        default=False,
+        description=(
+            "When signed in with a ChatGPT subscription, auto-start a built-in "
+            "local proxy that bridges chat.completions to the ChatGPT backend "
+            "(no external proxy needed)."
+        ),
+    )
     base_url: str = Field(
         default="https://api.openai.com/v1",
         description="OpenAI-compatible API base URL (auto-filled by provider)",

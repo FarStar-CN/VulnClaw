@@ -502,13 +502,23 @@ def _generate_attack_summary_from_session(session: SessionState) -> str:
     try:
         from vulnclaw.agent.think_filter import strip_think_tags
         from vulnclaw.config.settings import load_config, make_openai_client
+        from vulnclaw.config.token_provider import (
+            TokenResolutionError,
+            has_llm_credentials,
+            resolve_llm_token,
+        )
 
         config = load_config()
-        if not config.llm.api_key:
+        if not has_llm_credentials(config.llm):
+            return ""
+
+        try:
+            token = resolve_llm_token(config.llm)
+        except TokenResolutionError:
             return ""
 
         client = make_openai_client(
-            api_key=config.llm.api_key,
+            api_key=token,
             base_url=config.llm.base_url,
         )
 

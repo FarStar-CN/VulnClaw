@@ -205,6 +205,12 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
         with suppress(ValueError):
             config.llm.temperature = float(v)
 
+    # ── LLM auth mode (static / oauth) ──────────────────────────────────
+    if v := os.environ.get("VULNCLAW_LLM_AUTH_MODE"):
+        config.llm.auth_mode = v
+    if v := os.environ.get("VULNCLAW_LLM_CHATGPT_AUTO_PROXY"):
+        config.llm.chatgpt_auto_proxy = v.lower() in ("1", "true", "yes", "on")
+
     # ── Session ──────────────────────────────────────────────────────
     if v := os.environ.get("VULNCLAW_SESSION_OUTPUT_DIR"):
         config.session.output_dir = Path(v)
