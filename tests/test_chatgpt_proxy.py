@@ -11,7 +11,6 @@ import pytest
 
 from vulnclaw.agent import chatgpt_proxy as cp
 
-
 # ── Pure translation functions ───────────────────────────────────────
 
 
