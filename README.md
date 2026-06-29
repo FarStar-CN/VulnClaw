@@ -146,6 +146,8 @@ vulnclaw config set llm.model your-model-name
 
 # 2. 设置 API Key
 vulnclaw config set llm.api_key sk-your-key-here
+#    — 或改用 ChatGPT 订阅登录（无需 API Key）：
+#      vulnclaw login   （浏览器登录；详见 docs/keyless-auth.md，注意 ToS 风险）
 
 # 3. 默认：打开原 CLI / REPL
 vulnclaw
@@ -172,7 +174,8 @@ vulnclaw doctor
 
 LLM 配置:
   Provider: openai
-  API Key: 已设置
+  Auth Mode: static
+  Credentials: configured
   Base URL: https://api.openai.com/v1
   Model: gpt-4o
 
@@ -690,7 +693,9 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程（也可在
 | 配置项                   | 默认值 | 说明                                     |
 | ------------------------ | ------ | ---------------------------------------- |
 | `llm.provider`           | openai | LLM 提供商（8 个内置 + custom）          |
-| `llm.api_key`            | 空     | API Key                                  |
+| `llm.api_key`            | 空     | API Key（auth_mode=static）              |
+| `llm.auth_mode`          | static | `static`（api_key）或 `oauth`（`vulnclaw login`） |
+| `llm.chatgpt_auto_proxy` | false  | 自动启动内置 ChatGPT 后端桥接代理         |
 | `llm.base_url`           | 按 provider | API 基础 URL，可自定义              |
 | `llm.model`              | 按 provider | 模型名称，可自定义                   |
 | `llm.temperature`        | 0.1    | 采样温度                                 |
@@ -715,6 +720,8 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程（也可在
 | ----------------------------- | ---------------------- |
 | `VULNCLAW_LLM_PROVIDER`       | LLM 提供商名称         |
 | `VULNCLAW_LLM_API_KEY`        | API Key                |
+| `VULNCLAW_LLM_AUTH_MODE`      | static / oauth         |
+| `VULNCLAW_LLM_CHATGPT_AUTO_PROXY` | 内置 ChatGPT 代理  |
 | `VULNCLAW_LLM_BASE_URL`       | API 基础 URL           |
 | `VULNCLAW_LLM_MODEL`          | 模型名称               |
 | `VULNCLAW_SESSION_MAX_ROUNDS`| 自主渗透最大轮数       |

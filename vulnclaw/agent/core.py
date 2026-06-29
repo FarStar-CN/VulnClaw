@@ -229,15 +229,50 @@ class AgentCore:
             pass
 
     def _get_client(self):
-        """Lazy-initialize OpenAI client."""
+        """Lazy-initialize OpenAI client with dynamic credential resolution.
+
+        Supports static API keys as well as keyless / short-lived bearer tokens
+        (env / file / command / WIF). The token is re-resolved on every call so
+        rotated or just-minted access tokens are picked up without rebuilding the
+        client; ``client.api_key`` becomes the ``Authorization: Bearer`` value.
+        """
+        from vulnclaw.config.token_provider import load_oauth_tokens, resolve_llm_token
+
+        llm = self.config.llm
+
+        # ── ChatGPT subscription: auto-start the built-in bridge proxy ──
+        # The subscription token only works against the ChatGPT backend, so we
+        # transparently route VulnClaw's chat.completions through an in-process
+        # proxy instead of requiring the user to run one.
+        if (
+            getattr(llm, "chatgpt_auto_proxy", False)
+            and str(getattr(llm, "auth_mode", "") or "").lower() == "oauth"
+            and str(load_oauth_tokens().get("flow") or "") == "chatgpt"
+        ):
+            from vulnclaw.agent.chatgpt_proxy import ensure_proxy_running
+
+            proxy_base = ensure_proxy_running()
+            if self._client is None:
+                try:
+                    self._client = make_openai_client(
+                        api_key="local-proxy", base_url=proxy_base
+                    )
+                except ImportError:
+                    raise RuntimeError("请安装 openai 包: pip install openai")
+            return self._client
+
+        token = resolve_llm_token(llm)
         if self._client is None:
             try:
                 self._client = make_openai_client(
-                    api_key=self.config.llm.api_key,
-                    base_url=self.config.llm.base_url,
+                    api_key=token or "placeholder",
+                    base_url=llm.base_url,
                 )
             except ImportError:
                 raise RuntimeError("请安装 openai 包: pip install openai")
+        elif token:
+            # Refresh the bearer token in place for rotating / short-lived creds.
+            self._client.api_key = token
         return self._client
 
     @staticmethod

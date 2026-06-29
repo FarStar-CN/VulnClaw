@@ -56,6 +56,7 @@ from vulnclaw.config.settings import (
     save_config,
     set_config_value,
 )
+from vulnclaw.config.token_provider import has_llm_credentials
 from vulnclaw.i18n import _
 from vulnclaw.orchestrator import run_agent_task
 from vulnclaw.repl_runner import run_repl_call
@@ -253,7 +254,7 @@ def _run_repl() -> None:
     _print_banner()
 
     config = load_config()
-    if not config.llm.api_key:
+    if not has_llm_credentials(config.llm):
         console.print(_("cli.no_api_key"))
         console.print(_("cli.choose_provider"))
         console.print(_("cli.set_env_var"))
@@ -902,8 +903,8 @@ def run(
 ) -> None:
     """Run a full authorized pentest workflow."""
     config = load_config()
-    if not config.llm.api_key:
-        err_console.print("[!] Configure an LLM API key first.")
+    if not has_llm_credentials(config.llm):
+        err_console.print("[!] Configure LLM credentials first (api_key or auth_mode).")
         raise typer.Exit(1)
 
     console.print(f"[*] Target: [bold]{target}[/] | Scope: [bold]{scope}[/]")
@@ -998,8 +999,8 @@ def solve(
     from the target toward the goal and stops on success or when no path remains.
     """
     config = load_config()
-    if not config.llm.api_key:
-        err_console.print("[!] Configure an LLM API key first.")
+    if not has_llm_credentials(config.llm):
+        err_console.print("[!] Configure LLM credentials first (api_key or auth_mode).")
         raise typer.Exit(1)
 
     resolved_goal = goal or "找到 flag / 拿到 shell / 确认并验证高价值漏洞"
@@ -1088,8 +1089,8 @@ def persistent(
     from vulnclaw.agent.core import PersistentCycleResult
 
     config = load_config()
-    if not config.llm.api_key:
-        err_console.print("[!] Configure an LLM API key first.")
+    if not has_llm_credentials(config.llm):
+        err_console.print("[!] Configure LLM credentials first (api_key or auth_mode).")
         raise typer.Exit(1)
 
     # Resolve parameters (CLI override -> config defaults)
@@ -1515,10 +1516,11 @@ def config_provider(
     console.print(f"    Base URL: [dim]{config.llm.base_url}[/]")
     console.print(f"    Model:    [dim]{config.llm.model}[/]")
 
-    if not config.llm.api_key:
+    if not has_llm_credentials(config.llm):
         console.print()
         console.print(
-            "[yellow]Set an API key first: [bold]vulnclaw config set llm.api_key <your-key>[/][/]"
+            "[yellow]Set credentials first: [bold]vulnclaw config set llm.api_key <your-key>[/] "
+            "or configure keyless auth (llm.auth_mode = env/file/command/wif)[/]"
         )
 
 
@@ -1545,6 +1547,101 @@ def init() -> None:
     console.print(_("cli.init.step_api_key"))
     console.print(_("cli.init.step_cli"))
     console.print(_("cli.init.step_tui"))
+
+
+# 鈹€鈹€ Login / Logout commands 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+
+
+@app.command()
+def login(
+    proxy_url: Optional[str] = typer.Option(
+        None,
+        "--proxy-url",
+        help="External OpenAI-compatible proxy base_url (disables the built-in one)",
+    ),
+    no_browser: bool = typer.Option(
+        False, "--no-browser", help="Print the URL instead of opening a browser"
+    ),
+    set_default: bool = typer.Option(
+        True, "--set-default/--no-set-default", help="Set llm.auth_mode=oauth on success"
+    ),
+) -> None:
+    """Sign in with your ChatGPT subscription (Codex "Sign in with ChatGPT").
+
+    Opens the ChatGPT consent page in your browser, stores the resulting
+    refreshable token, and enables the built-in proxy that bridges
+    chat.completions to the ChatGPT backend — so VulnClaw just works afterwards.
+
+    ⚠️ This reuses OpenAI's first-party Codex OAuth client. Using a ChatGPT
+    subscription through a non-official client may violate OpenAI's Terms of
+    Service and can get your account restricted. You proceed at your own risk.
+    """
+    from vulnclaw.config.token_provider import (
+        CHATGPT_CLIENT_ID,
+        CHATGPT_TOKEN_URL,
+        OAuthError,
+        perform_chatgpt_login,
+    )
+
+    llm = load_config().llm
+
+    err_console.print(
+        "[yellow][!] Sign in with ChatGPT reuses OpenAI's first-party Codex OAuth "
+        "client. Using a ChatGPT subscription through a non-official client may "
+        "violate OpenAI's Terms of Service and can get your account restricted. "
+        "You are proceeding at your own risk.[/]"
+    )
+    try:
+        bundle = perform_chatgpt_login(open_browser=not no_browser)
+    except OAuthError as exc:
+        err_console.print(f"[!] ChatGPT sign-in failed: {exc}")
+        raise typer.Exit(1)
+
+    # Wire config so resolve/refresh works against the Codex token endpoint.
+    set_config_value("llm.oauth_token_url", CHATGPT_TOKEN_URL)
+    set_config_value("llm.oauth_client_id", CHATGPT_CLIENT_ID)
+    if set_default:
+        set_config_value("llm.auth_mode", "oauth")
+    # The ChatGPT backend serves its own model family — gpt-4o won't work.
+    if (llm.model or "").lower() in ("", "gpt-4o", "gpt-5", "gpt-5-codex"):
+        set_config_value("llm.model", "gpt-5.5")
+
+    if proxy_url:
+        # User supplied an external proxy: use it, disable the built-in one.
+        set_config_value("llm.base_url", proxy_url.rstrip("/"))
+        set_config_value("llm.chatgpt_auto_proxy", "false")
+    else:
+        # Default: built-in proxy auto-starts on demand — zero setup.
+        set_config_value("llm.chatgpt_auto_proxy", "true")
+
+    tok = bundle.get("access_token", "")
+    masked = (tok[:6] + "…" + tok[-4:]) if len(tok) > 12 else "(received)"
+    console.print("[green]Signed in with ChatGPT.[/]")
+    console.print(f"  Access token: [dim]{masked}[/]  (refreshes automatically)")
+    if bundle.get("account_id"):
+        console.print(f"  Account id: [dim]{bundle['account_id']}[/]")
+    console.print()
+    if proxy_url:
+        console.print(f"  base_url set to external proxy: [dim]{proxy_url.rstrip('/')}[/]")
+    else:
+        console.print(
+            "  [green]Built-in ChatGPT proxy enabled — it starts automatically.[/]\n"
+            "  [dim]No external proxy needed. The bridge to OpenAI's ChatGPT backend "
+            "is experimental; if a call fails, the error shows the backend response "
+            "so you can adjust llm.model or the VULNCLAW_CHATGPT_* env vars.[/]"
+        )
+    console.print("  Run [bold]vulnclaw[/] to start.")
+
+
+@app.command()
+def logout() -> None:
+    """Remove stored OAuth tokens (browser sign-in)."""
+    from vulnclaw.config.token_provider import logout_oauth
+
+    if logout_oauth():
+        console.print("[green]Signed out — stored OAuth tokens removed.[/]")
+    else:
+        console.print("[yellow]No stored OAuth tokens to remove.[/]")
 
 
 # 鈹€鈹€ Doctor command 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -1600,10 +1697,13 @@ def doctor() -> None:
     config = load_config()
     console.print()
     console.print("[bold]LLM Config[/]:")
-    has_key = bool(config.llm.api_key)
+    has_key = has_llm_credentials(config.llm)
+    auth_mode = (config.llm.auth_mode or "static").lower()
     console.print(f"  Provider: [bold cyan]{config.llm.provider}[/]")
+    console.print(f"  Auth Mode: [bold]{auth_mode}[/]")
+    cred_label = "configured" if has_key else "not set"
     console.print(
-        f"  API Key: [{'green' if has_key else 'red'}]{'configured' if has_key else 'not set'}[/]"
+        f"  Credentials: [{'green' if has_key else 'red'}]{cred_label}[/]"
     )
     console.print(f"  Base URL: [dim]{config.llm.base_url}[/]")
     console.print(f"  Model: [dim]{config.llm.model}[/]")
@@ -1642,7 +1742,8 @@ def doctor() -> None:
         console.print("[green]Environment ready. Run [bold]vulnclaw[/] to start.[/]")
     else:
         console.print(
-            "[yellow]Set an API key first: [bold]vulnclaw config set llm.api_key <key>[/][/]"
+            "[yellow]Set credentials first: [bold]vulnclaw config set llm.api_key <key>[/] "
+            "or keyless auth (llm.auth_mode = env/file/command/wif)[/]"
         )
 
 
