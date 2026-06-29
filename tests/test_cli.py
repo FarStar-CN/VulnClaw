@@ -48,7 +48,10 @@ class TestCLI:
         assert result.exit_code == 0
         assert "Registered:" in result.output
         assert "Tools:" in result.output
-        assert "vulnclaw tui" in result.output or "Set an API key first" in result.output
+        assert (
+            "Environment ready. Run vulnclaw to start." in result.output
+            or "Set credentials first" in result.output
+        )
 
     def test_cli_config_list(self, runner):
         from vulnclaw.cli.main import app
