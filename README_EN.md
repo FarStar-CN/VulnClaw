@@ -78,6 +78,31 @@ cd VulnClaw
 pip install -e .
 ```
 
+### Run with Docker (optional)
+
+The image bundles the Web UI plus the runtimes (`npx` / `uvx`) needed by the
+default MCP servers. All state (config, sessions, targets, reports) persists in
+a `/data` volume.
+
+```bash
+cp .env.example .env          # add VULNCLAW_LLM_API_KEY etc.
+docker compose up --build      # build the image and start the Web UI
+# open http://127.0.0.1:7788
+```
+
+Or run a one-off CLI command with plain docker:
+
+```bash
+docker run --rm -it \
+  -e VULNCLAW_LLM_API_KEY=sk-your-key-here \
+  -v vulnclaw-data:/data \
+  vulnclaw:latest scan <target>
+```
+
+> ⚠️ `localhost` inside the container refers to the container itself. To scan a
+> service on your host use `host.docker.internal`; to scan another container,
+> share a network and use its container name. See [DOCKER.md](DOCKER.md).
+
 ### Four-Step Launch
 
 ```bash

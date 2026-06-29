@@ -1,0 +1,62 @@
+# Git / CI
+.git
+.github
+.gitignore
+
+# Python caches & build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.tox/
+.nox/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Frontend deps / build (rebuilt inside the image)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.npm-cache/
+frontend/*.tsbuildinfo
+
+# VulnClaw runtime state (lives in the /data volume)
+.vulnclaw/
+sessions/
+reports/
+pocs/
+
+# Local-only / secrets
+.env
+.env.*
+!.env.example
+.claude/
+CLAUDE.md
+docs/
+.test-tmp/
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Tests & assets not needed at runtime
+tests/
+assets/
+*.log
+*.tmp
+*.bak
