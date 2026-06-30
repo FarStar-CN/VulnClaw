@@ -45,6 +45,7 @@ VulnClaw 自动执行：
 
 <img width="1148" height="642" alt="image" src="https://github.com/user-attachments/assets/576e1cf6-25da-4969-864b-40e77d020dbf" />
 
+<img width="2529" height="1136" alt="image" src="https://github.com/user-attachments/assets/9612c633-31f3-4062-8f56-ea5b4989fd50" />
 
 适用于已授权的渗透测试、CTF 竞赛、安全教学、红队演练等场景。
 
