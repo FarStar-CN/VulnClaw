@@ -14,7 +14,7 @@ Before `jadx`, `frida_mcp`, or `ida_pro_mcp`, always do this first:
 3. open the app with `scrcpy_vision`
 4. simulate real business clicks and navigation
 5. after each important action, inspect screenshots, logs, and `burp` or `charles`
-6. if packets are visible and usable, move directly into `03-web-security-integrated.md`
+6. if packets are visible and usable, move directly into `web-playbook-index.md`
 7. only if traffic is missing, encrypted, opaque, still not replayable, or runtime evidence clearly points to a client-side blocker should reverse work begin
 
 This rule is the default for Android pentest work. Reverse is not the first step unless the task itself is already a known decryption or reverse-only problem.
@@ -156,7 +156,7 @@ Three cases:
 - move directly into replay and security testing
 - use `burp` as the testing baseline
 - preserve the screen action that produced the packet
-- continue into `03-web-security-integrated.md` to test the HTTP/HTTPS or WebSocket surface
+- continue into `web-playbook-index.md` to test the HTTP/HTTPS or WebSocket surface
 - after finishing one server-side probe set, return to the app and repeat the loop for the next business action if needed
 
 #### Case 2: Packet is visible but encrypted or opaque
@@ -205,9 +205,9 @@ Do not keep reversing only because static recovery also seems possible.
 
 Then continue into:
 
-- `03-web-security-integrated.md` for API and Web testing
+- `web-playbook-index.md` for API and Web testing
 - `04-ai-and-mcp-security-integrated.md` if the target request reaches AI, agent, or MCP surfaces
-- `05-tools-and-operations-integrated.md` when you need the next operator tool family
+- `tools-reference-index.md` when you need the next operator tool family
 
 ## Evidence Contract
 

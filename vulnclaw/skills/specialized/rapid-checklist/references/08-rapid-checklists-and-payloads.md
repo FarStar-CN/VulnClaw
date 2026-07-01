@@ -20,13 +20,13 @@ Use it only after routing is clear. It is meant for fast lookup, not for replaci
 
 ### Web injection or output execution
 
-- 先看 `03-web-security-integrated.md`
+- 先看 `web-playbook-index.md`（`web-security-advanced` Skill）
 - 如果是输入点验证，优先分成 `SQLi`、`XSS`、`command execution`、`SSTI`、`XXE`
 - 如果请求是客户端构造的，先回到 `02-client-api-reverse-and-burp.md`
 
 ### Auth, logic, token, or state bugs
 
-- 先看 `03-web-security-integrated.md`
+- 先看 `web-playbook-index.md`（`web-security-advanced` Skill）
 - 重点先确认对象标识、角色边界、重置流程、支付金额、顺序依赖
 - 如果 token 或签名来自客户端，先稳定重放再测试
 
@@ -34,7 +34,7 @@ Use it only after routing is clear. It is meant for fast lookup, not for replaci
 
 - 先看 `browser-js-signing-workflow.md`
 - 再按阶段进入 `browser-locate-and-request-chain.md`、`browser-recover-and-shell-reduction.md`、`browser-runtime-fit-and-risk.md`、`browser-validation-and-handoff.md`
-- 重放稳定后再切回 `03-web-security-integrated.md`
+- 重放稳定后再切回 `web-playbook-index.md`（`web-security-advanced` Skill）
 
 ### Android runtime, packet visibility, or sign recovery
 
@@ -51,7 +51,7 @@ Use it only after routing is clear. It is meant for fast lookup, not for replaci
 ### Intranet, host, or AD work
 
 - 先看 `06-intranet-and-host-operations-integrated.md`
-- 工具不确定时补看 `05-tools-and-operations-integrated.md`
+- 工具不确定时补看 `tools-reference-index.md`（`pentest-tools` Skill）
 
 ## Web Rapid Cards
 
@@ -148,6 +148,6 @@ Use families, not copied full lists, unless the current task specifically needs 
 
 - If the route is still unclear, go back to `00-usage-and-routing.md`.
 - If packet visibility or replay is blocked, go back to `02-client-api-reverse-and-burp.md` or the matching browser or Android workflow.
-- If you need exact original payload wording or exhaustive raw examples, open `references/payloads.md`.
+- If you need exact original payload wording or exhaustive raw examples, use the Web Rapid Cards section above or open the relevant `web-playbook-*.md` files in `web-security-advanced`.
 
 

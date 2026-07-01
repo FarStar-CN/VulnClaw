@@ -29,7 +29,7 @@ Start in this order instead:
 2. get `burp` or `charles` ready before driving the feature
 3. use `scrcpy_vision` to open the app and drive real business features
 4. after each important action, inspect `burp` or `charles` for HTTP/HTTPS requests or WebSocket messages
-5. if packets are already visible and usable, move directly into `03-web-security-integrated.md` and test the server-side surface
+5. if packets are already visible and usable, move directly into `web-playbook-index.md` and test the server-side surface
 6. repeat the UI action -> packet capture -> Web security analysis loop for the next business feature
 7. escalate into `jadx`, `frida_mcp`, or `ida_pro_mcp` only when packets are absent, encrypted, opaque, still not replayable, or when runtime anomalies clearly point to a client-side blocker
 
@@ -44,7 +44,7 @@ For this Android pentest path, reverse engineering is a blocker-resolution step,
 5. If the target is Android reverse or crypto recovery, continue into `android-signing-and-crypto-workflow.md`.
 6. If Android runtime progress depends on app UI state, continue into `android-ui-driven-observation-and-packet-loop.md`.
 7. Read `Rule` and `reporting-and-evidence.md` content before switching to Burp.
-8. After replay is stable, move into `03-web-security-integrated.md` or `04-ai-and-mcp-security-integrated.md`.
+8. After replay is stable, move into `web-playbook-index.md` or `04-ai-and-mcp-security-integrated.md`.
 
 ## Replay Readiness Checklist
 
@@ -75,7 +75,7 @@ Record template: `references/browser-request-chain-template.md`
 - use `scrcpy_vision` to navigate, inspect screenshots, and decide the next action
 - check `burp` or `charles` for HTTP/HTTPS requests or WebSocket messages after each important action
 - use `adb_mcp` to review logs after important actions
-- once packets are visible and replayable, move directly into `03-web-security-integrated.md` and keep the UI-action to packet to Web-analysis loop going for the next business feature
+- once packets are visible and replayable, move directly into `web-playbook-index.md` and keep the UI-action to packet to Web-analysis loop going for the next business feature
 - reverse Java only when packets are absent, encrypted, still opaque, or otherwise blocked
 - escalate into JNI or `.so` work only when Java stops exposing the required inputs or outputs
 - use `frida_mcp` when hook-based plaintext recovery is faster than reimplementation
