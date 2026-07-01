@@ -196,6 +196,11 @@ def _make_solve_event_printer(target_console):
                 )
             else:
                 target_console.print("[dim]◆ Reason: 暂不新增方向[/dim]")
+        elif kind == "frontier_recovery":
+            target_console.print(
+                f"[yellow]Frontier recovery:[/yellow] "
+                f"no open intents, retry {payload.get('streak', '?')}"
+            )
         elif kind == "completed":
             target_console.print("[green]✓ Reason: 目标达成[/green]")
         elif kind == "explore_start":
