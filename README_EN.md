@@ -418,7 +418,7 @@ Operate the full pentest workflow through a browser — ideal for users who pref
 
 ```bash
 # Install Web dependencies
-pip install vulnclaw[web]
+pip install 'vulnclaw[web]'
 
 # Launch Web UI (default: 127.0.0.1:7788)
 vulnclaw web
