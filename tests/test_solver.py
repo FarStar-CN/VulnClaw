@@ -355,6 +355,53 @@ async def test_solve_recovers_empty_frontier_with_new_intent(monkeypatch):
     assert "flag{recovered}" in result.board.complete_reason
 
 
+async def test_solve_adds_fallback_intents_when_recovery_is_empty(monkeypatch):
+    async def fake_reason(agent, board, max_intents):
+        if not board.intents:
+            return {"intents": [{"from": [], "description": "dead login path"}]}
+        return {"complete": False}
+
+    async def fake_recovery_noop(agent, board, max_intents, streak):
+        return {"complete": False}
+
+    async def fake_explore(
+        agent,
+        board,
+        intent,
+        *,
+        max_tool_rounds,
+        evidence_buffer,
+        stream_sink=None,
+        skip_context_write=False,
+    ):
+        if "header/cookie auth bypass" in intent.description:
+            evidence_buffer.append("HTTP 200\nflag{fallback}")
+            return True, "header/cookie auth bypass returned flag{fallback}"
+        return False, "no useful result"
+
+    monkeypatch.setattr(solver, "reason_step", fake_reason)
+    monkeypatch.setattr(solver, "frontier_recovery_step", fake_recovery_noop)
+    monkeypatch.setattr(solver, "explore_step", fake_explore)
+
+    events: list[tuple[str, dict]] = []
+    result = await solver.solve(
+        _fake_agent(),
+        origin="http://t",
+        goal="capture flag",
+        max_steps=10,
+        max_parallel=3,
+        on_event=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert result.completed is True
+    assert any(
+        kind == "frontier_recovery" and payload.get("reason") == "fallback_intents"
+        for kind, payload in events
+    )
+    assert any("header/cookie auth bypass" in intent.description for intent in result.board.intents)
+    assert "flag{fallback}" in result.board.complete_reason
+
+
 async def test_solve_abandons_unproductive_intent(monkeypatch):
     state = {"reason": 0}
 

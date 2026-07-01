@@ -435,6 +435,40 @@ def _frontier_recovery_prompt(board: Blackboard, max_intents: int, streak: int) 
     )
 
 
+def _add_fallback_recovery_intents(board: Blackboard, max_intents: int) -> int:
+    if not board.intents:
+        return 0
+
+    from_facts = board.fact_ids()[-3:]
+    candidates = [
+        (
+            "Pivot to header/cookie auth bypass: test Authorization, x-auth-token, "
+            "Cookies, Aaa, X-Forwarded-* and method override headers against login "
+            "and likely protected pages."
+        ),
+        (
+            "Pivot to request-shape login bypass: compare form vs JSON bodies, "
+            "duplicate username/password parameters, array parameters, empty values, "
+            "and GET/POST/PUT method differences while preserving session cookies."
+        ),
+        (
+            "Pivot to source and backup leakage under catch-all routing: classify "
+            "candidate source/backup paths by status, content-type, body length, "
+            "hash and headers rather than status code alone."
+        ),
+    ]
+
+    added = 0
+    for desc in candidates:
+        if _is_duplicate_intent(board, desc):
+            continue
+        board.add_intent(desc, from_facts)
+        added += 1
+        if added >= max(1, min(max_intents, len(candidates))):
+            break
+    return added
+
+
 async def reason_step(agent: Any, board: Blackboard, max_intents: int) -> dict:
     raw = await _structured_call(agent, _reason_prompt(board, max_intents), max_tokens=1200)
     parsed = _extract_json(raw)
@@ -646,6 +680,19 @@ async def solve(
 
             emit("reason", {"decision": recovery_decision, "step": steps, "recovery": True})
             if _add_decision_intents(board, recovery_decision):
+                empty_reason_streak = 0
+                return True
+
+            fallback_added = _add_fallback_recovery_intents(board, max_intents)
+            if fallback_added:
+                emit(
+                    "frontier_recovery",
+                    {
+                        "streak": empty_reason_streak,
+                        "reason": "fallback_intents",
+                        "added": fallback_added,
+                    },
+                )
                 empty_reason_streak = 0
                 return True
             return False
