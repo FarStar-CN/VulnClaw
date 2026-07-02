@@ -473,7 +473,7 @@ vulnclaw tui --target 192.168.1.100 --mode continuous
 
 ```bash
 # 安装 Web 依赖
-pip install vulnclaw[web]
+pip install 'vulnclaw[web]'
 
 # 启动 Web UI（默认 127.0.0.1:7788）
 vulnclaw web
