@@ -319,6 +319,12 @@ async def persistent_pentest(
 
         cycle_results_list: list[AgentResult] = []
 
+        # Snapshot which findings were already verified before this cycle runs, so
+        # the cycle report can label only genuinely-new verified findings.
+        prev_verified_ids = {
+            f.finding_id for f in agent.context.state.get_verified_findings()
+        }
+
         def _make_step_callback(cycle: int):
             def _on_step(round_num: int, result: AgentResult) -> None:
                 cycle_results_list.append(result)
@@ -376,6 +382,7 @@ async def persistent_pentest(
                     total_steps=total_steps,
                     rounds_per_cycle=rounds_per_cycle,
                     llm_attack_summary=llm_summary,
+                    prev_verified_ids=prev_verified_ids,
                 )
             except Exception as e:
                 report_path = f"报告生成失败: {e}"

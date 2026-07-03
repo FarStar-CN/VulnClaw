@@ -595,6 +595,7 @@ def generate_persistent_cycle_report(
     rounds_per_cycle: int,
     output_path: Optional[str] = None,
     llm_attack_summary: str = "",  # ★ LLM 生成的攻击路径摘要
+    prev_verified_ids: Optional[set] = None,
 ) -> Path:
     """Generate a cycle report for persistent pentest.
 
@@ -604,10 +605,16 @@ def generate_persistent_cycle_report(
         session: Current session state with findings.
         cycle_num: Current cycle number (1-based).
         total_findings: Total findings so far (cumulative).
-        new_findings: New findings in this cycle.
+        new_findings: New findings in this cycle (all findings delta; used only
+            as a fallback when prev_verified_ids is not supplied).
         total_steps: Total executed steps so far (cumulative).
         rounds_per_cycle: Rounds per cycle.
         output_path: Output file path. If None, auto-generate.
+        prev_verified_ids: finding_id set of findings already verified before this
+            cycle. When provided, "new this cycle" is computed by identity against
+            this set instead of slicing by an all-findings count — the count-based
+            slice mislabels prior verified findings as new when a cycle adds
+            unverified findings.
 
     Returns:
         Path to the generated report file.
@@ -634,7 +641,14 @@ def generate_persistent_cycle_report(
             severity_counts["Medium"] += 1
 
     # ★ 本周期新增已验证 findings（只统计 verified）
-    cycle_findings = verified_findings[-new_findings:] if new_findings > 0 else []
+    if prev_verified_ids is not None:
+        # 按 finding_id 身份判定本周期新验证的漏洞，避免用"全部 findings 增量"
+        # 去切片"已验证子集"导致把往期漏洞误标为本周期新增。
+        cycle_findings = [
+            f for f in verified_findings if f.finding_id not in prev_verified_ids
+        ]
+    else:
+        cycle_findings = verified_findings[-new_findings:] if new_findings > 0 else []
 
     # Generate recommendations from verified high/critical findings only
     # Deduplicate by vuln_type: only one recommendation per vulnerability type

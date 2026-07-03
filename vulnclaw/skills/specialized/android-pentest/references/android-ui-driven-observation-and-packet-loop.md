@@ -143,7 +143,7 @@ Once the target packet is real:
 - inspect it in `charles` or `burp`
 - determine host, path, method, headers, cookies, tokens, body shape, and sequencing
 - if it is already usable, move directly into replay and security testing
-- hand it off to `03-web-security-integrated.md` for API, HTTP/HTTPS, or WebSocket security analysis
+- hand it off to `web-playbook-index.md` for API, HTTP/HTTPS, or WebSocket security analysis
 - only correlate it with builder or signer logic if encryption, signatures, or replay blockers remain
 - use `frida_mcp` only if runtime-only values are still missing
 
@@ -181,9 +181,9 @@ First confirm:
 
 Then branch:
 
-- `03-web-security-integrated.md` for normal API and Web testing
+- `web-playbook-index.md` for normal API and Web testing
 - `04-ai-and-mcp-security-integrated.md` if the packet reaches AI, agent, or MCP-exposed surfaces
-- `05-tools-and-operations-integrated.md` when you need the next operator tool family
+- `tools-reference-index.md` when you need the next operator tool family
 
 ## Evidence Contract
 
