@@ -167,7 +167,8 @@ def test_guess_payload(vuln_type, expected):
         ("[POSSIBLE] diff", 0, VerificationResult.NO_RESPONSE_DIFF),
         ("plain output", 0, VerificationResult.NORMAL_RESPONSE),
         ("", -1, VerificationResult.TIMEOUT),
-        ("", -2, VerificationResult.ERROR_403_404),
+        ("", -2, VerificationResult.EXECUTION_ERROR),
+        ("", -3, VerificationResult.EXECUTION_ERROR),
         ("boom", 1, VerificationResult.FALSE_POSITIVE),
     ],
 )

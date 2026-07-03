@@ -146,7 +146,7 @@ def detect_attack_path(output: str) -> Optional[str]:
         ("deserialization", ["反序列化", "unserialize", "serialize", "pop链", "wakeup"]),
         ("file_upload", ["文件上传", "upload", "webshell", "一句话木马"]),
         ("ssrf", ["ssrf", "gopher://", "dict://", "内网访问"]),
-        ("xxe", ["xxe", "xml外部实体", "ENTITY"]),
+        ("xxe", ["xxe", "xml外部实体", "entity"]),
         ("info_leak", ["源码泄露", ".git", ".svn", "备份文件", "目录遍历", "robots.txt"]),
         ("brute_force", ["爆破", "弱口令", "字典", "brute"]),
     ]

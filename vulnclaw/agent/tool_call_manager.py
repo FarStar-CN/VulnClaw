@@ -103,6 +103,26 @@ async def _execute_parallel(
     return await asyncio.gather(*(_guarded(item) for item in to_execute))
 
 
+def _extract_structured_content(tool_result: Any) -> dict[str, Any] | None:
+    """Recover the structured payload embedded by execute_mcp_tool.
+
+    On a successful MCP call, ``execute_mcp_tool`` appends
+    ``[structured] {json}`` to the result string. Parse it back so callers get a
+    separate ``structured_content`` field without re-executing the tool.
+    """
+    if not isinstance(tool_result, str):
+        return None
+    marker = "[structured] "
+    idx = tool_result.rfind(marker)
+    if idx == -1:
+        return None
+    try:
+        parsed = json.loads(tool_result[idx + len(marker):].strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 async def _execute_single(agent: Any, item: dict[str, Any]) -> dict[str, Any] | None:
     """Execute one tool call with isolated error handling.
 
@@ -114,14 +134,12 @@ async def _execute_single(agent: Any, item: dict[str, Any]) -> dict[str, Any] | 
     func_args = item["func_args"]
     try:
         tool_result = await agent._execute_mcp_tool(func_name, func_args)
-        structured_content = None
-        if getattr(agent, "mcp_manager", None):
-            try:
-                raw_result = await agent.mcp_manager.call_tool(func_name, func_args)
-                if isinstance(raw_result, dict):
-                    structured_content = raw_result.get("structured_content")
-            except Exception:
-                structured_content = None
+        # NOTE: do not re-invoke agent.mcp_manager.call_tool here. _execute_mcp_tool
+        # already dispatches MCP tools through call_tool (running the side effect
+        # once) and embeds any structured content into tool_result as
+        # "[structured] {...}". A second call_tool would run the side effect twice,
+        # so we recover the structured payload from the result string instead.
+        structured_content = _extract_structured_content(tool_result)
         return {
             "tool_call": tool_call,
             "tool_call_id": tool_call.id,

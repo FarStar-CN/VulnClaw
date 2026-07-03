@@ -349,6 +349,62 @@ class TestReportGenerator:
         assert "https://example.com/admin/exec" in content
         assert "PoC" in content
 
+    def test_persistent_cycle_report_counts_only_newly_verified(self, tmp_path):
+        """Regression: with prev_verified_ids, prior verified findings are not
+        counted as new this cycle even when the all-findings delta is larger."""
+        from vulnclaw.agent.context import SessionState, VulnerabilityFinding
+        from vulnclaw.report.generator import generate_persistent_cycle_report
+
+        session = SessionState(target="https://example.com")
+
+        old = VulnerabilityFinding(
+            title="Old RCE",
+            severity="Critical",
+            vuln_type="RCE",
+            description="prior cycle finding",
+            evidence="https://example.com/old | /old | confirmed",
+        )
+        old.mark_verified(note="prior")
+        session.add_finding(old)
+
+        # Snapshot taken at the start of this cycle: the old finding is already verified.
+        prev_verified_ids = {f.finding_id for f in session.get_verified_findings()}
+
+        # This cycle adds one newly-verified finding plus an unverified one.
+        new_verified = VulnerabilityFinding(
+            title="New SQLi",
+            severity="High",
+            vuln_type="SQLI",
+            description="new cycle finding",
+            evidence="https://example.com/new | /new | confirmed",
+        )
+        new_verified.mark_verified(note="this cycle")
+        session.add_finding(new_verified)
+        session.add_finding(
+            VulnerabilityFinding(
+                title="Unverified XSS",
+                severity="Low",
+                vuln_type="XSS",
+                description="not verified",
+                evidence="https://example.com/xss | /xss",
+            )
+        )
+
+        output = generate_persistent_cycle_report(
+            session=session,
+            cycle_num=2,
+            total_findings=3,
+            new_findings=2,  # all-findings delta — would over-count without prev ids
+            total_steps=10,
+            rounds_per_cycle=100,
+            output_path=str(tmp_path / "cycle2.md"),
+            prev_verified_ids=prev_verified_ids,
+        )
+        content = Path(output).read_text(encoding="utf-8")
+        # Only the one newly-verified finding counts as new this cycle.
+        assert "本周期新增已验证漏洞** | 1 个" in content
+        assert "New SQLi" in content
+
     def test_persistent_cycle_report_prefers_llm_attack_summary(self, tmp_path, monkeypatch):
         from vulnclaw.report.generator import generate_persistent_cycle_report
 

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -47,6 +48,7 @@ class VerificationResult(str, Enum):
     NORMAL_RESPONSE = "normal_response"  # 正常响应
     TIMEOUT = "timeout"  # 超时
     ERROR_403_404 = "error_403_404"  # 403/404 正常拒绝
+    EXECUTION_ERROR = "execution_error"  # PoC 执行环境错误（如解释器缺失）
 
 
 @dataclass
@@ -140,7 +142,7 @@ try:
 
     if payload in r.text:
         print("[CONFIRMED] XSS漏洞: payload出现在响应中")
-        print(f"[INFO] 响应中包含: {payload}")
+        print("[INFO] 已发送 XSS payload，检测到原样反射")
         exit(0)
 
     print("[REJECTED] XSS payload未出现在响应中")
@@ -426,8 +428,9 @@ except Exception as e:
 class VerifierExecutor:
     """执行 PoC 验证并判定结果."""
 
-    # Python 解释器路径
-    PYTHON_CMD = "python"
+    # Python 解释器路径：使用当前运行的解释器，避免 "python" 在仅有
+    # "python3" 的环境中缺失而被误判为漏洞验证失败。
+    PYTHON_CMD = sys.executable or "python"
 
     @classmethod
     def execute_poc(cls, poc_code: str, timeout: int = 30) -> tuple[int, str]:
@@ -491,8 +494,10 @@ class VerifierExecutor:
         # 执行失败
         if returncode == -1:
             return VerificationResult.TIMEOUT
-        if returncode == -2:
-            return VerificationResult.ERROR_403_404
+        if returncode in (-2, -3):
+            # -2: Python 解释器缺失；-3: PoC 执行本身抛出异常。
+            # 均为执行环境问题，而非目标返回 403/404。
+            return VerificationResult.EXECUTION_ERROR
         if returncode != 0:
             return VerificationResult.FALSE_POSITIVE
 
@@ -646,6 +651,7 @@ class VulnerabilityVerifier:
             VerificationResult.NORMAL_RESPONSE: "返回正常响应，漏洞不存在",
             VerificationResult.TIMEOUT: "PoC 执行超时",
             VerificationResult.ERROR_403_404: "请求被拒绝（403/404），目标不可利用",
+            VerificationResult.EXECUTION_ERROR: "PoC 执行环境错误（如解释器缺失），未能验证漏洞",
         }
 
         vf.rejection_reason = rejection_reasons.get(

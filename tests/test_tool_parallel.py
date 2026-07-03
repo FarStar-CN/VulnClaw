@@ -169,6 +169,42 @@ async def test_single_call_runs_without_parallel_overhead():
 
 
 @pytest.mark.asyncio
+async def test_mcp_tool_executed_exactly_once_per_call():
+    """Regression: _execute_single must not re-invoke mcp_manager.call_tool.
+
+    Previously it called call_tool a second time to read structured_content,
+    which ran every MCP-backed tool's side effect twice.
+    """
+
+    class _CountingMcp:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call_tool(self, name, args):
+            self.calls += 1
+            return {"ok": True, "content": "done", "structured_content": {"n": args.get("n")}}
+
+    mcp = _CountingMcp()
+
+    class _McpAgent:
+        def __init__(self) -> None:
+            self.mcp_manager = mcp
+            self.config = _Config(_Safety(tool_parallel=True, tool_max_concurrent=5))
+
+        async def _execute_mcp_tool(self, func_name, func_args):
+            # Mirror the real dispatch: genuine MCP tools go through call_tool once.
+            result = await self.mcp_manager.call_tool(func_name, func_args)
+            return str(result.get("content"))
+
+    message = _make_message([(f"c{i}", "probe", f'{{"n":{i}}}') for i in range(3)])
+    results, _ = await handle_tool_calls_with_results(_McpAgent(), message)
+
+    assert len(results) == 3
+    # Exactly one execution per tool call — not double.
+    assert mcp.calls == 3
+
+
+@pytest.mark.asyncio
 async def test_missing_config_defaults_to_parallel():
     async def executor(func_name, func_args):
         await asyncio.sleep(0.05)
