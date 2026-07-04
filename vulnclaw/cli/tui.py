@@ -1840,6 +1840,90 @@ def _default_launcher(draft: TuiTaskDraft) -> None:
 # (新增 recon 分区, api_key 掩码, 三种 MCP transport, OAuth 字段只读)
 
 
+class _ConfigTuiExit(Exception):
+    """Raised when the interactive config editor should return immediately."""
+
+
+def _is_escape_input(value: str) -> bool:
+    return value == "\x1b"
+
+
+def _read_config_prompt_raw(
+    label: str,
+    *,
+    default: str = "",
+    choices: list[str] | None = None,
+    console: Console | None = None,
+) -> str:
+    """Read config-editor input, letting a bare Escape cancel immediately."""
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            from prompt_toolkit import prompt
+            from prompt_toolkit.completion import WordCompleter
+            from prompt_toolkit.key_binding import KeyBindings
+        except Exception:
+            pass
+        else:
+            kb = KeyBindings()
+
+            @kb.add("escape", eager=True)
+            def _escape(event: Any) -> None:
+                event.app.exit(result="\x1b")
+
+            hint = ""
+            if choices:
+                hint += f" ({'/'.join(choices)})"
+            if default:
+                hint += f" [{default}]"
+            completer = WordCompleter(choices or [], ignore_case=True) if choices else None
+            return prompt(
+                f"{label}{hint}: ",
+                default=default,
+                completer=completer,
+                complete_while_typing=bool(completer),
+                key_bindings=kb,
+            )
+
+    value = Prompt.ask(label, default=default, choices=choices, console=console).strip()
+    if _is_escape_input(value):
+        raise _ConfigTuiExit
+    return value
+
+
+def _config_prompt_ask(
+    screen: Console,
+    label: str,
+    *,
+    default: str = "",
+    choices: list[str] | None = None,
+) -> str:
+    """Prompt inside the config editor, with Escape mapped to editor exit."""
+    while True:
+        value = _read_config_prompt_raw(
+            label,
+            default=default,
+            choices=choices,
+            console=screen,
+        ).strip()
+        if _is_escape_input(value):
+            raise _ConfigTuiExit
+        if not choices or value in choices:
+            return value
+        screen.print(f"[{C_ERROR}]Choose one of: {', '.join(choices)}[/]")
+
+
+def _config_confirm_ask(screen: Console, label: str, *, default: bool = False) -> bool:
+    """Confirm inside the config editor, with Escape mapped to editor exit."""
+    default_text = "y" if default else "n"
+    while True:
+        value = _config_prompt_ask(screen, label, default=default_text).lower()
+        if value in ("y", "yes"):
+            return True
+        if value in ("n", "no"):
+            return False
+        screen.print(f"[{C_ERROR}]Enter y or n.[/]")
+
+
 def _split_csv_items(raw: str) -> list[str]:
     """Split a comma/newline separated string into cleaned items."""
     return [item.strip() for item in raw.replace("\n", ",").split(",") if item.strip()]
@@ -1865,7 +1949,7 @@ def _mask_key_list(keys: list[str]) -> str:
 
 def _prompt_text_value(screen: Console, label: str, current: str) -> str:
     """Prompt for a string value, keeping the current value on blank input."""
-    raw = Prompt.ask(label, default=current, console=screen).strip()
+    raw = _config_prompt_ask(screen, label, default=current)
     if raw == "!clear":
         return ""
     return current if raw == "" else raw
@@ -1874,18 +1958,18 @@ def _prompt_text_value(screen: Console, label: str, current: str) -> str:
 def _prompt_choice_value(screen: Console, label: str, choices: list[str], current: str) -> str:
     """Prompt for a choice value with a stable default."""
     default = current if current in choices else choices[0]
-    return Prompt.ask(label, choices=choices, default=default, console=screen).strip()
+    return _config_prompt_ask(screen, label, choices=choices, default=default)
 
 
 def _prompt_bool_value(screen: Console, label: str, current: bool) -> bool:
     """Prompt for a boolean value."""
-    return Confirm.ask(label, default=current, console=screen)
+    return _config_confirm_ask(screen, label, default=current)
 
 
 def _prompt_int_value(screen: Console, label: str, current: int) -> int:
     """Prompt for an integer value, keeping the current value on blank input."""
     while True:
-        raw = Prompt.ask(label, default=str(current), console=screen).strip()
+        raw = _config_prompt_ask(screen, label, default=str(current))
         if not raw:
             return current
         try:
@@ -1897,7 +1981,7 @@ def _prompt_int_value(screen: Console, label: str, current: int) -> int:
 def _prompt_float_value(screen: Console, label: str, current: float) -> float:
     """Prompt for a float value, keeping the current value on blank input."""
     while True:
-        raw = Prompt.ask(label, default=str(current), console=screen).strip()
+        raw = _config_prompt_ask(screen, label, default=str(current))
         if not raw:
             return current
         try:
@@ -1908,7 +1992,7 @@ def _prompt_float_value(screen: Console, label: str, current: float) -> float:
 
 def _prompt_list_value(screen: Console, label: str, current: list[str]) -> list[str]:
     """Prompt for a comma-separated list value."""
-    raw = Prompt.ask(label, default=", ".join(current), console=screen).strip()
+    raw = _config_prompt_ask(screen, label, default=", ".join(current))
     if raw == "!clear":
         return []
     if not raw:
@@ -1921,7 +2005,7 @@ def _prompt_env_value(
 ) -> dict[str, str]:
     """Prompt for key=value pairs separated by commas."""
     current_text = ", ".join(f"{k}={v}" for k, v in sorted((current or {}).items()))
-    raw = Prompt.ask(label, default=current_text, console=screen).strip()
+    raw = _config_prompt_ask(screen, label, default=current_text)
     if raw == "!clear":
         return {}
     if not raw:
@@ -2252,12 +2336,12 @@ def _edit_mcp_config(screen: Console, config):
             )
         screen.print(table)
 
-        action = Prompt.ask(
+        action = _prompt_choice_value(
+            screen,
             "Action",
-            choices=["add", "edit", "delete", "back"],
-            default="back",
-            console=screen,
-        ).strip()
+            ["add", "edit", "delete", "back"],
+            "back",
+        )
 
         if action == "back":
             return config
@@ -2269,12 +2353,12 @@ def _edit_mcp_config(screen: Console, config):
             if not config.mcp.servers:
                 screen.print(f"[{C_WARNING}]No MCP servers to edit.[/]")
                 continue
-            name = Prompt.ask(
+            name = _prompt_choice_value(
+                screen,
                 "Server to edit",
-                choices=list(config.mcp.servers.keys()),
-                default=next(iter(config.mcp.servers)),
-                console=screen,
-            ).strip()
+                list(config.mcp.servers.keys()),
+                next(iter(config.mcp.servers)),
+            )
             current = config.mcp.servers[name]
             _, server = _prompt_mcp_server(screen, config, server=current)
             config.mcp.servers[name] = server
@@ -2283,18 +2367,18 @@ def _edit_mcp_config(screen: Console, config):
             if not config.mcp.servers:
                 screen.print(f"[{C_WARNING}]No MCP servers to delete.[/]")
                 continue
-            name = Prompt.ask(
+            name = _prompt_choice_value(
+                screen,
                 "Server to delete",
-                choices=list(config.mcp.servers.keys()),
-                default=next(iter(config.mcp.servers)),
-                console=screen,
-            ).strip()
+                list(config.mcp.servers.keys()),
+                next(iter(config.mcp.servers)),
+            )
             if name in BUILTIN_MCP_SERVERS:
                 screen.print(
                     f"[{C_WARNING}]Built-in servers are seeded defaults and cannot be deleted here.[/]"
                 )
                 continue
-            if Confirm.ask(f"Delete MCP server '{name}'?", default=False, console=screen):
+            if _prompt_bool_value(screen, f"Delete MCP server '{name}'?", False):
                 config.mcp.servers.pop(name, None)
             continue
 
@@ -2304,31 +2388,36 @@ def run_config_tui() -> None:
     screen = Console()
     config = load_config()
 
-    while True:
-        screen.print()
-        screen.print(Panel("VulnClaw Config", border_style=C_BORDER, box=box.ROUNDED))
-        _render_config_summary(screen, config)
-        action = Prompt.ask(
-            "Section",
-            choices=["llm", "session", "safety", "recon", "mcp", "save", "quit"],
-            default="save",
-            console=screen,
-        ).strip()
+    try:
+        while True:
+            screen.print()
+            screen.print(Panel("VulnClaw Config", border_style=C_BORDER, box=box.ROUNDED))
+            _render_config_summary(screen, config)
+            action = _prompt_choice_value(
+                screen,
+                "Section",
+                ["llm", "session", "safety", "recon", "mcp", "save", "quit"],
+                "save",
+            )
 
-        if action == "llm":
-            config = _edit_llm_config(screen, config)
-        elif action == "session":
-            config = _edit_session_config(screen, config)
-        elif action == "safety":
-            config = _edit_safety_config(screen, config)
-        elif action == "recon":
-            config = _edit_recon_config(screen, config)
-        elif action == "mcp":
-            config = _edit_mcp_config(screen, config)
-        elif action == "save":
-            save_config(config)
-            screen.print(Panel("Config saved.", border_style=C_SUCCESS, box=box.ROUNDED))
-            return
-        elif action == "quit":
-            screen.print(Panel("Discarded changes.", border_style=C_WARNING, box=box.ROUNDED))
-            return
+            if action == "llm":
+                config = _edit_llm_config(screen, config)
+            elif action == "session":
+                config = _edit_session_config(screen, config)
+            elif action == "safety":
+                config = _edit_safety_config(screen, config)
+            elif action == "recon":
+                config = _edit_recon_config(screen, config)
+            elif action == "mcp":
+                config = _edit_mcp_config(screen, config)
+            elif action == "save":
+                save_config(config)
+                screen.print(Panel("Config saved.", border_style=C_SUCCESS, box=box.ROUNDED))
+                return
+            elif action == "quit":
+                screen.print(Panel("Discarded changes.", border_style=C_WARNING, box=box.ROUNDED))
+                return
+    except _ConfigTuiExit:
+        screen.print()
+        screen.print(Panel("Discarded changes.", border_style=C_WARNING, box=box.ROUNDED))
+        return

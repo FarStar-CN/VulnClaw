@@ -999,6 +999,33 @@ class TestCLI:
         assert "模型/API 配置已保存" in output
         assert "API Key: 已更新" in output
 
+    def test_config_tui_escape_exits_without_saving(self, monkeypatch):
+        import vulnclaw.cli.tui as tui_mod
+        from rich.console import Console as RichConsole
+        from vulnclaw.config.schema import VulnClawConfig
+
+        answers = iter(["llm", "\x1b"])
+        saved = []
+        screen = RichConsole(
+            file=io.StringIO(),
+            record=True,
+            width=100,
+            force_terminal=False,
+            color_system=None,
+        )
+
+        monkeypatch.setattr(tui_mod, "load_config", VulnClawConfig)
+        monkeypatch.setattr(tui_mod, "save_config", lambda cfg: saved.append(cfg))
+        monkeypatch.setattr(
+            tui_mod, "_read_config_prompt_raw", lambda *args, **kwargs: next(answers)
+        )
+        monkeypatch.setattr(tui_mod, "Console", lambda *args, **kwargs: screen)
+
+        tui_mod.run_config_tui()
+
+        assert saved == []
+        assert "Discarded changes." in screen.export_text()
+
 
 class TestClassicReplSlashPalette:
     """Classic `vulnclaw` REPL: '/' skill palette and '/.' flag-skill wiring."""
