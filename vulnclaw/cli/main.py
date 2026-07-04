@@ -1126,7 +1126,7 @@ def run(
         console.print(_("cli.pentest_finished", findings=total_findings))
 
     report_path = _generate_report_for_target(target, output_path=output)
-    console.print(f"[+] Report generated: {report_path}")
+    console.print(_("cli.report_generated", path=report_path))
 
 
 @app.command()
