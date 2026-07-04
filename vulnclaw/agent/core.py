@@ -125,6 +125,18 @@ class AgentCore:
         self.context.reset()
         self._reset_runtime_state()
 
+    def apply_config(self, config: VulnClawConfig) -> None:
+        """Adopt an updated config (e.g. after the in-REPL config editor).
+
+        The cached OpenAI client is bound to a specific ``base_url``, so drop it
+        and rebuild the failover key pool; the next call re-creates the client
+        with the new provider / model / key.
+        """
+        self.config = config
+        self._client = None
+        self._key_pool = config.llm.key_pool()
+        self._key_index = 0
+
     def _reset_runtime_state(
         self,
         user_input: str = "",

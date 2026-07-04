@@ -1028,15 +1028,17 @@ class TestClassicReplSlashPalette:
         assert result.kind == "message"
         assert "Unknown flag skill" in result.text
 
-    def test_completer_offers_all_skills_on_bare_slash(self):
+    def test_completer_offers_commands_and_skills_on_bare_slash(self):
         from prompt_toolkit.document import Document
 
-        from vulnclaw.cli.tui import build_repl_slash_completer, list_skill_palette_entries
+        from vulnclaw.cli.tui import build_repl_slash_completer, list_repl_palette_entries
 
         completer = build_repl_slash_completer()
         completions = list(completer.get_completions(Document("/", 1), None))
 
-        assert len(completions) == len(list_skill_palette_entries())
+        assert len(completions) == len(list_repl_palette_entries())
+        # Built-in commands come first, ahead of the skills.
+        assert [c.text for c in completions[:2]] == ["config", "language"]
 
     def test_completer_stops_after_skill_is_chosen(self):
         from prompt_toolkit.document import Document
@@ -1055,6 +1057,127 @@ class TestClassicReplSlashPalette:
         monkeypatch.setattr(main_mod.sys.stdin, "isatty", lambda: False)
 
         assert main_mod._make_repl_prompt_session() is None
+
+    def test_config_command_dispatches(self):
+        from vulnclaw.cli.tui import dispatch_repl_slash
+
+        result = dispatch_repl_slash("/config")
+
+        assert result.kind == "command"
+        assert result.value == "config"
+        assert result.text == ""
+
+    def test_config_alias_dispatches(self):
+        from vulnclaw.cli.tui import dispatch_repl_slash
+
+        result = dispatch_repl_slash("/cfg")
+
+        assert result.kind == "command"
+        assert result.value == "config"
+
+    def test_language_command_carries_argument(self):
+        from vulnclaw.cli.tui import dispatch_repl_slash
+
+        result = dispatch_repl_slash("/language en")
+
+        assert result.kind == "command"
+        assert result.value == "language"
+        assert result.text == "en"
+
+    def test_language_alias_dispatches(self):
+        from vulnclaw.cli.tui import dispatch_repl_slash
+
+        result = dispatch_repl_slash("/lang")
+
+        assert result.kind == "command"
+        assert result.value == "language"
+
+    def test_repl_palette_lists_commands_before_skills(self):
+        import vulnclaw.cli.tui as tui_mod
+
+        entries = tui_mod.list_repl_palette_entries()
+        names = [name for name, _ in entries]
+
+        assert names[:2] == ["config", "language"]
+        assert "recon" in names  # skills still follow the commands
+
+    def test_repl_palette_filters_commands_by_prefix(self):
+        import vulnclaw.cli.tui as tui_mod
+
+        names = [name for name, _ in tui_mod.list_repl_palette_entries("co")]
+
+        assert "config" in names
+        assert "language" not in names
+
+    def test_language_switch_updates_config(self, monkeypatch):
+        import vulnclaw.cli.main as main_mod
+        import vulnclaw.cli.tui as tui_mod
+        import vulnclaw.i18n as i18n_mod
+
+        saved = {}
+        monkeypatch.setattr(main_mod, "save_config", lambda cfg: saved.setdefault("cfg", cfg))
+        # Keep the switch pure: no real locale reload / global rebuild.
+        monkeypatch.setattr(i18n_mod, "init_i18n", lambda *a, **k: None)
+        monkeypatch.setattr(tui_mod, "rebuild_translations", lambda: None)
+
+        class _Cfg:
+            class session:
+                language = "auto"
+
+        class _Agent:
+            def __init__(self):
+                self.applied = None
+
+            def apply_config(self, cfg):
+                self.applied = cfg
+
+        cfg = _Cfg()
+        agent = _Agent()
+
+        out = main_mod._repl_switch_language("en", agent, cfg)
+
+        assert cfg.session.language == "en"
+        assert out is cfg
+        assert saved["cfg"] is cfg
+        assert agent.applied is cfg
+
+    def test_language_switch_rejects_unknown(self, monkeypatch):
+        import vulnclaw.cli.main as main_mod
+
+        called = {"saved": False}
+        monkeypatch.setattr(
+            main_mod, "save_config", lambda cfg: called.__setitem__("saved", True)
+        )
+
+        class _Cfg:
+            class session:
+                language = "en"
+
+        class _Agent:
+            def apply_config(self, cfg):  # pragma: no cover - must not run
+                raise AssertionError("apply_config should not be called")
+
+        cfg = _Cfg()
+        out = main_mod._repl_switch_language("klingon", _Agent(), cfg)
+
+        assert out is cfg
+        assert cfg.session.language == "en"  # unchanged
+        assert called["saved"] is False
+
+    def test_agent_apply_config_resets_client(self):
+        from vulnclaw.agent.core import AgentCore
+        from vulnclaw.config.settings import load_config
+
+        config = load_config()
+        agent = AgentCore.__new__(AgentCore)
+        agent._client = object()
+        agent._key_index = 3
+
+        agent.apply_config(config)
+
+        assert agent.config is config
+        assert agent._client is None
+        assert agent._key_index == 0
 
 
 class TestCLISubCommands:

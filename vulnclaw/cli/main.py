@@ -330,6 +330,54 @@ def _read_repl_line(
     return pt_session.prompt(HTML(f"vulnclaw {body}<b>&gt; </b>"))
 
 
+def _run_repl_command(name: str, args: str, agent: Any, config: Any) -> Any:
+    """Execute a built-in classic-REPL slash command.
+
+    Returns the (possibly reloaded) config so the caller can keep using it.
+    """
+    if name == "config":
+        from vulnclaw.cli.tui import run_config_tui
+
+        run_config_tui()
+        # The editor writes to disk; reload and rebind the running agent so
+        # provider/model/key changes take effect without restarting.
+        new_config = load_config()
+        agent.apply_config(new_config)
+        console.print(
+            f"[green]✓[/] Config reloaded: "
+            f"{new_config.llm.provider}/{new_config.llm.model}"
+        )
+        return new_config
+
+    if name == "language":
+        return _repl_switch_language(args, agent, config)
+
+    return config
+
+
+def _repl_switch_language(args: str, agent: Any, config: Any) -> Any:
+    """Switch the interface language from the classic REPL."""
+    from vulnclaw.cli.tui import _SUPPORTED_LANGUAGES, rebuild_translations
+    from vulnclaw.i18n import init_i18n
+
+    lang = args.strip().lower()
+    if lang not in _SUPPORTED_LANGUAGES:
+        console.print(
+            "[yellow]Usage:[/] /language <"
+            + " | ".join(_SUPPORTED_LANGUAGES)
+            + f">  (current: {config.session.language})"
+        )
+        return config
+
+    config.session.language = lang
+    save_config(config)
+    init_i18n(lang=lang if lang != "auto" else None, config=config)
+    rebuild_translations()
+    agent.apply_config(config)
+    console.print(f"[green]✓[/] Language set to [bold]{lang}[/].")
+    return config
+
+
 def _run_repl() -> None:
     """Run the interactive REPL loop."""
     from vulnclaw.agent.core import AgentCore
@@ -403,6 +451,9 @@ def _run_repl() -> None:
                     if restored_loaded:
                         console.print(_("cli.target_restored", target=current_target))
                     console.print(_("cli.target_set", target=current_target))
+                    continue
+                if result.kind == "command":
+                    config = _run_repl_command(result.value, result.text, agent, config)
                     continue
                 # result.kind == "run": fall through with the rewritten prompt.
                 user_input = result.text

@@ -85,10 +85,11 @@ def rebuild_translations() -> None:
     Call this after init_i18n() with a new language to update all
     module-level globals that were built with _() translations.
     """
-    global MODES, MENU_ITEMS, SLASH_COMMANDS
+    global MODES, MENU_ITEMS, SLASH_COMMANDS, REPL_COMMANDS
     MODES = _build_modes()
     MENU_ITEMS = _build_menu_items()
     SLASH_COMMANDS = _build_slash_commands()
+    REPL_COMMANDS = _build_repl_commands()
 
 
 CheckMode = Literal["quick", "standard", "deep", "continuous"]
@@ -712,6 +713,31 @@ def _build_slash_commands() -> dict[str, str]:
 SLASH_COMMANDS: dict[str, str] = _build_slash_commands()
 
 
+def _build_repl_commands() -> dict[str, str]:
+    """Built-in commands the classic REPL implements itself (not skills).
+
+    These have real handlers in ``_run_repl`` — unlike the wider Textual-TUI
+    ``SLASH_COMMANDS`` set, which the classic REPL cannot dispatch.
+    """
+    return {
+        "config": _("tui.slash_config"),
+        "language": _("tui.slash_lang"),
+    }
+
+
+REPL_COMMANDS: dict[str, str] = _build_repl_commands()
+
+# Short aliases → canonical classic-REPL command name.
+_REPL_COMMAND_ALIASES: dict[str, str] = {"cfg": "config", "lang": "language"}
+
+
+def _resolve_repl_command(name: str) -> str:
+    """Return the canonical REPL command for ``name`` (or an alias), else ``""``."""
+    key = name.strip().lower()
+    key = _REPL_COMMAND_ALIASES.get(key, key)
+    return key if key in REPL_COMMANDS else ""
+
+
 def list_skill_palette_entries(prefix: str = "") -> list[tuple[str, str]]:
     """Return palette entries for available skills only (no built-in commands).
 
@@ -726,6 +752,22 @@ def list_skill_palette_entries(prefix: str = "") -> list[tuple[str, str]]:
         description = skill.get("description", "") or f"{skill.get('type', 'skill')} skill"
         refs = skill.get("references", "0")
         entries.append((name, f"Skill · {description} · {refs} refs"))
+    return entries
+
+
+def list_repl_palette_entries(prefix: str = "") -> list[tuple[str, str]]:
+    """Classic-REPL ``/`` palette: built-in commands first, then skills.
+
+    The Textual TUI's other slash commands (``/mode`` etc.) are still excluded —
+    only the commands the classic REPL actually handles are offered here.
+    """
+    normalized = prefix.strip().lower()
+    entries: list[tuple[str, str]] = []
+    for cmd, desc in REPL_COMMANDS.items():
+        if normalized and not cmd.startswith(normalized):
+            continue
+        entries.append((cmd, f"Command · {desc}"))
+    entries.extend(list_skill_palette_entries(prefix))
     return entries
 
 
@@ -797,10 +839,11 @@ def _build_slash_completer() -> Any:
 
 
 def build_repl_slash_completer() -> Any:
-    """Completer for the classic REPL: ``/`` lists skills, ``/.`` lists flag skills.
+    """Completer for the classic REPL: ``/`` lists commands+skills, ``/.`` flag skills.
 
-    Unlike the Textual palette, the classic REPL's ``/`` menu never offers the
-    Textual TUI's slash commands (``/mode`` etc.) — those have no handler here.
+    The ``/`` menu offers the classic REPL's built-in commands (``/config``,
+    ``/language``) followed by skills. The Textual TUI's other slash commands
+    (``/mode`` etc.) are still excluded — they have no handler here.
     """
     from prompt_toolkit.completion import Completer, Completion
 
@@ -829,9 +872,9 @@ def build_repl_slash_completer() -> Any:
 
             word = text[1:]
             if " " in word:
-                # A skill is already chosen; the rest is free-text task input.
+                # A command/skill is already chosen; the rest is free-text input.
                 return
-            for name, desc in list_skill_palette_entries(word):
+            for name, desc in list_repl_palette_entries(word):
                 start_position = -len(word) if word else 0
                 yield Completion(
                     name,
@@ -854,9 +897,10 @@ class ReplSlashResult:
     - ``"run"``     — feed ``text`` to the agent as a natural-language prompt.
     - ``"message"`` — print ``text`` and keep looping.
     - ``"target"``  — set the REPL target to ``value`` (restore behaviour), then loop.
+    - ``"command"`` — run built-in command ``value`` with arguments ``text``.
     """
 
-    kind: Literal["run", "message", "target"]
+    kind: Literal["run", "message", "target", "command"]
     text: str = ""
     value: str = ""
 
@@ -879,6 +923,11 @@ def dispatch_repl_slash(text: str) -> ReplSlashResult:
     parts = body.split(maxsplit=1)
     name = parts[0]
     task = parts[1].strip() if len(parts) > 1 else ""
+
+    # Built-in REPL commands (/config, /language) take precedence over skills.
+    command = _resolve_repl_command(name)
+    if command:
+        return ReplSlashResult("command", value=command, text=task)
 
     skill = load_skill_by_name(name)
     if skill is None:
