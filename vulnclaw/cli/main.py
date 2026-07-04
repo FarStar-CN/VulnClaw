@@ -1686,6 +1686,16 @@ config_app = typer.Typer(help="Manage configuration")
 app.add_typer(config_app, name="config")
 
 
+@config_app.callback(invoke_without_command=True)
+def config_root(ctx: typer.Context) -> None:
+    """Open the interactive config editor when no subcommand is provided."""
+    if ctx.resilient_parsing or ctx.invoked_subcommand is not None:
+        return
+    from vulnclaw.cli.tui import run_config_tui
+
+    run_config_tui()
+
+
 @config_app.command("set")
 def config_set(
     key: str = typer.Argument(..., help="Config key in dot notation, e.g. llm.api_key"),
