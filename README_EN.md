@@ -19,7 +19,7 @@ Official Website：https://unclecheng-li.github.io/vulnclaw.com/
 <br>
 
 Built on LLM Agent + MCP Toolchain + Pentest Skill orchestration,
-compatible with OpenAI / MiniMax / DeepSeek and similar models.
+compatible with OpenAI / Anthropic / MiniMax / DeepSeek and similar models.
 Natural language input → automated "Recon → Vulnerability Discovery → Exploitation → Reporting".
 
 [Quick Start](#quick-start) · [Architecture](#-architecture) · [Skills](#-built-in-skills)
@@ -53,7 +53,7 @@ Suitable for authorized pentests, CTF competitions, security training, and red t
 ## Features
 
 - **Natural Language Driven** — Describe your intent in plain English, it auto-identifies phases and tools
-- **8 LLM Providers** — OpenAI / MiniMax / DeepSeek / Zhipu / Moonshot / Qwen / SiliconFlow, one-command switch
+- **13 LLM Providers** — OpenAI / Anthropic / MiniMax / DeepSeek / Zhipu / Moonshot / Qwen / SiliconFlow / Doubao / Baichuan / StepFun / SenseTime / Yi, one-command switch
 - **MCP Toolchain** — Ships with 11 MCP service configs and 23 tool definitions; `fetch` / `memory` currently run in stable `local` mode, while most other MCP integrations remain preview or placeholder until full session lifecycle management is completed
 - **AI Agent Core** — OpenAI-compatible protocol + Tool Calling + autonomous pentest loop
 - **21 Pentest Skills** — 7 core + 14 specialized skills (incl. CTF Web/Crypto/Misc, osint-recon, secknowledge-skill), 180 reference documents
@@ -111,7 +111,7 @@ docker run --rm -it \
 
 ```bash
 # 1. Select provider (auto-fills Base URL and model name)
-vulnclaw config provider minimax   # or openai / deepseek / zhipu / moonshot / qwen / siliconflow
+vulnclaw config provider minimax   # or openai / anthropic / deepseek / zhipu / moonshot / qwen / siliconflow
 
 # 1.2 (optional) custom Base URL or model name
 vulnclaw config set llm.base_url https://your-own-api.example.com/v1
@@ -439,7 +439,7 @@ Once launched, open `http://127.0.0.1:7788` in your browser.
 
 ## LLM Provider Configuration
 
-VulnClaw supports all OpenAI-compatible APIs with 8 built-in provider presets:
+VulnClaw supports OpenAI-compatible APIs with 13 built-in provider presets plus custom endpoints:
 
 ```bash
 vulnclaw config provider --list    # list all providers
@@ -449,6 +449,7 @@ vulnclaw config provider minimax   # one-command switch
 | Provider     | Command                  | Default Model          |
 | ------------ | ------------------------ | ---------------------- |
 | OpenAI      | `provider openai`        | gpt-4o                 |
+| Anthropic Claude | `provider anthropic` | claude-sonnet-5        |
 | MiniMax     | `provider minimax`       | MiniMax-M3             |
 | DeepSeek    | `provider deepseek`      | deepseek-v4-pro        |
 | Zhipu GLM   | `provider zhipu`         | glm-4.7                |
@@ -507,7 +508,7 @@ vulnclaw config provider minimax   # one-command switch
 | **MCP Orchestration**| `mcp/registry.py` + `lifecycle.py` + `router.py`    | Service registry + lifecycle + NL→tool routing     |
 | **Skill Dispatcher** | `skills/loader.py` + `dispatcher.py`               | Directory-format Skills + CTF/SRC/AI/Web intent routing |
 | **Crypto Tools**    | `skills/crypto_tools.py`                             | 29 encode/decode/crypto ops, registered as built-in tools |
-| **Config**          | `config/schema.py` + `settings.py`                   | Pydantic models + YAML persistence + 8 provider presets |
+| **Config**          | `config/schema.py` + `settings.py`                   | Pydantic models + YAML persistence + 13 provider presets |
 | **Report Generator** | `report/generator.py` + `poc_builder.py`          | Markdown reports + Python PoC templates             |
 | **Security KB**     | `kb/store.py` + `retriever.py`                     | JSON storage + CVE/technique/tool retrieval        |
 
@@ -604,7 +605,7 @@ vulnclaw config set session.show_thinking false  # hide thinking process (also i
 
 | Option                                  | Default        | Description                                      |
 | --------------------------------------- | -------------- | ------------------------------------------------ |
-| `llm.provider`                         | openai         | LLM provider (8 built-in + custom)              |
+| `llm.provider`                         | openai         | LLM provider (13 built-in + custom)             |
 | `llm.api_key`                          | empty          | API key (auth_mode=static)                       |
 | `llm.auth_mode`                        | static         | `static` (api_key) or `oauth` (`vulnclaw login`) |
 | `llm.chatgpt_auto_proxy`               | false          | Auto-start built-in ChatGPT-backend bridge proxy |

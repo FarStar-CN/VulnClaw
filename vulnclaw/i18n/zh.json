@@ -70,6 +70,12 @@
   "status.mcp_services": "MCP 服务: [bold]{count}[/]",
   "status.tools": "可用工具: [bold]{count}[/]",
   "status.thinking": "推理: {state}",
+  "phase.idle": "就绪",
+  "phase.recon": "信息收集",
+  "phase.vuln_discovery": "漏洞发现",
+  "phase.exploitation": "漏洞利用",
+  "phase.post_exploitation": "后渗透",
+  "phase.reporting": "报告生成",
 
   "auto_pentest.title": "自主渗透测试结果",
   "auto_pentest.finished": "[*] 自主渗透测试完成",

@@ -881,6 +881,33 @@ class TestCLI:
 
         assert session["state"].only_host == "example.com"
 
+    def test_textual_slash_palette_highlight_keeps_terminal_background(self):
+        import re
+
+        import vulnclaw.cli.tui_textual as textual_mod
+
+        palette = re.search(
+            r"#cmd-palette \{(?P<body>.*?)\}",
+            textual_mod.CSS,
+            re.DOTALL,
+        )
+        item = re.search(
+            r"#cmd-palette ListItem \{(?P<body>.*?)\}",
+            textual_mod.CSS,
+            re.DOTALL,
+        )
+        highlight = re.search(
+            r"#cmd-palette ListItem\.-highlight \{(?P<body>.*?)\}",
+            textual_mod.CSS,
+            re.DOTALL,
+        )
+
+        for match in (palette, item, highlight):
+            assert match is not None
+            body = match.group("body")
+            assert "background: transparent;" in body
+            assert "background: #" not in body
+
     def test_tui_slash_palette_includes_available_skills(self):
         import vulnclaw.cli.tui as tui_mod
 
@@ -1156,6 +1183,23 @@ class TestClassicReplSlashPalette:
         # Built-in commands come first, ahead of the skills.
         assert [c.text for c in completions[:2]] == ["config", "language"]
 
+    def test_completion_style_keeps_terminal_background(self):
+        from vulnclaw.cli.tui import build_repl_slash_style
+
+        rules = dict(build_repl_slash_style().style_rules)
+        completion_rules = {
+            selector: value
+            for selector, value in rules.items()
+            if selector.startswith(("completion-menu", "completion-toolbar"))
+        }
+
+        assert completion_rules
+        for value in completion_rules.values():
+            assert "bg:#" not in value
+            assert "reverse" not in value.replace("noreverse", "")
+        assert rules["completion-menu.completion.current"].endswith("noreverse")
+        assert "bg:default" in rules["completion-menu.completion.current"]
+
     def test_completer_stops_after_skill_is_chosen(self):
         from prompt_toolkit.document import Document
 
@@ -1173,6 +1217,35 @@ class TestClassicReplSlashPalette:
         monkeypatch.setattr(main_mod.sys.stdin, "isatty", lambda: False)
 
         assert main_mod._make_repl_prompt_session() is None
+
+    def test_prompt_session_uses_terminal_background_completion_style(self, monkeypatch):
+        import prompt_toolkit
+
+        import vulnclaw.cli.main as main_mod
+
+        captured: dict[str, object] = {}
+
+        class _Hook:
+            def __iadd__(self, handler):
+                captured["handler"] = handler
+                return self
+
+        class _Buffer:
+            on_text_changed = _Hook()
+
+        class _PromptSession:
+            default_buffer = _Buffer()
+
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr(main_mod.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(prompt_toolkit, "PromptSession", _PromptSession)
+
+        assert isinstance(main_mod._make_repl_prompt_session(), _PromptSession)
+        rules = dict(captured["style"].style_rules)
+        assert "bg:default" in rules["completion-menu.completion.current"]
+        assert rules["completion-menu.completion.current"].endswith("noreverse")
 
     def test_config_command_dispatches(self):
         from vulnclaw.cli.tui import dispatch_repl_slash
@@ -1256,6 +1329,27 @@ class TestClassicReplSlashPalette:
         assert out is cfg
         assert saved["cfg"] is cfg
         assert agent.applied is cfg
+
+    def test_repl_prompt_localizes_chinese_phase_when_language_is_english(self, monkeypatch):
+        import vulnclaw.cli.main as main_mod
+        from vulnclaw.i18n import init_i18n
+
+        prompts = []
+
+        class _Console:
+            def input(self, prompt):
+                prompts.append(prompt)
+                return "exit"
+
+        monkeypatch.setattr(main_mod, "console", _Console())
+        init_i18n(lang="en")
+        try:
+            assert main_mod._read_repl_line(None, "127.0.0.1:3000", "就绪", True) == "exit"
+        finally:
+            init_i18n(lang="zh")
+
+        assert "Ready" in prompts[0]
+        assert "就绪" not in prompts[0]
 
     def test_language_switch_rejects_unknown(self, monkeypatch):
         import vulnclaw.cli.main as main_mod
