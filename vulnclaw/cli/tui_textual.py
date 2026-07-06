@@ -1362,16 +1362,20 @@ CSS = """
     overflow-y: auto;
     scrollbar-size: 0 0;
     border: solid #fab283;
+    background: transparent;
 }
 #cmd-palette.open {
     display: block;
 }
+#cmd-palette ListItem {
+    background: transparent;
+}
 #cmd-palette ListItem.-highlight {
-    color: white;
-    background: #fab283 30%;
+    color: #fab283;
+    background: transparent;
 }
 #cmd-palette ListItem.-highlight Static {
-    color: white;
+    color: #fab283;
 }
 
 #sec-popup {

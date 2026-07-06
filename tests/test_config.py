@@ -132,6 +132,7 @@ class TestVulnClawConfig:
         # Should have at least the documented providers
         expected_providers = [
             "openai",
+            "anthropic",
             "minimax",
             "deepseek",
             "zhipu",
@@ -146,6 +147,7 @@ class TestVulnClawConfig:
         from vulnclaw.config.schema import LLMProvider
 
         assert hasattr(LLMProvider, "OPENAI")
+        assert hasattr(LLMProvider, "ANTHROPIC")
         assert hasattr(LLMProvider, "DEEPSEEK")
         assert hasattr(LLMProvider, "MINIMAX")
 
@@ -211,6 +213,16 @@ class TestSettingsLoad:
         apply_provider_preset(config, "deepseek")
         assert config.llm.provider == "deepseek"
         assert "deepseek" in config.llm.base_url.lower()
+
+    def test_apply_anthropic_provider_preset(self):
+        from vulnclaw.config.schema import VulnClawConfig
+        from vulnclaw.config.settings import apply_provider_preset
+
+        config = VulnClawConfig()
+        apply_provider_preset(config, "anthropic")
+        assert config.llm.provider == "anthropic"
+        assert config.llm.base_url == "https://api.anthropic.com/v1"
+        assert config.llm.model == "claude-sonnet-5"
 
     def test_list_providers(self):
         from vulnclaw.config.settings import list_providers

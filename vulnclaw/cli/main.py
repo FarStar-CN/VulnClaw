@@ -258,6 +258,31 @@ async def _run_repl_agent_call(agent, *, call, after_result) -> None:
     await run_repl_call(call=call, after_result=after_result)
 
 
+_PHASE_LABEL_KEYS = {
+    "就绪": "phase.idle",
+    "ready": "phase.idle",
+    "信息收集": "phase.recon",
+    "recon": "phase.recon",
+    "漏洞发现": "phase.vuln_discovery",
+    "vulnerability discovery": "phase.vuln_discovery",
+    "漏洞利用": "phase.exploitation",
+    "exploitation": "phase.exploitation",
+    "后渗透": "phase.post_exploitation",
+    "post-exploitation": "phase.post_exploitation",
+    "post exploitation": "phase.post_exploitation",
+    "报告生成": "phase.reporting",
+    "reporting": "phase.reporting",
+}
+
+
+def _localized_phase_label(phase: Any) -> str:
+    """Return a display-only phase label for the active UI language."""
+    raw = getattr(phase, "value", phase)
+    text = str(raw or "").strip()
+    key = _PHASE_LABEL_KEYS.get(text) or _PHASE_LABEL_KEYS.get(text.lower())
+    return _(key) if key else text
+
+
 def _make_repl_prompt_session() -> Any:
     """Build a prompt_toolkit session with the skill palette, or None if unavailable.
 
@@ -272,11 +297,12 @@ def _make_repl_prompt_session() -> Any:
             return None
         from prompt_toolkit import PromptSession
 
-        from vulnclaw.cli.tui import build_repl_slash_completer
+        from vulnclaw.cli.tui import build_repl_slash_completer, build_repl_slash_style
 
         session = PromptSession(
             completer=build_repl_slash_completer(),
             complete_while_typing=True,
+            style=build_repl_slash_style(),
         )
 
         # `complete_while_typing` reopens the menu on insertion but not on
@@ -306,11 +332,12 @@ def _read_repl_line(
     auto_mode: bool,
 ) -> str:
     """Read one REPL line, using the slash palette when a session is available."""
+    phase_label = _localized_phase_label(phase)
     if pt_session is None:
         prompt_parts = []
         if target:
             prompt_parts.append(f"[bold cyan]{target}[/]")
-        prompt_parts.append(f"[dim]{phase}[/]")
+        prompt_parts.append(f"[dim]{phase_label}[/]")
         if auto_mode:
             prompt_parts.append("[bold yellow]AUTO[/]")
         prompt_str = " | ".join(prompt_parts) if prompt_parts else "vulnclaw"
@@ -323,7 +350,7 @@ def _read_repl_line(
     parts = []
     if target:
         parts.append(f"<ansicyan><b>{_html.escape(target)}</b></ansicyan>")
-    parts.append(f"<ansibrightblack>{_html.escape(phase)}</ansibrightblack>")
+    parts.append(f"<ansibrightblack>{_html.escape(phase_label)}</ansibrightblack>")
     if auto_mode:
         parts.append("<ansiyellow><b>AUTO</b></ansiyellow>")
     body = " | ".join(parts) if parts else "vulnclaw"
@@ -878,10 +905,11 @@ def _print_help() -> None:
 def _print_status(agent, mcp_manager, target, phase, config) -> None:
     """Print current session status."""
     think_state = "[green]shown[/]" if config.session.show_thinking else "[yellow]hidden[/]"
+    phase_label = _localized_phase_label(phase)
     console.print(
         Panel(
             f"{_('status.target', target=target or 'Not set')}\n"
-            f"{_('status.phase', phase=phase)}\n"
+            f"{_('status.phase', phase=phase_label)}\n"
             f"{_('status.mcp_services', count=mcp_manager.running_count())}\n"
             f"{_('status.tools', count=len(mcp_manager.list_available_tools()))}\n"
             f"{_('status.thinking', state=think_state)}",
