@@ -78,11 +78,16 @@ class TestWebServices:
         view = get_provider_presets()
         ids = {p.id for p in view.providers}
         assert "openai" in ids
+        assert "anthropic" in ids
         assert "custom" in ids
         openai = next(p for p in view.providers if p.id == "openai")
         assert openai.base_url == "https://api.openai.com/v1"
         assert openai.default_model == "gpt-4o"
         assert openai.label == "OpenAI"
+        anthropic = next(p for p in view.providers if p.id == "anthropic")
+        assert anthropic.base_url == "https://api.anthropic.com/v1"
+        assert anthropic.default_model == "claude-sonnet-5"
+        assert anthropic.label == "Anthropic Claude"
 
     def test_web_provider_service_fetch_models_uses_saved_key(self, monkeypatch):
         import vulnclaw.web.services.provider_service as provider_service

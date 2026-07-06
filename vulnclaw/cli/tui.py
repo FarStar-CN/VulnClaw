@@ -572,6 +572,7 @@ def _run_pt_tui(session: dict[str, Any]) -> Optional[str]:
         "divider": f"fg:{C_BORDER}",
         "status-bar": f"bg:{C_BORDER_SUBTLE}",
         "input": f"bg:#1e1e1e fg:{C_TEXT}",
+        **slash_completion_style_rules(),
     })
 
     app = Application(
@@ -903,6 +904,31 @@ def build_repl_slash_completer() -> Any:
                 )
 
     return _ReplSlashCompleter()
+
+
+def slash_completion_style_rules() -> dict[str, str]:
+    """Prompt_toolkit completion styles that inherit the terminal background."""
+    return {
+        "completion-menu": "bg:default",
+        "completion-menu.completion": "bg:default",
+        "completion-menu.completion.current": f"fg:{C_PRIMARY} bg:default bold noreverse",
+        "completion-menu.meta.completion": f"fg:{C_MUTED} bg:default",
+        "completion-menu.meta.completion.current": f"fg:{C_MUTED} bg:default noreverse",
+        "completion-menu.multi-column-meta": f"fg:{C_MUTED} bg:default",
+        "completion-toolbar": "bg:default",
+        "completion-toolbar.arrow": "bg:default",
+        "completion-toolbar.completion": "bg:default",
+        "completion-toolbar.completion.current": f"fg:{C_PRIMARY} bg:default bold noreverse",
+        "scrollbar.background": "",
+        "scrollbar.button": f"fg:{C_BORDER_SUBTLE}",
+    }
+
+
+def build_repl_slash_style() -> Any:
+    """Style classic REPL slash completions without forcing a menu background."""
+    from prompt_toolkit.styles import Style
+
+    return Style.from_dict(slash_completion_style_rules())
 
 
 @dataclass
