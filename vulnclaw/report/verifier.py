@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -47,6 +48,7 @@ class VerificationResult(str, Enum):
     NORMAL_RESPONSE = "normal_response"  # 正常响应
     TIMEOUT = "timeout"  # 超时
     ERROR_403_404 = "error_403_404"  # 403/404 正常拒绝
+    EXECUTION_ERROR = "execution_error"  # PoC 执行环境错误（如解释器缺失）
 
 
 @dataclass
@@ -85,14 +87,21 @@ class PoCGenerator:
     """根据漏洞假设生成 PoC 代码."""
 
     # 漏洞类型 → PoC 模板映射
+    #
+    # ⚠️ 模板使用 *单花括号* 作为 Python 语法（dict 字面量、f-string 插值）。
+    # 唯一的模板占位符是 ``{target}`` / ``{payload}`` / ``{baseline_len}`` /
+    # ``{path}``，它们由 :meth:`generate_poc` 通过 ``str.replace`` 精确替换。
+    # 不要使用 ``{{`` / ``}}`` 转义——渲染器不是 ``str.format``，双花括号会原样
+    # 残留到生成的 PoC 中，导致 ``dict`` 字面量变成 ``set``（``TypeError``）或
+    # f-string 打印字面量 ``{var}`` 文本而非插值结果。
     POC_TEMPLATES: dict[str, str] = {
         "sql_injection": """
 import requests
 
 target = "{target}"
-params = {{
+params = {
     "id": "{payload}",
-}}
+}
 
 try:
     r = requests.get(target, params=params, timeout=10, verify=False)
@@ -108,46 +117,45 @@ try:
     for err in sql_errors:
         if err in text:
             print(f"[CONFIRMED] SQL注入漏洞: 检测到SQL错误特征 '{err}'")
-            print(f"[INFO] 响应状态码: {{r.status_code}}")
+            print(f"[INFO] 响应状态码: {r.status_code}")
             exit(0)
 
     # 检查响应差异（如果提供正常 baseline）
     baseline_len = {baseline_len}
     if len(r.content) != baseline_len and baseline_len > 0:
-        print(f"[POSSIBLE] 响应长度异常: {{len(r.content)}} vs baseline {{baseline_len}}")
+        print(f"[POSSIBLE] 响应长度异常: {len(r.content)} vs baseline {baseline_len}")
 
     print("[REJECTED] 未检测到SQL注入特征")
 except requests.Timeout:
     print("[REJECTED] 请求超时")
 except Exception as e:
-    print(f"[ERROR] {{e}}")
+    print(f"[ERROR] {e}")
 """,
         "xss": """
 import requests
-import sys
 
 target = "{target}"
 payload = "{payload}"
 
 try:
-    r = requests.get(target, params={{"q": payload}}, timeout=10, verify=False)
+    r = requests.get(target, params={"q": payload}, timeout=10, verify=False)
 
     if payload in r.text:
-        print(f"[CONFIRMED] XSS漏洞: payload出现在响应中")
-        print(f"[INFO] 响应中包含: {{payload}}")
+        print("[CONFIRMED] XSS漏洞: payload出现在响应中")
+        print("[INFO] 已发送 XSS payload，检测到原样反射")
         exit(0)
 
     print("[REJECTED] XSS payload未出现在响应中")
 except Exception as e:
-    print(f"[ERROR] {{e}}")
+    print(f"[ERROR] {e}")
 """,
         "command_injection": """
 import requests
 
 target = "{target}"
-params = {{
+params = {
     "cmd": "{payload}",
-}}
+}
 
 try:
     r = requests.get(target, params=params, timeout=10, verify=False)
@@ -158,12 +166,12 @@ try:
 
     for indicator in cmd_indicators:
         if indicator in text:
-            print(f"[CONFIRMED] 命令注入漏洞: 检测到 '{{indicator}}'")
+            print(f"[CONFIRMED] 命令注入漏洞: 检测到 '{indicator}'")
             exit(0)
 
     print("[REJECTED] 未检测到命令注入特征")
 except Exception as e:
-    print(f"[ERROR] {{e}}")
+    print(f"[ERROR] {e}")
 """,
         "debug_mode": """
 import requests
@@ -179,13 +187,13 @@ try:
     r_debug = requests.get(target + "/?debug=1", timeout=10, verify=False)
     len_debug = len(r_debug.content)
 
-    print(f"[INFO] 正常响应长度: {{len_normal}}")
-    print(f"[INFO] debug=1 响应长度: {{len_debug}}")
+    print(f"[INFO] 正常响应长度: {len_normal}")
+    print(f"[INFO] debug=1 响应长度: {len_debug}")
 
     # 检查调试信息泄露
     if len_debug != len_normal:
         diff = len_debug - len_normal
-        print(f"[POSSIBLE] 调试模式响应与正常响应不同，差异: {{diff}} 字节")
+        print(f"[POSSIBLE] 调试模式响应与正常响应不同，差异: {diff} 字节")
 
         # 检查是否真的泄露敏感信息
         debug_content = r_debug.text.replace(r_normal.text, "")
@@ -206,7 +214,7 @@ try:
     print("[REJECTED] 调试模式未发现明显敏感信息泄露")
 
 except Exception as e:
-    print(f"[ERROR] {{e}}")
+    print(f"[ERROR] {e}")
 """,
         "lfi": """
 import requests
@@ -215,7 +223,7 @@ target = "{target}"
 payload = "{payload}"
 
 try:
-    r = requests.get(target, params={{"file": payload}}, timeout=10, verify=False)
+    r = requests.get(target, params={"file": payload}, timeout=10, verify=False)
     text = r.text.lower()
 
     # LFI 特征
@@ -223,12 +231,12 @@ try:
 
     for indicator in lfi_indicators:
         if indicator in text:
-            print(f"[CONFIRMED] LFI漏洞: 检测到 '{{indicator}}'")
+            print(f"[CONFIRMED] LFI漏洞: 检测到 '{indicator}'")
             exit(0)
 
     print("[REJECTED] 未检测到LFI特征")
 except Exception as e:
-    print(f"[ERROR] {{e}}")
+    print(f"[ERROR] {e}")
 """,
         "sensitive_file": """
 import requests
@@ -240,18 +248,18 @@ try:
     r = requests.get(target + path, timeout=10, verify=False)
 
     if r.status_code == 200 and len(r.content) > 10:
-        print(f"[CONFIRMED] 敏感文件可访问: {{path}}")
-        print(f"[INFO] 状态码: {{r.status_code}}, 长度: {{len(r.content)}}")
+        print(f"[CONFIRMED] 敏感文件可访问: {path}")
+        print(f"[INFO] 状态码: {r.status_code}, 长度: {len(r.content)}")
 
         # 检查内容类型
         ct = r.headers.get("content-type", "")
-        print(f"[INFO] Content-Type: {{ct}}")
+        print(f"[INFO] Content-Type: {ct}")
 
         exit(0)
 
-    print(f"[REJECTED] 文件不可访问或为空: {{r.status_code}}")
+    print(f"[REJECTED] 文件不可访问或为空: {r.status_code}")
 except Exception as e:
-    print(f"[ERROR] {{e}}")
+    print(f"[ERROR] {e}")
 """,
         "info_disclosure": """
 import requests
@@ -260,7 +268,7 @@ target = "{target}"
 
 try:
     r = requests.get(target, timeout=10, verify=False)
-    headers = {{k.lower(): v.lower() for k, v in r.headers.items()}}
+    headers = {k.lower(): v.lower() for k, v in r.headers.items()}
 
     # 检查敏感 header
     sensitive_headers = {
@@ -273,18 +281,18 @@ try:
     found = []
     for header, desc in sensitive_headers.items():
         if header in headers:
-            found.append(f"{{header}}: {{headers[header][:50]}}")
+            found.append(f"{header}: {headers[header][:50]}")
 
     if found:
-        print(f"[CONFIRMED] 信息泄露: {{len(found)}}个敏感header")
-        for f in found:
-            print(f"  - {{f}}")
+        print(f"[CONFIRMED] 信息泄露: {len(found)}个敏感header")
+        for item in found:
+            print(f"  - {item}")
         exit(0)
 
     print("[INFO] 未发现明显信息泄露，这是正常的安全配置问题")
     print("[REJECTED] 响应头信息泄露 - 这是配置问题，不是漏洞")
 except Exception as e:
-    print(f"[ERROR] {{e}}")
+    print(f"[ERROR] {e}")
 """,
     }
 
@@ -325,25 +333,74 @@ except Exception as e:
 
     @classmethod
     def _generic_template(cls) -> str:
-        """生成通用 PoC 模板."""
+        """生成通用 PoC 模板.
+
+        当漏洞类型没有专用模板时使用。通过对比基准响应与注入 payload 后的响应，
+        在常见注入参数上做启发式验证：反射检测、错误/敏感特征扫描、以及状态码/
+        响应长度差异，并输出与 :meth:`VerifierExecutor.parse_result` 一致的
+        ``[CONFIRMED]`` / ``[POSSIBLE]`` / ``[REJECTED]`` 标记。
+        """
         return """
 import requests
 
 target = "{target}"
+payload = "{payload}"
+
+# 常见的可注入参数名，逐个尝试注入 payload 并与基准响应对比
+CANDIDATE_PARAMS = ["id", "q", "search", "name", "file", "page", "cmd", "url"]
+
+# 通用的异常 / 敏感信息特征
+SIGNATURES = [
+    "sql syntax", "sqlstate", "mysql", "odbc", "you have an error in your sql",
+    "traceback (most recent call last)", "stack trace", "fatal error",
+    "warning:", "exception", "root:", "/bin/bash", "uid=", "gid=",
+]
+
+
+def fetch(params=None):
+    return requests.get(target, params=params, timeout=10, verify=False)
+
 
 try:
-    print(f"[*] 测试目标: {{target}}")
+    baseline = fetch()
+    base_status = baseline.status_code
+    base_len = len(baseline.content)
+    print(f"[*] 基准响应: status={base_status}, len={base_len}")
 
-    # 自定义验证逻辑
-    r = requests.get(target, timeout=10, verify=False)
-    print(f"[*] 响应状态: {{r.status_code}}")
-    print(f"[*] 响应长度: {{len(r.content)}}")
+    confirmed = False
+    for name in CANDIDATE_PARAMS:
+        try:
+            r = fetch(params={name: payload})
+        except Exception:
+            continue
 
-    # TODO: 根据具体漏洞类型添加验证逻辑
-    print("[INFO] 使用通用模板，请根据具体漏洞补充验证逻辑")
+        # 1) 反射检测：payload 原样出现在响应中（潜在 XSS / 模板注入）
+        if payload and payload in r.text:
+            print(f"[CONFIRMED] payload 在参数 '{name}' 处被原样反射到响应中")
+            confirmed = True
+            break
 
+        # 2) 错误 / 敏感信息特征扫描
+        low = r.text.lower()
+        hit = next((s for s in SIGNATURES if s in low), None)
+        if hit:
+            print(f"[CONFIRMED] 参数 '{name}' 触发异常/敏感特征: '{hit}'")
+            confirmed = True
+            break
+
+        # 3) 响应差异：状态码变化或响应长度显著变化
+        if r.status_code != base_status:
+            print(f"[POSSIBLE] 参数 '{name}' 改变了响应状态码: {base_status} -> {r.status_code}")
+        elif base_len and abs(len(r.content) - base_len) > max(50, int(base_len * 0.2)):
+            print(f"[POSSIBLE] 参数 '{name}' 显著改变了响应长度: {base_len} -> {len(r.content)}")
+
+    if not confirmed:
+        print("[REJECTED] 通用验证未检测到明确的漏洞特征")
+
+except requests.Timeout:
+    print("[REJECTED] 请求超时")
 except Exception as e:
-    print(f"[ERROR] {{e}}")
+    print(f"[ERROR] {e}")
 """
 
     @classmethod
@@ -371,8 +428,9 @@ except Exception as e:
 class VerifierExecutor:
     """执行 PoC 验证并判定结果."""
 
-    # Python 解释器路径
-    PYTHON_CMD = "python"
+    # Python 解释器路径：使用当前运行的解释器，避免 "python" 在仅有
+    # "python3" 的环境中缺失而被误判为漏洞验证失败。
+    PYTHON_CMD = sys.executable or "python"
 
     @classmethod
     def execute_poc(cls, poc_code: str, timeout: int = 30) -> tuple[int, str]:
@@ -436,8 +494,10 @@ class VerifierExecutor:
         # 执行失败
         if returncode == -1:
             return VerificationResult.TIMEOUT
-        if returncode == -2:
-            return VerificationResult.ERROR_403_404
+        if returncode in (-2, -3):
+            # -2: Python 解释器缺失；-3: PoC 执行本身抛出异常。
+            # 均为执行环境问题，而非目标返回 403/404。
+            return VerificationResult.EXECUTION_ERROR
         if returncode != 0:
             return VerificationResult.FALSE_POSITIVE
 
@@ -591,6 +651,7 @@ class VulnerabilityVerifier:
             VerificationResult.NORMAL_RESPONSE: "返回正常响应，漏洞不存在",
             VerificationResult.TIMEOUT: "PoC 执行超时",
             VerificationResult.ERROR_403_404: "请求被拒绝（403/404），目标不可利用",
+            VerificationResult.EXECUTION_ERROR: "PoC 执行环境错误（如解释器缺失），未能验证漏洞",
         }
 
         vf.rejection_reason = rejection_reasons.get(

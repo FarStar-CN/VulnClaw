@@ -184,9 +184,9 @@ class TestSkillLoader:
             ("web-security-advanced", "web-injection.md"),
             ("ai-mcp-security", "ai-app-security.md"),
             ("intranet-pentest-advanced", "06-intranet-and-host-operations-integrated.md"),
-            ("pentest-tools", "05-tools-and-operations-integrated.md"),
-            ("rapid-checklist", "payloads.md"),
-            ("web-pentest", "03-web-security-integrated.md"),
+            ("pentest-tools", "tools-reference-index.md"),
+            ("rapid-checklist", "08-rapid-checklists-and-payloads.md"),
+            ("web-pentest", "web-injection.md"),
             ("android-pentest", "android-authorized-app-pentest-sop.md"),
             ("crypto-toolkit", "encoding-cheatsheet.md"),
             ("secknowledge-skill", "vulnclaw-ctf-src-routing.md"),
@@ -333,6 +333,69 @@ class TestSkillDispatcher:
         d = self._make_dispatcher()
         skill = d.dispatch("MD5哈希加密")
         assert skill["name"] == "crypto-toolkit"
+
+
+# ── flag_skills.py ────────────────────────────────────────────────
+
+
+class TestFlagSkills:
+    """Test slash-dot flag skill registry and TUI application helpers."""
+
+    def test_flag_skill_registry_includes_common_and_command_flags(self):
+        from vulnclaw.skills.flag_skills import find_flag_skill
+
+        assert find_flag_skill("/.only-port").canonical == "--only-port"
+        assert find_flag_skill("/.--allow-actions").canonical == "--allow-actions"
+        assert find_flag_skill("parallel-agents").canonical == "--parallel-agents"
+        assert find_flag_skill("allow-remote").canonical == "--allow-remote"
+        assert find_flag_skill("format").canonical == "--format"
+
+    def test_flag_skill_aliases_normalize_slash_dot_forms(self):
+        from vulnclaw.skills.flag_skills import find_flag_skill
+
+        expected = find_flag_skill("--only-port")
+        assert find_flag_skill("/.only-port") == expected
+        assert find_flag_skill("/.--only-port") == expected
+        assert find_flag_skill("only_port") == expected
+
+    def test_complete_flag_skills_filters_by_prefix(self):
+        from vulnclaw.skills.flag_skills import complete_flag_skills
+
+        names = [skill.name for skill in complete_flag_skills("only-")]
+        assert "only-port" in names
+        assert "only-host" in names
+        assert "blocked-host" not in names
+
+    def test_apply_flag_skill_to_tui_state(self):
+        from vulnclaw.cli.tui import TuiState
+        from vulnclaw.skills.flag_skills import apply_flag_skill_to_tui_state, find_flag_skill
+
+        state = TuiState()
+        result = apply_flag_skill_to_tui_state(find_flag_skill("only-port"), "443", state)
+
+        assert result.applied is True
+        assert state.only_port == "443"
+
+    def test_apply_flag_skill_rejects_invalid_port(self):
+        from vulnclaw.cli.tui import TuiState
+        from vulnclaw.skills.flag_skills import apply_flag_skill_to_tui_state, find_flag_skill
+
+        state = TuiState()
+        result = apply_flag_skill_to_tui_state(find_flag_skill("only-port"), "99999", state)
+
+        assert result.applied is False
+        assert result.error is True
+        assert state.only_port == ""
+
+    def test_no_resume_flag_applies_without_value(self):
+        from vulnclaw.cli.tui import TuiState
+        from vulnclaw.skills.flag_skills import apply_flag_skill_to_tui_state, find_flag_skill
+
+        state = TuiState(resume=True)
+        result = apply_flag_skill_to_tui_state(find_flag_skill("no-resume"), "", state)
+
+        assert result.applied is True
+        assert state.resume is False
 
 
 # ── crypto_tools.py ────────────────────────────────────────────────

@@ -10,16 +10,18 @@
 [![MCP](https://img.shields.io/badge/Toolchain-MCP-orange)](https://modelcontextprotocol.io/)
 [![PyPI](https://img.shields.io/badge/PyPI-v0.3.3-blueviolet)](https://pypi.org/project/vulnclaw/)
 [![Security](https://img.shields.io/badge/Scope-Authorized_Only-red)](#-安全声明)
+[![AtomGitStars](https://atomgit.com/Unclecheng-li/VulnClaw/star/badge.svg)](https://atomgit.com/Unclecheng-li/VulnClaw)
 <br>
 
 🌐 **English version**: [`README_EN.md`](README_EN.md)
 
 **本项目是可独立运行的 AI 渗透测试 Agent。**
-
+<br>
+项目官网：https://unclecheng-li.github.io/vulnclaw.com/
 <br>
 
 基于 LLM Agent + MCP 工具链 + 渗透 Skill 编排，
-配合 OpenAI / MiniMax / DeepSeek 等兼容模型，
+配合 OpenAI / Anthropic / MiniMax / DeepSeek 等兼容模型，
 自然语言输入 → 自动完成「信息收集 → 漏洞发现 → 漏洞利用 → 报告生成」全流程。
 
 [快速开始](#快速开始) · [架构设计](#️-架构) · [Skill 体系](#-内置-skill)
@@ -44,6 +46,7 @@ VulnClaw 自动执行：
 
 <img width="1148" height="642" alt="image" src="https://github.com/user-attachments/assets/576e1cf6-25da-4969-864b-40e77d020dbf" />
 
+<img width="2529" height="1136" alt="image" src="https://github.com/user-attachments/assets/9612c633-31f3-4062-8f56-ea5b4989fd50" />
 
 适用于已授权的渗透测试、CTF 竞赛、安全教学、红队演练等场景。
 
@@ -55,7 +58,7 @@ VulnClaw 自动执行：
 - **黑板图状态空间搜索** — 把渗透建模为从 origin 向 goal 的搜索：Fact（已确认事实）+ Intent（探索方向），结构上杜绝"原地打转"
 - **证据级反幻觉闸门** — 声称的 flag/结论必须在真实工具输出里逐字符出现才被采信，杜绝凭空编造 flag 的假胜利
 - **自然语言驱动** — 用人话描述渗透意图，自动识别阶段和工具
-- **13 个 LLM Provider** — OpenAI / MiniMax / DeepSeek / 智谱 / Moonshot / 千问 / SiliconFlow / 豆包 / 百川 / 阶跃星辰 / 商汤 / 零一万物，一键切换
+- **13 个 LLM Provider** — OpenAI / Anthropic / MiniMax / DeepSeek / 智谱 / Moonshot / 千问 / SiliconFlow / 豆包 / 百川 / 阶跃星辰 / 商汤 / 零一万物，一键切换
 - **MCP 工具链** — 4 个 MCP 服务：`fetch` / `memory` 本地实现开箱即用，`chrome-devtools` / `burp` 对接外部 MCP 服务实现浏览器自动化和 HTTP 抓包重放
 - **AI Agent 核心** — OpenAI 兼容协议 + Tool Calling + 自主渗透循环
 - **结构化推理 + 自适应反思** — 已知事实/约束/攻击链结构化沉淀；失败自动归类并按 L0-L4 渐进升级 payload 绕过策略
@@ -159,7 +162,7 @@ docker run --rm -it \
 
 ```bash
 # 1. 选择提供商（自动填充 Base URL 和模型名）
-vulnclaw config provider minimax   (或 openai/deepseek/zhipu/moonshot/qwen/siliconflow)
+vulnclaw config provider minimax   (或 openai/anthropic/deepseek/zhipu/moonshot/qwen/siliconflow)
 
 # 1.2（可选）自定义 Base URL 或模型名
 vulnclaw config set llm.base_url https://your-own-api.example.com/v1 
@@ -471,7 +474,7 @@ vulnclaw tui --target 192.168.1.100 --mode continuous
 
 ```bash
 # 安装 Web 依赖
-pip install vulnclaw[web]
+pip install 'vulnclaw[web]'
 
 # 启动 Web UI（默认 127.0.0.1:7788）
 vulnclaw web
@@ -491,7 +494,7 @@ vulnclaw web --dry-run
 
 ## LLM 提供商配置
 
-VulnClaw 支持所有 OpenAI 兼容协议的 API，内置 8 个提供商预设：
+VulnClaw 支持 OpenAI 兼容协议的 API，内置 13 个提供商预设并支持自定义端点：
 
 ```bash
 vulnclaw config provider --list    # 查看所有提供商
@@ -501,6 +504,7 @@ vulnclaw config provider minimax   # 一键切换
 | 提供商      | 命令                   | 默认模型              |
 | ----------- | ---------------------- | --------------------- |
 | OpenAI      | `provider openai`      | gpt-4o                |
+| Anthropic Claude | `provider anthropic` | claude-sonnet-5   |
 | MiniMax     | `provider minimax`     | MiniMax-M3            |
 | DeepSeek    | `provider deepseek`    | deepseek-v4-pro       |
 | 智谱 GLM    | `provider zhipu`       | glm-4.7               |
@@ -559,7 +563,7 @@ vulnclaw config provider minimax   # 一键切换
 | **MCP 编排**   | `mcp/registry.py` + `lifecycle.py` + `router.py` | 服务注册 + 生命周期 + 自然语言→工具路由       |
 | **Skill 调度** | `skills/loader.py` + `dispatcher.py`             | 目录格式 Skill + CTF/SRC/AI/Web 等意图动态调度 |
 | **编解码工具** | `skills/crypto_tools.py`                         | 29 种编解码/加解密操作，注册为内置 Agent 工具  |
-| **配置管理**   | `config/schema.py` + `settings.py`               | Pydantic 模型 + YAML 持久化 + 8 Provider 预设 |
+| **配置管理**   | `config/schema.py` + `settings.py`               | Pydantic 模型 + YAML 持久化 + 13 Provider 预设 |
 | **报告生成**   | `report/generator.py` + `poc_builder.py`         | Markdown 报告 + Python PoC 模板               |
 | **安全知识库** | `kb/store.py` + `retriever.py`                   | JSON 存储 + CVE/技术/工具检索                 |
 
@@ -713,7 +717,7 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程（也可在
 
 | 配置项                   | 默认值 | 说明                                     |
 | ------------------------ | ------ | ---------------------------------------- |
-| `llm.provider`           | openai | LLM 提供商（8 个内置 + custom）          |
+| `llm.provider`           | openai | LLM 提供商（13 个内置 + custom）         |
 | `llm.api_key`            | 空     | API Key（auth_mode=static）              |
 | `llm.auth_mode`          | static | `static`（api_key）或 `oauth`（`vulnclaw login`） |
 | `llm.chatgpt_auto_proxy` | false  | 自动启动内置 ChatGPT 后端桥接代理         |
@@ -793,6 +797,10 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程（也可在
 ---
 
 ## 安全声明
+
+**公开 Alpha 阶段**：VulnClaw 是面向已授权安全测试、CTF、实验环境与可控研究场景的公开
+Alpha 软件，不应作为生产环境的安全控制手段或授权机制。使用前请阅读
+[SECURITY.md](SECURITY.md)。
 
 VulnClaw 仅用于**已授权的安全测试**。使用本工具前，请确保：
 

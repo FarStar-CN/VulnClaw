@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 
 # [修改] 2026-06-10 Nyaecho - 将 prompt_toolkit 导入移到 _run_pt_tui() 函数内部，避免硬性依赖
@@ -25,6 +26,11 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
+from vulnclaw.config.schema import (
+    BUILTIN_MCP_SERVERS,
+    MCPServerConfig,
+    MCPTransportConfig,
+)
 from vulnclaw.config.settings import (
     apply_provider_preset,
     fetch_provider_models,
@@ -33,6 +39,16 @@ from vulnclaw.config.settings import (
     save_config,
 )
 from vulnclaw.i18n import _, init_i18n
+from vulnclaw.skills.dispatcher import SkillDispatcher
+from vulnclaw.skills.flag_skills import (
+    apply_flag_skill_to_tui_state,
+    complete_flag_skills,
+    find_flag_skill,
+    parse_flag_skill_command,
+    render_flag_skill,
+    render_flag_skill_compact,
+)
+from vulnclaw.skills.loader import load_skill_by_name
 from vulnclaw.target_state.store import get_target_state_preview, list_target_snapshots
 
 # ── opencode-inspired colour palette ──
@@ -69,10 +85,11 @@ def rebuild_translations() -> None:
     Call this after init_i18n() with a new language to update all
     module-level globals that were built with _() translations.
     """
-    global MODES, MENU_ITEMS, SLASH_COMMANDS
+    global MODES, MENU_ITEMS, SLASH_COMMANDS, REPL_COMMANDS
     MODES = _build_modes()
     MENU_ITEMS = _build_menu_items()
     SLASH_COMMANDS = _build_slash_commands()
+    REPL_COMMANDS = _build_repl_commands()
 
 
 CheckMode = Literal["quick", "standard", "deep", "continuous"]
@@ -435,19 +452,35 @@ def _run_pt_tui(session: dict[str, Any]) -> Optional[str]:
 
     session["_palette_idx"] = 0
 
-    def _palette_visible() -> bool:
+    def _palette_context() -> tuple[str, str] | None:
         text = input_buffer.text
-        if not text.startswith("/"):
-            return False
-        word = text.lstrip("/")
-        if " " in word:
-            return False
-        return True
+        if text.startswith("/."):
+            word = text[2:]
+            if " " in word:
+                return None
+            return "flag", word
+        if text.startswith("/"):
+            word = text.lstrip("/")
+            if " " in word:
+                return None
+            return "slash", word
+        return None
+
+    def _palette_visible() -> bool:
+        return _palette_context() is not None
 
     def _palette_filtered() -> list[tuple[str, str]]:
-        word = input_buffer.text.lstrip("/")
-        return [(cmd, desc) for cmd, desc in SLASH_COMMANDS.items()
-                if cmd.startswith(word)]
+        context = _palette_context()
+        if context is None:
+            return []
+        kind, word = context
+        if kind == "flag":
+            return [(skill.name, skill.summary) for skill in complete_flag_skills(word)]
+        return build_slash_palette_entries(word)
+
+    def _palette_prefix() -> str:
+        context = _palette_context()
+        return "/." if context and context[0] == "flag" else "/"
 
     def _palette_content() -> list[tuple[str, str]]:
         items = _palette_filtered()
@@ -462,10 +495,10 @@ def _run_pt_tui(session: dict[str, Any]) -> Optional[str]:
         for i, (cmd, desc) in enumerate(items):
             prefix = "▸" if i == sel else " "
             if i == sel:
-                result.append((f"fg:{C_PRIMARY} bold bg:#2a2a2a", f" {prefix} /{cmd:<12}"))
+                result.append((f"fg:{C_PRIMARY} bold bg:#2a2a2a", f" {prefix} {_palette_prefix()}{cmd:<12}"))
                 result.append((f"fg:{C_MUTED} bg:#2a2a2a", f" {desc}\n"))
             else:
-                result.append((f"fg:{C_PRIMARY} bold bg:#1e1e1e", f" {prefix} /{cmd:<12}"))
+                result.append((f"fg:{C_PRIMARY} bold bg:#1e1e1e", f" {prefix} {_palette_prefix()}{cmd:<12}"))
                 result.append((f"fg:{C_MUTED} bg:#1e1e1e", f" {desc}\n"))
         result.append((f"fg:{C_BORDER} bg:#1e1e1e", "╰" + "─" * box_inner + "╯"))
         return result
@@ -476,7 +509,7 @@ def _run_pt_tui(session: dict[str, Any]) -> Optional[str]:
         items = _palette_filtered()
         if items:
             sel = session["_palette_idx"] % len(items)
-            input_buffer.text = "/" + items[sel][0]
+            input_buffer.text = _palette_prefix() + items[sel][0]
             input_buffer.cursor_position = len(input_buffer.text)
 
     body = HSplit([
@@ -539,6 +572,7 @@ def _run_pt_tui(session: dict[str, Any]) -> Optional[str]:
         "divider": f"fg:{C_BORDER}",
         "status-bar": f"bg:{C_BORDER_SUBTLE}",
         "input": f"bg:#1e1e1e fg:{C_TEXT}",
+        **slash_completion_style_rules(),
     })
 
     app = Application(
@@ -680,6 +714,93 @@ def _build_slash_commands() -> dict[str, str]:
 SLASH_COMMANDS: dict[str, str] = _build_slash_commands()
 
 
+def _build_repl_commands() -> dict[str, str]:
+    """Built-in commands the classic REPL implements itself (not skills).
+
+    These have real handlers in ``_run_repl`` — unlike the wider Textual-TUI
+    ``SLASH_COMMANDS`` set, which the classic REPL cannot dispatch.
+    """
+    return {
+        "config": _("tui.slash_config"),
+        "language": _("tui.slash_lang"),
+    }
+
+
+REPL_COMMANDS: dict[str, str] = _build_repl_commands()
+
+# Short aliases → canonical classic-REPL command name.
+_REPL_COMMAND_ALIASES: dict[str, str] = {"cfg": "config", "lang": "language"}
+
+
+def _resolve_repl_command(name: str) -> str:
+    """Return the canonical REPL command for ``name`` (or an alias), else ``""``."""
+    key = name.strip().lower()
+    key = _REPL_COMMAND_ALIASES.get(key, key)
+    return key if key in REPL_COMMANDS else ""
+
+
+def skill_display_description(skill: dict[str, Any]) -> str:
+    """Localized description for a skill's palette / help entry.
+
+    Skill frontmatter descriptions are authored in Chinese. When a localized
+    override exists in the i18n catalog for the active language (key
+    ``skill.<name>.description``, e.g. the English strings in ``en.json``),
+    prefer it; otherwise fall back to the frontmatter description.
+    """
+    name = skill.get("name", "")
+    key = f"skill.{name}.description"
+    localized = _(key)
+    if localized and localized != key:
+        return localized
+    return skill.get("description", "") or f"{skill.get('type', 'skill')} skill"
+
+
+def list_skill_palette_entries(prefix: str = "") -> list[tuple[str, str]]:
+    """Return palette entries for available skills only (no built-in commands).
+
+    Used by the classic REPL, whose ``/`` menu lists skills exclusively.
+    """
+    normalized = prefix.strip().lower()
+    entries: list[tuple[str, str]] = []
+    for skill in SkillDispatcher().list_all_skills():
+        name = skill["name"]
+        if normalized and not name.lower().startswith(normalized):
+            continue
+        description = skill_display_description(skill)
+        refs = skill.get("references", "0")
+        entries.append((name, f"Skill · {description} · {refs} refs"))
+    return entries
+
+
+def list_repl_palette_entries(prefix: str = "") -> list[tuple[str, str]]:
+    """Classic-REPL ``/`` palette: built-in commands first, then skills.
+
+    The Textual TUI's other slash commands (``/mode`` etc.) are still excluded —
+    only the commands the classic REPL actually handles are offered here.
+    """
+    normalized = prefix.strip().lower()
+    entries: list[tuple[str, str]] = []
+    for cmd, desc in REPL_COMMANDS.items():
+        if normalized and not cmd.startswith(normalized):
+            continue
+        entries.append((cmd, f"Command · {desc}"))
+    entries.extend(list_skill_palette_entries(prefix))
+    return entries
+
+
+def build_slash_palette_entries(prefix: str = "") -> list[tuple[str, str]]:
+    """Return command-palette entries for built-in commands and available skills."""
+    normalized = prefix.strip().lower()
+    entries: list[tuple[str, str]] = list_skill_palette_entries(prefix)
+
+    for cmd, desc in SLASH_COMMANDS.items():
+        if normalized and not cmd.startswith(normalized):
+            continue
+        entries.append((cmd, desc))
+
+    return entries
+
+
 def _build_slash_completer() -> Any:
     from prompt_toolkit.completion import Completer, Completion
 
@@ -692,10 +813,27 @@ def _build_slash_completer() -> Any:
             if not text.startswith("/"):
                 return
 
+            if text.startswith("/."):
+                word = text[2:]
+                if " " in word:
+                    return
+                for skill in complete_flag_skills(word):
+                    start_position = -len(word) if word else 0
+                    yield Completion(
+                        skill.name,
+                        start_position=start_position,
+                        display=[
+                            (f"fg:{C_PRIMARY} bold", f"/.{skill.name}"),
+                            ("", "  "),
+                            (f"fg:{C_MUTED}", skill.summary),
+                        ],
+                    )
+                return
+
             word = text.lstrip("/")
 
             if not word:
-                for cmd, desc in SLASH_COMMANDS.items():
+                for cmd, desc in build_slash_palette_entries():
                     yield Completion(
                         cmd,
                         start_position=0,
@@ -707,25 +845,176 @@ def _build_slash_completer() -> Any:
             typed_cmd = parts[0]
 
             if len(parts) == 1 and not text.endswith(" "):
-                for cmd, desc in SLASH_COMMANDS.items():
-                    if cmd.startswith(typed_cmd):
-                        yield Completion(
-                            cmd,
-                            start_position=-len(typed_cmd),
-                            display=[(f"fg:{C_PRIMARY} bold", f"/{cmd}"), ("", "  "), (f"fg:{C_MUTED}", desc)],
-                        )
+                for cmd, desc in build_slash_palette_entries(typed_cmd):
+                    yield Completion(
+                        cmd,
+                        start_position=-len(typed_cmd),
+                        display=[(f"fg:{C_PRIMARY} bold", f"/{cmd}"), ("", "  "), (f"fg:{C_MUTED}", desc)],
+                    )
 
     return _SlashCompleter()
 
 
+def build_repl_slash_completer() -> Any:
+    """Completer for the classic REPL: ``/`` lists commands+skills, ``/.`` flag skills.
+
+    The ``/`` menu offers the classic REPL's built-in commands (``/config``,
+    ``/language``) followed by skills. The Textual TUI's other slash commands
+    (``/mode`` etc.) are still excluded — they have no handler here.
+    """
+    from prompt_toolkit.completion import Completer, Completion
+
+    class _ReplSlashCompleter(Completer):
+        def get_completions(self, document, _complete_event):
+            text = document.text_before_cursor
+            if not text.startswith("/"):
+                return
+
+            if text.startswith("/."):
+                word = text[2:]
+                if " " in word:
+                    return
+                for skill in complete_flag_skills(word):
+                    start_position = -len(word) if word else 0
+                    yield Completion(
+                        skill.name,
+                        start_position=start_position,
+                        display=[
+                            (f"fg:{C_PRIMARY} bold", f"/.{skill.name}"),
+                            ("", "  "),
+                            (f"fg:{C_MUTED}", skill.summary),
+                        ],
+                    )
+                return
+
+            word = text[1:]
+            if " " in word:
+                # A command/skill is already chosen; the rest is free-text input.
+                return
+            for name, desc in list_repl_palette_entries(word):
+                start_position = -len(word) if word else 0
+                yield Completion(
+                    name,
+                    start_position=start_position,
+                    display=[
+                        (f"fg:{C_PRIMARY} bold", f"/{name}"),
+                        ("", "  "),
+                        (f"fg:{C_MUTED}", desc),
+                    ],
+                )
+
+    return _ReplSlashCompleter()
+
+
+def slash_completion_style_rules() -> dict[str, str]:
+    """Prompt_toolkit completion styles that inherit the terminal background."""
+    return {
+        "completion-menu": "bg:default",
+        "completion-menu.completion": "bg:default",
+        "completion-menu.completion.current": f"fg:{C_PRIMARY} bg:default bold noreverse",
+        "completion-menu.meta.completion": f"fg:{C_MUTED} bg:default",
+        "completion-menu.meta.completion.current": f"fg:{C_MUTED} bg:default noreverse",
+        "completion-menu.multi-column-meta": f"fg:{C_MUTED} bg:default",
+        "completion-toolbar": "bg:default",
+        "completion-toolbar.arrow": "bg:default",
+        "completion-toolbar.completion": "bg:default",
+        "completion-toolbar.completion.current": f"fg:{C_PRIMARY} bg:default bold noreverse",
+        "scrollbar.background": "",
+        "scrollbar.button": f"fg:{C_BORDER_SUBTLE}",
+    }
+
+
+def build_repl_slash_style() -> Any:
+    """Style classic REPL slash completions without forcing a menu background."""
+    from prompt_toolkit.styles import Style
+
+    return Style.from_dict(slash_completion_style_rules())
+
+
+@dataclass
+class ReplSlashResult:
+    """Outcome of dispatching a ``/`` line in the classic REPL.
+
+    ``kind`` is one of:
+    - ``"run"``     — feed ``text`` to the agent as a natural-language prompt.
+    - ``"message"`` — print ``text`` and keep looping.
+    - ``"target"``  — set the REPL target to ``value`` (restore behaviour), then loop.
+    - ``"command"`` — run built-in command ``value`` with arguments ``text``.
+    """
+
+    kind: Literal["run", "message", "target", "command"]
+    text: str = ""
+    value: str = ""
+
+
+def dispatch_repl_slash(text: str) -> ReplSlashResult:
+    """Resolve a ``/`` or ``/.`` line into an intent for the classic REPL.
+
+    Pure: performs no I/O and mutates no state, so the loop stays in control of
+    printing and target restoration. See :class:`ReplSlashResult`.
+    """
+    stripped = text.strip()
+
+    if stripped.startswith("/."):
+        return _dispatch_repl_flag_skill(stripped)
+
+    body = stripped[1:].strip()
+    if not body:
+        return ReplSlashResult("message", "Type a skill name after '/', e.g. /recon <task>.")
+
+    parts = body.split(maxsplit=1)
+    name = parts[0]
+    task = parts[1].strip() if len(parts) > 1 else ""
+
+    # Built-in REPL commands (/config, /language) take precedence over skills.
+    command = _resolve_repl_command(name)
+    if command:
+        return ReplSlashResult("command", value=command, text=task)
+
+    skill = load_skill_by_name(name)
+    if skill is None:
+        return ReplSlashResult("message", f"Unknown skill: /{name}")
+
+    if task:
+        return ReplSlashResult("run", f"Use VulnClaw skill {skill['name']}. {task}")
+
+    return ReplSlashResult("message", render_slash_skill_help(skill))
+
+
+def _dispatch_repl_flag_skill(text: str) -> ReplSlashResult:
+    """Light (B1) flag-skill wiring for the classic REPL.
+
+    Only ``--target`` and ``--resume``/``--no-resume`` change REPL state; every
+    other flag skill is rendered as guidance, since the classic REPL keeps no
+    persistent mode/scope to apply them to.
+    """
+    command = parse_flag_skill_command(text)
+    skill = find_flag_skill(command.query)
+    if skill is None:
+        return ReplSlashResult("message", f"Unknown flag skill: /.{command.query}")
+
+    if skill.tui_action == "target":
+        if not command.value:
+            return ReplSlashResult("message", f"{skill.canonical} needs a host value, e.g. /.target example.com")
+        return ReplSlashResult("target", value=command.value)
+
+    # Everything else (mode/scope/action flags, resume, and guidance-only flags)
+    # has no persistent home in the classic REPL, so we render it as guidance.
+    return ReplSlashResult("message", render_flag_skill(skill))
+
+
 def _dispatch_slash(text: str, session: dict[str, Any]) -> None:
+    if text.startswith("/."):
+        _dispatch_flag_skill(text, session)
+        return
+
     parts = text.lstrip("/").strip().split(maxsplit=1)
     cmd = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
     handler = _SLASH_HANDLERS.get(cmd)
     if handler:
         handler(session, args)
-    else:
+    elif not dispatch_skill_slash_command(cmd, args, session):
         session["_message"] = f"Unknown command: /{cmd}"
 
 
@@ -737,6 +1026,59 @@ def _register_handler(cmd: str):
         _SLASH_HANDLERS[cmd] = fn
         return fn
     return deco
+
+
+def _dispatch_flag_skill(text: str, session: dict[str, Any]) -> None:
+    command = parse_flag_skill_command(text)
+    skill = find_flag_skill(command.query)
+    if skill is None:
+        session["_message"] = f"Unknown flag skill: /.{command.query}"
+        return
+
+    if command.value or skill.tui_action in {"resume_true", "resume_false"}:
+        result = apply_flag_skill_to_tui_state(skill, command.value, session["state"])
+        if result.applied or result.error:
+            session["_message"] = result.message
+            return
+
+    _set_prompt_message(session, render_flag_skill_compact(skill))
+
+def dispatch_skill_slash_command(cmd: str, args: str, session: dict[str, Any]) -> bool:
+    """Dispatch `/skill-name [task text]` commands from the TUI."""
+    skill = load_skill_by_name(cmd)
+    if skill is None:
+        return False
+
+    if args:
+        state: TuiState = session["state"]
+        if not state.target.strip():
+            session["_message"] = _("tui.please_set_target")
+            return True
+        prompt = f"Use VulnClaw skill {skill['name']}. {args.strip()}"
+        session["_nl_text"] = prompt
+        session["_nl_history"] = prompt
+        session["_action"] = "launch"
+        return True
+
+    _set_prompt_message(session, render_slash_skill_help(skill))
+    return True
+
+
+def render_slash_skill_help(skill: dict[str, Any]) -> str:
+    """Render compact help for a selected slash skill."""
+    refs = skill.get("references", [])
+    lines = [
+        f"/{skill['name']} skill",
+        skill_display_description(skill) or "No description available.",
+        f"Format: {skill.get('format', 'unknown')}",
+    ]
+    if refs:
+        ref_list = ", ".join(refs[:5])
+        if len(refs) > 5:
+            ref_list += f", ... ({len(refs)} total)"
+        lines.append(f"References: {ref_list}")
+    lines.append(f"Run with this skill: /{skill['name']} <task>")
+    return " | ".join(lines)
 
 
 @_register_handler("quit")
@@ -1517,3 +1859,652 @@ def _default_launcher(draft: TuiTaskDraft) -> None:
         cli_main.persistent(rounds=0, cycles=0, no_report=False, **common)
     else:
         cli_main.run(scope="full", output=None, **common)
+
+
+# ── Interactive config editor ──────────────────────────────────────
+# [新增] 从 VulnBot 移植的交互式配置编辑器, 适配 VulnClaw 的 schema
+# (新增 recon 分区, api_key 掩码, 三种 MCP transport, OAuth 字段只读)
+
+
+class _ConfigTuiExit(Exception):
+    """Raised when the interactive config editor should return immediately."""
+
+
+def _is_escape_input(value: str) -> bool:
+    return value == "\x1b"
+
+
+def _read_config_prompt_raw(
+    label: str,
+    *,
+    default: str = "",
+    choices: list[str] | None = None,
+    console: Console | None = None,
+) -> str:
+    """Read config-editor input, letting a bare Escape cancel immediately."""
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            from prompt_toolkit import prompt
+            from prompt_toolkit.completion import WordCompleter
+            from prompt_toolkit.key_binding import KeyBindings
+        except Exception:
+            pass
+        else:
+            kb = KeyBindings()
+
+            @kb.add("escape", eager=True)
+            def _escape(event: Any) -> None:
+                event.app.exit(result="\x1b")
+
+            hint = ""
+            if choices:
+                hint += f" ({'/'.join(choices)})"
+            if default:
+                hint += f" [{default}]"
+            completer = WordCompleter(choices or [], ignore_case=True) if choices else None
+            return prompt(
+                f"{label}{hint}: ",
+                default=default,
+                completer=completer,
+                complete_while_typing=bool(completer),
+                key_bindings=kb,
+            )
+
+    value = Prompt.ask(label, default=default, choices=choices, console=console).strip()
+    if _is_escape_input(value):
+        raise _ConfigTuiExit
+    return value
+
+
+def _config_prompt_ask(
+    screen: Console,
+    label: str,
+    *,
+    default: str = "",
+    choices: list[str] | None = None,
+) -> str:
+    """Prompt inside the config editor, with Escape mapped to editor exit."""
+    while True:
+        value = _read_config_prompt_raw(
+            label,
+            default=default,
+            choices=choices,
+            console=screen,
+        ).strip()
+        if _is_escape_input(value):
+            raise _ConfigTuiExit
+        if not choices or value in choices:
+            return value
+        screen.print(f"[{C_ERROR}]Choose one of: {', '.join(choices)}[/]")
+
+
+def _config_confirm_ask(screen: Console, label: str, *, default: bool = False) -> bool:
+    """Confirm inside the config editor, with Escape mapped to editor exit."""
+    default_text = "y" if default else "n"
+    while True:
+        value = _config_prompt_ask(screen, label, default=default_text).lower()
+        if value in ("y", "yes"):
+            return True
+        if value in ("n", "no"):
+            return False
+        screen.print(f"[{C_ERROR}]Enter y or n.[/]")
+
+
+def _split_csv_items(raw: str) -> list[str]:
+    """Split a comma/newline separated string into cleaned items."""
+    return [item.strip() for item in raw.replace("\n", ",").split(",") if item.strip()]
+
+
+def _mask_secret(value: str) -> str:
+    """Mask a secret so only a hint of it reaches the terminal."""
+    value = (value or "").strip()
+    if not value:
+        return "(not set)"
+    if len(value) <= 8:
+        return "…" + value[-2:]
+    return f"{value[:2]}…{value[-4:]}"
+
+
+def _mask_key_list(keys: list[str]) -> str:
+    """Summarise a list of API keys without printing any in the clear."""
+    usable = [k for k in keys if k and k.strip()]
+    if not usable:
+        return "(none)"
+    return f"{_mask_secret(usable[0])} ({len(usable)} key{'s' if len(usable) != 1 else ''})"
+
+
+def _prompt_text_value(screen: Console, label: str, current: str) -> str:
+    """Prompt for a string value, keeping the current value on blank input."""
+    raw = _config_prompt_ask(screen, label, default=current)
+    if raw == "!clear":
+        return ""
+    return current if raw == "" else raw
+
+
+def _prompt_choice_value(screen: Console, label: str, choices: list[str], current: str) -> str:
+    """Prompt for a choice value with a stable default."""
+    default = current if current in choices else choices[0]
+    return _config_prompt_ask(screen, label, choices=choices, default=default)
+
+
+def _prompt_bool_value(screen: Console, label: str, current: bool) -> bool:
+    """Prompt for a boolean value."""
+    return _config_confirm_ask(screen, label, default=current)
+
+
+def _prompt_int_value(screen: Console, label: str, current: int) -> int:
+    """Prompt for an integer value, keeping the current value on blank input."""
+    while True:
+        raw = _config_prompt_ask(screen, label, default=str(current))
+        if not raw:
+            return current
+        try:
+            return int(raw)
+        except ValueError:
+            screen.print(f"[{C_ERROR}]Enter a whole number.[/]")
+
+
+def _prompt_float_value(screen: Console, label: str, current: float) -> float:
+    """Prompt for a float value, keeping the current value on blank input."""
+    while True:
+        raw = _config_prompt_ask(screen, label, default=str(current))
+        if not raw:
+            return current
+        try:
+            return float(raw)
+        except ValueError:
+            screen.print(f"[{C_ERROR}]Enter a number.[/]")
+
+
+def _prompt_list_value(screen: Console, label: str, current: list[str]) -> list[str]:
+    """Prompt for a comma-separated list value."""
+    raw = _config_prompt_ask(screen, label, default=", ".join(current))
+    if raw == "!clear":
+        return []
+    if not raw:
+        return current
+    return _split_csv_items(raw)
+
+
+def _prompt_env_value(
+    screen: Console, label: str, current: dict[str, str] | None
+) -> dict[str, str]:
+    """Prompt for key=value pairs separated by commas."""
+    current_text = ", ".join(f"{k}={v}" for k, v in sorted((current or {}).items()))
+    raw = _config_prompt_ask(screen, label, default=current_text)
+    if raw == "!clear":
+        return {}
+    if not raw:
+        return current or {}
+
+    result: dict[str, str] = {}
+    for item in _split_csv_items(raw):
+        if "=" not in item:
+            raise ValueError("Environment entries must look like KEY=value")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise ValueError("Environment keys cannot be blank")
+        result[key] = value.strip()
+    return result
+
+
+def _prompt_secret_text_value(screen: Console, label: str, current: str) -> str:
+    """Prompt for a secret value without putting the current secret in the input buffer."""
+    status = _mask_secret(current)
+    raw = _config_prompt_ask(screen, f"{label} [{status}]", default="")
+    if raw == "!clear":
+        return ""
+    return current if raw == "" else raw
+
+
+def _prompt_secret_list_value(screen: Console, label: str, current: list[str]) -> list[str]:
+    """Prompt for comma-separated secrets without printing existing values."""
+    status = _mask_key_list(current)
+    raw = _config_prompt_ask(screen, f"{label} [{status}]", default="")
+    if raw == "!clear":
+        return []
+    if not raw:
+        return current
+    return _split_csv_items(raw)
+
+
+def _render_model_choices(screen: Console, models: list[str], current: str) -> None:
+    table = Table(title="Available Models", box=box.ROUNDED, border_style=C_BORDER_SUBTLE)
+    table.add_column("#", style=f"bold {C_PRIMARY}", width=4)
+    table.add_column("Model", style=C_TEXT)
+    for idx, model in enumerate(models, 1):
+        marker = " *" if model == current else ""
+        table.add_row(str(idx), f"{model}{marker}")
+    screen.print(table)
+
+
+def _prompt_model_value(screen: Console, config) -> str:
+    """Prompt for an LLM model, showing provider models when credentials can fetch them."""
+    current = config.llm.model
+    models: list[str] = []
+    base_url = config.llm.base_url
+    api_key = config.llm.primary_key()
+
+    if base_url and api_key:
+        screen.print(f"[{C_MUTED}]{_('tui.fetching_models')}[/]")
+        models = fetch_provider_models(base_url, api_key)
+
+    if models:
+        _render_model_choices(screen, models, current)
+        raw = _config_prompt_ask(screen, f"Model [current: {current}]", default="")
+        if not raw:
+            return current
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(models):
+                return models[idx - 1]
+            screen.print(f"[{C_WARNING}]Model number out of range; using '{raw}' as a custom model id.[/]")
+        return raw
+
+    if base_url and api_key:
+        screen.print(f"[{C_WARNING}]No models returned; enter a model id manually.[/]")
+    raw = _config_prompt_ask(screen, f"Model [current: {current}]", default="")
+    if raw == "!clear":
+        return ""
+    return current if raw == "" else raw
+
+
+def _render_config_summary(screen: Console, config) -> None:
+    """Render a compact summary of the editable config sections."""
+    llm = Table(title="LLM", box=box.ROUNDED, border_style=C_BORDER_SUBTLE)
+    llm.add_column("Field", style=f"bold {C_PRIMARY}")
+    llm.add_column("Value", style=C_TEXT)
+    llm.add_row("Provider", config.llm.provider)
+    llm.add_row("Model", config.llm.model)
+    llm.add_row("Base URL", config.llm.base_url)
+    llm.add_row("Auth mode", config.llm.auth_mode)
+    llm.add_row("API key", _mask_secret(config.llm.api_key))
+    llm.add_row("API keys", _mask_key_list(config.llm.api_keys))
+    llm.add_row("ChatGPT auto-proxy", "yes" if config.llm.chatgpt_auto_proxy else "no")
+    llm.add_row("OAuth token URL", config.llm.oauth_token_url or "(login-managed)")
+    llm.add_row("OAuth client id", config.llm.oauth_client_id or "(login-managed)")
+    llm.add_row("Reasoning", config.llm.reasoning_effort)
+
+    session = Table(title="Session", box=box.ROUNDED, border_style=C_BORDER_SUBTLE)
+    session.add_column("Field", style=f"bold {C_SECONDARY}")
+    session.add_column("Value", style=C_TEXT)
+    session.add_row("Output dir", str(config.session.output_dir))
+    session.add_row("Engine", config.session.engine)
+    session.add_row("Max rounds", str(config.session.max_rounds))
+    session.add_row("Report format", config.session.report_format)
+    session.add_row("PoC language", config.session.poc_language)
+    session.add_row("Language", config.session.language)
+    session.add_row("Show thinking", "yes" if config.session.show_thinking else "no")
+    session.add_row("Persistent cycles", str(config.session.persistent_max_cycles))
+
+    safety = Table(title="Safety", box=box.ROUNDED, border_style=C_BORDER_SUBTLE)
+    safety.add_column("Field", style=f"bold {C_ACCENT}")
+    safety.add_column("Value", style=C_TEXT)
+    safety.add_row("Python execute", "yes" if config.safety.enable_python_execute else "no")
+    safety.add_row("Restricted", "yes" if config.safety.python_execute_restricted else "no")
+    safety.add_row("Mode", config.safety.python_execute_mode)
+    safety.add_row("Parallel tools", "yes" if config.safety.tool_parallel else "no")
+
+    recon = Table(title="Recon", box=box.ROUNDED, border_style=C_BORDER_SUBTLE)
+    recon.add_column("Field", style=f"bold {C_PRIMARY}")
+    recon.add_column("Value", style=C_TEXT)
+    recon.add_row("FOFA email", config.recon.fofa_email or "(not set)")
+    recon.add_row("FOFA key", _mask_secret(config.recon.fofa_key))
+    recon.add_row("Hunter key", _mask_secret(config.recon.hunter_key))
+    recon.add_row("Quake key", _mask_secret(config.recon.quake_key))
+    recon.add_row("ZoomEye key", _mask_secret(config.recon.zoomeye_key))
+    recon.add_row("Shodan key", _mask_secret(config.recon.shodan_key))
+    recon.add_row("0.zone key", _mask_secret(config.recon.zerozone_key))
+    recon.add_row("Max concurrency", str(config.recon.max_concurrency))
+
+    mcp = Table(title="MCP Servers", box=box.ROUNDED, border_style=C_BORDER_SUBTLE)
+    mcp.add_column("Name", style=f"bold {C_PRIMARY}")
+    mcp.add_column("Status", style=C_TEXT)
+    mcp.add_column("Transport", style=C_MUTED)
+    for name, server in config.mcp.servers.items():
+        transport = server.transport
+        if transport.type == "stdio":
+            details = " ".join(
+                part for part in [transport.command or "", " ".join(transport.args or [])] if part
+            ).strip()
+            summary = f"stdio {details}".strip()
+        else:
+            summary = f"{transport.type} {transport.url or ''}".strip()
+        status = "enabled" if server.enabled else "disabled"
+        if name in BUILTIN_MCP_SERVERS:
+            status += ", builtin"
+        mcp.add_row(name, status, summary)
+
+    screen.print(
+        Panel(
+            Group(llm, session, safety, recon, mcp),
+            title="Config Draft",
+            border_style=C_BORDER,
+            box=box.ROUNDED,
+        )
+    )
+
+
+def _edit_llm_config(screen: Console, config):
+    """Edit LLM configuration fields in-place."""
+    screen.print(Panel("Edit LLM settings", border_style=C_BORDER_SUBTLE, box=box.ROUNDED))
+    providers = [item["provider"] for item in list_providers()]
+    provider = _prompt_choice_value(screen, "Provider", providers, config.llm.provider)
+    if provider != config.llm.provider:
+        config = apply_provider_preset(config, provider)
+
+    config.llm.base_url = _prompt_text_value(screen, "Base URL", config.llm.base_url)
+    config.llm.auth_mode = _prompt_choice_value(
+        screen, "Auth mode", ["static", "oauth"], config.llm.auth_mode
+    )
+    config.llm.api_keys = _prompt_secret_list_value(
+        screen,
+        "API keys (comma-separated, !clear to empty)",
+        config.llm.api_keys,
+    )
+    config.llm.api_key = _prompt_secret_text_value(
+        screen,
+        "Single API key fallback (!clear to empty)",
+        config.llm.api_key,
+    )
+    config.llm.model = _prompt_model_value(screen, config)
+    config.llm.chatgpt_auto_proxy = _prompt_bool_value(
+        screen, "ChatGPT auto-proxy", config.llm.chatgpt_auto_proxy
+    )
+    config.llm.max_tokens = _prompt_int_value(screen, "Max tokens", config.llm.max_tokens)
+    config.llm.max_context_tokens = _prompt_int_value(
+        screen, "Max context tokens", config.llm.max_context_tokens
+    )
+    config.llm.temperature = _prompt_float_value(screen, "Temperature", config.llm.temperature)
+    config.llm.reasoning_effort = _prompt_text_value(
+        screen, "Reasoning effort", config.llm.reasoning_effort
+    )
+    screen.print(
+        f"[{C_MUTED}]OAuth endpoints are managed by `vulnclaw login` and are not edited here.[/]"
+    )
+    return config
+
+
+def _edit_session_config(screen: Console, config):
+    """Edit the commonly-tuned session fields in-place.
+
+    Deep engine/reflexion/plugin knobs are left to `vulnclaw config set`.
+    """
+    screen.print(Panel("Edit session settings", border_style=C_BORDER_SUBTLE, box=box.ROUNDED))
+    config.session.output_dir = Path(
+        _prompt_text_value(screen, "Output directory", str(config.session.output_dir))
+    )
+    config.session.auto_save = _prompt_bool_value(screen, "Auto save", config.session.auto_save)
+    config.session.report_format = _prompt_choice_value(
+        screen, "Report format", ["markdown", "html"], config.session.report_format
+    )
+    config.session.poc_language = _prompt_choice_value(
+        screen, "PoC language", ["python", "bash"], config.session.poc_language
+    )
+    config.session.engine = _prompt_choice_value(
+        screen, "Autonomous engine", ["solve", "rounds"], config.session.engine
+    )
+    config.session.max_rounds = _prompt_int_value(screen, "Max rounds", config.session.max_rounds)
+    config.session.show_thinking = _prompt_bool_value(
+        screen, "Show thinking", config.session.show_thinking
+    )
+    config.session.persistent_rounds_per_cycle = _prompt_int_value(
+        screen, "Persistent rounds per cycle", config.session.persistent_rounds_per_cycle
+    )
+    config.session.persistent_max_cycles = _prompt_int_value(
+        screen, "Persistent max cycles", config.session.persistent_max_cycles
+    )
+    config.session.persistent_auto_report = _prompt_bool_value(
+        screen, "Persistent auto report", config.session.persistent_auto_report
+    )
+    config.session.language = _prompt_choice_value(
+        screen, "Language", ["auto", "en", "zh"], config.session.language
+    )
+    return config
+
+
+def _edit_safety_config(screen: Console, config):
+    """Edit safety configuration fields in-place."""
+    screen.print(Panel("Edit safety settings", border_style=C_BORDER_SUBTLE, box=box.ROUNDED))
+    config.safety.enable_python_execute = _prompt_bool_value(
+        screen, "Enable python execute", config.safety.enable_python_execute
+    )
+    config.safety.python_execute_restricted = _prompt_bool_value(
+        screen, "Python execute restricted", config.safety.python_execute_restricted
+    )
+    config.safety.python_execute_mode = _prompt_choice_value(
+        screen,
+        "Python execute mode",
+        ["safe", "lab", "trusted-local"],
+        config.safety.python_execute_mode,
+    )
+    config.safety.python_execute_max_lines = _prompt_int_value(
+        screen, "Python execute max lines", config.safety.python_execute_max_lines
+    )
+    config.safety.python_execute_show_warning = _prompt_bool_value(
+        screen, "Show python execute warning", config.safety.python_execute_show_warning
+    )
+    config.safety.python_execute_max_output_chars = _prompt_int_value(
+        screen,
+        "Python execute max output chars",
+        config.safety.python_execute_max_output_chars,
+    )
+    config.safety.python_execute_audit_enabled = _prompt_bool_value(
+        screen, "Python execute audit enabled", config.safety.python_execute_audit_enabled
+    )
+    config.safety.tool_parallel = _prompt_bool_value(
+        screen, "Parallel tool calls", config.safety.tool_parallel
+    )
+    config.safety.tool_max_concurrent = _prompt_int_value(
+        screen, "Max concurrent tools", config.safety.tool_max_concurrent
+    )
+    return config
+
+
+def _edit_recon_config(screen: Console, config):
+    """Edit recon / space-mapping configuration fields in-place."""
+    screen.print(Panel("Edit recon settings", border_style=C_BORDER_SUBTLE, box=box.ROUNDED))
+    config.recon.fofa_email = _prompt_text_value(
+        screen, "FOFA email", config.recon.fofa_email
+    )
+    config.recon.fofa_key = _prompt_text_value(
+        screen, "FOFA key (!clear to empty)", config.recon.fofa_key
+    )
+    config.recon.hunter_key = _prompt_text_value(
+        screen, "Hunter key (!clear to empty)", config.recon.hunter_key
+    )
+    config.recon.quake_key = _prompt_text_value(
+        screen, "Quake key (!clear to empty)", config.recon.quake_key
+    )
+    config.recon.zoomeye_key = _prompt_text_value(
+        screen, "ZoomEye key (!clear to empty)", config.recon.zoomeye_key
+    )
+    config.recon.shodan_key = _prompt_text_value(
+        screen, "Shodan key (!clear to empty)", config.recon.shodan_key
+    )
+    config.recon.zerozone_key = _prompt_text_value(
+        screen, "0.zone key (!clear to empty)", config.recon.zerozone_key
+    )
+    config.recon.http_timeout = _prompt_float_value(
+        screen, "HTTP timeout (s)", config.recon.http_timeout
+    )
+    config.recon.max_concurrency = _prompt_int_value(
+        screen, "Max concurrency", config.recon.max_concurrency
+    )
+    config.recon.space_size = _prompt_int_value(
+        screen, "Space-mapping result size", config.recon.space_size
+    )
+    config.recon.dir_wordlist_path = _prompt_text_value(
+        screen, "Directory wordlist path (!clear to empty)", config.recon.dir_wordlist_path
+    )
+    config.recon.dir_max_requests = _prompt_int_value(
+        screen, "Directory enumeration max requests", config.recon.dir_max_requests
+    )
+    config.recon.js_max_files = _prompt_int_value(
+        screen, "Max JS files per js_recon", config.recon.js_max_files
+    )
+    return config
+
+
+def _prompt_mcp_transport(screen: Console, transport: MCPTransportConfig) -> MCPTransportConfig:
+    """Edit transport settings for an MCP server."""
+    transport.type = _prompt_choice_value(
+        screen, "Transport type", ["stdio", "sse", "streamable-http"], transport.type
+    )
+    transport.command = _prompt_text_value(screen, "Transport command", transport.command or "")
+    transport.args = _prompt_list_value(
+        screen,
+        "Transport args (comma-separated, !clear to empty)",
+        transport.args or [],
+    )
+    transport.url = _prompt_text_value(screen, "Transport URL", transport.url or "")
+    transport.env = _prompt_env_value(
+        screen, "Transport env / headers (KEY=value, !clear to empty)", transport.env
+    )
+    transport.startup_timeout = _prompt_int_value(
+        screen, "Transport startup timeout", transport.startup_timeout
+    )
+    transport.tool_timeout = _prompt_int_value(
+        screen, "Transport tool timeout", transport.tool_timeout
+    )
+    return transport
+
+
+def _prompt_mcp_server(
+    screen: Console, config, *, server: MCPServerConfig | None = None
+) -> tuple[str, MCPServerConfig]:
+    """Create or edit a single MCP server definition."""
+    is_new = server is None
+    current_name = server.name if server else ""
+    while True:
+        if is_new:
+            name = _prompt_text_value(screen, "Server name", current_name)
+            if not name:
+                screen.print(f"[{C_ERROR}]Server name cannot be blank.[/]")
+                continue
+            if name in config.mcp.servers:
+                screen.print(f"[{C_ERROR}]Server '{name}' already exists.[/]")
+                continue
+        else:
+            name = current_name
+        break
+
+    current = server or MCPServerConfig(
+        name=name,
+        enabled=True,
+        priority=1,
+        transport=MCPTransportConfig(type="stdio"),
+    )
+    current.name = name
+    current.enabled = _prompt_bool_value(screen, f"Enabled [{name}]", current.enabled)
+    current.priority = _prompt_int_value(screen, f"Priority [{name}]", current.priority)
+    current.description = _prompt_text_value(screen, f"Description [{name}]", current.description)
+    current.transport = _prompt_mcp_transport(screen, current.transport)
+    return name, current
+
+
+def _edit_mcp_config(screen: Console, config):
+    """Edit MCP server configuration."""
+    while True:
+        screen.print(Panel("Edit MCP servers", border_style=C_BORDER_SUBTLE, box=box.ROUNDED))
+        table = Table(box=box.SIMPLE, border_style=C_BORDER_SUBTLE)
+        table.add_column("Server", style=f"bold {C_PRIMARY}")
+        table.add_column("Enabled", style=C_TEXT)
+        table.add_column("Priority", style=C_TEXT)
+        table.add_column("Transport", style=C_MUTED)
+        for name, server in config.mcp.servers.items():
+            marker = "builtin" if name in BUILTIN_MCP_SERVERS else "custom"
+            table.add_row(
+                name,
+                "yes" if server.enabled else "no",
+                str(server.priority),
+                f"{server.transport.type} / {marker}",
+            )
+        screen.print(table)
+
+        action = _prompt_choice_value(
+            screen,
+            "Action",
+            ["add", "edit", "delete", "back"],
+            "back",
+        )
+
+        if action == "back":
+            return config
+        if action == "add":
+            name, server = _prompt_mcp_server(screen, config)
+            config.mcp.servers[name] = server
+            continue
+        if action == "edit":
+            if not config.mcp.servers:
+                screen.print(f"[{C_WARNING}]No MCP servers to edit.[/]")
+                continue
+            name = _prompt_choice_value(
+                screen,
+                "Server to edit",
+                list(config.mcp.servers.keys()),
+                next(iter(config.mcp.servers)),
+            )
+            current = config.mcp.servers[name]
+            _, server = _prompt_mcp_server(screen, config, server=current)
+            config.mcp.servers[name] = server
+            continue
+        if action == "delete":
+            if not config.mcp.servers:
+                screen.print(f"[{C_WARNING}]No MCP servers to delete.[/]")
+                continue
+            name = _prompt_choice_value(
+                screen,
+                "Server to delete",
+                list(config.mcp.servers.keys()),
+                next(iter(config.mcp.servers)),
+            )
+            if name in BUILTIN_MCP_SERVERS:
+                screen.print(
+                    f"[{C_WARNING}]Built-in servers are seeded defaults and cannot be deleted here.[/]"
+                )
+                continue
+            if _prompt_bool_value(screen, f"Delete MCP server '{name}'?", False):
+                config.mcp.servers.pop(name, None)
+            continue
+
+
+def run_config_tui() -> None:
+    """Run the interactive config editor."""
+    screen = Console()
+    config = load_config()
+
+    try:
+        while True:
+            screen.print()
+            screen.print(Panel("VulnClaw Config", border_style=C_BORDER, box=box.ROUNDED))
+            _render_config_summary(screen, config)
+            action = _prompt_choice_value(
+                screen,
+                "Section",
+                ["llm", "session", "safety", "recon", "mcp", "save", "quit"],
+                "save",
+            )
+
+            if action == "llm":
+                config = _edit_llm_config(screen, config)
+            elif action == "session":
+                config = _edit_session_config(screen, config)
+            elif action == "safety":
+                config = _edit_safety_config(screen, config)
+            elif action == "recon":
+                config = _edit_recon_config(screen, config)
+            elif action == "mcp":
+                config = _edit_mcp_config(screen, config)
+            elif action == "save":
+                save_config(config)
+                screen.print(Panel("Config saved.", border_style=C_SUCCESS, box=box.ROUNDED))
+                return
+            elif action == "quit":
+                screen.print(Panel("Discarded changes.", border_style=C_WARNING, box=box.ROUNDED))
+                return
+    except _ConfigTuiExit:
+        screen.print()
+        screen.print(Panel("Discarded changes.", border_style=C_WARNING, box=box.ROUNDED))
+        return

@@ -17,11 +17,17 @@ import contextvars
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+if TYPE_CHECKING:
+    from vulnclaw.agent.agent_context import AgentContext
+
 
 from vulnclaw.agent.blackboard import Blackboard, BoardIntent, IntentStatus
 from vulnclaw.agent.llm_client import build_chat_completion_kwargs, call_llm_auto
 from vulnclaw.agent.think_filter import strip_think_tags
+
+FRONTIER_RECOVERY_LIMIT = 2
 
 # 探索阶段判定「已推进/已确认结论」的信号（宽泛匹配，避免漏判有进展的 intent）
 _ADVANCE_MARKERS = [
@@ -237,7 +243,7 @@ def _extract_json(text: str) -> Optional[dict]:
     return None
 
 
-async def _structured_call(agent: Any, prompt: str, *, max_tokens: int = 900) -> str:
+async def _structured_call(agent: AgentContext, prompt: str, *, max_tokens: int = 900) -> str:
     """无工具的结构化 LLM 调用（用于 Reason / Conclude）。"""
     client = agent._get_client()
     messages = [{"role": "user", "content": prompt}]
@@ -276,10 +282,21 @@ def _reason_prompt(board: Blackboard, max_intents: int) -> str:
             concluded_block += f"  - {i.id} → {i.result_fact}: {i.description}\n"
         concluded_block += "\n"
 
+    frontier_block = ""
+    if not open_list and not board.completed:
+        frontier_block = (
+            "Frontier recovery rule: there are currently no OPEN intents and the goal is "
+            "not complete. Do not return {\"complete\": false} without new intents in this "
+            "state. Propose fresh, non-overlapping directions that pivot to a different "
+            "attack surface, parameter shape, HTTP method/header/cookie angle, source leak, "
+            "or runtime behavior. Avoid repeating abandoned intents, but do not stop just "
+            "because earlier broad directions failed.\n\n"
+        )
+
     return (
         "你是该领域的资深渗透专家。下面是当前任务的「黑板图」快照：facts 是已确认的客观事实，"
         "intents 是探索方向。图从 facts 出发、通过 intent 探索得到新的 fact，逐步逼近 goal。\n\n"
-        f"{open_block}{abandoned_block}{concluded_block}"
+        f"{open_block}{abandoned_block}{concluded_block}{frontier_block}"
         "请判断两件事：① 现有 facts 是否已满足 goal；② 若未满足，是否应提出新的探索方向。\n\n"
         "只返回一个 JSON 对象，不要输出别的内容：\n"
         '- 若 goal 已达成： {"complete": true, "reason": "说明为何已达成", "evidence": ["f002"]}'
@@ -395,14 +412,88 @@ def _is_duplicate_intent(board: Blackboard, new_desc: str) -> bool:
     return False
 
 
-async def reason_step(agent: Any, board: Blackboard, max_intents: int) -> dict:
+def _add_decision_intents(board: Blackboard, decision: dict) -> int:
+    added = 0
+    for item in decision.get("intents") or []:
+        desc = (item or {}).get("description", "").strip() if isinstance(item, dict) else ""
+        if not desc:
+            continue
+        if _is_duplicate_intent(board, desc):
+            continue
+        board.add_intent(desc, (item or {}).get("from"))
+        added += 1
+    return added
+
+
+def _frontier_recovery_prompt(board: Blackboard, max_intents: int, streak: int) -> str:
+    return (
+        _reason_prompt(board, max_intents)
+        + "\n\n## Frontier recovery override\n"
+        + f"This is recovery attempt {streak}/{FRONTIER_RECOVERY_LIMIT}. "
+        + "The solve graph has no OPEN intents, but the goal is not complete. "
+        + "Return JSON with at least one new intent unless the existing facts prove the "
+        + "goal is impossible under the authorized scope. The new intents must be concrete "
+        + "next actions and must pivot away from abandoned directions.\n"
+        + 'Valid recovery response: {"complete": false, "intents": [{"from": ["f001"], '
+        + '"description": "try a different concrete path"}]}\n'
+    )
+
+
+def _add_fallback_recovery_intents(board: Blackboard, max_intents: int) -> int:
+    if not board.intents:
+        return 0
+
+    from_facts = board.fact_ids()[-3:]
+    candidates = [
+        (
+            "Pivot to header/cookie auth bypass: test Authorization, x-auth-token, "
+            "Cookies, Aaa, X-Forwarded-* and method override headers against login "
+            "and likely protected pages."
+        ),
+        (
+            "Pivot to request-shape login bypass: compare form vs JSON bodies, "
+            "duplicate username/password parameters, array parameters, empty values, "
+            "and GET/POST/PUT method differences while preserving session cookies."
+        ),
+        (
+            "Pivot to source and backup leakage under catch-all routing: classify "
+            "candidate source/backup paths by status, content-type, body length, "
+            "hash and headers rather than status code alone."
+        ),
+    ]
+
+    added = 0
+    for desc in candidates:
+        if _is_duplicate_intent(board, desc):
+            continue
+        board.add_intent(desc, from_facts)
+        added += 1
+        if added >= max(1, min(max_intents, len(candidates))):
+            break
+    return added
+
+
+async def reason_step(agent: AgentContext, board: Blackboard, max_intents: int) -> dict:
     raw = await _structured_call(agent, _reason_prompt(board, max_intents), max_tokens=1200)
     parsed = _extract_json(raw)
     return parsed or {}
 
 
+async def frontier_recovery_step(
+    agent: AgentContext,
+    board: Blackboard,
+    max_intents: int,
+    streak: int,
+) -> dict:
+    raw = await _structured_call(
+        agent, _frontier_recovery_prompt(board, max_intents, streak), max_tokens=1200
+    )
+    parsed = _extract_json(raw)
+    return parsed or {}
+
+
 async def explore_step(
-    agent: Any,
+    agent: AgentContext,
     board: Blackboard,
     intent: BoardIntent,
     *,
@@ -488,7 +579,7 @@ async def explore_step(
 
 
 async def solve(
-    agent: Any,
+    agent: AgentContext,
     *,
     origin: str,
     goal: str,
@@ -572,6 +663,44 @@ async def solve(
                 sum(1 for i in board.intents if i.status == IntentStatus.ABANDONED),
             )
 
+        async def _try_frontier_recovery() -> bool:
+            nonlocal empty_reason_streak, consecutive_errors
+            if empty_reason_streak >= FRONTIER_RECOVERY_LIMIT:
+                return False
+
+            empty_reason_streak += 1
+            emit(
+                "frontier_recovery",
+                {"streak": empty_reason_streak, "reason": "no_open_intents"},
+            )
+            try:
+                recovery_decision = await frontier_recovery_step(
+                    agent, board, max_intents, empty_reason_streak
+                )
+            except Exception as exc:
+                consecutive_errors += 1
+                emit("error", {"phase": "frontier_recovery", "error": str(exc)})
+                return False
+
+            emit("reason", {"decision": recovery_decision, "step": steps, "recovery": True})
+            if _add_decision_intents(board, recovery_decision):
+                empty_reason_streak = 0
+                return True
+
+            fallback_added = _add_fallback_recovery_intents(board, max_intents)
+            if fallback_added:
+                emit(
+                    "frontier_recovery",
+                    {
+                        "streak": empty_reason_streak,
+                        "reason": "fallback_intents",
+                        "added": fallback_added,
+                    },
+                )
+                empty_reason_streak = 0
+                return True
+            return False
+
         while steps < max_steps and not board.completed:
             cur_checkpoint = _graph_checkpoint()
             open_intents = board.open_intents()
@@ -630,29 +759,27 @@ async def solve(
                     continue
                 complete_reject_streak = 0
 
-                for item in decision.get("intents") or []:
-                    desc = (item or {}).get("description", "").strip() if isinstance(item, dict) else ""
-                    if not desc:
-                        continue
-                    if _is_duplicate_intent(board, desc):
-                        continue
-                    board.add_intent(desc, (item or {}).get("from"))
+                _add_decision_intents(board, decision)
 
                 open_intents = board.open_intents()
                 if not open_intents:
-                    empty_reason_streak += 1
-                    if empty_reason_streak >= 3:
+                    await _try_frontier_recovery()
+                    open_intents = board.open_intents()
+                    if empty_reason_streak >= FRONTIER_RECOVERY_LIMIT and not open_intents:
                         break
-                    continue
+                    if not open_intents:
+                        continue
                 empty_reason_streak = 0
 
             # ── 选取 intent batch 去探索 ──────────────────────────────
             open_intents = board.open_intents()
             if not open_intents:
-                empty_reason_streak += 1
-                if empty_reason_streak >= 3:
+                await _try_frontier_recovery()
+                open_intents = board.open_intents()
+                if empty_reason_streak >= FRONTIER_RECOVERY_LIMIT and not open_intents:
                     break
-                continue
+                if not open_intents:
+                    continue
             empty_reason_streak = 0
 
             batch = open_intents[:max_parallel]
@@ -760,7 +887,7 @@ async def solve(
 
 
 async def _explore_batch(
-    agent: Any,
+    agent: AgentContext,
     board: Blackboard,
     intents: list[BoardIntent],
     *,

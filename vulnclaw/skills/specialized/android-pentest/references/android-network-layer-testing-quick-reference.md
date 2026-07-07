@@ -102,7 +102,7 @@ Escalation order:
 
 ## Best Follow-On References
 
-- `03-web-security-integrated.md` for server-side bug classes and payload families
+- `web-playbook-index.md` for server-side bug classes and payload families
 - `web-modern-protocols.md` for CORS, GraphQL, WebSocket, OAuth/OIDC, and request smuggling
 - `web-logic-auth.md` for IDOR, auth bypass, reset flows, payment logic, and workflow abuse
 - `web-file-infra.md` for upload, traversal, inclusion, and infrastructure issues

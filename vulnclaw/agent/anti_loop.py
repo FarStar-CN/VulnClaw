@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from vulnclaw.agent.agent_context import AgentContext
+
 
 from vulnclaw.agent.context import PentestPhase
 
@@ -67,7 +71,7 @@ def is_completion_signal(output: str) -> bool:
     return any(signal in output for signal in completion_signals)
 
 
-def track_failed_target(agent, response_text: str) -> Optional[str]:
+def track_failed_target(agent: AgentContext, response_text: str) -> Optional[str]:
     """Track target-level failures and detect repeatedly failed targets."""
     hostname = None
     url_match = re.search(r'https?://([^\s/<>"\')\]]+)', response_text)
@@ -146,7 +150,7 @@ def detect_attack_path(output: str) -> Optional[str]:
         ("deserialization", ["反序列化", "unserialize", "serialize", "pop链", "wakeup"]),
         ("file_upload", ["文件上传", "upload", "webshell", "一句话木马"]),
         ("ssrf", ["ssrf", "gopher://", "dict://", "内网访问"]),
-        ("xxe", ["xxe", "xml外部实体", "ENTITY"]),
+        ("xxe", ["xxe", "xml外部实体", "entity"]),
         ("info_leak", ["源码泄露", ".git", ".svn", "备份文件", "目录遍历", "robots.txt"]),
         ("brute_force", ["爆破", "弱口令", "字典", "brute"]),
     ]

@@ -6,13 +6,17 @@ import asyncio
 import json
 import re
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from vulnclaw.agent.agent_context import AgentContext
+
 
 # Default concurrency cap used when the agent config does not specify one.
 DEFAULT_TOOL_MAX_CONCURRENT = 5
 
 
-async def handle_tool_calls(agent: Any, message: Any) -> str:
+async def handle_tool_calls(agent: AgentContext, message: Any) -> str:
     """Handle tool calls from the LLM response (legacy single-turn)."""
     results: list[str] = []
     # [修改] 2026-06-10 Nyaecho - 修复 tool_calls 属性访问问题，使用 getattr 防止 AttributeError
@@ -25,7 +29,7 @@ async def handle_tool_calls(agent: Any, message: Any) -> str:
 
 
 async def handle_tool_calls_with_results(
-    agent: Any, message: Any
+    agent: AgentContext, message: Any
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Handle tool calls with deduplication and rate limiting."""
     max_calls_per_round = 10
@@ -74,7 +78,7 @@ async def handle_tool_calls_with_results(
     return results, skipped_info
 
 
-def _resolve_parallel_settings(agent: Any) -> tuple[bool, int]:
+def _resolve_parallel_settings(agent: AgentContext) -> tuple[bool, int]:
     """Read tool parallelization settings from the agent config with safe defaults."""
     safety = getattr(getattr(agent, "config", None), "safety", None)
     if safety is None:
@@ -87,7 +91,7 @@ def _resolve_parallel_settings(agent: Any) -> tuple[bool, int]:
 
 
 async def _execute_parallel(
-    agent: Any, to_execute: list[dict[str, Any]], max_concurrent: int
+    agent: AgentContext, to_execute: list[dict[str, Any]], max_concurrent: int
 ) -> list[dict[str, Any] | None]:
     """Run independent tool calls concurrently, capped by a semaphore.
 
@@ -103,7 +107,27 @@ async def _execute_parallel(
     return await asyncio.gather(*(_guarded(item) for item in to_execute))
 
 
-async def _execute_single(agent: Any, item: dict[str, Any]) -> dict[str, Any] | None:
+def _extract_structured_content(tool_result: Any) -> dict[str, Any] | None:
+    """Recover the structured payload embedded by execute_mcp_tool.
+
+    On a successful MCP call, ``execute_mcp_tool`` appends
+    ``[structured] {json}`` to the result string. Parse it back so callers get a
+    separate ``structured_content`` field without re-executing the tool.
+    """
+    if not isinstance(tool_result, str):
+        return None
+    marker = "[structured] "
+    idx = tool_result.rfind(marker)
+    if idx == -1:
+        return None
+    try:
+        parsed = json.loads(tool_result[idx + len(marker):].strip())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str, Any] | None:
     """Execute one tool call with isolated error handling.
 
     Returns a result dict on success, or ``None`` when the call raised — matching
@@ -114,14 +138,12 @@ async def _execute_single(agent: Any, item: dict[str, Any]) -> dict[str, Any] | 
     func_args = item["func_args"]
     try:
         tool_result = await agent._execute_mcp_tool(func_name, func_args)
-        structured_content = None
-        if getattr(agent, "mcp_manager", None):
-            try:
-                raw_result = await agent.mcp_manager.call_tool(func_name, func_args)
-                if isinstance(raw_result, dict):
-                    structured_content = raw_result.get("structured_content")
-            except Exception:
-                structured_content = None
+        # NOTE: do not re-invoke agent.mcp_manager.call_tool here. _execute_mcp_tool
+        # already dispatches MCP tools through call_tool (running the side effect
+        # once) and embeds any structured content into tool_result as
+        # "[structured] {...}". A second call_tool would run the side effect twice,
+        # so we recover the structured payload from the result string instead.
+        structured_content = _extract_structured_content(tool_result)
         return {
             "tool_call": tool_call,
             "tool_call_id": tool_call.id,
