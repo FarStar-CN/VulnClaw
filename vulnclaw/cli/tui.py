@@ -1051,7 +1051,11 @@ def dispatch_skill_slash_command(cmd: str, args: str, session: dict[str, Any]) -
 
     if args:
         state: TuiState = session["state"]
-        if not state.target.strip():
+        # Self-discovering skills (frontmatter ``requires_target: false``, e.g.
+        # ``hackerone``) derive their target from ``args`` — a scope link — so
+        # they launch without a preset target. Every other skill still requires
+        # one.
+        if skill.get("requires_target", True) and not state.target.strip():
             session["_message"] = _("tui.please_set_target")
             return True
         prompt = f"Use VulnClaw skill {skill['name']}. {args.strip()}"

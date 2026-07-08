@@ -170,6 +170,11 @@ def _parse_skill_file(path: Path) -> dict[str, Any]:
 
     # Parse optional frontmatter
     description = ""
+    # Whether a preset scan target is required before the skill can launch.
+    # Self-discovering skills (e.g. ``hackerone``, which reads its target from a
+    # scope link) set ``requires_target: false`` in frontmatter to launch
+    # target-less. Defaults to True so every existing skill is unchanged.
+    requires_target = True
     body = content
 
     if content.startswith("---"):
@@ -182,6 +187,7 @@ def _parse_skill_file(path: Path) -> dict[str, Any]:
                 if isinstance(frontmatter, dict):
                     description = frontmatter.get("description", "")
                     name = frontmatter.get("name", name)
+                    requires_target = bool(frontmatter.get("requires_target", True))
             except yaml.YAMLError:
                 pass
             body = parts[2].strip()
@@ -191,6 +197,7 @@ def _parse_skill_file(path: Path) -> dict[str, Any]:
         "description": description,
         "content": body,
         "path": str(path),
+        "requires_target": requires_target,
         "references": [],
         "references_dir": "",
         "skill_dir": str(path.parent) if path.name == "SKILL.md" else "",
