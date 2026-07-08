@@ -19,6 +19,11 @@ if TYPE_CHECKING:
 
 from urllib.parse import urlparse
 
+# 修改者: Nyaecho
+# 修改时间: 2026-07-08
+# 修改原因: 消除 V1 违规 — infer_port_from_url 已移至 config/url_utils.py，
+#          此处重新导出以保持向后兼容。
+from vulnclaw.config.url_utils import infer_port_from_url  # noqa: F401 — re-export
 from vulnclaw.agent.constraint_policy import validate_tool_action
 from vulnclaw.agent.network_scan import (
     attach_network_scan_to_session,

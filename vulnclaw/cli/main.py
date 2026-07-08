@@ -48,7 +48,7 @@ from rich.text import Text
 from vulnclaw import __version__, headless
 from vulnclaw.agent.constraint_policy import validate_action_constraints
 from vulnclaw.agent.input_analysis import extract_task_constraints
-from vulnclaw.agent.think_filter import format_think_tags, strip_think_tags
+from vulnclaw.config.text_utils import format_think_tags, strip_think_tags
 from vulnclaw.cli.manual import available_topics, render_manual
 from vulnclaw.config.settings import (
     RUNS_DIR,
@@ -73,162 +73,23 @@ from vulnclaw.target_state.store import (
 )
 
 # === Stream Output Renderer ===
-# 放在文件顶部 imports 之后，app 定义之前
+# 修改者: Nyaecho
+# 修改时间: 2026-07-08
+# 修改原因: S2 修复 — 共享辅助函数已移至 cli/_helpers.py。
 
-
-class TerminalStreamSink:
-    """CLI terminal stream renderer.
-
-    Implements StreamSink protocol for real-time terminal output.
-    """
-
-    def __init__(self, console: "Console", show_thinking: bool = False) -> None:
-        """Initialize the terminal sink.
-
-        Args:
-            console: Rich Console instance
-            show_thinking: Whether to show thinking content
-        """
-        self._console = console
-        self._show_thinking = show_thinking
-        self._status_printed = False
-        self._in_thinking = False
-
-    def on_status(self, message: str) -> None:
-        """Display status message like 'Thinking...'."""
-        self._console.print(f"[dim]{message}[/dim] ", end="", soft_wrap=True)
-        self._status_printed = True
-
-    def on_thinking_token(self, token: str) -> None:
-        """Receive thinking token."""
-        if self._show_thinking:
-            # Print thinking with dim italic style
-            self._console.print(f"[dim i]{token}[/]", end="", soft_wrap=True)
-
-    def on_content_token(self, token: str) -> None:
-        """Receive content token."""
-        # If we printed status and now getting content, move to new line
-        if self._status_printed and not self._in_thinking:
-            self._console.print()  # 换行到新行
-            self._status_printed = False
-        self._console.print(token, end="", soft_wrap=True)
-
-    def on_tool_call(self, tool_name: str, args: str) -> None:
-        """Display tool call notification."""
-        self._console.print()
-        self._console.print(f"[bold cyan]→ 调用工具: {tool_name}[/] {args[:100]}")
-        self._status_printed = False
-
-    def on_tool_result(self, result_summary: str) -> None:
-        """Display tool result summary."""
-        self._console.print()
-        if len(result_summary) > 200:
-            result_summary = result_summary[:200] + "..."
-        self._console.print(f"[dim]→ 工具结果: {result_summary}[/]")
-
-    def on_stream_end(self) -> None:
-        """Handle stream end."""
-        if self._status_printed:
-            self._status_printed = False
-        self._console.print()
-
-app = typer.Typer(
-    name="vulnclaw",
-    help="VulnClaw - AI-powered penetration testing CLI (run 'vulnclaw tui' for the TUI workbench)",
-    no_args_is_help=False,
-    add_completion=False,
+from vulnclaw.cli._helpers import (
+    TerminalStreamSink,
+    _append_action_constraints,
+    _append_cli_constraints,
+    _append_cli_constraints_compat,
+    _generate_report_for_target,
+    _make_solve_event_printer,
+    _print_agent_output,
+    _print_banner,
+    _run_cli_orchestrated_task,
+    console,
+    err_console,
 )
-
-console = Console()
-err_console = Console(stderr=True)
-
-
-# 鈹€鈹€ Banner 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
-ASCII_LOGO = (
-    " _    __      __      ________\n"
-    "| |  / /_  __/ /___  / ____/ /___ __      __\n"
-    "| | / / / / / / __ \\/ /   / / __ `/ | /| / /\n"
-    "| |/ / /_/ / / / / / /___/ / /_/ /| |/ |/ /\n"
-    "|___/\\__,_/_/_/ /_/\\____/_/\\__,_/ |__/|__/\n"
-)
-
-BANNER_SUBTITLE = f"VulnClaw v{__version__} - AI-powered penetration testing CLI"
-
-
-def _print_banner() -> None:
-    logo = Text(ASCII_LOGO, style="bold red")
-    subtitle = Text(BANNER_SUBTITLE)
-    console.print(logo)
-    console.print(subtitle)
-    console.print()
-
-
-def _print_agent_output(output: str, config) -> None:
-    """Print agent output with think-tag filtering based on config."""
-    from rich.markup import escape as rich_escape
-
-    formatted = format_think_tags(output, show=config.session.show_thinking)
-    if formatted:
-        # LLM output may contain Rich-style brackets like [/TOOL_CALL] which
-        # cause MarkupError.  Escape before printing so they render literally.
-        console.print(rich_escape(formatted))
-    elif not config.session.show_thinking:
-        # Check if the original output had thinking content that was stripped
-        stripped = strip_think_tags(output)
-        had_thinking = (stripped != output) and not stripped
-        if had_thinking:
-            console.print("[dim](LLM returned only hidden reasoning and no visible answer.)[/dim]")
-
-
-def _make_solve_event_printer(target_console):
-    """Return an on_event callback that prints solve-engine progress live."""
-
-    def on_event(kind: str, payload: dict) -> None:
-        if kind == "reason":
-            decision = payload.get("decision") or {}
-            complete_flag = decision.get("complete")
-            if complete_flag is not None and complete_flag is not False:
-                # 完成声明留给校验后的 completed / complete_rejected 事件输出，
-                # 避免「先打目标达成、后被拒绝」的错位
-                pass
-            elif decision.get("intents"):
-                target_console.print(
-                    f"[cyan]◆ Reason:[/cyan] 提出 {len(decision['intents'])} 个新探索方向"
-                )
-            else:
-                target_console.print("[dim]◆ Reason: 暂不新增方向[/dim]")
-        elif kind == "frontier_recovery":
-            if payload.get("reason") == "fallback_intents":
-                target_console.print(
-                    f"[yellow]Frontier recovery:[/yellow] "
-                    f"added {payload.get('added', 0)} fallback intents"
-                )
-            else:
-                target_console.print(
-                    f"[yellow]Frontier recovery:[/yellow] "
-                    f"no open intents, retry {payload.get('streak', '?')}"
-                )
-        elif kind == "completed":
-            target_console.print("[green]✓ Reason: 目标达成[/green]")
-        elif kind == "explore_start":
-            target_console.print(
-                f"[yellow]▶ Explore {payload['intent_id']}:[/yellow] {payload['description'][:90]}"
-            )
-        elif kind == "conclude":
-            target_console.print(
-                f"[green]＋ Fact {payload.get('fact', '')}:[/green] {payload.get('desc', '')[:90]}"
-            )
-        elif kind == "hallucination":
-            target_console.print(
-                f"[red]⚠ 幻觉拦截 {payload['intent_id']}:[/red] 声称的 flag 无真实证据，已拒绝"
-            )
-        elif kind == "complete_rejected":
-            target_console.print(f"[red]⚠ 拒绝完成:[/red] {payload.get('reason', '')[:90]}")
-        elif kind == "abandon":
-            target_console.print(f"[red]✗ 放弃 {payload['intent_id']}[/red]")
-
-    return on_event
 
 
 # 鈹€鈹€ REPL 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -2578,7 +2439,10 @@ def doctor() -> None:
     """Inspect the VulnClaw runtime environment."""
     import shutil
 
-    from vulnclaw.web.services.mcp_service import get_mcp_diagnostics
+    # 修改者: Nyaecho
+    # 修改时间: 2026-07-08
+    # 修改原因: V6 修复 — 从 mcp/diagnostics 导入，消除 CLI→Web 依赖。
+    from vulnclaw.mcp.diagnostics import get_mcp_diagnostics
 
     console.print("[bold]VulnClaw Environment Check[/]")
     console.print()

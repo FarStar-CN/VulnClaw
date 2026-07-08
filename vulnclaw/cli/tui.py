@@ -1562,7 +1562,10 @@ def build_runtime_diagnostic(config) -> TuiRuntimeDiagnostic:
     nmap_status = "installed" if shutil.which("nmap") else "optional/missing"
 
     try:
-        from vulnclaw.web.services.mcp_service import get_mcp_diagnostics
+        # 修改者: Nyaecho
+        # 修改时间: 2026-07-08
+        # 修改原因: V6 修复 — 从 mcp/diagnostics 导入，消除 CLI→Web 依赖。
+        from vulnclaw.mcp.diagnostics import get_mcp_diagnostics
 
         mcp_diag = get_mcp_diagnostics()
         return TuiRuntimeDiagnostic(
