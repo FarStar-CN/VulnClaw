@@ -272,6 +272,10 @@ class SessionConfig(BaseModel):
     """Session / output configuration."""
 
     output_dir: Path = Field(default=Path("./vulnclaw-output"), description="Output directory")
+    runs_dir: Path | None = Field(
+        default=None,
+        description="Default run-directory root (defaults to ~/.vulnclaw/runs when unset)",
+    )
     auto_save: bool = Field(default=True, description="Auto-save session state")
     report_format: str = Field(
         default="markdown", description="Default report format: markdown, html"

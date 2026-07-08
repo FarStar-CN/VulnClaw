@@ -197,6 +197,8 @@ def merge_session_state(parent: SessionState, child: SessionState) -> None:
         if record not in parent.step_records:
             parent.step_records.append(record)
 
+    parent._notify_checkpoint("child_agent_finish")
+
 
 def _seed_child_session(child: SessionState, parent: SessionState, surface: AttackSurface) -> None:
     child.target = parent.target

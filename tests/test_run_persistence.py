@@ -1,0 +1,263 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from vulnclaw.agent.context import ContextManager, PentestPhase, SessionState
+from vulnclaw.config.schema import VulnClawConfig
+from vulnclaw.run_context import (
+    RunCollisionError,
+    RunCorruptError,
+    create_run_context,
+    load_run_context,
+)
+from vulnclaw.targets import legacy_target_state_key, parse_target
+
+
+def test_target_model_infers_and_canonicalizes_equivalent_paths(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    relative = parse_target("./repo")
+    absolute = parse_target(str(repo))
+    repo_url = parse_target("https://github.com/JMAN730/VulnClaw/")
+    web_url = parse_target("https://example.com/app/")
+    domain = parse_target("Example.COM.")
+    ip = parse_target("192.168.0.1")
+
+    assert relative.kind == "local_repo"
+    assert relative.canonical == str(repo.resolve())
+    assert relative.state_key == absolute.state_key
+    assert repo_url.kind == "repo_url"
+    assert web_url.kind == "web_url"
+    assert web_url.canonical == "https://example.com/app"
+    assert domain.kind == "domain"
+    assert domain.canonical == "example.com"
+    assert ip.kind == "ip"
+
+
+def test_run_context_creates_manifest_and_rejects_explicit_collision(tmp_path):
+    target = parse_target("https://example.com")
+    ctx = create_run_context(
+        command="run",
+        targets=[target],
+        runs_dir=tmp_path / "runs",
+        run_name="demo-run",
+    )
+
+    manifest = json.loads((ctx.run_dir / "run.json").read_text(encoding="utf-8"))
+    assert manifest["run_name"] == "demo-run"
+    assert manifest["targets"][0]["state_path"] == (
+        f"targets/{target.target_id}/state/current.json"
+    )
+    assert (ctx.run_dir / "events" / "events.jsonl").exists()
+    assert (ctx.run_dir / "targets" / target.target_id / "target.json").exists()
+
+    with pytest.raises(RunCollisionError):
+        create_run_context(
+            command="run",
+            targets=[target],
+            runs_dir=tmp_path / "runs",
+            run_name="demo-run",
+        )
+
+
+def test_run_context_fails_loudly_for_partial_run(tmp_path):
+    target = parse_target("https://example.com")
+    create_run_context(
+        command="run",
+        targets=[target],
+        runs_dir=tmp_path / "runs",
+        run_name="partial-run",
+    )
+
+    with pytest.raises(RunCorruptError, match="target state is missing"):
+        load_run_context("partial-run", runs_dir=tmp_path / "runs")
+
+
+def test_run_aware_save_writes_current_snapshot_and_index(tmp_path, monkeypatch):
+    import vulnclaw.target_state.store as store
+
+    monkeypatch.setattr(store, "TARGETS_DIR", tmp_path / "targets")
+    target = parse_target("https://example.com/")
+    ctx = create_run_context(
+        command="run",
+        targets=[target],
+        runs_dir=tmp_path / "runs",
+        run_name="indexed-run",
+    )
+    state = SessionState(target=target.raw)
+    state.add_step("checked headers", action="probe", target=target.raw, result="ok")
+
+    current_path = store.save_target_state(
+        target.raw,
+        state,
+        command="run",
+        run_context=ctx,
+        target_model=target,
+        checkpoint_reason="test",
+    )
+
+    assert current_path == ctx.run_dir / "targets" / target.target_id / "state" / "current.json"
+    assert current_path.exists()
+    snapshots = list((current_path.parent / "snapshots").glob("*.json"))
+    assert len(snapshots) == 1
+    assert not (tmp_path / "targets" / target.state_key / "state.json").exists()
+
+    loaded = store.load_target_state(target.raw)
+    assert loaded is not None
+    assert loaded["resume_meta"]["run_name"] == "indexed-run"
+    assert loaded["resume_meta"]["target_id"] == target.target_id
+
+
+def test_legacy_import_copies_once_and_leaves_legacy_read_only(tmp_path, monkeypatch):
+    import vulnclaw.target_state.store as store
+
+    monkeypatch.setattr(store, "TARGETS_DIR", tmp_path / "targets")
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    raw_target = "./repo"
+    target = parse_target(raw_target)
+
+    legacy_dir = tmp_path / "targets" / legacy_target_state_key(raw_target)
+    legacy_dir.mkdir(parents=True)
+    legacy_state = SessionState(target=raw_target)
+    legacy_state.advance_phase(PentestPhase.RECON)
+    (legacy_dir / "state.json").write_text(
+        json.dumps(legacy_state.model_dump(mode="json"), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    ctx = create_run_context(
+        command="run",
+        targets=[target],
+        runs_dir=tmp_path / "runs",
+        run_name="legacy-import",
+    )
+    result = store.import_legacy_target_state(
+        raw_target,
+        run_context=ctx,
+        target_model=target,
+        command="run",
+    )
+
+    assert result.restored is True
+    loaded = store.load_target_state(raw_target)
+    assert loaded is not None
+    assert loaded["resume_meta"]["run_name"] == "legacy-import"
+    assert (legacy_dir / "state.json").stat().st_mode & 0o222 == 0
+
+
+class DummyAgent:
+    def __init__(self, runs_dir: Path) -> None:
+        self.config = VulnClawConfig()
+        self.config.session.runs_dir = runs_dir
+        self.context = ContextManager()
+        self.runtime = None
+
+    @property
+    def session_state(self) -> SessionState:
+        return self.context.state
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_checkpoints_and_resumes_exact_run(tmp_path, monkeypatch):
+    import vulnclaw.target_state.store as store
+    from vulnclaw.orchestrator import run_agent_task
+
+    monkeypatch.setattr(store, "TARGETS_DIR", tmp_path / "targets")
+    agent = DummyAgent(tmp_path / "runs")
+
+    async def runner(shared_agent):
+        shared_agent.session_state.add_step(
+            "checked login",
+            action="probe",
+            target="https://example.com/login",
+            result="ok",
+        )
+        shared_agent.session_state.advance_phase(PentestPhase.RECON)
+
+    result = await run_agent_task(
+        agent=agent,
+        command="recon",
+        target="https://example.com",
+        resume=False,
+        runner=runner,
+    )
+
+    run_name = result.summary["run_name"]
+    run_dir = Path(result.summary["run_dir"])
+    assert result.status == "completed"
+    assert result.summary["resume_command"] == f"vulnclaw --resume {run_name}"
+    assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["status"] == (
+        "completed"
+    )
+    state_dir = run_dir / "targets" / result.run_context.targets[0].target_id / "state"
+    snapshots = list((state_dir / "snapshots").glob("*.json"))
+    assert len(snapshots) >= 3
+
+    resumed_agent = DummyAgent(tmp_path / "runs")
+
+    async def noop(_shared_agent):
+        return None
+
+    resumed = await run_agent_task(
+        agent=resumed_agent,
+        command="recon",
+        target="ignored.example",
+        resume=True,
+        resume_run_name=run_name,
+        runner=noop,
+    )
+
+    assert resumed.restore_result.restored is True
+    assert "checked login" in resumed_agent.session_state.executed_steps
+
+    (state_dir / "current.json").unlink()
+    with pytest.raises(RunCorruptError, match="target state is missing"):
+        load_run_context(run_name, runs_dir=tmp_path / "runs")
+
+
+@pytest.mark.asyncio
+async def test_no_import_legacy_resume_does_not_create_run_copy(tmp_path, monkeypatch):
+    import vulnclaw.target_state.store as store
+    from vulnclaw.orchestrator import run_agent_task
+
+    monkeypatch.setattr(store, "TARGETS_DIR", tmp_path / "targets")
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    raw_target = "./repo"
+
+    legacy_dir = tmp_path / "targets" / legacy_target_state_key(raw_target)
+    legacy_dir.mkdir(parents=True)
+    legacy_state = SessionState(target=raw_target)
+    legacy_state.add_step("legacy step", action="probe", target=raw_target, result="ok")
+    (legacy_dir / "state.json").write_text(
+        json.dumps(legacy_state.model_dump(mode="json"), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    agent = DummyAgent(tmp_path / "runs")
+
+    async def noop(_shared_agent):
+        return None
+
+    result = await run_agent_task(
+        agent=agent,
+        command="run",
+        target=raw_target,
+        resume=True,
+        no_import=True,
+        runner=noop,
+    )
+
+    assert result.run_context is None
+    assert result.restore_result.restored is True
+    assert "legacy step" in agent.session_state.executed_steps
+    assert not (tmp_path / "runs").exists()
+    assert not (tmp_path / "targets" / parse_target(raw_target).state_key / "index.json").exists()
