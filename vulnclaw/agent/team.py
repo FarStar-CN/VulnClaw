@@ -186,7 +186,7 @@ async def run_team_pentest(
             ready = _ready_wave(plan.steps, completed_count=plan_cursor)
             if not ready:
                 ready = [plan_cursor]
-            wave = ready[:max_parallel]
+            wave = ready[: min(max_parallel, remaining_steps)]
             step_budget = max(1, remaining_steps // max(1, len(wave)))
             step_results = await asyncio.gather(
                 *(

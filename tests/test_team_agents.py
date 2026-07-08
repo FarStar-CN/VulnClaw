@@ -358,3 +358,33 @@ async def test_independent_steps_run_in_parallel_before_dependent_step():
     assert FakeAgent.max_active_solves == 2
     assert FakeAgent.solve_order[:2] == ["researcher", "developer"]
     assert FakeAgent.solve_order[2] == "executor"
+
+
+@pytest.mark.asyncio
+async def test_team_run_does_not_start_more_workers_than_remaining_step_budget():
+    from vulnclaw.agent.team import TeamDecision, TeamPlan, TeamStep, run_team_pentest
+
+    FakeAgent.active_solves = 0
+    FakeAgent.max_active_solves = 0
+    FakeAgent.solve_order = []
+    root = FakeAgent()
+    plan = TeamPlan(
+        steps=[
+            TeamStep(role="researcher", objective="Collect facts", done_when="facts", depends_on=()),
+            TeamStep(role="developer", objective="Build payload", done_when="payload", depends_on=()),
+            TeamStep(role="executor", objective="Verify payload", done_when="evidence", depends_on=()),
+        ]
+    )
+
+    await run_team_pentest(
+        root,
+        user_input="Capture the flag",
+        target="https://example.com",
+        planner=lambda agent, origin, goal, facts: plan,
+        adviser=lambda agent, origin, goal, step, step_result: TeamDecision(action="continue"),
+        agent_factory=FakeAgent,
+        max_steps=1,
+        max_parallel=3,
+    )
+
+    assert FakeAgent.solve_order == ["researcher"]
