@@ -187,7 +187,12 @@ def _parse_skill_file(path: Path) -> dict[str, Any]:
                 if isinstance(frontmatter, dict):
                     description = frontmatter.get("description", "")
                     name = frontmatter.get("name", name)
-                    requires_target = bool(frontmatter.get("requires_target", True))
+                    # Only an explicit boolean ``false`` opts out of the target
+                    # gate. Any other value (missing, null, 0, "false", …) keeps
+                    # the safe default so malformed frontmatter can't silently
+                    # bypass the authorized-target check.
+                    rt = frontmatter.get("requires_target", True)
+                    requires_target = rt if isinstance(rt, bool) else True
             except yaml.YAMLError:
                 pass
             body = parts[2].strip()

@@ -105,6 +105,16 @@ class TestSkillLoader:
         skill = _parse_skill_file(skill_file)
         assert skill["requires_target"] is False
 
+    def test_skill_requires_target_ignores_non_boolean(self, tmp_path):
+        """Only an explicit boolean false opts out; falsy non-bools stay True."""
+        from vulnclaw.skills.loader import _parse_skill_file
+
+        for raw in ["requires_target:", "requires_target: 0", 'requires_target: "false"']:
+            skill_file = tmp_path / "s.md"
+            skill_file.write_text(f"---\nname: s\n{raw}\n---\nbody\n", encoding="utf-8")
+            skill = _parse_skill_file(skill_file)
+            assert skill["requires_target"] is True, raw
+
     def test_skill_format_field(self):
         """Directory-format skills should have format='directory'."""
         from vulnclaw.skills.loader import load_skill_by_name
