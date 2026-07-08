@@ -997,6 +997,71 @@ class TestCLI:
         assert result == "launch"
         assert session["_nl_text"] == "Use VulnClaw skill ctf-web. find the flag"
 
+    def test_skill_slash_with_args_requires_target_by_default(self, monkeypatch):
+        import vulnclaw.cli.tui as tui_mod
+
+        monkeypatch.setattr(
+            tui_mod,
+            "load_skill_by_name",
+            lambda name: {"name": name, "requires_target": True},
+        )
+        session = {"state": tui_mod.TuiState(), "_message": "", "_prompt": None}
+
+        handled = tui_mod.dispatch_skill_slash_command("needs-target", "go", session)
+
+        assert handled is True
+        assert session["_message"] == tui_mod._("tui.please_set_target")
+        assert session.get("_action") != "launch"
+
+    def test_self_discovering_skill_launches_without_target(self, monkeypatch):
+        import vulnclaw.cli.tui as tui_mod
+
+        # A skill declaring ``requires_target: false`` (e.g. hackerone) discovers
+        # its target from args, so it launches with no preset target.
+        monkeypatch.setattr(
+            tui_mod,
+            "load_skill_by_name",
+            lambda name: {"name": name, "requires_target": False},
+        )
+        session = {"state": tui_mod.TuiState(), "_message": "", "_prompt": None}
+
+        handled = tui_mod.dispatch_skill_slash_command(
+            "hackerone", "https://hackerone.com/example", session
+        )
+
+        assert handled is True
+        assert session["_action"] == "launch"
+        assert (
+            session["_nl_text"]
+            == "Use VulnClaw skill hackerone. https://hackerone.com/example"
+        )
+        # The scope link stands in as the target so the launched subprocess
+        # records a real target rather than the "<target>" placeholder.
+        assert session["state"].target == "https://hackerone.com/example"
+
+    def test_self_discovering_skill_keeps_preset_target(self, monkeypatch):
+        import vulnclaw.cli.tui as tui_mod
+
+        monkeypatch.setattr(
+            tui_mod,
+            "load_skill_by_name",
+            lambda name: {"name": name, "requires_target": False},
+        )
+        session = {
+            "state": tui_mod.TuiState(target="https://preset.example"),
+            "_message": "",
+            "_prompt": None,
+        }
+
+        handled = tui_mod.dispatch_skill_slash_command(
+            "hackerone", "https://hackerone.com/example", session
+        )
+
+        assert handled is True
+        assert session["_action"] == "launch"
+        # An already-set target is respected, not overwritten by the args.
+        assert session["state"].target == "https://preset.example"
+
     def test_tui_runtime_diagnostic_panel_renders_environment_summary(self, monkeypatch):
         import vulnclaw.cli.tui as tui_mod
         from vulnclaw.config.schema import VulnClawConfig
