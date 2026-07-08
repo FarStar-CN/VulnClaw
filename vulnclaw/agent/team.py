@@ -175,17 +175,20 @@ async def run_team_pentest(
     _surface_plan(root_agent, plan, stream_sink=stream_sink)
 
     result = TeamRunResult(plan=plan)
-    plan_cursor = 0
+    completed_steps: set[int] = set()
     remaining_steps = max(1, max_steps)
     max_parallel = max(1, max_parallel or len(plan.steps) or 1)
     previous_root_role = getattr(root_agent, "active_role", None)
 
     try:
         root_agent.active_role = None
-        while plan_cursor < len(plan.steps) and remaining_steps > 0:
-            ready = _ready_wave(plan.steps, completed_count=plan_cursor)
+        while len(completed_steps) < len(plan.steps) and remaining_steps > 0:
+            ready = _ready_wave(plan.steps, completed=completed_steps)
             if not ready:
-                ready = [plan_cursor]
+                remaining_idx = [i for i in range(len(plan.steps)) if i not in completed_steps]
+                if not remaining_idx:
+                    break
+                ready = [remaining_idx[0]]
             wave = ready[: min(max_parallel, remaining_steps)]
             step_budget = max(1, remaining_steps // max(1, len(wave)))
             step_results = await asyncio.gather(
@@ -208,6 +211,7 @@ async def run_team_pentest(
             remaining_steps -= sum(_steps_used(step_result, step_budget) for step_result in step_results)
 
             for idx, step_result in zip(wave, step_results):
+                completed_steps.add(idx)
                 decision = await _call_adviser(
                     adviser, root_agent, target, goal, plan.steps[idx], step_result
                 )
@@ -221,7 +225,7 @@ async def run_team_pentest(
                     plan = validate_plan(new_plan, fallback_goal=goal)
                     _surface_plan(root_agent, plan, stream_sink=stream_sink)
                     result.plan = plan
-                    plan_cursor = 0
+                    completed_steps = set()
                     break
 
                 if decision.action == "stop":
@@ -232,7 +236,6 @@ async def run_team_pentest(
                         continue
                     return result
             else:
-                plan_cursor = max(wave) + 1
                 continue
             continue
     finally:
@@ -407,17 +410,16 @@ def _surface_plan(agent: Any, plan: TeamPlan, *, stream_sink: Any = None) -> Non
         stream_sink.on_status(rendered)
 
 
-def _ready_wave(steps: list[TeamStep], *, completed_count: int) -> list[int]:
+def _ready_wave(steps: list[TeamStep], *, completed: set[int]) -> list[int]:
     ready: list[int] = []
-    for idx in range(completed_count, len(steps)):
-        deps = steps[idx].depends_on
+    for idx, step in enumerate(steps):
+        if idx in completed:
+            continue
+        deps = step.depends_on
         if deps is None:
             deps = (idx - 1,) if idx > 0 else ()
-        if all(dep < completed_count for dep in deps):
+        if all(dep in completed for dep in deps):
             ready.append(idx)
-            continue
-        if not ready:
-            break
     return ready
 
 
@@ -488,5 +490,6 @@ def _merge_blackboard(parent: Any, child: Any) -> None:
         if tool_call not in parent.tool_calls:
             parent.tool_calls.append(tool_call)
 
-    if child.completed and not parent.completed:
-        parent.mark_complete(child.complete_reason)
+    # A worker's `completed` reflects its own step-scoped done_when (solver.solve
+    # overwrites board.goal with the step goal), not the team's overall goal.
+    # Never let a subtask's local completion mark the shared root goal achieved.
