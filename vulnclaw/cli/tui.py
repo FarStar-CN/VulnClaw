@@ -2243,7 +2243,7 @@ def _edit_session_config(screen: Console, config):
         screen, "PoC language", ["python", "bash"], config.session.poc_language
     )
     config.session.engine = _prompt_choice_value(
-        screen, "Autonomous engine", ["solve", "rounds"], config.session.engine
+        screen, "Autonomous engine", ["solve", "team", "rounds"], config.session.engine
     )
     config.session.max_rounds = _prompt_int_value(screen, "Max rounds", config.session.max_rounds)
     config.session.show_thinking = _prompt_bool_value(

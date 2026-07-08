@@ -380,6 +380,60 @@ class TestCLI:
         ]
         assert "/custom/path/report.md" in result.output
 
+    def test_run_engine_team_routes_to_team_supervisor(self, runner, monkeypatch):
+        from types import SimpleNamespace
+
+        import vulnclaw.agent.team as team
+        import vulnclaw.cli.main as cli_main
+        from vulnclaw.cli.main import app
+        from vulnclaw.config.schema import VulnClawConfig
+
+        config = VulnClawConfig()
+        config.llm.api_key = "test-key"
+        config.session.solve_max_steps = 7
+        monkeypatch.setattr(cli_main, "load_config", lambda: config)
+
+        calls = []
+
+        async def fake_run_team_pentest(agent, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(plan=SimpleNamespace(steps=[]))
+
+        monkeypatch.setattr(team, "run_team_pentest", fake_run_team_pentest)
+
+        class DummyBoard:
+            def get_summary(self):
+                return {
+                    "completed": False,
+                    "facts": 1,
+                    "intents": 0,
+                    "complete_reason": "",
+                }
+
+        class DummyAgent:
+            mcp_manager = None
+
+            def __init__(self, *_args):
+                self.context = SimpleNamespace(state=SimpleNamespace(board=DummyBoard()))
+
+        async def fake_orchestrated(*, command, target, resume, snapshot, runner):
+            await runner(DummyAgent(), config)
+            return type("RunResult", (), {"summary": {"findings_count": 0}})()
+
+        monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
+        monkeypatch.setattr(
+            cli_main,
+            "_generate_report_for_target",
+            lambda target, **kwargs: "/tmp/report.md",
+        )
+
+        result = runner.invoke(app, ["run", "https://example.com", "--engine", "team"])
+
+        assert result.exit_code == 0
+        assert calls
+        assert calls[0]["target"] == "https://example.com"
+        assert calls[0]["max_steps"] == 7
+
     def test_run_cli_constraints_are_appended_to_prompt(self, runner, monkeypatch):
         import vulnclaw.cli.main as cli_main
         from vulnclaw.cli.main import app

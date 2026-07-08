@@ -1055,6 +1055,11 @@ def run(
     prompt: Optional[str] = typer.Option(
         None, "--prompt", help="Custom natural language prompt (overrides auto-generated prompt)"
     ),
+    engine: Optional[str] = typer.Option(
+        None,
+        "--engine",
+        help="Autonomous engine for this run: solve, team, or rounds",
+    ),
     only_port: Optional[int] = typer.Option(
         None, "--only-port", help="Restrict testing to a single port"
     ),
@@ -1086,6 +1091,9 @@ def run(
     if not has_llm_credentials(config.llm):
         err_console.print("[!] Configure LLM credentials first (api_key or auth_mode).")
         raise typer.Exit(1)
+    if engine is not None and engine not in {"solve", "team", "rounds"}:
+        err_console.print("[!] --engine must be one of: solve, team, rounds")
+        raise typer.Exit(1)
 
     console.print(f"[*] Target: [bold]{target}[/] | Scope: [bold]{scope}[/]")
 
@@ -1107,8 +1115,9 @@ def run(
     async def _run():
         async def runner(agent, shared_config):
             sink = TerminalStreamSink(console, shared_config.session.show_thinking)
-            # 默认走目标驱动 solve 引擎；engine=rounds 时回退到旧的固定轮数循环
-            if getattr(shared_config.session, "engine", "solve") == "solve":
+            selected_engine = engine or getattr(shared_config.session, "engine", "solve")
+            # 默认走目标驱动 solve 引擎；engine=team 启用角色团队；engine=rounds 回退旧循环
+            if selected_engine == "solve":
                 result = await agent.solve(
                     task_prompt,
                     target=target,
@@ -1118,7 +1127,30 @@ def run(
                     stream_sink=sink,
                     on_event=_make_solve_event_printer(console),
                 )
-                board_holder["board"] = agent.context.state.board.get_summary()
+                board = getattr(getattr(getattr(agent, "context", None), "state", None), "board", None)
+                if board is not None:
+                    board_holder["board"] = board.get_summary()
+                return result
+            if selected_engine == "team":
+                from vulnclaw.agent.team import run_team_pentest
+
+                def agent_factory():
+                    return agent.__class__(shared_config, getattr(agent, "mcp_manager", None))
+
+                result = await run_team_pentest(
+                    agent,
+                    user_input=task_prompt,
+                    target=target,
+                    agent_factory=agent_factory,
+                    max_steps=shared_config.session.solve_max_steps,
+                    max_intents=shared_config.session.solve_max_intents,
+                    max_tool_rounds=shared_config.session.solve_max_tool_rounds,
+                    stream_sink=sink,
+                    on_event=_make_solve_event_printer(console),
+                )
+                board = getattr(getattr(getattr(agent, "context", None), "state", None), "board", None)
+                if board is not None:
+                    board_holder["board"] = board.get_summary()
                 return result
             return await agent.auto_pentest(
                 task_prompt,
