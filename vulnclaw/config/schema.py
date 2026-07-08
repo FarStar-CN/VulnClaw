@@ -278,9 +278,14 @@ class SessionConfig(BaseModel):
     )
     poc_language: str = Field(default="python", description="Default PoC language: python, bash")
     max_rounds: int = Field(default=15, description="Max autonomous pentest rounds (1-100)")
-    # Autonomous engine: "solve" = goal-driven OODA (default), "rounds" = legacy fixed-round loop
+    # Autonomous engine: "solve" = goal-driven OODA (default),
+    # "team" = role-specialized supervisor, "rounds" = legacy fixed-round loop
     engine: str = Field(
-        default="solve", description="Autonomous engine: solve (goal-driven) or rounds (legacy)"
+        default="solve",
+        description=(
+            "Autonomous engine: solve (goal-driven), team (role-specialized), "
+            "or rounds (legacy)"
+        ),
     )
     # Solve-engine knobs
     solve_max_steps: int = Field(

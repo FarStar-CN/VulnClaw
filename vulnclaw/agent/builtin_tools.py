@@ -32,11 +32,17 @@ from vulnclaw.agent.network_scan import (
     target_is_private_literal,
     without_privileged_nmap_args,
 )
+from vulnclaw.agent.roles import role_tool_violation, tool_allowed_for_role
 from vulnclaw.intel.tools import (
     INTEL_TOOL_NAMES,
     dispatch_intel_tool,
     intel_tool_schemas,
 )
+
+
+def role_allows_tool(role: str | None, tool_name: str) -> bool:
+    """Return whether the active team role may see or call a tool."""
+    return tool_allowed_for_role(tool_name, role)
 
 BLOCKED_PATTERNS: list[str] = [
     r"os\.\s*system\s*\(",
@@ -90,6 +96,10 @@ LAB_MODE_PATTERNS: list[str] = [
 
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
     """Execute a tool call via MCP manager or built-in tools."""
+    violation = role_tool_violation(getattr(agent, "active_role", None), tool_name)
+    if violation is not None:
+        return violation
+
     session = getattr(agent, "session_state", None)
     constraints = getattr(session, "task_constraints", None)
     if constraints is not None:
@@ -302,11 +312,16 @@ def infer_port_from_url(url: str) -> int | None:
     return None
 
 
-def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
+def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> list[dict[str, Any]]:
     """Build OpenAI function calling schema from MCP tools + built-in tools."""
     tools: list[dict[str, Any]] = []
 
-    tools.append(
+    def append_tool(tool: dict[str, Any]) -> None:
+        name = str(tool.get("function", {}).get("name", ""))
+        if role_allows_tool(active_role, name):
+            tools.append(tool)
+
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -330,7 +345,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -360,7 +375,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -400,7 +415,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -445,7 +460,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -506,7 +521,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -539,7 +554,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -563,7 +578,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -597,7 +612,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -632,7 +647,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -663,11 +678,12 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.extend(intel_tool_schemas())
+    for tool in intel_tool_schemas():
+        append_tool(tool)
 
     if mcp_manager:
         for schema in mcp_manager.get_tool_schemas():
-            tools.append(
+            append_tool(
                 {
                     "type": "function",
                     "function": {
