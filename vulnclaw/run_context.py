@@ -7,7 +7,7 @@ import os
 import re
 import secrets
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
@@ -384,8 +384,11 @@ def atomic_write_text(path: Path, text: str) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp_path, path)
+    dir_flags = getattr(os, "O_DIRECTORY", None)
+    if dir_flags is None:
+        return
     try:
-        dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
+        dir_fd = os.open(str(path.parent), dir_flags)
     except OSError:
         return
     try:
@@ -397,7 +400,7 @@ def atomic_write_text(path: Path, text: str) -> None:
 def generate_run_name(command: str, targets: Iterable[Target]) -> str:
     first = next(iter(targets), None)
     target_slug = _slugify(first.label or first.raw if first else "target")
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{timestamp}-{_slugify(command or 'run')}-{target_slug}-{uuid4().hex[:8]}"
 
 
@@ -497,7 +500,7 @@ def _validate_run_name(run_name: str) -> None:
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _slugify(value: str) -> str:

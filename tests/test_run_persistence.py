@@ -10,6 +10,7 @@ from vulnclaw.config.schema import VulnClawConfig
 from vulnclaw.run_context import (
     RunCollisionError,
     RunCorruptError,
+    atomic_write_text,
     create_run_context,
     load_run_context,
 )
@@ -76,6 +77,17 @@ def test_run_context_fails_loudly_for_partial_run(tmp_path):
 
     with pytest.raises(RunCorruptError, match="target state is missing"):
         load_run_context("partial-run", runs_dir=tmp_path / "runs")
+
+
+def test_atomic_write_text_skips_directory_fsync_when_unsupported(tmp_path, monkeypatch):
+    import vulnclaw.run_context as run_context
+
+    monkeypatch.setattr(run_context.os, "O_DIRECTORY", None, raising=False)
+    path = tmp_path / "state" / "current.json"
+
+    atomic_write_text(path, '{"ok": true}')
+
+    assert path.read_text(encoding="utf-8") == '{"ok": true}'
 
 
 def test_run_aware_save_writes_current_snapshot_and_index(tmp_path, monkeypatch):
