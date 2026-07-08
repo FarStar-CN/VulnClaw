@@ -93,10 +93,16 @@ AI_MODEL, SMART_CONTRACT, OTHER
 ```
 
 Note the community bug-bounty tooling (`bounty-targets`) filters scopes down to
-`%w[URL WILDCARD]` when it wants web targets — a useful signal that **URL +
-WILDCARD are the asset types the pentest-flow can act on directly**; the rest
-(mobile, source, hardware, CIDR) are either non-web or need special handling
-(CIDR/non-web assets are **Fog** on #43).
+`%w[URL WILDCARD]` when it wants web targets. For VulnClaw, the direct web-target
+set is slightly wider: **`Domain`, `URL`, and `WILDCARD` can all be handed to
+`pentest-flow` directly** — a bare `Domain` like `myprogram.com` is a first-class
+pentest target (VulnClaw already accepts bare domains; see
+`tests/test_agent.py::test_target_detection_domain`). `Domain` is in fact
+HackerOne's *default* asset type for a whole domain, with `URL` reserved for a
+specific application/path on it — so treating `Domain` as needing special
+handling would make #46 silently skip most in-scope web roots. The remaining
+types (mobile, source, hardware, and `CIDR`/IP ranges) are either non-web or need
+special handling (those non-web assets are **Fog** on #43).
 
 **How in-scope vs out-of-scope is marked:** the scope has two lists —
 **In scope** and **Out of scope**. Out-of-scope assets are shown to hackers with
@@ -171,6 +177,8 @@ www.example.com               URL         Eligible             Critical
 api.example.com               URL         Eligible             High
 store.example.com             URL         Not eligible         Medium      (in scope, unpaid)
 172.16.0.0/16                 CIDR        Eligible             High
+203.0.113.10                  IP Address  Eligible             High        (standalone IP, no slash)
+myprogram.com                 Domain      Eligible             Critical
 com.example.mobile            Android: .apk  Eligible          High
 https://github.com/example/core   Source code   Eligible      Medium
 
@@ -191,10 +199,17 @@ Realistic parser expectations:
 - Detect the **"Out of scope"** section header to split the deny-list from the
   allow-list. If the header is missing, treat everything as in-scope but warn
   the user and ask them to confirm the out-of-scope set explicitly.
-- Classify identifiers by regex when the type column is lost:
-  `*.` prefix → Wildcard; `NNN.NNN.../NN` → CIDR; `scheme://…/path` or bare
-  `host/path` → URL; bare `host` → Domain; reverse-DNS `com.x.y` → mobile
-  package; `github.com/…`/`gitlab.com/…` → Source code.
+- Classify identifiers by regex when the type column is lost, **in this order**
+  (earlier rules win, so IPs are caught before the generic bare-host rule):
+  `*.` prefix → Wildcard;
+  value with a `/NN` suffix over a dotted/colon-hex address → CIDR;
+  **bare IPv4 (`N.N.N.N`) or IPv6 (`::`/hex-colon) with no slash → IP address**
+  (HackerOne lists `IP Address` as its own asset type; a single IP is
+  effectively a `/32` and #44 explicitly asked for CIDR/**IP** coverage — don't
+  let it fall through to the bare-host/Domain rule and get misclassified);
+  `scheme://…/path` or bare `host/path` → URL; bare `host` → Domain;
+  reverse-DNS `com.x.y` → mobile package; `github.com/…`/`gitlab.com/…` →
+  Source code.
 - Map **"Not eligible" / "Not eligible for bounty"** text to the unpaid tri-state
   from §3; do **not** confuse it with out-of-scope.
 
