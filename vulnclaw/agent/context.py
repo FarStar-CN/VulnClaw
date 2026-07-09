@@ -26,6 +26,20 @@ class PentestPhase(str, Enum):
     REPORTING = "报告生成"
 
 
+class EvidenceRef(BaseModel):
+    """A structured reference from a finding to a piece of evidence.
+
+    Minimal, forward-compatible stub for the evidence model owned by the
+    findings PRD. For ``kind="http_capture"`` refs, ``request_id`` points at a
+    captured request/response pair in the traffic evidence store; the report
+    generator resolves it back to the raw request/response and inlines it.
+    """
+
+    kind: str = Field(default="http_capture", description="Evidence kind, e.g. http_capture")
+    request_id: str = Field(default="", description="Traffic-store request_id for http_capture refs")
+    note: str = Field(default="", description="Optional human note about this evidence")
+
+
 class VulnerabilityFinding(BaseModel):
     """A single vulnerability finding."""
 
@@ -53,6 +67,11 @@ class VulnerabilityFinding(BaseModel):
 
     # ★ 漏洞唯一标识（用于去重）
     finding_id: str = Field(default="", description="漏洞唯一标识：vuln_type + target + location")
+
+    # ★ 结构化证据引用（http_capture 等），报告生成时内联原始请求/响应
+    evidence_refs: list[EvidenceRef] = Field(
+        default_factory=list, description="Structured evidence references (e.g. http_capture)"
+    )
 
     def model_post_init(self, *args, **kwargs) -> None:
         # ★ Vulnerability completeness validation
