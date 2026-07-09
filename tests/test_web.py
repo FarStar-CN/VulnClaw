@@ -602,6 +602,7 @@ class TestWebServices:
             snapshot_id=None,
             before_restore=None,
             on_restored=None,
+            on_legacy_import=None,
             runner=None,
         ):
             if before_restore is not None:
@@ -825,6 +826,7 @@ class TestWebServices:
         assert result.summary["restored"] is True
         assert called == [
             "restore:https://example.com:snap_001",
+            "save",
             "runner",
             "save",
         ]
