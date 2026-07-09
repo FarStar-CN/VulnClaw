@@ -34,12 +34,25 @@ class TestVulnerabilityFinding:
         from vulnclaw.agent.context import VulnerabilityFinding
 
         finding = VulnerabilityFinding(title="Test Vuln")
-        assert finding.title == "Test Vuln"
+        # A bare finding (no evidence/vuln_type/remediation) is quarantined at intake
+        # for ANY severity: title prefixed, lifecycle set to needs_manual_review.
+        assert "Test Vuln" in finding.title
+        assert finding.title.startswith("[未验证]")
         assert finding.severity == "Medium"
         assert finding.vuln_type == ""
         assert finding.cve is None
-        assert finding.evidence_level == "L1"
-        assert finding.lifecycle_status == "candidate"
+        assert finding.evidence_level == "L2"
+        assert finding.lifecycle_status == "needs_manual_review"
+        # New structured fields default to empty/None.
+        assert finding.target == ""
+        assert finding.impact == ""
+        assert finding.cvss is None
+        assert finding.cwe is None
+        assert finding.endpoint is None
+        assert finding.method is None
+        assert finding.code_location is None
+        assert finding.evidence_refs == []
+        assert finding.skill_provenance is None
 
     def test_full_values(self):
         from vulnclaw.agent.context import VulnerabilityFinding
@@ -858,7 +871,10 @@ class TestAgentCore:
         agent._finding_parser.parse(response)
         assert len(agent.session_state.findings) >= 1
         assert agent.session_state.findings[0].severity == "Critical"
-        assert agent.session_state.findings[0].evidence_level == "L1"
+        # Bare explicit-tag findings are quarantined at intake (needs_manual_review,
+        # evidence_level bumped L1 → L2) until an evidence chain is attached.
+        assert agent.session_state.findings[0].evidence_level == "L2"
+        assert agent.session_state.findings[0].lifecycle_status == "needs_manual_review"
 
     def test_parse_high_confidence_pattern_needs_manual_review(self):
         agent = self._make_agent()

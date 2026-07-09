@@ -192,11 +192,19 @@ class TestWebServices:
 
         state = SessionState(target="https://example.com")
         state.add_finding(
-            VulnerabilityFinding(title="Candidate", severity="Low", lifecycle_status="candidate")
+            # A vuln_type keeps this out of intake quarantine so it stays a genuine
+            # candidate (a bare finding would be auto-promoted to needs_manual_review).
+            VulnerabilityFinding(
+                title="Candidate",
+                severity="Low",
+                vuln_type="Info Leak",
+                lifecycle_status="candidate",
+            )
         )
         review = VulnerabilityFinding(
             title="Review Me",
             severity="High",
+            vuln_type="Access Control",
             evidence_level="L2",
             lifecycle_status="needs_manual_review",
         )
