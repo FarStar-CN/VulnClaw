@@ -108,6 +108,26 @@ class TestFindingsDocument:
         assert doc["summary"]["verified"] == 2
         assert doc["summary"]["rejected"] == 1
 
+    def test_summary_verified_matches_deduped_array(self):
+        # Two identical verified findings dedup to one in the `verified` array;
+        # summary.verified must track that deduplicated length, not the raw bucket
+        # count over all findings (which would report 2 and break consumers).
+        kwargs = dict(
+            title="SQLi in login",
+            severity="Critical",
+            vuln_type="SQLi",
+            evidence="error-based extraction confirms injectable id param on /login?id=1",
+        )
+        state = SessionState(target="https://shop.example.com")
+        # bypass add_finding's exact dedup so both raw findings live in state.findings
+        state.findings.append(_verified(**kwargs))
+        state.findings.append(_verified(**kwargs))
+
+        doc = build_findings_document(state)
+        assert doc["summary"]["total"] == 2  # every raw finding counted
+        assert len(doc["verified"]) == 1  # deduplicated array
+        assert doc["summary"]["verified"] == 1  # summary aligned with the array
+
     def test_findings_json_serializes_evidence_refs(self):
         session = _make_mixed_session()
         doc = build_findings_document(session)
@@ -242,5 +262,21 @@ class TestWriteArtifacts:
 
         session = _make_mixed_session()
         generate_report(session, str(tmp_path / "report.md"))
+        assert (tmp_path / "findings" / "findings.json").exists()
+        assert (tmp_path / "findings" / "findings.sarif").exists()
+
+    def test_persistent_cycle_report_emits_findings_dir(self, tmp_path):
+        from vulnclaw.report.generator import generate_persistent_cycle_report
+
+        session = _make_mixed_session()
+        generate_persistent_cycle_report(
+            session,
+            cycle_num=1,
+            total_findings=len(session.findings),
+            new_findings=2,
+            total_steps=10,
+            rounds_per_cycle=100,
+            output_path=str(tmp_path / "cycle.md"),
+        )
         assert (tmp_path / "findings" / "findings.json").exists()
         assert (tmp_path / "findings" / "findings.sarif").exists()

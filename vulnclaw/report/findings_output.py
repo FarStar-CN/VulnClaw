@@ -109,8 +109,14 @@ def build_findings_document(
     all_findings = list(session.findings)
     verified = _verified_set(session)
 
-    summary = {"total": len(all_findings), "verified": len(verified)}
-    summary.update(_lifecycle_counts(all_findings))
+    # Lifecycle buckets count the raw (un-deduplicated) findings, but summary.verified
+    # must track the deduplicated ``verified`` array and the SARIF result count — so
+    # override the raw "verified" bucket with the deduplicated length. Otherwise a
+    # session with duplicate verified findings would report summary.verified larger
+    # than len(verified), breaking consumers that trust the totals.
+    lifecycle = _lifecycle_counts(all_findings)
+    lifecycle["verified"] = len(verified)
+    summary = {"total": len(all_findings), **lifecycle}
 
     return {
         "schema_version": FINDINGS_SCHEMA_VERSION,

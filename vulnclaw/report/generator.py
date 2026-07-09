@@ -732,6 +732,13 @@ def generate_persistent_cycle_report(
         )
     output.write_text(report_content, encoding="utf-8")
 
+    # ★ Emit the same machine-consumable findings artifacts as generate_report, so a
+    # persistent run's per-cycle reports also produce findings/findings.json and
+    # findings/findings.sarif.
+    from vulnclaw.report.findings_output import write_findings_artifacts
+
+    write_findings_artifacts(session, output.parent / "findings")
+
     return output
 
 
