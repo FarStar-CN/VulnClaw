@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -27,18 +27,27 @@ class PentestPhase(str, Enum):
     REPORTING = "报告生成"
 
 
-class EvidenceRef(BaseModel):
-    """A structured reference from a finding to a piece of evidence.
+# Typed evidence-reference kinds. ``sandbox_output`` refs land under
+# ``evidence/sandbox/`` (produced by the sandbox PRD), ``http_capture`` refs are
+# resolved against the traffic store via ``request_id`` (traffic-store PRD), and
+# ``file`` refs point at any other artifact inside the per-run ``evidence/`` tree.
+EvidenceKind = Literal["sandbox_output", "http_capture", "file"]
 
-    Minimal, forward-compatible stub for the evidence model owned by the
-    findings PRD. For ``kind="http_capture"`` refs, ``request_id`` points at a
-    captured request/response pair in the traffic evidence store; the report
-    generator resolves it back to the raw request/response and inlines it.
+
+class EvidenceRef(BaseModel):
+    """A typed pointer from a finding into the per-run ``evidence/`` tree.
+
+    ``path`` is always relative to that tree so evidence stays portable across
+    machines. ``request_id`` is the optional hook a traffic store resolves an
+    ``http_capture`` against; it is ``None`` for refs that are self-contained
+    files (``sandbox_output`` / ``file``).
     """
 
-    kind: str = Field(default="http_capture", description="Evidence kind, e.g. http_capture")
-    request_id: str = Field(default="", description="Traffic-store request_id for http_capture refs")
-    note: str = Field(default="", description="Optional human note about this evidence")
+    kind: EvidenceKind = Field(description="sandbox_output | http_capture | file")
+    path: str = Field(default="", description="Path relative to the per-run evidence/ tree")
+    request_id: Optional[str] = Field(
+        default=None, description="Traffic-store request id for http_capture refs"
+    )
 
 
 class VulnerabilityFinding(BaseModel):
@@ -47,10 +56,28 @@ class VulnerabilityFinding(BaseModel):
     title: str = Field(description="Vulnerability title")
     severity: str = Field(default="Medium", description="Critical/High/Medium/Low/Info")
     vuln_type: str = Field(default="", description="Vulnerability type (SQLi, XSS, RCE, etc.)")
-    description: str = Field(default="", description="Detailed description")
+    description: str = Field(default="", description="Detailed description (what/where)")
+    impact: str = Field(
+        default="", description="Consequence / business risk (distinct from description)"
+    )
     evidence: str = Field(default="", description="Proof/evidence of the finding")
     cve: Optional[str] = Field(default=None, description="Associated CVE ID")
+    cvss: Optional[float] = Field(default=None, description="CVSS base score (0.0-10.0)")
+    cwe: Optional[str] = Field(default=None, description="CWE identifier, e.g. 'CWE-89'")
     remediation: str = Field(default="", description="Fix recommendation")
+    # ★ Structured location — ties findings to a concrete request/route or code site.
+    target: str = Field(default="", description="Owning target (ties to the Target model)")
+    endpoint: Optional[str] = Field(default=None, description="Affected URL/endpoint")
+    method: Optional[str] = Field(default=None, description="HTTP method, e.g. 'POST'")
+    code_location: Optional[str] = Field(
+        default=None, description="file:line for repo/SAST-style findings"
+    )
+    # ★ Typed evidence references into the per-run evidence/ tree (alongside the
+    # free-text ``evidence`` blob, which is retained for backward compatibility).
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    # ★ Optional skill-loading provenance (reserved by the skill-loading PRD);
+    # mapped into finding metadata / SARIF ``properties`` when present.
+    skill_provenance: Optional[dict[str, Any]] = Field(default=None)
     poc_script: Optional[str] = Field(default=None, description="Generated PoC script path")
     evidence_level: str = Field(default="L1", description="L1-L4 evidence strength")
     lifecycle_status: str = Field(
@@ -69,36 +96,36 @@ class VulnerabilityFinding(BaseModel):
     # ★ 漏洞唯一标识（用于去重）
     finding_id: str = Field(default="", description="漏洞唯一标识：vuln_type + target + location")
 
-    # ★ Skill provenance — which skills/references produced this finding.
-    # Structured (not prose); populated from the active SkillSelection at finding
-    # creation. Optional here; the findings/SARIF PRD maps it into finding
-    # metadata / SARIF ``properties``.
-    skill_provenance: Optional[dict[str, Any]] = Field(
-        default=None,
-        description="Structured skill provenance: primary/support ids, references loaded, reason, confidence",
-    )
-
-    # ★ 结构化证据引用（http_capture 等），报告生成时内联原始请求/响应
-    evidence_refs: list[EvidenceRef] = Field(
-        default_factory=list, description="Structured evidence references (e.g. http_capture)"
-    )
-
     def model_post_init(self, *args, **kwargs) -> None:
-        # ★ Vulnerability completeness validation
-        # If severity is High/Critical but evidence, vuln_type, remediation are all empty,
-        # this is a placeholder finding — warn but allow it.
-        if self.severity in ("Critical", "High"):
-            if not self.evidence and not self.vuln_type and not self.remediation:
+        # ★ Generate the dedup identity FIRST, from the caller-supplied fields —
+        # before the intake quarantine below rewrites the description. Otherwise the
+        # injected warning text (which contains "/vuln_type/…") is picked up as a
+        # bogus location and every bare finding collides on the same nonsense id.
+        if not self.finding_id:
+            self.finding_id = self._generate_finding_id()
+
+        # ★ Intake quarantine (no hard rejection).
+        # A finding with no evidence, no vuln_type and no remediation carries no
+        # substantiating signal. For ANY severity we prefix the title, annotate the
+        # description, and quarantine it as ``needs_manual_review`` — it stays in run
+        # state / audit trail but is excluded from the report/SARIF gate until an
+        # actual evidence chain is attached. (Previously this fired for High/Critical
+        # only and did not set a lifecycle status.) The whole unit is skipped for a
+        # finding that is already verified/rejected — an explicitly promoted finding
+        # keeps its terminal status and is never re-stamped "[未验证]".
+        is_bare = not self.evidence and not self.vuln_type and not self.remediation
+        is_terminal = self.verified or self.verification_status in ("verified", "rejected")
+        if is_bare and not is_terminal:
+            if not self.title.startswith("[未验证]"):
                 self.title = f"[未验证] {self.title}"
+            if "缺少验证证据" not in self.description:
                 self.description = (
                     "(⚠️ 此漏洞缺少验证证据/vuln_type/修复建议三字段，"
                     "LLM 上报时未附实际测试结果。请补充证据后再作为正式漏洞。)"
                     + (f" {self.description}" if self.description else "")
                 )
+            self.lifecycle_status = "needs_manual_review"
 
-        # ★ 生成唯一标识
-        if not self.finding_id:
-            self.finding_id = self._generate_finding_id()
         self._sync_status_fields()
 
     def _sync_status_fields(self) -> None:
@@ -166,7 +193,12 @@ class VulnerabilityFinding(BaseModel):
         # Use vuln_type as dedup key; location only if non-empty (avoids "SQL注入_")
         if location:
             return f"{self.vuln_type}_{location}"[:50]
-        return self.vuln_type[:50]
+        if self.vuln_type:
+            return self.vuln_type[:50]
+        # Bare finding (no vuln_type, no location): fall back to a title-derived key
+        # so distinct placeholders stay distinct in state / findings.json audit.
+        base_title = re.sub(r"^\[未验证\]\s*", "", self.title).strip()
+        return base_title[:50]
 
     def mark_verified(self, note: str = "", evidence_level: str = "L4") -> None:
         """标记漏洞为已验证."""
@@ -391,6 +423,10 @@ class SessionState(BaseModel):
             finding._sync_status_fields()
         if not finding.finding_id:
             finding.finding_id = finding._generate_finding_id()
+
+        # Tie the finding to the owning target when the caller didn't set one.
+        if not finding.target and self.target:
+            finding.target = self.target
 
         # 第一层：finding_id 精确去重
         if finding.finding_id in self._finding_ids_cache:

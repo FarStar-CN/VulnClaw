@@ -45,12 +45,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from vulnclaw import __version__
+from vulnclaw import __version__, headless
 from vulnclaw.agent.constraint_policy import validate_action_constraints
 from vulnclaw.agent.input_analysis import extract_task_constraints
 from vulnclaw.agent.think_filter import format_think_tags, strip_think_tags
 from vulnclaw.cli.manual import available_topics, render_manual
 from vulnclaw.config.settings import (
+    RUNS_DIR,
     apply_provider_preset,
     list_providers,
     load_config,
@@ -990,6 +991,81 @@ def _append_cli_constraints_compat(
         return _append_cli_constraints(prompt, only_port, only_host, only_path)
 
 
+def _validate_headless_choices(
+    scan_mode: str, fail_on: str, scope_mode: str
+) -> Optional[str]:
+    """Return an error message for a bad headless choice, else ``None``."""
+    if scan_mode not in headless.SCAN_MODES:
+        return f"--scan-mode must be one of: {', '.join(headless.SCAN_MODES)}"
+    if fail_on not in headless.FAIL_ON_MODES:
+        return f"--fail-on must be one of: {', '.join(headless.FAIL_ON_MODES)}"
+    if scope_mode not in headless.SCOPE_MODES:
+        return f"--scope-mode must be one of: {', '.join(headless.SCOPE_MODES)}"
+    return None
+
+
+def _run_non_interactive(
+    *,
+    target: str,
+    output: Optional[str],
+    profile: "headless.ScanProfile",
+    scan_mode: str,
+    scope_mode: str,
+    fail_on: str,
+    run_coro_factory,
+    classification_holder: dict,
+) -> None:
+    """Drive a headless run: no prompts, structured output, exit-code contract.
+
+    Any crash during the scan exits :data:`headless.EXIT_ERROR` (1) — a broken
+    scan never exits 0. On completion the finding set is mapped to an exit code
+    under ``--fail-on`` and a ``summary.json`` is written into the run directory.
+    """
+    from datetime import datetime
+
+    try:
+        asyncio.run(run_coro_factory())
+    except typer.Exit:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - CI must see a nonzero exit, not a traceback
+        err_console.print(f"[!] Scan did not complete: {type(exc).__name__}: {exc}")
+        raise typer.Exit(headless.EXIT_ERROR) from exc
+
+    classification = classification_holder.get("classification") or headless.FindingClassification(
+        verified=0, candidates=0
+    )
+    exit_code = headless.determine_exit_code(classification, fail_on)
+
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = headless.run_directory(RUNS_DIR, target, run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    # Co-locate the report inside the run directory unless the caller pinned a
+    # path with --output, so all structured output for a run lives in one place.
+    report_output = output or str(run_dir / "report.md")
+    report_path = _generate_report_for_target(target, output_path=report_output)
+
+    summary = headless.build_run_summary(
+        target=target,
+        scan_mode=scan_mode,
+        scope_mode=scope_mode,
+        fail_on=fail_on,
+        profile=profile,
+        classification=classification,
+        exit_code=exit_code,
+        report_path=str(report_path),
+    )
+    summary_path = headless.write_run_artifacts(run_dir, summary)
+
+    console.print(
+        f"[*] findings: verified={classification.verified} "
+        f"candidates={classification.candidates} | "
+        f"exit={exit_code} ({headless.exit_code_meaning(exit_code)})"
+    )
+    console.print(f"[*] run artifacts: {summary_path}")
+    console.print(_("cli.report_generated", path=report_path))
+    raise typer.Exit(exit_code)
+
+
 def _append_action_constraints(
     prompt: str, allow_actions: Optional[str], block_actions: Optional[str]
 ) -> str:
@@ -1172,6 +1248,46 @@ def run(
     snapshot: Optional[str] = typer.Option(
         None, "--snapshot", help="Resume from a specific target snapshot id"
     ),
+    # ── Headless / CI knobs ────────────────────────────────────────────
+    non_interactive: bool = typer.Option(
+        False,
+        "--non-interactive",
+        help="Headless mode: zero prompts, structured output to the run directory, "
+        "and a distinct exit code (see --fail-on). Intended for CI.",
+    ),
+    scan_mode: str = typer.Option(
+        headless.DEFAULT_SCAN_MODE,
+        "--scan-mode",
+        help="Depth preset over the effort knobs: quick | standard | deep. "
+        "Explicit --max-* flags override the preset.",
+    ),
+    fail_on: str = typer.Option(
+        headless.DEFAULT_FAIL_ON,
+        "--fail-on",
+        help="Which finding class trips a nonzero exit: verified | any | never.",
+    ),
+    scope_mode: str = typer.Option(
+        headless.DEFAULT_SCOPE_MODE,
+        "--scope-mode",
+        help="Scope selection recorded for the run: full (whole surface, current "
+        "behaviour) | auto (diff-scope to changed code — consumed by the Target "
+        "diff-scope model, #35; falls back to full until that lands).",
+    ),
+    max_steps: Optional[int] = typer.Option(
+        None, "--max-steps", help="Override the scan-mode explore-step cap"
+    ),
+    max_intents: Optional[int] = typer.Option(
+        None, "--max-intents", help="Override the scan-mode max-intents-per-step"
+    ),
+    max_tool_rounds: Optional[int] = typer.Option(
+        None, "--max-tool-rounds", help="Override the scan-mode tool-rounds-per-intent"
+    ),
+    max_parallel: Optional[int] = typer.Option(
+        None, "--max-parallel", help="Override the scan-mode fan-out cap (1 = single agent)"
+    ),
+    max_rounds: Optional[int] = typer.Option(
+        None, "--max-rounds", help="Override the scan-mode legacy-engine round cap"
+    ),
     run_name: Optional[str] = typer.Option(
         None, "--run-name", help="Explicit name for a new run directory"
     ),
@@ -1200,16 +1316,46 @@ def run(
         False, "--no-import", help="Read legacy target state without importing it into a run"
     ),
 ) -> None:
-    """Run a full authorized pentest workflow."""
+    """Run a full authorized pentest workflow.
+
+    Interactive by default. Pass ``--non-interactive`` for a headless CI run: no
+    prompts, a machine-readable ``summary.json`` in the run directory, and an
+    exit code that lets a pipeline tell a clean scan (0) from a broken one (1)
+    from one that confirmed a verified finding (2) or only candidates (3).
+    """
     config = load_config()
+
+    # A bad target / scan-mode / fail-on / scope-mode is a misconfiguration:
+    # exit 1 (never a silent green run).
+    if not target or not target.strip():
+        err_console.print("[!] A non-empty target is required.")
+        raise typer.Exit(headless.EXIT_ERROR)
+    bad_choice = _validate_headless_choices(scan_mode, fail_on, scope_mode)
+    if bad_choice is not None:
+        err_console.print(f"[!] {bad_choice}")
+        raise typer.Exit(headless.EXIT_ERROR)
     if not has_llm_credentials(config.llm):
         err_console.print("[!] Configure LLM credentials first (api_key or auth_mode).")
-        raise typer.Exit(1)
+        raise typer.Exit(headless.EXIT_ERROR)
     if engine is not None and engine not in {"solve", "team", "rounds"}:
         err_console.print("[!] --engine must be one of: solve, team, rounds")
-        raise typer.Exit(1)
+        raise typer.Exit(headless.EXIT_ERROR)
 
-    console.print(f"[*] Target: [bold]{target}[/] | Scope: [bold]{scope}[/]")
+    profile = headless.resolve_scan_profile(
+        config,
+        scan_mode,
+        max_steps=max_steps,
+        max_intents=max_intents,
+        max_tool_rounds=max_tool_rounds,
+        max_parallel=max_parallel,
+        max_rounds=max_rounds,
+    )
+
+    console.print(
+        f"[*] Target: [bold]{target}[/] | Scope: [bold]{scope}[/] | "
+        f"Mode: [bold]{profile.scan_mode}[/]"
+        + (" | [bold]non-interactive[/]" if non_interactive else "")
+    )
 
     task_prompt = prompt if prompt else (
         f"Perform an authorized {scope} pentest against {target}. "
@@ -1222,30 +1368,37 @@ def run(
     violation = validate_action_constraints("run", extract_task_constraints(task_prompt))
     if violation is not None:
         err_console.print(f"[!] {violation}")
-        raise typer.Exit(1)
+        raise typer.Exit(headless.EXIT_ERROR)
 
     board_holder: dict = {}
+    classification_holder: dict = {}
 
     async def _run():
         async def runner(agent, shared_config):
-            sink = TerminalStreamSink(console, shared_config.session.show_thinking)
+            # Apply the resolved fan-out / round caps so solve/team/auto_pentest
+            # (which read them off config.session) honour the scan-mode preset.
+            shared_config.session.solve_max_parallel = profile.max_parallel
+            shared_config.session.max_rounds = profile.max_rounds
+            # In headless mode suppress streaming thinking so nothing blocks on a TTY.
+            sink = (
+                None
+                if non_interactive
+                else TerminalStreamSink(console, shared_config.session.show_thinking)
+            )
+            on_event = None if non_interactive else _make_solve_event_printer(console)
             selected_engine = engine or getattr(shared_config.session, "engine", "solve")
             # 默认走目标驱动 solve 引擎；engine=team 启用角色团队；engine=rounds 回退旧循环
             if selected_engine == "solve":
                 result = await agent.solve(
                     task_prompt,
                     target=target,
-                    max_steps=shared_config.session.solve_max_steps,
-                    max_intents=shared_config.session.solve_max_intents,
-                    max_tool_rounds=shared_config.session.solve_max_tool_rounds,
+                    max_steps=profile.max_steps,
+                    max_intents=profile.max_intents,
+                    max_tool_rounds=profile.max_tool_rounds,
                     stream_sink=sink,
-                    on_event=_make_solve_event_printer(console),
+                    on_event=on_event,
                 )
-                board = getattr(getattr(getattr(agent, "context", None), "state", None), "board", None)
-                if board is not None:
-                    board_holder["board"] = board.get_summary()
-                return result
-            if selected_engine == "team":
+            elif selected_engine == "team":
                 from vulnclaw.agent.team import run_team_pentest
 
                 def agent_factory():
@@ -1256,27 +1409,37 @@ def run(
                     user_input=task_prompt,
                     target=target,
                     agent_factory=agent_factory,
-                    max_steps=shared_config.session.solve_max_steps,
-                    max_intents=shared_config.session.solve_max_intents,
-                    max_tool_rounds=shared_config.session.solve_max_tool_rounds,
+                    max_steps=profile.max_steps,
+                    max_intents=profile.max_intents,
+                    max_tool_rounds=profile.max_tool_rounds,
+                    # team fan-out reads its own cap (not config), so pass the
+                    # resolved scan-mode profile explicitly or quick/--max-parallel
+                    # would be ignored and it would fan out to every ready step.
+                    max_parallel=profile.max_parallel,
                     stream_sink=sink,
-                    on_event=_make_solve_event_printer(console),
+                    on_event=on_event,
                 )
-                board = getattr(getattr(getattr(agent, "context", None), "state", None), "board", None)
-                if board is not None:
-                    board_holder["board"] = board.get_summary()
-                return result
-            return await agent.auto_pentest(
-                task_prompt,
-                target=target,
-                max_rounds=shared_config.session.max_rounds,
-                on_step=lambda r, res: (
-                    _print_agent_output(f"[dim]Round {r}[/]: {res.output[:200]}...", shared_config)
-                    if res.output
-                    else None
-                ),
-                stream_sink=sink,
+            else:
+                result = await agent.auto_pentest(
+                    task_prompt,
+                    target=target,
+                    max_rounds=profile.max_rounds,
+                    on_step=lambda r, res: (
+                        _print_agent_output(
+                            f"[dim]Round {r}[/]: {res.output[:200]}...", shared_config
+                        )
+                        if res.output and not non_interactive
+                        else None
+                    ),
+                    stream_sink=sink,
+                )
+            board = getattr(getattr(getattr(agent, "context", None), "state", None), "board", None)
+            if board is not None:
+                board_holder["board"] = board.get_summary()
+            classification_holder["classification"] = headless.classify_findings(
+                getattr(agent, "session_state", None)
             )
+            return result
 
         result = await _run_cli_orchestrated_task(
             command="run",
@@ -1297,6 +1460,19 @@ def run(
             ),
         )
         return result
+
+    if non_interactive:
+        _run_non_interactive(
+            target=target,
+            output=output,
+            profile=profile,
+            scan_mode=scan_mode,
+            scope_mode=scope_mode,
+            fail_on=fail_on,
+            run_coro_factory=_run,
+            classification_holder=classification_holder,
+        )
+        return
 
     orchestrated = asyncio.run(_run())
     if board_holder.get("board"):

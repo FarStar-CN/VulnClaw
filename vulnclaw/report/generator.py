@@ -317,6 +317,13 @@ def generate_report(
     else:
         output.write_text(report_content, encoding="utf-8")
 
+    # ★ Emit machine-consumable findings artifacts next to the report: findings.json
+    # (all findings + lifecycle) and findings.sarif (verified findings only). These
+    # draw from the same verified feed as the report — no divergent finding lists.
+    from vulnclaw.report.findings_output import write_findings_artifacts
+
+    write_findings_artifacts(session, output.parent / "findings")
+
     return output
 
 
@@ -726,6 +733,13 @@ def generate_persistent_cycle_report(
             traffic_store=_resolve_traffic_store(output.parent),
         )
     output.write_text(report_content, encoding="utf-8")
+
+    # ★ Emit the same machine-consumable findings artifacts as generate_report, so a
+    # persistent run's per-cycle reports also produce findings/findings.json and
+    # findings/findings.sarif.
+    from vulnclaw.report.findings_output import write_findings_artifacts
+
+    write_findings_artifacts(session, output.parent / "findings")
 
     return output
 
