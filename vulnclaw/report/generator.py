@@ -316,6 +316,13 @@ def generate_report(
     else:
         output.write_text(report_content, encoding="utf-8")
 
+    # ★ Emit machine-consumable findings artifacts next to the report: findings.json
+    # (all findings + lifecycle) and findings.sarif (verified findings only). These
+    # draw from the same verified feed as the report — no divergent finding lists.
+    from vulnclaw.report.findings_output import write_findings_artifacts
+
+    write_findings_artifacts(session, output.parent / "findings")
+
     return output
 
 
