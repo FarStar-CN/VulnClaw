@@ -1017,6 +1017,31 @@ class TestAgentCore:
         # Must NOT contain trailing dot - urlparse().hostname never returns trailing dots
         assert all(not h.endswith(".") for h in constraints.allowed_hosts)
 
+    def test_self_discovering_skill_launch_does_not_lock_allowed_hosts(self):
+        """A ``requires_target: false`` skill launch seeds a discovery link, not a
+        scan target — so ``allowed_hosts`` must NOT lock to the seed's host, or the
+        skill's discovered in-scope assets would be blocked by the host gate.
+        """
+        from vulnclaw.agent.input_analysis import extract_task_constraints
+
+        constraints = extract_task_constraints(
+            "Use VulnClaw skill hackerone. https://hackerone.com/security"
+        )
+        assert constraints.allowed_hosts == []
+        assert "hackerone.com" not in constraints.allowed_hosts
+
+    def test_ordinary_skill_launch_still_locks_allowed_hosts(self):
+        """A skill without ``requires_target: false`` (default True) is target-first,
+        so the seed URL still constrains ``allowed_hosts`` — the exemption is scoped
+        to self-discovering skills only.
+        """
+        from vulnclaw.agent.input_analysis import extract_task_constraints
+
+        constraints = extract_task_constraints(
+            "Use VulnClaw skill web-pentest. https://example.com"
+        )
+        assert "example.com" in constraints.allowed_hosts
+
     def test_round_context_includes_hard_constraints(self):
         from vulnclaw.agent.context import PentestPhase
 
