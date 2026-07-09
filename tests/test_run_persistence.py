@@ -125,6 +125,75 @@ def test_run_aware_save_writes_current_snapshot_and_index(tmp_path, monkeypatch)
     assert loaded["resume_meta"]["target_id"] == target.target_id
 
 
+def test_indexed_snapshot_path_rejects_traversal_ids(tmp_path, monkeypatch):
+    import vulnclaw.target_state.store as store
+
+    monkeypatch.setattr(store, "TARGETS_DIR", tmp_path / "targets")
+    target = parse_target("https://example.com/")
+    ctx = create_run_context(
+        command="run",
+        targets=[target],
+        runs_dir=tmp_path / "runs",
+        run_name="indexed-guard-run",
+    )
+    # A run-backed save writes the index.json mirror the guarded branch reads.
+    store.save_target_state(
+        target.raw,
+        SessionState(target=target.raw),
+        command="run",
+        run_context=ctx,
+        target_model=target,
+        checkpoint_reason="test",
+    )
+    assert store._index_path(target).exists()
+
+    # Plant a JSON file outside the state dir that a traversal id could reach.
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"stolen": True}), encoding="utf-8")
+
+    for bad_id in ["../../../../outside", "/tmp/other", "../outside"]:
+        assert store._indexed_state_path(target, snapshot_id=bad_id) is None
+        assert store.load_target_state(target.raw, snapshot_id=bad_id) is None
+
+
+@pytest.mark.asyncio
+async def test_multi_target_run_seeds_secondary_state_and_resumes(tmp_path, monkeypatch):
+    import vulnclaw.target_state.store as store
+    from vulnclaw.orchestrator import run_agent_task
+
+    monkeypatch.setattr(store, "TARGETS_DIR", tmp_path / "targets")
+    agent = DummyAgent(tmp_path / "runs")
+
+    async def runner(shared_agent):
+        shared_agent.session_state.add_step(
+            "checked primary",
+            action="probe",
+            target="https://primary.example",
+            result="ok",
+        )
+
+    result = await run_agent_task(
+        agent=agent,
+        command="recon",
+        target="https://primary.example",
+        additional_targets=["https://secondary.example"],
+        resume=False,
+        runner=runner,
+    )
+
+    run_name = result.summary["run_name"]
+    run_dir = Path(result.summary["run_dir"])
+    manifest = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    assert len(manifest["targets"]) == 2
+
+    # Every manifest target must have a state file, or resume rejects the run.
+    for entry in manifest["targets"]:
+        assert (run_dir / entry["state_path"]).exists()
+
+    # Resuming the multi-target run must not raise "target state is missing".
+    load_run_context(run_name, runs_dir=tmp_path / "runs")
+
+
 def test_legacy_import_copies_once_and_leaves_legacy_read_only(tmp_path, monkeypatch):
     import vulnclaw.target_state.store as store
 

@@ -140,6 +140,8 @@ def _indexed_state_path(target: str | Target, snapshot_id: Optional[str] = None)
         return None
     state_dir = Path(str(run_dir_value)) / "targets" / target_id / "state"
     if snapshot_id:
+        if not SNAPSHOT_ID_PATTERN.fullmatch(snapshot_id):
+            return None
         return state_dir / "snapshots" / f"{snapshot_id}.json"
     return state_dir / "current.json"
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
+from vulnclaw.agent.context import SessionState
 from vulnclaw.agent.core import AgentCore
 from vulnclaw.run_context import (
     RunContext,
@@ -151,7 +152,7 @@ async def run_agent_task(
         )
 
     checkpoint = (
-        _install_checkpoint_hook(agent, command, run_context, primary_target)
+        _install_checkpoint_hook(agent, command, run_context, targets)
         if run_context is not None
         else lambda _reason: None
     )
@@ -262,25 +263,54 @@ def _install_checkpoint_hook(
     agent: AgentCore,
     command: str,
     run_context: RunContext,
-    target: Target,
+    targets: list[Target],
 ) -> Callable[[str], None]:
+    primary_target = targets[0]
+    secondary_targets = targets[1:]
     checkpointing = False
+    secondaries_seeded = False
 
-    def checkpoint(reason: str) -> None:
-        nonlocal checkpointing
-        if checkpointing:
-            return
-        checkpointing = True
-        try:
-            state = agent.session_state
-            state.target = state.target or target.raw
+    def _seed_secondary_targets() -> None:
+        """Initialize a state file for every non-primary manifest target.
+
+        The agent loop only drives the primary target, but a multi-target run
+        lists every target in ``run.json`` and ``validate_run_context`` requires
+        a ``current.json`` per entry. Without this, ``--resume-run`` rejects the
+        run as corrupt. Seed a fresh session for any secondary target that has
+        no state yet so the whole manifest stays resumable.
+        """
+        for target in secondary_targets:
+            if run_context.state_path(target).exists():
+                continue
             save_target_state(
                 target.raw,
-                state,
+                SessionState(target=target.raw),
                 command=command,
                 runtime=agent.runtime,
                 run_context=run_context,
                 target_model=target,
+                checkpoint_reason="seed",
+                merge_existing=False,
+            )
+
+    def checkpoint(reason: str) -> None:
+        nonlocal checkpointing, secondaries_seeded
+        if checkpointing:
+            return
+        checkpointing = True
+        try:
+            if not secondaries_seeded:
+                secondaries_seeded = True
+                _seed_secondary_targets()
+            state = agent.session_state
+            state.target = state.target or primary_target.raw
+            save_target_state(
+                primary_target.raw,
+                state,
+                command=command,
+                runtime=agent.runtime,
+                run_context=run_context,
+                target_model=primary_target,
                 checkpoint_reason=reason,
                 merge_existing=False,
             )
