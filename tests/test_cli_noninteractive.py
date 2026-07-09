@@ -194,6 +194,29 @@ class TestScanModeWiring:
         )
         assert captured["agent"].solve_kwargs["max_steps"] == 999
 
+    def test_team_engine_receives_scan_mode_fan_out_cap(self, runner, monkeypatch, tmp_path):
+        # team fan-out reads its own cap (not config), so the CLI must pass it or
+        # quick/--max-parallel is silently ignored.
+        import vulnclaw.agent.team as team_mod
+
+        _install_fake_run(monkeypatch)
+        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
+
+        team_calls: list = []
+
+        async def fake_team(agent, **kwargs):
+            team_calls.append(kwargs)
+            return None
+
+        monkeypatch.setattr(team_mod, "run_team_pentest", fake_team)
+
+        runner.invoke(
+            app,
+            ["run", "t", "--non-interactive", "--engine", "team", "--scan-mode", "quick"],
+        )
+        assert team_calls
+        assert team_calls[0]["max_parallel"] == 1  # quick → single agent
+
 
 # ── Exit-code contract ──────────────────────────────────────────────
 

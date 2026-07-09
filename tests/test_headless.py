@@ -16,6 +16,7 @@ from vulnclaw.headless import (
     build_run_summary,
     classify_findings,
     determine_exit_code,
+    effective_scope_mode,
     resolve_scan_profile,
     run_directory,
     scan_mode_profile,
@@ -172,6 +173,8 @@ class TestRunArtifacts:
         assert loaded["target"] == "https://example.com"
         assert loaded["scan_mode"] == "quick"
         assert loaded["scope_mode"] == "auto"
+        # auto is recorded but currently degrades to full (Target diff-scope #35)
+        assert loaded["scope_mode_effective"] == "full"
         assert loaded["exit_code"] == EXIT_VERIFIED
         assert loaded["findings"] == {"verified": 1, "candidates": 0, "total": 1}
         assert loaded["profile"]["max_parallel"] == 1
@@ -179,3 +182,8 @@ class TestRunArtifacts:
     def test_scan_profile_as_dict_roundtrip(self):
         profile = ScanProfile(1, 2, 3, 4, 5, "quick")
         assert profile.as_dict()["scan_mode"] == "quick"
+
+    def test_effective_scope_mode_degrades_auto_to_full(self):
+        # auto diff-scoping is not computed here (Target model #35) → falls back
+        assert effective_scope_mode("auto") == "full"
+        assert effective_scope_mode("full") == "full"

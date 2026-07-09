@@ -10,7 +10,7 @@ and returns a distinct exit code so a pipeline can tell scan outcomes apart.
 |------|--------|---------|--------------|
 | `--non-interactive` | (flag) | off | Headless: no prompts, structured output, exit-code contract. |
 | `--scan-mode` | `quick` `standard` `deep` | `standard` | Depth preset over the effort knobs + fan-out cap. |
-| `--scope-mode` | `auto` `full` | `full` | `auto` diff-scopes to changed code; `full` tests the whole surface. |
+| `--scope-mode` | `auto` `full` | `full` | Recorded scope selection. `full` tests the whole surface (current behaviour); `auto` is consumed by the Target diff-scope model (#35) and falls back to `full` until that lands. |
 | `--fail-on` | `verified` `any` `never` | `verified` | Which finding class trips a nonzero exit. |
 | `--max-steps` / `--max-intents` / `--max-tool-rounds` / `--max-parallel` / `--max-rounds` | int | — | Override a single scan-mode dial. |
 
@@ -59,8 +59,10 @@ consume it in later pipeline steps.
 Two ready-to-use workflows live next to this doc:
 
 - **[`github-actions-pr-scan.yml`](./github-actions-pr-scan.yml)** — `on: pull_request`.
-  Fast, diff-scoped gate: `run --non-interactive --scan-mode quick --scope-mode auto --fail-on verified`.
-  A verified finding (exit `2`) blocks the merge; candidates don't.
+  Fast gate: `run --non-interactive --scan-mode quick --scope-mode auto --fail-on verified`.
+  A verified finding (exit `2`) blocks the merge; candidates don't. (`--scope-mode
+  auto` becomes a true diff-scoped gate once the Target diff-scope model, #35,
+  lands; until then it scans full-surface.)
 - **[`github-actions-scheduled-scan.yml`](./github-actions-scheduled-scan.yml)** — `on: schedule`.
   Deep full sweep: `run --non-interactive --scan-mode deep --scope-mode full --fail-on never`.
   Never breaks the pipeline; uploads the run directory and `findings.sarif` to

@@ -1182,7 +1182,9 @@ def run(
     scope_mode: str = typer.Option(
         headless.DEFAULT_SCOPE_MODE,
         "--scope-mode",
-        help="Test scope selection: auto (diff-scope changed code) | full (whole surface).",
+        help="Scope selection recorded for the run: full (whole surface, current "
+        "behaviour) | auto (diff-scope to changed code — consumed by the Target "
+        "diff-scope model, #35; falls back to full until that lands).",
     ),
     max_steps: Optional[int] = typer.Option(
         None, "--max-steps", help="Override the scan-mode explore-step cap"
@@ -1296,6 +1298,10 @@ def run(
                     max_steps=profile.max_steps,
                     max_intents=profile.max_intents,
                     max_tool_rounds=profile.max_tool_rounds,
+                    # team fan-out reads its own cap (not config), so pass the
+                    # resolved scan-mode profile explicitly or quick/--max-parallel
+                    # would be ignored and it would fan out to every ready step.
+                    max_parallel=profile.max_parallel,
                     stream_sink=sink,
                     on_event=on_event,
                 )

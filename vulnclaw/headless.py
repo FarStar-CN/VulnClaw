@@ -231,6 +231,17 @@ def exit_code_meaning(code: int) -> str:
 # ── Run artifacts ───────────────────────────────────────────────────
 
 
+def effective_scope_mode(scope_mode: str) -> str:
+    """The scope actually applied to the scan.
+
+    ``auto`` diff-scoping is owned by the Target diff-scope model (#35); until
+    that lands the scan runs full-surface, so ``auto`` degrades to ``full`` here.
+    Recording the effective value keeps the run summary honest rather than
+    reporting a diff-scoped run that did not happen.
+    """
+    return "full" if scope_mode == "auto" else scope_mode
+
+
 def _slugify_target(target: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", (target or "target").strip()).strip("-")
     return (slug or "target")[:80]
@@ -257,6 +268,7 @@ def build_run_summary(
         "target": target,
         "scan_mode": scan_mode,
         "scope_mode": scope_mode,
+        "scope_mode_effective": effective_scope_mode(scope_mode),
         "fail_on": fail_on,
         "profile": profile.as_dict(),
         "findings": {
