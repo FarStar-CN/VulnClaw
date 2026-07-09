@@ -130,3 +130,39 @@ def test_build_openai_tools_includes_traffic():
     tools = build_openai_tools(None)
     names = {t["function"]["name"] for t in tools}
     assert TRAFFIC_TOOL_NAMES <= names
+
+
+async def test_traffic_repeat_blocked_by_host_constraint(tmp_path):
+    """A url override to a blocked host is refused before any network call."""
+    import vulnclaw.agent.builtin_tools as builtin_tools
+
+    store = _store_with_two(tmp_path)
+    rid = store.entries()[0]["request_id"]
+    agent = _DummyAgent(str(tmp_path / "evidence"))
+    agent.session_state.task_constraints = TaskConstraints(blocked_hosts=["evil.test"])
+
+    out = await builtin_tools.execute_mcp_tool(
+        agent, "traffic_repeat", {"request_id": rid, "url": "http://evil.test/x"}
+    )
+    assert "constraint_violation" in out
+    assert "evil.test" in out
+    # No replay was recorded — the guard fired before dispatch.
+    assert [r for r in store.entries() if r["source"] == "manual-replay"] == []
+
+
+def test_traffic_repeat_guard_allows_in_scope_and_uses_stored_url(tmp_path):
+    """The guard permits an in-scope target and derives it from the stored url."""
+    from vulnclaw.agent.builtin_tools import enforce_traffic_repeat_constraints
+
+    store = _store_with_two(tmp_path)
+    rid = store.entries()[0]["request_id"]  # http://app.test/login
+    agent = _DummyAgent(str(tmp_path / "evidence"))
+    agent.session_state.task_constraints = TaskConstraints(allowed_hosts=["app.test"])
+
+    # No url override -> guard reads the stored request's host (app.test), allowed.
+    assert enforce_traffic_repeat_constraints(agent, store, {"request_id": rid}) is None
+    # An override to a non-allowed host is refused.
+    blocked = enforce_traffic_repeat_constraints(
+        agent, store, {"request_id": rid, "url": "http://other.test/"}
+    )
+    assert blocked is not None and "other.test" in blocked

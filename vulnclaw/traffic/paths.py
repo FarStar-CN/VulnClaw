@@ -41,12 +41,26 @@ def traffic_dir(base: str | Path | None = None) -> Path:
 
 
 def resolve_traffic_store(run_dir: str | Path | None = None) -> "TrafficStore":
-    """Resolve the traffic store both writers and the report reader share.
+    """Resolve the store the agent *writes* captures to.
 
-    Prefers ``run_dir``'s ``evidence/traffic`` when it already holds captures;
-    otherwise falls back to the config-scoped default. This single seam keeps the
-    agent's writes and the report generator's reads pointed at the same store
-    until the run-directory PRD provides an explicit per-run path.
+    Deterministic: a given ``run_dir`` always maps to its own
+    ``evidence/traffic`` (config default when ``run_dir`` is None). It never
+    falls back to another run's store — a fresh run's first capture must land in
+    that run's directory, not get appended to stale global evidence.
+    """
+    from vulnclaw.traffic.store import TrafficStore
+
+    return TrafficStore(traffic_dir(run_dir))
+
+
+def resolve_report_traffic_store(run_dir: str | Path | None = None) -> "TrafficStore":
+    """Resolve the store the report generator *reads* from.
+
+    Prefers ``run_dir``'s store when it already holds captures; otherwise falls
+    back to the config-scoped default, so a report generated outside the run
+    directory still finds captures the agent wrote there (the common case until
+    the run-directory PRD provides an explicit per-run path). Read-only: the
+    fallback never affects where captures are written.
     """
     from vulnclaw.traffic.store import INDEX_FILENAME, TrafficStore
 

@@ -109,8 +109,9 @@ class _PwRequest:
 
 
 class _PwResponse:
-    def __init__(self, status):
+    def __init__(self, status, body=b""):
         self._status = status
+        self._body = body
 
     @property
     def status(self):
@@ -119,25 +120,32 @@ class _PwResponse:
     def headers(self):
         return {"Content-Type": "text/html"}
 
+    def body(self):
+        return self._body
 
-def test_browser_bridge_captures_in_scope(tmp_path):
+
+def test_browser_bridge_captures_in_scope_with_body(tmp_path):
     capture = _capture(tmp_path)
     bridge = BrowserCaptureBridge(capture)
     request_id = bridge.on_response(
         _PwRequest("GET", "http://api.app.test/data", {"Accept": "*/*"}),
-        _PwResponse(200),
+        _PwResponse(200, body=b"<html>secret</html>"),
     )
     assert request_id
     row = capture.store.find(request_id)
     assert row["source"] == "browser"
     assert row["host"] == "api.app.test"
+    # Browser response body is preserved for evidence (not dropped).
+    assert row["content_length"] == len(b"<html>secret</html>")
+    assert b"secret" in capture.store.response_blob(request_id)
 
 
 def test_exchange_from_playwright_handles_callable_and_attr():
     exchange = exchange_from_playwright(
         _PwRequest("POST", "http://app.test/p", {"K": "v"}, "a=b"),
-        _PwResponse(302),
+        _PwResponse(302, body=b"redirecting"),
     )
     assert exchange.request.method == "POST"
     assert exchange.request.body == b"a=b"
     assert exchange.response.status == 302
+    assert exchange.response.body == b"redirecting"

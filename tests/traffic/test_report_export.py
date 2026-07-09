@@ -66,7 +66,10 @@ def test_shared_resolver_finds_config_default_when_no_run_captures(tmp_path, mon
     When the agent wrote captures to the config-default store (no per-run dir),
     the report generator's resolver still finds them.
     """
-    from vulnclaw.traffic.paths import resolve_traffic_store
+    from vulnclaw.traffic.paths import (
+        resolve_report_traffic_store,
+        resolve_traffic_store,
+    )
 
     evidence_root = tmp_path / "config-evidence"
     monkeypatch.setenv("VULNCLAW_EVIDENCE_DIR", str(evidence_root))
@@ -86,8 +89,31 @@ def test_shared_resolver_finds_config_default_when_no_run_captures(tmp_path, mon
 
     # Report-side read for a run dir that has no captures of its own: falls back
     # to the same config default and finds the agent's capture.
-    reader = resolve_traffic_store(tmp_path / "run-with-no-captures")
+    reader = resolve_report_traffic_store(tmp_path / "run-with-no-captures")
     assert reader.find(request_id) is not None
+
+
+def test_write_resolver_never_falls_back_to_stale_store(tmp_path, monkeypatch):
+    """A fresh run's writes go to its own dir, not a stale global store."""
+    from vulnclaw.traffic.paths import resolve_traffic_store
+
+    evidence_root = tmp_path / "config-evidence"
+    monkeypatch.setenv("VULNCLAW_EVIDENCE_DIR", str(evidence_root))
+
+    # Seed the config-default store with an unrelated earlier run's capture.
+    default = resolve_traffic_store(None)
+    TrafficCapture(
+        default, ScopeChecker([Target(host="old.test")], mode=ScopeMode.STRICT)
+    ).capture(
+        CapturedExchange(request=CapturedRequest(url="http://old.test/")),
+        source="proxy",
+    )
+
+    # A brand-new run resolves to ITS OWN dir even though the default has an index.
+    run_dir = tmp_path / "fresh-run"
+    writer = resolve_traffic_store(run_dir)
+    assert writer.base_dir == (run_dir / "evidence" / "traffic")
+    assert writer.entries() == []  # fresh run starts empty, not mixed with old.test
 
 
 def test_report_without_captures_is_unaffected(tmp_path):

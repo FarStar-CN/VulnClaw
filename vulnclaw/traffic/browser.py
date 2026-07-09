@@ -59,9 +59,11 @@ def exchange_from_playwright(request: Any, response: Any | None = None) -> Captu
     )
     captured_response = None
     if response is not None:
+        resp_body = _call_or_attr(response, "body", b"") or b""
         captured_response = CapturedResponse(
             status=int(_call_or_attr(response, "status", 0) or 0),
             headers=coerce_headers(_call_or_attr(response, "headers", {})),
+            body=resp_body if isinstance(resp_body, bytes) else str(resp_body).encode("utf-8", "replace"),
             reason=str(_call_or_attr(response, "status_text", "") or ""),
         )
     return CapturedExchange(request=captured_request, response=captured_response)
