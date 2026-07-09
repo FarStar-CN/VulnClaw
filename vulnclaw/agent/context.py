@@ -7,7 +7,7 @@ import re
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -318,11 +318,25 @@ class SessionState(BaseModel):
 
     # ★ 漏洞去重追踪（PrivateAttr 不受 Pydantic 字段命名限制）
     _finding_ids_cache: set[str] = PrivateAttr(default_factory=set)
+    _checkpoint_callback: Callable[["SessionState", str], None] | None = PrivateAttr(
+        default=None
+    )
 
     # 语义去重相似度阈值（高于此值视为同一漏洞的不同表述）
     semantic_dedup_threshold: float = Field(
         default=0.75, description="语义去重的相似度阈值（0-1）"
     )
+
+    def set_checkpoint_callback(
+        self, callback: Callable[["SessionState", str], None] | None
+    ) -> None:
+        """Install a persistence callback fired at durable state boundaries."""
+        self._checkpoint_callback = callback
+
+    def _notify_checkpoint(self, reason: str) -> None:
+        if self._checkpoint_callback is None:
+            return
+        self._checkpoint_callback(self, reason)
 
     def add_finding(self, finding: VulnerabilityFinding) -> bool:
         """Add a vulnerability finding with deduplication.
@@ -362,6 +376,7 @@ class SessionState(BaseModel):
                     self._finding_ids_cache.discard(existing.finding_id)
                     self._finding_ids_cache.add(finding.finding_id)
                     self.findings[idx] = finding
+                    self._notify_checkpoint("finding_updated")
                 else:
                     print(f"[DEDUP-SEM] 跳过语义重复漏洞: {finding.title}")
                 return False
@@ -369,6 +384,7 @@ class SessionState(BaseModel):
         # 添加到追踪集合和列表
         self._finding_ids_cache.add(finding.finding_id)
         self.findings.append(finding)
+        self._notify_checkpoint("finding_added")
         return True
 
     def get_verified_findings(self) -> list[VulnerabilityFinding]:
@@ -495,6 +511,7 @@ class SessionState(BaseModel):
                 detail=detail,
             )
             self.step_records.append(record)
+        self._notify_checkpoint("step_complete")
 
     def get_step_summary(self) -> dict[str, Any]:
         """生成攻击路径摘要.
@@ -869,6 +886,7 @@ class SessionState(BaseModel):
             result=f"进入{phase.value}阶段",
             status=StepStatus.INFO,
         )
+        self._notify_checkpoint("phase_transition")
 
     def save(self, path: Optional[Path] = None) -> Path:
         """Save session state to JSON file."""
