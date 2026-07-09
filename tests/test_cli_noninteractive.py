@@ -274,6 +274,21 @@ class TestWorkflowDocs:
         tokens = run_lines[0].split()
         return [t for t in tokens if t.startswith("--")]
 
+    def _run_option_names(self) -> set[str]:
+        """Option strings the `run` command actually registers.
+
+        Introspects the Typer/Click command rather than scraping ``--help``
+        text, which Rich wraps/truncates at narrow terminal widths (e.g. CI).
+        """
+        from typer.main import get_command
+
+        run_cmd = get_command(app).commands["run"]
+        names: set[str] = set()
+        for param in run_cmd.params:
+            names.update(getattr(param, "opts", []) or [])
+            names.update(getattr(param, "secondary_opts", []) or [])
+        return names
+
     def test_both_workflow_files_present(self):
         assert (self.DOCS_DIR / "github-actions-pr-scan.yml").exists()
         assert (self.DOCS_DIR / "github-actions-scheduled-scan.yml").exists()
@@ -282,14 +297,12 @@ class TestWorkflowDocs:
         "filename",
         ["github-actions-pr-scan.yml", "github-actions-scheduled-scan.yml"],
     )
-    def test_workflow_uses_flags_the_cli_accepts(self, runner, filename):
+    def test_workflow_uses_flags_the_cli_accepts(self, filename):
         flags = self._run_flags(self.DOCS_DIR / filename)
         assert "--non-interactive" in flags
-        help_text = runner.invoke(app, ["run", "--help"]).output
-        # Rich may wrap/insert soft newlines; strip them before substring checks.
-        flat_help = help_text.replace("\n", " ")
+        accepted = self._run_option_names()
         for flag in flags:
-            assert flag in flat_help, f"{flag} from {filename} is not a `run` option"
+            assert flag in accepted, f"{flag} from {filename} is not a `run` option"
 
     def test_pr_scan_gates_on_verified(self):
         flags = self._run_flags(self.DOCS_DIR / "github-actions-pr-scan.yml")
