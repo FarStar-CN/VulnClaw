@@ -38,6 +38,11 @@ from vulnclaw.intel.tools import (
     dispatch_intel_tool,
     intel_tool_schemas,
 )
+from vulnclaw.traffic.tools import (
+    TRAFFIC_TOOL_NAMES,
+    dispatch_traffic_tool,
+    traffic_tool_schemas,
+)
 
 
 def role_allows_tool(role: str | None, tool_name: str) -> bool:
@@ -94,6 +99,21 @@ LAB_MODE_PATTERNS: list[str] = [
 ]
 
 
+def resolve_traffic_store(agent: AgentContext) -> Any:
+    """Resolve the per-run traffic evidence store for this agent.
+
+    Prefers a run/evidence directory carried on the session (once the run-dir
+    PRD lands); otherwise falls back to the config-scoped evidence directory so
+    headless/CI runs still get a durable store.
+    """
+    from vulnclaw.traffic.paths import traffic_dir
+    from vulnclaw.traffic.store import TrafficStore
+
+    session = getattr(agent, "session_state", None)
+    base = getattr(session, "evidence_dir", None) or getattr(session, "run_dir", None)
+    return TrafficStore(traffic_dir(base))
+
+
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
     """Execute a tool call via MCP manager or built-in tools."""
     violation = role_tool_violation(getattr(agent, "active_role", None), tool_name)
@@ -121,6 +141,11 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
 
     if tool_name in INTEL_TOOL_NAMES:
         return await dispatch_intel_tool(agent, tool_name, args)
+
+    if tool_name in TRAFFIC_TOOL_NAMES:
+        store = resolve_traffic_store(agent)
+        # traffic_repeat issues a real network request; keep the loop responsive.
+        return await asyncio.to_thread(dispatch_traffic_tool, store, tool_name, args)
 
     if tool_name == "python_execute":
         return await execute_python(agent, args)
@@ -679,6 +704,9 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
     )
 
     for tool in intel_tool_schemas():
+        append_tool(tool)
+
+    for tool in traffic_tool_schemas():
         append_tool(tool)
 
     if mcp_manager:

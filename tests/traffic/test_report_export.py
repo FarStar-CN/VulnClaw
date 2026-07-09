@@ -1,0 +1,79 @@
+"""A verified finding with an http_capture ref inlines its raw request/response."""
+
+from __future__ import annotations
+
+from vulnclaw.agent.context import EvidenceRef, SessionState, VulnerabilityFinding
+from vulnclaw.report.generator import generate_report
+from vulnclaw.traffic import (
+    CapturedExchange,
+    CapturedRequest,
+    CapturedResponse,
+    ScopeChecker,
+    ScopeMode,
+    Target,
+    TrafficCapture,
+    TrafficStore,
+)
+
+
+def test_verified_finding_inlines_http_capture(tmp_path):
+    # Capture a request/response into the run's evidence/traffic store.
+    run_dir = tmp_path / "run"
+    store = TrafficStore(run_dir / "evidence" / "traffic")
+    capture = TrafficCapture(
+        store, ScopeChecker([Target(host="app.test")], mode=ScopeMode.STRICT)
+    )
+    request_id = capture.capture(
+        CapturedExchange(
+            request=CapturedRequest(
+                method="GET",
+                url="http://app.test/user?id=1'",
+                headers={"Host": "app.test"},
+            ),
+            response=CapturedResponse(status=500, body=b"SQL syntax error near ''1'"),
+        ),
+        source="proxy",
+    )
+    assert request_id
+
+    # A verified finding referencing that capture.
+    finding = VulnerabilityFinding(
+        title="SQL Injection in /user",
+        severity="High",
+        vuln_type="SQLi",
+        evidence="id parameter is injectable",
+        remediation="Use parameterized queries",
+        evidence_refs=[EvidenceRef(kind="http_capture", request_id=request_id)],
+    )
+    finding.mark_verified(note="confirmed via error-based injection")
+
+    session = SessionState(target="http://app.test")
+    session.add_finding(finding)
+
+    report_path = generate_report(session, output_path=str(run_dir / "report.md"))
+    text = report_path.read_text(encoding="utf-8")
+
+    assert "抓包复现证据" in text
+    assert request_id in text
+    assert "```http" in text
+    assert "GET /user?id=1' HTTP/1.1" in text
+    assert "SQL syntax error near" in text
+
+
+def test_report_without_captures_is_unaffected(tmp_path):
+    run_dir = tmp_path / "run"
+    finding = VulnerabilityFinding(
+        title="Reflected XSS",
+        severity="Medium",
+        vuln_type="XSS",
+        evidence="payload reflected",
+        remediation="encode output",
+    )
+    finding.mark_verified()
+    session = SessionState(target="http://app.test")
+    session.add_finding(finding)
+
+    report_path = generate_report(session, output_path=str(run_dir / "report.md"))
+    text = report_path.read_text(encoding="utf-8")
+    assert "Reflected XSS" in text
+    assert "```http" not in text
