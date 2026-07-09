@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from datetime import datetime
@@ -353,6 +354,15 @@ class SessionState(BaseModel):
     # 反思引擎跨周期记忆快照（persistent 模式），存为 dict 以避免与 reflexion 模块循环导入
     reflexion_snapshot: dict[str, Any] = Field(default_factory=dict)
     findings: list[VulnerabilityFinding] = Field(default_factory=list)
+    # ★ Active skill selection for this turn/child task — structured provenance
+    # source. Stored as a plain dict to avoid importing the resolver here.
+    active_skill_selection: Optional[dict[str, Any]] = Field(
+        default=None, description="Active SkillSelection.to_provenance() for the current turn"
+    )
+    # ★ Run events emitted whenever the active skill selection changes.
+    skill_selection_events: list[dict[str, Any]] = Field(
+        default_factory=list, description="Audit log of skill-selection changes"
+    )
     recon_data: dict[str, Any] = Field(default_factory=dict)
     # ★ 原始步骤日志（向后兼容）
     executed_steps: list[str] = Field(default_factory=list)
@@ -445,11 +455,63 @@ class SessionState(BaseModel):
                     print(f"[DEDUP-SEM] 跳过语义重复漏洞: {finding.title}")
                 return False
 
+        # 附加 skill 溯源（若未显式提供且当前有活跃选择）。深拷贝以免其中的
+        # references_loaded 列表与 active_skill_selection 共享 —— 否则之后
+        # record_loaded_reference() 会追溯性地修改已记录漏洞的溯源。
+        if finding.skill_provenance is None and self.active_skill_selection is not None:
+            finding.skill_provenance = copy.deepcopy(self.active_skill_selection)
+
         # 添加到追踪集合和列表
         self._finding_ids_cache.add(finding.finding_id)
         self.findings.append(finding)
         self._notify_checkpoint("finding_added")
         return True
+
+    def set_active_skill_selection(self, provenance: Optional[dict[str, Any]]) -> bool:
+        """Record the active skill selection; emit a run event when it changes.
+
+        Args:
+            provenance: A ``SkillSelection.to_provenance()`` dict (or None).
+
+        Returns:
+            True if the selection changed from the previous turn.
+        """
+        prev = self.active_skill_selection
+        changed = (prev or {}).get("primary") != (provenance or {}).get("primary") or (
+            (prev or {}).get("supporting") != (provenance or {}).get("supporting")
+        )
+        # Same bundle as last turn: carry over references already loaded under it
+        # so provenance keeps a complete record across turns.
+        if not changed and prev is not None and provenance is not None:
+            loaded = prev.get("references_loaded")
+            if loaded and not provenance.get("references_loaded"):
+                provenance = {**provenance, "references_loaded": list(loaded)}
+        self.active_skill_selection = provenance
+        if changed:
+            event = {
+                "kind": "skill_selection_changed" if provenance is not None else "skill_selection_cleared",
+                "timestamp": datetime.now().isoformat(),
+                "primary": (provenance or {}).get("primary"),
+                "supporting": (provenance or {}).get("supporting", []),
+                "reason": (provenance or {}).get("reason", ""),
+                "confidence": (provenance or {}).get("confidence", 0.0),
+            }
+            self.skill_selection_events.append(event)
+            self.skill_selection_events = self.skill_selection_events[-50:]
+        return changed
+
+    def record_loaded_reference(self, skill_name: str, ref_name: str) -> None:
+        """Record a reference loaded via ``load_skill_reference`` onto provenance.
+
+        Findings created after this call inherit the reference in their
+        ``skill_provenance['references_loaded']``.
+        """
+        if self.active_skill_selection is None:
+            return
+        entry = f"{skill_name}/{ref_name}" if skill_name else ref_name
+        loaded = self.active_skill_selection.setdefault("references_loaded", [])
+        if entry and entry not in loaded:
+            loaded.append(entry)
 
     def get_verified_findings(self) -> list[VulnerabilityFinding]:
         """获取已验证的漏洞列表.

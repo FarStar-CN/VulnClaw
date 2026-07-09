@@ -40,7 +40,7 @@ from vulnclaw.agent.prompt_context import build_round_context, generate_attack_s
 from vulnclaw.agent.recon_tracker import update_recon_dimension_completion
 from vulnclaw.agent.roles import role_prompt_block
 from vulnclaw.agent.runtime_state import AgentResult, PersistentCycleResult, RuntimeState
-from vulnclaw.agent.skill_context import get_active_skill_context
+from vulnclaw.agent.skill_context import apply_skill_selection
 from vulnclaw.agent.system_prompt import build_dynamic_system_prompt
 from vulnclaw.agent.tool_call_manager import safe_parse_tool_args
 from vulnclaw.config.schema import VulnClawConfig
@@ -381,7 +381,10 @@ class AgentCore:
         return prompt
 
     def _get_active_skill_context(self, user_input: Optional[str] = None) -> Optional[str]:
-        return get_active_skill_context(user_input)
+        # Resolve the bundle once, record its provenance on the session (so
+        # findings created this turn inherit it), and return the same bundle's
+        # context. All derivation lives in the skill_context helper.
+        return apply_skill_selection(self.context.state, user_input)
 
     def _build_kb_context(self, user_input: Optional[str] = None) -> str:
         return build_kb_context(self, user_input)
