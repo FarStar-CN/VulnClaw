@@ -38,6 +38,11 @@ from vulnclaw.intel.tools import (
     dispatch_intel_tool,
     intel_tool_schemas,
 )
+from vulnclaw.traffic.tools import (
+    TRAFFIC_TOOL_NAMES,
+    dispatch_traffic_tool,
+    traffic_tool_schemas,
+)
 
 
 def role_allows_tool(role: str | None, tool_name: str) -> bool:
@@ -94,6 +99,51 @@ LAB_MODE_PATTERNS: list[str] = [
 ]
 
 
+def resolve_traffic_store(agent: AgentContext) -> Any:
+    """Resolve the per-run traffic evidence store for this agent.
+
+    Prefers a run/evidence directory carried on the session (once the run-dir
+    PRD lands); otherwise falls back to the config-scoped evidence directory so
+    headless/CI runs still get a durable store.
+    """
+    from vulnclaw.traffic.paths import resolve_traffic_store as _resolve
+
+    session = getattr(agent, "session_state", None)
+    base = getattr(session, "evidence_dir", None) or getattr(session, "run_dir", None)
+    return _resolve(base)
+
+
+def enforce_traffic_repeat_constraints(
+    agent: AgentContext, store: Any, args: dict[str, Any]
+) -> str | None:
+    """Gate a ``traffic_repeat`` against task host/path/port constraints.
+
+    The effective target is the ``url`` override if supplied, else the stored
+    request's URL. Returns a violation message when the target is out of scope,
+    or ``None`` when the replay is allowed.
+    """
+    target_url = str(args.get("url") or "").strip()
+    if not target_url:
+        entry = store.find(str(args.get("request_id", "")))
+        target_url = str((entry or {}).get("url", "")).strip()
+    if not target_url:
+        return None
+
+    parsed = urlparse(target_url)
+    host = parsed.hostname or ""
+    path = parsed.path or ""
+    violation = enforce_host_path_constraints(agent, host=host, path=path, target=host)
+    if violation is not None:
+        return violation
+
+    port = infer_port_from_url(target_url)
+    if port is not None:
+        violation = enforce_port_constraints(agent, [port], target=host or target_url)
+        if violation is not None:
+            return violation
+    return None
+
+
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
     """Execute a tool call via MCP manager or built-in tools."""
     violation = role_tool_violation(getattr(agent, "active_role", None), tool_name)
@@ -121,6 +171,18 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
 
     if tool_name in INTEL_TOOL_NAMES:
         return await dispatch_intel_tool(agent, tool_name, args)
+
+    if tool_name in TRAFFIC_TOOL_NAMES:
+        store = resolve_traffic_store(agent)
+        if tool_name == "traffic_repeat":
+            # A url override could aim the replay at a blocked/out-of-scope host,
+            # so gate it with the same host/path/port guards other network tools
+            # use — the generic action check above does not see the target URL.
+            violation = enforce_traffic_repeat_constraints(agent, store, args)
+            if violation is not None:
+                return violation
+        # traffic_repeat issues a real network request; keep the loop responsive.
+        return await asyncio.to_thread(dispatch_traffic_tool, store, tool_name, args)
 
     if tool_name == "python_execute":
         return await execute_python(agent, args)
@@ -679,6 +741,9 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
     )
 
     for tool in intel_tool_schemas():
+        append_tool(tool)
+
+    for tool in traffic_tool_schemas():
         append_tool(tool)
 
     if mcp_manager:
