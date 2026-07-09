@@ -678,7 +678,7 @@ class VulnerabilityVerifier:
                 finding.severity = vf.verified_severity
                 # Stamp verification state so the produced finding passes the
                 # report/SARIF/findings.json inclusion gate (verification_status
-                # == "verified"). Attach the PoC output as a sandbox_output ref.
+                # == "verified"), recording the actual PoC execution time.
                 finding.mark_verified(
                     note=vf.verified_evidence[:200], evidence_level="L4"
                 )

@@ -109,8 +109,12 @@ class VulnerabilityFinding(BaseModel):
         # description, and quarantine it as ``needs_manual_review`` — it stays in run
         # state / audit trail but is excluded from the report/SARIF gate until an
         # actual evidence chain is attached. (Previously this fired for High/Critical
-        # only and did not set a lifecycle status.)
-        if not self.evidence and not self.vuln_type and not self.remediation:
+        # only and did not set a lifecycle status.) The whole unit is skipped for a
+        # finding that is already verified/rejected — an explicitly promoted finding
+        # keeps its terminal status and is never re-stamped "[未验证]".
+        is_bare = not self.evidence and not self.vuln_type and not self.remediation
+        is_terminal = self.verified or self.verification_status in ("verified", "rejected")
+        if is_bare and not is_terminal:
             if not self.title.startswith("[未验证]"):
                 self.title = f"[未验证] {self.title}"
             if "缺少验证证据" not in self.description:
@@ -119,10 +123,7 @@ class VulnerabilityFinding(BaseModel):
                     "LLM 上报时未附实际测试结果。请补充证据后再作为正式漏洞。)"
                     + (f" {self.description}" if self.description else "")
                 )
-            # Only quarantine findings that are not already verified/rejected — an
-            # explicitly promoted finding keeps its terminal status.
-            if not self.verified and self.verification_status not in ("verified", "rejected"):
-                self.lifecycle_status = "needs_manual_review"
+            self.lifecycle_status = "needs_manual_review"
 
         self._sync_status_fields()
 

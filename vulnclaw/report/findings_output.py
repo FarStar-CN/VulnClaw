@@ -64,7 +64,7 @@ def is_report_included(finding: VulnerabilityFinding) -> bool:
     execution (``verifier.py``) or manual confirmation (``finding_parser`` +
     ``mark_verified``). Pending / candidate / rejected findings never pass.
     """
-    return getattr(finding, "verification_status", "") == "verified"
+    return finding.verification_status == "verified"
 
 
 def _verified_set(session: SessionState) -> list[VulnerabilityFinding]:
@@ -85,7 +85,7 @@ def _finding_to_dict(finding: VulnerabilityFinding) -> dict[str, Any]:
 def _lifecycle_counts(findings: list[VulnerabilityFinding]) -> dict[str, int]:
     counts = {bucket: 0 for bucket in _LIFECYCLE_BUCKETS}
     for finding in findings:
-        status = getattr(finding, "lifecycle_status", "") or "candidate"
+        status = finding.lifecycle_status or "candidate"
         if status in counts:
             counts[status] += 1
     return counts

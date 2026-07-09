@@ -128,6 +128,21 @@ class TestIntakeQuarantine:
         assert finding.verification_status == "verified"
         assert finding.lifecycle_status == "verified"
 
+    def test_constructed_verified_bare_finding_keeps_terminal_status(self):
+        # A finding constructed already-verified must not be re-stamped "[未验证]"
+        # nor demoted to needs_manual_review, even with empty evidence/vuln_type.
+        finding = VulnerabilityFinding(title="Confirmed", severity="High", verified=True)
+        assert not finding.title.startswith("[未验证]")
+        assert finding.verification_status == "verified"
+        assert finding.lifecycle_status == "verified"
+
+    def test_constructed_rejected_bare_finding_keeps_terminal_status(self):
+        finding = VulnerabilityFinding(
+            title="Bogus", severity="High", verification_status="rejected"
+        )
+        assert not finding.title.startswith("[未验证]")
+        assert finding.lifecycle_status == "rejected"
+
     def test_candidates_are_never_dropped(self):
         state = SessionState(target="https://example.com")
         # Two bare findings with distinct titles must both survive intake.
