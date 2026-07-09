@@ -169,7 +169,11 @@ async def _run_surface_wave(
     worker_rounds: int,
     graph: Optional[AgentGraph] = None,
 ) -> list[Any]:
-    semaphore = asyncio.Semaphore(max(1, len(surfaces)))
+    # When a graph drives the wave its concurrency cap is the real gate, so the
+    # semaphore mirrors max_concurrent — the graph is the source of truth, not
+    # cosmetic bookkeeping. Without a graph, keep the original per-wave sizing.
+    slots = graph.caps.max_concurrent if graph is not None else len(surfaces)
+    semaphore = asyncio.Semaphore(max(1, slots))
 
     async def _run_one(surface: AttackSurface) -> Any:
         async with semaphore:
@@ -180,11 +184,19 @@ async def _run_surface_wave(
                     role="worker",
                     task_summary=f"{surface.kind}:{surface.target}",
                 )
-                node_id = created.node.id if created.node is not None else None
+                if not created.accepted:
+                    # A cap (max_total / max_depth) rejected this surface — the
+                    # graph already logged it; don't run an untracked child.
+                    return {"surface": surface, "results": None, "rejected": created.reason}
+                node_id = created.node.id
 
             child = agent_factory()
             _seed_child_session(child.session_state, root_agent.session_state, surface)
             prompt = _surface_prompt(surface, root_agent.session_state)
+
+            def _merge() -> None:
+                merge_session_state(root_agent.session_state, child.session_state)
+
             try:
                 result = await child.auto_pentest(
                     prompt,
@@ -193,21 +205,14 @@ async def _run_surface_wave(
                 )
             except Exception as exc:  # noqa: BLE001 - a crashed child must fail loud in the graph
                 if graph is not None and node_id is not None:
-                    graph.child_finish(
-                        node_id, outcome=AgentOutcome.FAILED, error=str(exc)
-                    )
+                    graph.child_finish(node_id, outcome=AgentOutcome.FAILED, error=str(exc))
                 raise
 
             if graph is not None and node_id is not None:
                 # merge_session_state is the child-finish reconciliation hook.
-                graph.child_finish(
-                    node_id,
-                    hook=lambda: merge_session_state(
-                        root_agent.session_state, child.session_state
-                    ),
-                )
+                graph.child_finish(node_id, hook=_merge)
             else:
-                merge_session_state(root_agent.session_state, child.session_state)
+                _merge()
             return {"surface": surface, "results": result}
 
     return await asyncio.gather(*(_run_one(surface) for surface in surfaces))

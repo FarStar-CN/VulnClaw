@@ -150,3 +150,36 @@ async def test_surface_wave_strategy_drives_agent_graph(tmp_path):
     root_node = graph.get_node(graph.root_id)
     assert root_node.status == AgentStatus.DONE
     assert root_node.outcome == AgentOutcome.FINISHED
+
+
+@pytest.mark.asyncio
+async def test_surface_wave_strategy_honors_max_total_cap(tmp_path):
+    root = FakeAgent()
+
+    def factory():
+        return FakeAgent()
+
+    # max_total=2 leaves room for the root + exactly one worker; the second
+    # surface's create_agent is rejected and that child must not run.
+    graph = AgentGraph(
+        tmp_path / "agents",
+        caps=FanOutCaps(max_concurrent=2, max_total=2, max_depth=1),
+    )
+
+    await run_parallel_pentest(
+        root,
+        agent_factory=factory,
+        user_input="Perform an authorized fast network scan against 192.168.1.0/24.",
+        target="192.168.1.0/24",
+        discovery_rounds=1,
+        worker_rounds=2,
+        max_agents=2,
+        max_depth=1,
+        graph=graph,
+    )
+
+    snapshot = graph.view_graph()
+    worker_nodes = [n for n in snapshot.nodes if n.parent_id == graph.root_id]
+    assert len(worker_nodes) == 1  # second surface rejected by max_total
+    assert len(root.session_state.findings) == 1  # rejected child never merged
+    assert graph.get_node(graph.root_id).outcome == AgentOutcome.FINISHED
