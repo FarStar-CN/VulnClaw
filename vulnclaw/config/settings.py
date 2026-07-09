@@ -234,6 +234,10 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
     # ── Session ──────────────────────────────────────────────────────
     if v := os.environ.get("VULNCLAW_SESSION_OUTPUT_DIR"):
         config.session.output_dir = Path(v)
+    if v := os.environ.get("VULNCLAW_RUNS_DIR"):
+        config.session.runs_dir = Path(v)
+    if v := os.environ.get("VULNCLAW_SESSION_RUNS_DIR"):
+        config.session.runs_dir = Path(v)
     if v := os.environ.get("VULNCLAW_SESSION_AUTO_SAVE"):
         config.session.auto_save = v.lower() in ("1", "true", "yes", "on")
     if v := os.environ.get("VULNCLAW_SESSION_REPORT_FORMAT"):
