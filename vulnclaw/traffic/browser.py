@@ -21,6 +21,7 @@ from vulnclaw.traffic.models import (
     CapturedExchange,
     CapturedRequest,
     CapturedResponse,
+    coerce_headers,
 )
 
 
@@ -31,12 +32,6 @@ def playwright_available() -> bool:
     except Exception:
         return False
     return True
-
-
-def _as_headers(value: Any) -> dict[str, str]:
-    if isinstance(value, dict):
-        return {str(k): str(v) for k, v in value.items()}
-    return {}
 
 
 def exchange_from_playwright(request: Any, response: Any | None = None) -> CapturedExchange:
@@ -59,14 +54,14 @@ def exchange_from_playwright(request: Any, response: Any | None = None) -> Captu
     captured_request = CapturedRequest(
         method=str(_call_or_attr(request, "method", "GET") or "GET"),
         url=str(_call_or_attr(request, "url", "") or ""),
-        headers=_as_headers(_call_or_attr(request, "headers", {})),
+        headers=coerce_headers(_call_or_attr(request, "headers", {})),
         body=body if isinstance(body, bytes) else str(body).encode("utf-8", "replace"),
     )
     captured_response = None
     if response is not None:
         captured_response = CapturedResponse(
             status=int(_call_or_attr(response, "status", 0) or 0),
-            headers=_as_headers(_call_or_attr(response, "headers", {})),
+            headers=coerce_headers(_call_or_attr(response, "headers", {})),
             reason=str(_call_or_attr(response, "status_text", "") or ""),
         )
     return CapturedExchange(request=captured_request, response=captured_response)

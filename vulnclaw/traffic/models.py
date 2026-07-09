@@ -11,12 +11,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 # Recognized capture sources, mirrored in the JSONL index ``source`` field.
 SOURCE_PROXY = "proxy"
 SOURCE_BROWSER = "browser"
 SOURCE_MANUAL_REPLAY = "manual-replay"
 VALID_SOURCES = frozenset({SOURCE_PROXY, SOURCE_BROWSER, SOURCE_MANUAL_REPLAY})
+
+
+def coerce_headers(value: Any) -> dict[str, str]:
+    """Coerce a backend's headers into a ``{str: str}`` dict.
+
+    Accepts a mapping (mitmproxy / Burp), a list of ``{name, value}`` pairs
+    (chrome-devtools / HAR), or anything else (→ empty). Shared by every capture
+    backend so header normalization lives in one place.
+    """
+    if isinstance(value, list):
+        headers: dict[str, str] = {}
+        for item in value:
+            if isinstance(item, dict) and "name" in item:
+                headers[str(item["name"])] = str(item.get("value", ""))
+        return headers
+    # dict, or any mapping-like object exposing .items() (e.g. mitmproxy Headers).
+    if hasattr(value, "items"):
+        try:
+            return {str(k): str(v) for k, v in value.items()}
+        except Exception:
+            return {}
+    return {}
 
 
 class ScopeMode(str, Enum):

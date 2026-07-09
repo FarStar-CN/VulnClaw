@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vulnclaw.traffic.store import TrafficStore
 
 TRAFFIC_SUBDIR = "traffic"
 
@@ -34,3 +38,25 @@ def traffic_dir(base: str | Path | None = None) -> Path:
             return root / TRAFFIC_SUBDIR
         return root / "evidence" / TRAFFIC_SUBDIR
     return evidence_root() / TRAFFIC_SUBDIR
+
+
+def resolve_traffic_store(run_dir: str | Path | None = None) -> "TrafficStore":
+    """Resolve the traffic store both writers and the report reader share.
+
+    Prefers ``run_dir``'s ``evidence/traffic`` when it already holds captures;
+    otherwise falls back to the config-scoped default. This single seam keeps the
+    agent's writes and the report generator's reads pointed at the same store
+    until the run-directory PRD provides an explicit per-run path.
+    """
+    from vulnclaw.traffic.store import INDEX_FILENAME, TrafficStore
+
+    candidates: list[Path] = []
+    if run_dir is not None:
+        candidates.append(traffic_dir(run_dir))
+    candidates.append(traffic_dir(None))  # config-scoped default
+
+    for path in candidates:
+        if (path / INDEX_FILENAME).exists():
+            return TrafficStore(path)
+    # Nothing captured anywhere yet: honor the caller's run dir, else default.
+    return TrafficStore(candidates[0])

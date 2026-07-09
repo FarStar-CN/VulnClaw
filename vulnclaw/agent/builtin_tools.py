@@ -106,12 +106,11 @@ def resolve_traffic_store(agent: AgentContext) -> Any:
     PRD lands); otherwise falls back to the config-scoped evidence directory so
     headless/CI runs still get a durable store.
     """
-    from vulnclaw.traffic.paths import traffic_dir
-    from vulnclaw.traffic.store import TrafficStore
+    from vulnclaw.traffic.paths import resolve_traffic_store as _resolve
 
     session = getattr(agent, "session_state", None)
     base = getattr(session, "evidence_dir", None) or getattr(session, "run_dir", None)
-    return TrafficStore(traffic_dir(base))
+    return _resolve(base)
 
 
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:

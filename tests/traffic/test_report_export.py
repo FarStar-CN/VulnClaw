@@ -60,6 +60,36 @@ def test_verified_finding_inlines_http_capture(tmp_path):
     assert "SQL syntax error near" in text
 
 
+def test_shared_resolver_finds_config_default_when_no_run_captures(tmp_path, monkeypatch):
+    """The report reader and agent writer share one resolver seam.
+
+    When the agent wrote captures to the config-default store (no per-run dir),
+    the report generator's resolver still finds them.
+    """
+    from vulnclaw.traffic.paths import resolve_traffic_store
+
+    evidence_root = tmp_path / "config-evidence"
+    monkeypatch.setenv("VULNCLAW_EVIDENCE_DIR", str(evidence_root))
+
+    # Agent-side write: no run dir -> lands in the config default.
+    writer = resolve_traffic_store(None)
+    capture = TrafficCapture(
+        writer, ScopeChecker([Target(host="app.test")], mode=ScopeMode.STRICT)
+    )
+    request_id = capture.capture(
+        CapturedExchange(
+            request=CapturedRequest(method="GET", url="http://app.test/x"),
+            response=CapturedResponse(status=200, body=b"ok"),
+        ),
+        source="proxy",
+    )
+
+    # Report-side read for a run dir that has no captures of its own: falls back
+    # to the same config default and finds the agent's capture.
+    reader = resolve_traffic_store(tmp_path / "run-with-no-captures")
+    assert reader.find(request_id) is not None
+
+
 def test_report_without_captures_is_unaffected(tmp_path):
     run_dir = tmp_path / "run"
     finding = VulnerabilityFinding(

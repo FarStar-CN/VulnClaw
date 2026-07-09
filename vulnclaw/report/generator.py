@@ -819,13 +819,13 @@ def _build_repro_summary_clean(finding: VulnerabilityFinding) -> str:
 
 
 def _resolve_traffic_store(output_dir: Path) -> Any | None:
-    """Return a TrafficStore for the run's evidence dir, or None if absent."""
+    """Return the run's TrafficStore (report dir preferred, config default as
+    fallback so captures the agent wrote are found), or None if none exist."""
     try:
-        from vulnclaw.traffic.paths import traffic_dir
-        from vulnclaw.traffic.store import TrafficStore
+        from vulnclaw.traffic.paths import resolve_traffic_store
     except Exception:
         return None
-    store = TrafficStore(traffic_dir(output_dir / "evidence"))
+    store = resolve_traffic_store(output_dir)
     return store if store.index_path.exists() else None
 
 

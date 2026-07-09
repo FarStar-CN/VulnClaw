@@ -22,6 +22,7 @@ from vulnclaw.traffic.models import (
     CapturedExchange,
     CapturedRequest,
     CapturedResponse,
+    coerce_headers,
 )
 
 
@@ -34,13 +35,6 @@ def mitmproxy_available() -> bool:
     return True
 
 
-def _headers_to_dict(headers: Any) -> dict[str, str]:
-    try:
-        return {str(k): str(v) for k, v in headers.items()}
-    except Exception:
-        return {}
-
-
 def exchange_from_flow(flow: Any) -> CapturedExchange:
     """Build a :class:`CapturedExchange` from a mitmproxy ``HTTPFlow``.
 
@@ -51,7 +45,7 @@ def exchange_from_flow(flow: Any) -> CapturedExchange:
     request = CapturedRequest(
         method=str(getattr(req, "method", "GET")),
         url=str(getattr(req, "url", "")),
-        headers=_headers_to_dict(getattr(req, "headers", {})),
+        headers=coerce_headers(getattr(req, "headers", {})),
         body=bytes(getattr(req, "raw_content", b"") or getattr(req, "content", b"") or b""),
         http_version=str(getattr(req, "http_version", "HTTP/1.1")),
     )
@@ -60,7 +54,7 @@ def exchange_from_flow(flow: Any) -> CapturedExchange:
     if resp is not None:
         response = CapturedResponse(
             status=int(getattr(resp, "status_code", 0) or 0),
-            headers=_headers_to_dict(getattr(resp, "headers", {})),
+            headers=coerce_headers(getattr(resp, "headers", {})),
             body=bytes(getattr(resp, "raw_content", b"") or getattr(resp, "content", b"") or b""),
             reason=str(getattr(resp, "reason", "")),
             http_version=str(getattr(resp, "http_version", "HTTP/1.1")),

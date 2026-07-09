@@ -19,6 +19,7 @@ from vulnclaw.traffic.models import (
     CapturedExchange,
     CapturedRequest,
     CapturedResponse,
+    coerce_headers,
 )
 
 
@@ -28,19 +29,6 @@ def _as_bytes(value: Any) -> bytes:
     if isinstance(value, bytes):
         return value
     return str(value).encode("utf-8", "replace")
-
-
-def _as_headers(value: Any) -> dict[str, str]:
-    if isinstance(value, dict):
-        return {str(k): str(v) for k, v in value.items()}
-    if isinstance(value, list):
-        # List of {name, value} pairs (chrome-devtools / HAR style).
-        headers: dict[str, str] = {}
-        for item in value:
-            if isinstance(item, dict) and "name" in item:
-                headers[str(item["name"])] = str(item.get("value", ""))
-        return headers
-    return {}
 
 
 def _int(value: Any, default: int = 0) -> int:
@@ -58,7 +46,7 @@ def normalize_burp_entry(entry: dict[str, Any]) -> CapturedExchange:
     request = CapturedRequest(
         method=str(req.get("method", entry.get("method", "GET")) or "GET"),
         url=str(req.get("url", entry.get("url", "")) or ""),
-        headers=_as_headers(req.get("headers", entry.get("headers"))),
+        headers=coerce_headers(req.get("headers", entry.get("headers"))),
         body=_as_bytes(req.get("body", req.get("data"))),
     )
     response = None
@@ -66,7 +54,7 @@ def normalize_burp_entry(entry: dict[str, Any]) -> CapturedExchange:
         source = resp or entry
         response = CapturedResponse(
             status=_int(source.get("status", source.get("status_code", 0))),
-            headers=_as_headers(source.get("headers")),
+            headers=coerce_headers(source.get("headers")),
             body=_as_bytes(source.get("body", source.get("data"))),
             reason=str(source.get("reason", "")),
         )
@@ -81,14 +69,14 @@ def normalize_chrome_devtools_entry(entry: dict[str, Any]) -> CapturedExchange:
     request = CapturedRequest(
         method=str(req.get("method", "GET") or "GET"),
         url=str(req.get("url", entry.get("url", "")) or ""),
-        headers=_as_headers(req.get("headers")),
+        headers=coerce_headers(req.get("headers")),
         body=_as_bytes(req.get("postData", req.get("body"))),
     )
     response = None
     if resp is not None:
         response = CapturedResponse(
             status=_int(resp.get("status", resp.get("statusCode", 0))),
-            headers=_as_headers(resp.get("headers")),
+            headers=coerce_headers(resp.get("headers")),
             body=_as_bytes(resp.get("body", entry.get("body"))),
             reason=str(resp.get("statusText", resp.get("reason", ""))),
         )
