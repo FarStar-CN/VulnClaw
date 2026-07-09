@@ -324,10 +324,17 @@ class TestSkillDispatcher:
         skill = d.dispatch("GAARM AI应用安全测试 Prompt注入 MCP Agent 风险映射")
         assert skill["name"] == "secknowledge-skill"
 
-    def test_dispatch_default_to_pentest_flow(self):
-        """Unrecognized input should default to pentest-flow."""
+    def test_dispatch_non_security_injects_nothing(self):
+        """Unrelated, non-security text no longer auto-injects pentest-flow."""
         d = self._make_dispatcher()
         skill = d.dispatch("你好今天天气怎么样")
+        assert skill is None
+
+    def test_dispatch_generic_pentest_falls_back(self):
+        """Generic pentest-like input without specificity falls back to pentest-flow."""
+        d = self._make_dispatcher()
+        skill = d.dispatch("帮我对这个目标做一次渗透测试")
+        assert skill is not None
         assert skill["name"] == "pentest-flow"
 
     def test_dispatch_returns_dict(self):

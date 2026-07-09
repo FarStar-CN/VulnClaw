@@ -133,6 +133,11 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
             ref_name = args.get("reference_name", "")
             content = load_skill_reference(skill_name, ref_name)
             if content:
+                state = getattr(agent, "session_state", None) or getattr(
+                    getattr(agent, "context", None), "state", None
+                )
+                if state is not None and hasattr(state, "record_loaded_reference"):
+                    state.record_loaded_reference(skill_name, ref_name)
                 return content
             return f"[!] 参考文档未找到: {skill_name}/{ref_name}"
         except Exception as e:
