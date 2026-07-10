@@ -516,8 +516,8 @@ class TestCLI:
         assert "Blocked path /internal" in prompts[0]
 
     def test_cli_blocks_command_when_allowed_actions_conflict(self, runner, monkeypatch):
-        import vulnclaw.cli.main as cli_main
         import vulnclaw.cli._helpers as helpers_mod
+        import vulnclaw.cli.main as cli_main
         from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
