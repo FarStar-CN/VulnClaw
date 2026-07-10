@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-
 # Read-only tools the constraint policy may treat as passive: no egress to the
 # target, no host-changing action.
 READ_ONLY_INTEL_TOOLS: set[str] = {

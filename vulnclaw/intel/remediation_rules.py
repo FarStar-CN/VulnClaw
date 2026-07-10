@@ -19,7 +19,6 @@ from vulnclaw.intel.remediation import (
     _severity_to_priority,
 )
 
-
 # ── SQL Injection ────────────────────────────────────────────────────────────
 
 @_rule(r"sql\s*inject|sqli|blind.*inject|union.*inject")

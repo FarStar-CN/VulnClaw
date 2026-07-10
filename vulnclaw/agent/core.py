@@ -84,7 +84,6 @@ class AgentCore:
             status = self._kb_retriever.get_status()
             # Auto-seed when KB is empty
             if status == RetrieverStatus.DISABLED:
-                from vulnclaw.kb.store import KnowledgeStore
                 from vulnclaw.kb.updater import seed_knowledge_base
 
                 seed_knowledge_base(self._kb_retriever.store)

@@ -512,8 +512,8 @@ CYCLE_REPORT_TEMPLATE = """\
 def _generate_attack_summary_from_session(session: SessionState) -> str:
     """Generate a readable attack-path summary using VulnClaw's configured LLM."""
     try:
-        from vulnclaw.config.text_utils import strip_think_tags
         from vulnclaw.config.settings import load_config, make_openai_client
+        from vulnclaw.config.text_utils import strip_think_tags
         from vulnclaw.config.token_provider import (
             TokenResolutionError,
             has_llm_credentials,

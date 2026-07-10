@@ -10,12 +10,13 @@ from datetime import timedelta
 from typing import Any
 from urllib.parse import urlparse
 
+from vulnclaw.config.schema import MCPServerConfig, VulnClawConfig
+
 # 修改者: Nyaecho
 # 修改时间: 2026-07-08
 # 修改原因: 消除 V1 违规 — mcp/ 基础设施层不应反向依赖 agent/ 领域层，
 #          改为从 config/url_utils.py 导入纯 URL 工具函数。
 from vulnclaw.config.url_utils import infer_port_from_url
-from vulnclaw.config.schema import MCPServerConfig, VulnClawConfig
 from vulnclaw.mcp._probe_mixin import ProbeMixin
 from vulnclaw.mcp.registry import HealthStatus, MCPRegistry
 

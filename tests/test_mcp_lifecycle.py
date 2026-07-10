@@ -381,8 +381,8 @@ def _sse_server_config(name: str = "burp") -> MCPServerConfig:
 
 class TestStreamableHttp:
     def test_attach_success_registers_known_tools(self, monkeypatch):
-        import vulnclaw.mcp.lifecycle as _mod
         import vulnclaw.mcp._probe_mixin as _probe_mod
+        import vulnclaw.mcp.lifecycle as _mod
 
         m = _manager()
         cfg = _http_server_config("chrome-devtools")
@@ -467,8 +467,8 @@ class TestStreamableHttp:
 
 class TestSseMcp:
     def test_burp_attach_success_registers_runtime_tools(self, monkeypatch):
-        import vulnclaw.mcp.lifecycle as _mod
         import vulnclaw.mcp._probe_mixin as _probe_mod
+        import vulnclaw.mcp.lifecycle as _mod
 
         m = _manager()
         cfg = _sse_server_config()

@@ -517,6 +517,7 @@ class TestCLI:
 
     def test_cli_blocks_command_when_allowed_actions_conflict(self, runner, monkeypatch):
         import vulnclaw.cli.main as cli_main
+        import vulnclaw.cli._helpers as helpers_mod
         from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
@@ -524,9 +525,9 @@ class TestCLI:
         config.llm.api_key = "test-key"
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
         monkeypatch.setattr(
-            cli_main,
+            helpers_mod,
             "_append_cli_constraints",
-            lambda prompt, only_port, only_host, only_path: f"{prompt} 仅做信息收集。",
+            lambda prompt, only_port, only_host, only_path, blocked_host=None, blocked_path=None: f"{prompt} 仅做信息收集。",
         )
 
         result = runner.invoke(app, ["run", "https://example.com"])

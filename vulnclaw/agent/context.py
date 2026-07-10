@@ -7,7 +7,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -21,11 +21,11 @@ from vulnclaw.agent.reasoning_state import ReasoningState
 # 修改原因: 消除 V2/V3/V4 违规 — 基础设施层不应反向依赖领域层。
 # ──────────────────────────────────────────────────────────────
 from vulnclaw.config.domain_models import (  # noqa: F401 — re-export
+    PHASE_TO_ACTION,
     ConstraintViolationEvent,
     EvidenceKind,
     EvidenceRef,
     PentestPhase,
-    PHASE_TO_ACTION,
     StepRecord,
     StepStatus,
     TaskConstraints,
@@ -33,7 +33,6 @@ from vulnclaw.config.domain_models import (  # noqa: F401 — re-export
     normalize_action_name,
     validate_action_constraints,
 )
-
 
 # ==============================================================================
 # [P17 重构] 子状态类定义

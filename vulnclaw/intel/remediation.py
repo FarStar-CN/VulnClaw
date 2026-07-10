@@ -203,7 +203,6 @@ def _rule(pattern: str):
 # 导入规则定义模块（触发 @_rule 装饰器注册）
 from vulnclaw.intel import remediation_rules  # noqa: E402, F401
 
-
 # ── Compile Rules ────────────────────────────────────────────────────────────
 
 _COMPILED_RULES: List[Tuple[re.Pattern, Callable]] = []

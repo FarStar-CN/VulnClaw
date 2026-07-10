@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Any, Optional
 
 from rich.console import Console
@@ -16,7 +15,6 @@ from rich.text import Text
 
 from vulnclaw import __version__
 from vulnclaw.config.text_utils import format_think_tags, strip_think_tags
-from vulnclaw.i18n import _
 
 console = Console()
 err_console = Console(stderr=True)

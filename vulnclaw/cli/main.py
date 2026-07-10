@@ -41,14 +41,28 @@ def _configure_windows_console() -> None:
 _configure_windows_console()
 
 import typer
-from rich.console import Console
 from rich.panel import Panel
-from rich.text import Text
 
 from vulnclaw import __version__, headless
 from vulnclaw.agent.constraint_policy import validate_action_constraints
 from vulnclaw.agent.input_analysis import extract_task_constraints
-from vulnclaw.config.text_utils import format_think_tags, strip_think_tags
+
+# === Stream Output Renderer ===
+# 修改者: Nyaecho
+# 修改时间: 2026-07-08
+# 修改原因: S2 修复 — 共享辅助函数已移至 cli/_helpers.py。
+from vulnclaw.cli._helpers import (
+    TerminalStreamSink,
+    _append_action_constraints,
+    _append_cli_constraints_compat,
+    _generate_report_for_target,
+    _make_solve_event_printer,
+    _print_agent_output,
+    _print_banner,
+    _run_cli_orchestrated_task,
+    console,
+    err_console,
+)
 from vulnclaw.cli.manual import available_topics, render_manual
 from vulnclaw.config.settings import (
     RUNS_DIR,
@@ -60,7 +74,6 @@ from vulnclaw.config.settings import (
 )
 from vulnclaw.config.token_provider import has_llm_credentials
 from vulnclaw.i18n import _
-from vulnclaw.orchestrator import run_agent_task
 from vulnclaw.repl_runner import run_repl_call
 from vulnclaw.target_state.store import (
     apply_target_state_to_agent,
@@ -71,26 +84,6 @@ from vulnclaw.target_state.store import (
     load_target_state,
     rollback_target_state,
 )
-
-# === Stream Output Renderer ===
-# 修改者: Nyaecho
-# 修改时间: 2026-07-08
-# 修改原因: S2 修复 — 共享辅助函数已移至 cli/_helpers.py。
-
-from vulnclaw.cli._helpers import (
-    TerminalStreamSink,
-    _append_action_constraints,
-    _append_cli_constraints,
-    _append_cli_constraints_compat,
-    _generate_report_for_target,
-    _make_solve_event_printer,
-    _print_agent_output,
-    _print_banner,
-    _run_cli_orchestrated_task,
-    console,
-    err_console,
-)
-
 
 # 鈹€鈹€ REPL 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
@@ -781,77 +774,6 @@ def _print_status(agent, mcp_manager, target, phase, config) -> None:
     )
 
 
-def _generate_report_for_target(
-    target: str,
-    *,
-    current_session=None,
-    report_format: str = "markdown",
-    output_path: Optional[str] = None,
-) -> str:
-    """Generate a report for a target using the best available source data."""
-    from vulnclaw.agent.context import SessionState
-    from vulnclaw.report.generator import generate_report, generate_report_from_target_state
-    from vulnclaw.target_state.store import load_target_state
-
-    if current_session is not None and (
-        current_session.findings or current_session.executed_steps or current_session.notes
-    ):
-        path = generate_report(current_session, output_path, report_format=report_format)
-        return str(path)
-
-    state = load_target_state(target)
-    if state:
-        path = generate_report_from_target_state(state, output_path=output_path)
-        return str(path)
-
-    session = SessionState(target=target)
-    path = generate_report(session, output_path, report_format=report_format)
-    return str(path)
-
-
-def _append_cli_constraints(
-    prompt: str,
-    only_port: Optional[int],
-    only_host: Optional[str],
-    only_path: Optional[str],
-    blocked_host: Optional[str] = None,
-    blocked_path: Optional[str] = None,
-) -> str:
-    constraints = []
-    if only_port is not None:
-        constraints.append(f"Only test port {only_port}")
-    if only_host:
-        constraints.append(f"Only test host {only_host}")
-    if only_path:
-        constraints.append(f"Only test path {only_path}")
-    if blocked_host:
-        constraints.append(f"Blocked host {blocked_host}")
-    if blocked_path:
-        constraints.append(f"Blocked path {blocked_path}")
-    if not constraints:
-        return prompt
-    return f"{prompt} {' '.join(constraints)}."
-
-
-def _append_cli_constraints_compat(
-    prompt: str,
-    only_port: Optional[int],
-    only_host: Optional[str],
-    only_path: Optional[str],
-    blocked_host: Optional[str],
-    blocked_path: Optional[str],
-) -> str:
-    """Append scope constraints while preserving older monkeypatch call shapes."""
-    try:
-        return _append_cli_constraints(
-            prompt, only_port, only_host, only_path, blocked_host, blocked_path
-        )
-    except TypeError as exc:
-        if "positional" not in str(exc) and "argument" not in str(exc):
-            raise
-        return _append_cli_constraints(prompt, only_port, only_host, only_path)
-
-
 def _validate_headless_choices(
     scan_mode: str, fail_on: str, scope_mode: str
 ) -> Optional[str]:
@@ -927,88 +849,6 @@ def _run_non_interactive(
     raise typer.Exit(exit_code)
 
 
-def _append_action_constraints(
-    prompt: str, allow_actions: Optional[str], block_actions: Optional[str]
-) -> str:
-    constraints = []
-    if allow_actions:
-        constraints.append(f"Only allowed actions: {allow_actions}")
-    if block_actions:
-        constraints.append(f"Blocked actions: {block_actions}")
-    if not constraints:
-        return prompt
-    return f"{prompt} {' '.join(constraints)}."
-
-
-async def _run_cli_orchestrated_task(
-    *,
-    command: str,
-    target: str,
-    resume: bool,
-    snapshot: Optional[str],
-    runner,
-    run_name: Optional[str] = None,
-    resume_run_name: Optional[str] = None,
-    runs_dir: Optional[str] = None,
-    additional_targets: Optional[list[str]] = None,
-    target_type: Optional[str] = None,
-    mount: bool = False,
-    repair: bool = False,
-    force_fresh: bool = False,
-    no_import: bool = False,
-):
-    """Run a CLI task through the shared orchestrator helpers."""
-    from vulnclaw.agent.core import AgentCore
-    from vulnclaw.mcp.lifecycle import MCPLifecycleManager
-
-    config = load_config()
-    mcp_manager = MCPLifecycleManager(config)
-    mcp_manager.start_enabled_servers()
-    agent = AgentCore(config, mcp_manager)
-
-    try:
-
-        def on_restored(restore_result) -> None:
-            console.print(
-                f"[*] Restored saved target state: [bold]{restore_result.target or target}[/]"
-            )
-
-        def on_legacy_import(restore_result) -> None:
-            console.print(
-                "[yellow]Imported legacy target state into run-backed storage:[/] "
-                f"[bold]{restore_result.target or target}[/]"
-            )
-
-        result = await run_agent_task(
-            agent=agent,
-            command=command,
-            target=target,
-            resume=resume,
-            snapshot_id=snapshot,
-            run_name=run_name,
-            resume_run_name=resume_run_name,
-            runs_dir=runs_dir,
-            additional_targets=additional_targets,
-            target_type=target_type,
-            mount=mount,
-            repair=repair,
-            force_fresh=force_fresh,
-            no_import=no_import,
-            on_restored=on_restored,
-            on_legacy_import=on_legacy_import,
-            runner=lambda shared_agent: runner(shared_agent, config),
-        )
-        _print_run_completion_summary(result.summary)
-        if result.exit_code:
-            raise typer.Exit(result.exit_code)
-        return result
-    finally:
-        import signal
-
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        mcp_manager.stop_all()
-
-
 def _run_context_kwargs(
     *,
     run_name: Optional[str] = None,
@@ -1069,7 +909,6 @@ def _print_run_completion_summary(summary: dict[str, Any]) -> None:
 
 # 鈹€鈹€ Sub-commands 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-import typer
 
 app = typer.Typer(
     name="vulnclaw",
