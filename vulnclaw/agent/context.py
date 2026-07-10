@@ -22,6 +22,8 @@ from vulnclaw.agent.reasoning_state import ReasoningState
 # ──────────────────────────────────────────────────────────────
 from vulnclaw.config.domain_models import (  # noqa: F401 — re-export
     ConstraintViolationEvent,
+    EvidenceKind,
+    EvidenceRef,
     PentestPhase,
     PHASE_TO_ACTION,
     StepRecord,
@@ -75,6 +77,7 @@ class VulnerabilityStore(BaseModel):
     2. 语义相似度匹配（捕获同一漏洞的不同表述），命中后保留证据更强者
     """
 
+    target: Optional[str] = None
     findings: list[VulnerabilityFinding] = Field(default_factory=list)
     semantic_dedup_threshold: float = Field(
         default=0.75, description="语义去重的相似度阈值（0-1）"
@@ -600,6 +603,7 @@ class SessionState(BaseModel):
             task_constraints=self.task_constraints,
         )
         self._vulnerabilities = VulnerabilityStore(
+            target=self.target,
             findings=self.findings,
             semantic_dedup_threshold=self.semantic_dedup_threshold,
         )
@@ -659,12 +663,35 @@ class SessionState(BaseModel):
         description="信息收集四维模型完成度追踪",
     )
     recon_dimension4_active: bool = Field(default=False, description="维度四（人员信息）是否被激活")
+    # ★ Active skill selection for this turn/child task — structured provenance
+    # source. Stored as a plain dict to avoid importing the resolver here.
+    active_skill_selection: Optional[dict[str, Any]] = Field(
+        default=None, description="Active SkillSelection.to_provenance() for the current turn"
+    )
+    # ★ Run events emitted whenever the active skill selection changes.
+    skill_selection_events: list[dict[str, Any]] = Field(
+        default_factory=list, description="Audit log of skill-selection changes"
+    )
     semantic_dedup_threshold: float = Field(
         default=0.75, description="语义去重的相似度阈值（0-1）"
     )
 
     # ★ 漏洞去重追踪（PrivateAttr）
     _finding_ids_cache: set[str] = PrivateAttr(default_factory=set)
+    _checkpoint_callback: Callable[["SessionState", str], None] | None = PrivateAttr(
+        default=None
+    )
+
+    def set_checkpoint_callback(
+        self, callback: Callable[["SessionState", str], None] | None
+    ) -> None:
+        """Install a persistence callback fired at durable state boundaries."""
+        self._checkpoint_callback = callback
+
+    def _notify_checkpoint(self, reason: str) -> None:
+        if self._checkpoint_callback is None:
+            return
+        self._checkpoint_callback(self, reason)
 
     # ==========================================================================
     # @property 代理（保持向后兼容）
@@ -710,6 +737,10 @@ class SessionState(BaseModel):
         if not finding.finding_id:
             finding.finding_id = finding._generate_finding_id()
 
+        # Tie the finding to the owning target when the caller didn't set one.
+        if not finding.target and self.target:
+            finding.target = self.target
+
         # 第一层：finding_id 精确去重
         if finding.finding_id in self._finding_ids_cache:
             print(f"[DEDUP] 跳过重复漏洞: {finding.title} (ID: {finding.finding_id})")
@@ -735,6 +766,12 @@ class SessionState(BaseModel):
                 else:
                     print(f"[DEDUP-SEM] 跳过语义重复漏洞: {finding.title}")
                 return False
+
+        # 附加 skill 溯源（若未显式提供且当前有活跃选择）。深拷贝以免其中的
+        # references_loaded 列表与 active_skill_selection 共享 —— 否则之后
+        # record_loaded_reference() 会追溯性地修改已记录漏洞的溯源。
+        if finding.skill_provenance is None and self.active_skill_selection is not None:
+            finding.skill_provenance = copy.deepcopy(self.active_skill_selection)
 
         # 添加到追踪集合和列表
         self._finding_ids_cache.add(finding.finding_id)
@@ -899,6 +936,49 @@ class SessionState(BaseModel):
         self.notes.append(note)
         # 同步到子状态
         self._history.notes = self.notes
+
+    def set_active_skill_selection(self, provenance: Optional[dict[str, Any]]) -> bool:
+        """Record the active skill selection; emit a run event when it changes.
+
+        Args:
+            provenance: A ``SkillSelection.to_provenance()`` dict (or None).
+
+        Returns:
+            True if the selection changed from the previous turn.
+        """
+        prev = self.active_skill_selection
+        changed = (prev or {}).get("primary") != (provenance or {}).get("primary") or (
+            (prev or {}).get("supporting") != (provenance or {}).get("supporting")
+        )
+        # Same bundle as last turn: carry over references already loaded under it
+        # so provenance keeps a complete record across turns.
+        if not changed and prev is not None and provenance is not None:
+            loaded = prev.get("references_loaded")
+            if loaded and not provenance.get("references_loaded"):
+                provenance = {**provenance, "references_loaded": list(loaded)}
+        self.active_skill_selection = provenance
+        if changed:
+            event = {
+                "kind": "skill_selection_changed" if provenance is not None else "skill_selection_cleared",
+                "timestamp": datetime.now().isoformat(),
+                "primary": (provenance or {}).get("primary"),
+                "supporting": (provenance or {}).get("supporting", []),
+                "reason": (provenance or {}).get("reason", ""),
+                "confidence": (provenance or {}).get("confidence", 0.0),
+            }
+            self.skill_selection_events.append(event)
+            self.skill_selection_events = self.skill_selection_events[-50:]
+        self._notify_checkpoint("skill_selection_changed")
+        return changed
+
+    def record_loaded_reference(self, skill_name: str, ref_name: str) -> None:
+        """Track a reference loaded under the current skill selection."""
+        if self.active_skill_selection is None:
+            return
+        entry = f"{skill_name}/{ref_name}" if skill_name else ref_name
+        loaded = self.active_skill_selection.setdefault("references_loaded", [])
+        if entry and entry not in loaded:
+            loaded.append(entry)
 
     def add_confirmed_fact(self, fact: str) -> None:
         """添加已确认事实。
