@@ -1069,6 +1069,15 @@ def _print_run_completion_summary(summary: dict[str, Any]) -> None:
 
 # 鈹€鈹€ Sub-commands 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
+import typer
+
+app = typer.Typer(
+    name="vulnclaw",
+    help="VulnClaw - AI-powered penetration testing CLI (run 'vulnclaw tui' for the TUI workbench)",
+    no_args_is_help=False,
+    add_completion=False,
+)
+
 
 @app.command()
 def run(
