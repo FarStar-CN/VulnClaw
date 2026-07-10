@@ -1,5 +1,7 @@
 export type TaskCommand = "run" | "recon" | "scan" | "exploit" | "persistent";
 
+export type TaskStatus = "pending" | "restoring" | "running" | "completed" | "failed" | "stopped";
+
 export interface ConfigView {
   provider: string;
   model: string;
@@ -163,10 +165,19 @@ export interface TaskSummary {
   restored: boolean;
   snapshot_id: string;
   schema_version: number;
+  status: string;
+  exit_code: number;
+  exit_meaning: string;
+  run_name: string;
+  run_dir: string;
+  resume_command: string;
+  artifact_locations: Record<string, string>;
   phase?: string;
   findings_count: number;
   verified_count: number;
   pending_count: number;
+  candidate_count: number;
+  quarantined_count: number;
   executed_steps: number;
   resume_strategy: string;
   resume_reason: string;
@@ -179,7 +190,7 @@ export interface TaskRecord {
   task_id: string;
   command: TaskCommand;
   target: string;
-  status: "pending" | "running" | "completed" | "failed" | "stopped";
+  status: TaskStatus;
   created_at: string;
   started_at?: string;
   completed_at?: string;
