@@ -12,12 +12,16 @@ All functions return a dict with:
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import html
 import json
+import logging
 import re
 import urllib.parse
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # ── Morse Code Tables ────────────────────────────────────────────────
 
@@ -132,7 +136,7 @@ def _base64_decode(input_str: str, **_) -> dict:
             "utf-8", errors="replace"
         )
         return {"success": True, "result": decoded}
-    except Exception as e:
+    except (ValueError, binascii.Error) as e:
         return {"success": False, "result": "", "error": f"Base64 解码失败: {e}"}
 
 
@@ -151,7 +155,7 @@ def _base32_decode(input_str: str, **_) -> dict:
             cleaned += "=" * (8 - missing_padding)
         decoded = base64.b32decode(cleaned).decode("utf-8", errors="replace")
         return {"success": True, "result": decoded}
-    except Exception as e:
+    except (ValueError, binascii.Error) as e:
         return {"success": False, "result": "", "error": f"Base32 解码失败: {e}"}
 
 
@@ -190,7 +194,7 @@ def _base58_decode(input_str: str, **_) -> dict:
         result_bytes = num.to_bytes((num.bit_length() + 7) // 8, "big") if num else b""
         result_bytes = b"\x00" * leading_zeros + result_bytes
         return {"success": True, "result": result_bytes.decode("utf-8", errors="replace")}
-    except Exception as e:
+    except (ValueError, binascii.Error) as e:
         return {"success": False, "result": "", "error": f"Base58 解码失败: {e}"}
 
 

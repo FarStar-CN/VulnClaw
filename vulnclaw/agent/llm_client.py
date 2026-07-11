@@ -5,15 +5,16 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import sys
+import logging
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
 
+logger = logging.getLogger(__name__)
 
-from vulnclaw.agent.token_counter import estimate_tokens, truncate_messages
-from vulnclaw.agent.tool_call_manager import (
+from vulnclaw.agent.token_counter import estimate_tokens, truncate_messages  # noqa: E402
+from vulnclaw.agent.tool_call_manager import (  # noqa: E402
     handle_tool_calls,
     handle_tool_calls_with_results,
 )
@@ -45,7 +46,7 @@ def _fit_context_window(agent: AgentContext, messages: list[dict[str, Any]]) -> 
             f"已截断至约 {estimate_tokens(trimmed)} tokens[/yellow]"
         )
     except Exception:
-        print(f"[!] 上下文截断: {current} → {estimate_tokens(trimmed)} tokens (预算 {budget})")
+        logger.warning("上下文截断: %d → %d tokens (预算 %d)", current, estimate_tokens(trimmed), budget)
     return trimmed
 
 
@@ -147,12 +148,19 @@ def build_chat_completion_kwargs(
 
 
 async def _call_with_persistent_retries(
-    agent: AgentContext, request_fn, stage_label: str
+    agent: AgentContext, request_fn, stage_label: str, max_retries: int = 20
 ) -> tuple[Any, int]:
-    """Keep retrying retriable LLM calls until success or manual interruption.
+    """Keep retrying retriable LLM calls until success, max retries, or manual interruption.
+
+    Args:
+        max_retries: Maximum number of retry attempts before raising RuntimeError.
+                     Default is 20 (at 5s intervals = ~100s total wait).
 
     Returns:
         (response, retry_attempts)
+
+    Raises:
+        RuntimeError: If max_retries is exceeded.
     """
     loop = asyncio.get_running_loop()
     retry_attempts = 0
@@ -160,7 +168,7 @@ async def _call_with_persistent_retries(
     can_rotate = pool_size > 1 and callable(getattr(agent, "rotate_api_key", None))
     keys_tried: set[int] = set()
 
-    while True:
+    while retry_attempts < max_retries:
         try:
             maybe_response = loop.run_in_executor(None, request_fn)
             response = await maybe_response if inspect.isawaitable(maybe_response) else maybe_response
@@ -168,10 +176,9 @@ async def _call_with_persistent_retries(
                 return response, retry_attempts
 
             retry_attempts += 1
-            print(
-                f"[!] {stage_label} LLM API 异常响应，第 {retry_attempts} 次重连尝试中... (5s 后重试)",
-                file=sys.stdout,
-                flush=True,
+            logger.warning(
+                "%s LLM API 异常响应，第 %d 次重连尝试中... (5s 后重试)",
+                stage_label, retry_attempts,
             )
             await asyncio.sleep(5)
         except asyncio.CancelledError:
@@ -190,10 +197,9 @@ async def _call_with_persistent_retries(
                 if len(keys_tried) < pool_size:
                     agent.rotate_api_key()
                     retry_attempts += 1
-                    print(
-                        f"[!] {stage_label} 当前密钥失败 ({exc})，切换到下一个 API 密钥并重试...",
-                        file=sys.stdout,
-                        flush=True,
+                    logger.warning(
+                        "%s 当前密钥失败 (%s)，切换到下一个 API 密钥并重试...",
+                        stage_label, exc,
                     )
                     continue
                 # Every key has now failed in this burst.
@@ -205,10 +211,9 @@ async def _call_with_persistent_retries(
                 keys_tried.clear()
                 agent.rotate_api_key()
                 retry_attempts += 1
-                print(
-                    f"[!] {stage_label} 所有 API 密钥均已限流，第 {retry_attempts} 次重连尝试中... (5s 后重试)",
-                    file=sys.stdout,
-                    flush=True,
+                logger.warning(
+                    "%s 所有 API 密钥均已限流，第 %d 次重连尝试中... (5s 后重试)",
+                    stage_label, retry_attempts,
                 )
                 await asyncio.sleep(5)
                 continue
@@ -217,12 +222,15 @@ async def _call_with_persistent_retries(
                 raise
 
             retry_attempts += 1
-            print(
-                f"[!] {stage_label} LLM 连接异常，第 {retry_attempts} 次重连尝试中... ({exc})",
-                file=sys.stdout,
-                flush=True,
+            logger.warning(
+                "%s LLM 连接异常，第 %d 次重连尝试中... (%s)",
+                stage_label, retry_attempts, exc,
             )
             await asyncio.sleep(5)
+
+    raise RuntimeError(
+        f"{stage_label} LLM 调用失败：已达到最大重试次数 {max_retries}"
+    )
 
 
 def _prepend_retry_notice(text: str, retry_attempts: int) -> str:
@@ -308,9 +316,7 @@ async def call_llm_auto(
         executed_tcs = []
         for tc in tool_results:
             if not isinstance(tc, dict) or "tool_call" not in tc:
-                import sys
-
-                print(f"[!] 跳过异常工具结果: {type(tc).__name__} {str(tc)[:100]}", file=sys.stderr)
+                logger.warning("跳过异常工具结果: %s %s", type(tc).__name__, str(tc)[:100])
                 continue
             executed_tcs.append(tc["tool_call"])
 
@@ -528,12 +534,11 @@ def _assemble_tool_calls(tool_calls_chunks: list[dict]) -> list[Any]:
             tc_data["function"]["arguments"],
         )
         if not _validate_tool_call(candidate):
-            print(
-                f"[!] 丢弃不完整的流式 tool_call: id={tc_data['id']!r} "
-                f"name={tc_data['function']['name']!r} "
-                f"args={tc_data['function']['arguments'][:80]!r}",
-                file=sys.stderr,
-                flush=True,
+            logger.warning(
+                "丢弃不完整的流式 tool_call: id=%r name=%r args=%r",
+                tc_data["id"],
+                tc_data["function"]["name"],
+                tc_data["function"]["arguments"][:80],
             )
             continue
         tool_calls.append(candidate)
