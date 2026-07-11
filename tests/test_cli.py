@@ -123,7 +123,7 @@ class TestCLI:
         monkeypatch.setattr(kb_store, "KB_DIR", tmp_path)
         result = runner.invoke(app, ["kb", "update"])
         assert result.exit_code == 0
-        assert "Knowledge base updated" in result.output or result.output
+        assert "Knowledge base updated" in result.output, f"Expected 'Knowledge base updated' in output: {result.output[:200]}"
         assert (tmp_path / "index.json").exists()
 
     def test_cli_doctor_reports_registered_tools(self, runner):
@@ -269,7 +269,7 @@ class TestCLI:
 
         result = runner.invoke(app, ["report", "https://example.com", "--target"])
         assert result.exit_code == 0
-        assert "Report generated" in result.output or "报告已生成" in result.output or "报告已生成" in result.output or result.output
+        assert "Report generated" in result.output or "报告已生成" in result.output, f"Expected report confirmation in output: {result.output[:200]}"
 
     def test_repl_report_command_uses_current_session_or_target_state(self, runner, monkeypatch):
         import vulnclaw.cli.main as cli_main

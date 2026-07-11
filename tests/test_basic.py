@@ -19,10 +19,6 @@ def test_import_vulnclaw():
     assert vulnclaw.__version__ == expected_version
 
 
-def test_all_submodules_importable():
-    """Test that all major submodules can be imported."""
-
-
 def test_no_import_errors():
     """Verify no module raises on import."""
     import importlib
