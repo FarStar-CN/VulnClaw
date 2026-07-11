@@ -745,7 +745,7 @@ class SessionState(BaseModel):
 
         # 第一层：finding_id 精确去重
         if finding.finding_id in self._finding_ids_cache:
-            print(f"[DEDUP] 跳过重复漏洞: {finding.title} (ID: {finding.finding_id})")
+            logger.debug("跳过重复漏洞: %s (ID: %s)", finding.title, finding.finding_id)
             return False
 
         # 第二层：语义相似度去重
@@ -758,15 +758,16 @@ class SessionState(BaseModel):
             if finding_similarity(finding, existing) >= self.semantic_dedup_threshold:
                 # 命中语义重复：保留证据更强者
                 if _evidence_strength(finding) > _evidence_strength(existing):
-                    print(
-                        f"[DEDUP-SEM] 语义重复，替换为证据更强的漏洞: "
-                        f"{finding.title} 取代 {existing.title}"
+                    logger.debug(
+                        "语义重复，替换为证据更强的漏洞: %s 取代 %s",
+                        finding.title,
+                        existing.title,
                     )
                     self._finding_ids_cache.discard(existing.finding_id)
                     self._finding_ids_cache.add(finding.finding_id)
                     self.findings[idx] = finding
                 else:
-                    print(f"[DEDUP-SEM] 跳过语义重复漏洞: {finding.title}")
+                    logger.debug("跳过语义重复漏洞: %s", finding.title)
                 return False
 
         # 附加 skill 溯源（若未显式提供且当前有活跃选择）。深拷贝以免其中的

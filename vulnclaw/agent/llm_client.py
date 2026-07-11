@@ -6,7 +6,6 @@ import asyncio
 import inspect
 import json
 import logging
-import sys
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -317,9 +316,7 @@ async def call_llm_auto(
         executed_tcs = []
         for tc in tool_results:
             if not isinstance(tc, dict) or "tool_call" not in tc:
-                import sys
-
-                print(f"[!] 跳过异常工具结果: {type(tc).__name__} {str(tc)[:100]}", file=sys.stderr)
+                logger.warning("跳过异常工具结果: %s %s", type(tc).__name__, str(tc)[:100])
                 continue
             executed_tcs.append(tc["tool_call"])
 
@@ -537,12 +534,11 @@ def _assemble_tool_calls(tool_calls_chunks: list[dict]) -> list[Any]:
             tc_data["function"]["arguments"],
         )
         if not _validate_tool_call(candidate):
-            print(
-                f"[!] 丢弃不完整的流式 tool_call: id={tc_data['id']!r} "
-                f"name={tc_data['function']['name']!r} "
-                f"args={tc_data['function']['arguments'][:80]!r}",
-                file=sys.stderr,
-                flush=True,
+            logger.warning(
+                "丢弃不完整的流式 tool_call: id=%r name=%r args=%r",
+                tc_data["id"],
+                tc_data["function"]["name"],
+                tc_data["function"]["arguments"][:80],
             )
             continue
         tool_calls.append(candidate)
