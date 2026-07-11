@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import suppress
 from pathlib import Path
@@ -19,6 +20,8 @@ from .schema import (
     MCPTransportConfig,
     VulnClawConfig,
 )
+
+logger = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────
 
@@ -82,7 +85,7 @@ def load_config() -> VulnClawConfig:
             config = _merge_config(config, raw)
         except (yaml.YAMLError, ValidationError) as e:
             # Log warning but don't crash
-            print(f"[!] Warning: Failed to parse config file {CONFIG_FILE}: {e}")
+            logger.warning("Failed to parse config file %s: %s", CONFIG_FILE, e)
 
     # Overlay from env vars
     config = _overlay_env(config)

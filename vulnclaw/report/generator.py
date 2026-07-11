@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,8 @@ from jinja2 import Template
 # 修改原因: 消除 V2 违规 — 叶子类型已移至 config/domain_models.py。
 from vulnclaw.agent.context import SessionState
 from vulnclaw.config.domain_models import VulnerabilityFinding
+
+logger = logging.getLogger(__name__)
 
 # ── Report Template ─────────────────────────────────────────────────
 
@@ -278,7 +281,7 @@ def generate_report(
     if not llm_attack_summary:
         llm_attack_summary = _generate_attack_summary_from_session(session)
         if llm_attack_summary:
-            print("[*] LLM attack summary generated for report section 4")
+            logger.info("LLM attack summary generated for report section 4")
     filtered_summary = ReportContentFilter.filter(llm_attack_summary) if llm_attack_summary else ""
 
     context = {
@@ -586,7 +589,7 @@ def _generate_attack_summary_from_session(session: SessionState) -> str:
             raw = response.choices[0].message.content or ""
             return strip_think_tags(raw).strip()
     except Exception as exc:
-        print(f"[!] LLM attack summary generation failed: {exc}")
+        logger.warning("LLM attack summary generation failed: %s", exc)
         return ""
     return ""
 
