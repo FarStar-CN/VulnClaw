@@ -147,12 +147,19 @@ def build_chat_completion_kwargs(
 
 
 async def _call_with_persistent_retries(
-    agent: AgentContext, request_fn, stage_label: str
+    agent: AgentContext, request_fn, stage_label: str, max_retries: int = 20
 ) -> tuple[Any, int]:
-    """Keep retrying retriable LLM calls until success or manual interruption.
+    """Keep retrying retriable LLM calls until success, max retries, or manual interruption.
+
+    Args:
+        max_retries: Maximum number of retry attempts before raising RuntimeError.
+                     Default is 20 (at 5s intervals = ~100s total wait).
 
     Returns:
         (response, retry_attempts)
+
+    Raises:
+        RuntimeError: If max_retries is exceeded.
     """
     loop = asyncio.get_running_loop()
     retry_attempts = 0
@@ -160,7 +167,7 @@ async def _call_with_persistent_retries(
     can_rotate = pool_size > 1 and callable(getattr(agent, "rotate_api_key", None))
     keys_tried: set[int] = set()
 
-    while True:
+    while retry_attempts < max_retries:
         try:
             maybe_response = loop.run_in_executor(None, request_fn)
             response = await maybe_response if inspect.isawaitable(maybe_response) else maybe_response
@@ -223,6 +230,11 @@ async def _call_with_persistent_retries(
                 flush=True,
             )
             await asyncio.sleep(5)
+
+    raise RuntimeError(
+        f"{stage_label} LLM 调用失败：已达到最大重试次数 {max_retries}，"
+        f"最后一次错误: {exc if 'exc' in locals() else '响应为空'}"
+    )
 
 
 def _prepend_retry_notice(text: str, retry_attempts: int) -> str:
