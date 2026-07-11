@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import sys
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
@@ -45,7 +48,7 @@ def _fit_context_window(agent: AgentContext, messages: list[dict[str, Any]]) -> 
             f"已截断至约 {estimate_tokens(trimmed)} tokens[/yellow]"
         )
     except Exception:
-        print(f"[!] 上下文截断: {current} → {estimate_tokens(trimmed)} tokens (预算 {budget})")
+        logger.warning("上下文截断: %d → %d tokens (预算 %d)", current, estimate_tokens(trimmed), budget)
     return trimmed
 
 
@@ -175,10 +178,9 @@ async def _call_with_persistent_retries(
                 return response, retry_attempts
 
             retry_attempts += 1
-            print(
-                f"[!] {stage_label} LLM API 异常响应，第 {retry_attempts} 次重连尝试中... (5s 后重试)",
-                file=sys.stdout,
-                flush=True,
+            logger.warning(
+                "%s LLM API 异常响应，第 %d 次重连尝试中... (5s 后重试)",
+                stage_label, retry_attempts,
             )
             await asyncio.sleep(5)
         except asyncio.CancelledError:
@@ -197,10 +199,9 @@ async def _call_with_persistent_retries(
                 if len(keys_tried) < pool_size:
                     agent.rotate_api_key()
                     retry_attempts += 1
-                    print(
-                        f"[!] {stage_label} 当前密钥失败 ({exc})，切换到下一个 API 密钥并重试...",
-                        file=sys.stdout,
-                        flush=True,
+                    logger.warning(
+                        "%s 当前密钥失败 (%s)，切换到下一个 API 密钥并重试...",
+                        stage_label, exc,
                     )
                     continue
                 # Every key has now failed in this burst.
@@ -212,10 +213,9 @@ async def _call_with_persistent_retries(
                 keys_tried.clear()
                 agent.rotate_api_key()
                 retry_attempts += 1
-                print(
-                    f"[!] {stage_label} 所有 API 密钥均已限流，第 {retry_attempts} 次重连尝试中... (5s 后重试)",
-                    file=sys.stdout,
-                    flush=True,
+                logger.warning(
+                    "%s 所有 API 密钥均已限流，第 %d 次重连尝试中... (5s 后重试)",
+                    stage_label, retry_attempts,
                 )
                 await asyncio.sleep(5)
                 continue
@@ -224,10 +224,9 @@ async def _call_with_persistent_retries(
                 raise
 
             retry_attempts += 1
-            print(
-                f"[!] {stage_label} LLM 连接异常，第 {retry_attempts} 次重连尝试中... ({exc})",
-                file=sys.stdout,
-                flush=True,
+            logger.warning(
+                "%s LLM 连接异常，第 %d 次重连尝试中... (%s)",
+                stage_label, retry_attempts, exc,
             )
             await asyncio.sleep(5)
 

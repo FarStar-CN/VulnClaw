@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import sys
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
+
+logger = logging.getLogger(__name__)
 
 
 # Default concurrency cap used when the agent config does not specify one.
@@ -151,7 +154,7 @@ async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str
             "structured_content": structured_content,
         }
     except Exception as e:
-        print(f"[!] 工具执行失败 {func_name}: {e}", file=sys.stderr)
+        logger.error("工具执行失败 %s: %s", func_name, e)
         return None
 
 
