@@ -351,7 +351,7 @@ async def call_llm_auto(
         for tc in executed_tcs:
             try:
                 args_str = str(tc.function.arguments)[:200]
-            except Exception:
+            except (TypeError, ValueError, AttributeError):
                 args_str = "<无法读取>"
             tool_summary_parts.append(f"调用工具: {tc.function.name}({args_str})")
         for tr in tool_results:
@@ -502,7 +502,7 @@ def _build_tool_call(tc_id: str, name: str, arguments: str) -> Any:
             type="function",
             function=Function(name=name, arguments=arguments),
         )
-    except Exception:
+    except (TypeError, ValueError, AttributeError, ImportError):
         func = type("Function", (), {"name": name, "arguments": arguments})()
         return type("ToolCall", (), {"id": tc_id, "type": "function", "function": func})()
 

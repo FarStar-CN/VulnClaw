@@ -174,7 +174,7 @@ def _base58_encode(input_str: str, **_) -> dict:
             else:
                 break
         return {"success": True, "result": result or "1"}
-    except Exception as e:
+    except (ValueError, TypeError) as e:
         return {"success": False, "result": "", "error": f"Base58 编码失败: {e}"}
 
 
@@ -215,7 +215,7 @@ def _hex_decode(input_str: str, **_) -> dict:
         cleaned = cleaned.replace(" ", "")
         decoded = bytes.fromhex(cleaned).decode("utf-8", errors="replace")
         return {"success": True, "result": decoded}
-    except Exception as e:
+    except (ValueError, UnicodeDecodeError) as e:
         return {"success": False, "result": "", "error": f"Hex 解码失败: {e}"}
 
 
@@ -230,7 +230,7 @@ def _url_decode(input_str: str, **_) -> dict:
     try:
         decoded = urllib.parse.unquote(input_str.strip())
         return {"success": True, "result": decoded}
-    except Exception as e:
+    except (ValueError, UnicodeDecodeError) as e:
         return {"success": False, "result": "", "error": f"URL 解码失败: {e}"}
 
 
@@ -245,7 +245,7 @@ def _html_decode(input_str: str, **_) -> dict:
     try:
         decoded = html.unescape(input_str.strip())
         return {"success": True, "result": decoded}
-    except Exception as e:
+    except (ValueError, UnicodeDecodeError) as e:
         return {"success": False, "result": "", "error": f"HTML 解码失败: {e}"}
 
 
@@ -260,7 +260,7 @@ def _unicode_decode(input_str: str, **_) -> dict:
     try:
         decoded = input_str.strip().encode("ascii", errors="ignore").decode("unicode_escape")
         return {"success": True, "result": decoded}
-    except Exception as e:
+    except (UnicodeDecodeError, ValueError) as e:
         return {"success": False, "result": "", "error": f"Unicode 解码失败: {e}"}
 
 
@@ -349,7 +349,7 @@ def _morse_decode(input_str: str, **_) -> dict:
                     result.append("?")
             result.append(" ")
         return {"success": True, "result": "".join(result).strip()}
-    except Exception as e:
+    except (TypeError, ValueError) as e:
         return {"success": False, "result": "", "error": f"Morse 解码失败: {e}"}
 
 
@@ -410,7 +410,7 @@ def _jwt_decode(input_str: str, **_) -> dict:
 
         result = json.dumps({"header": header, "payload": payload}, ensure_ascii=False, indent=2)
         return {"success": True, "result": result}
-    except Exception as e:
+    except (json.JSONDecodeError, ValueError, binascii.Error, UnicodeDecodeError) as e:
         return {"success": False, "result": "", "error": f"JWT 解码失败: {e}"}
 
 
@@ -457,7 +457,7 @@ def _jwt_encode(
             return {"success": False, "result": "", "error": f"暂不支持算法: {algorithm}"}
 
         return {"success": True, "result": f"{signing_input}.{sig_b64}"}
-    except Exception as e:
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
         return {"success": False, "result": "", "error": f"JWT 编码失败: {e}"}
 
 
@@ -492,7 +492,7 @@ def _aes_encrypt(input_str: str, key: str = "", iv: str = "", **_) -> dict:
             "result": "",
             "error": "需要安装 pycryptodome: pip install pycryptodome",
         }
-    except Exception as e:
+    except (ValueError, TypeError, KeyError) as e:
         return {"success": False, "result": "", "error": f"AES 加密失败: {e}"}
 
 
@@ -524,7 +524,7 @@ def _aes_decrypt(input_str: str, key: str = "", iv: str = "", **_) -> dict:
             "result": "",
             "error": "需要安装 pycryptodome: pip install pycryptodome",
         }
-    except Exception as e:
+    except (ValueError, TypeError, KeyError, UnicodeDecodeError) as e:
         return {"success": False, "result": "", "error": f"AES 解密失败: {e}"}
 
 
