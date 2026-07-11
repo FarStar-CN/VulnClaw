@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import os
@@ -63,6 +64,109 @@ BLOCKED_PATTERNS: list[str] = [
     r"open\s*\(\s*['\"].*vulnclaw.*config",
     r"open\s*\(\s*['\"].*\.vulnclaw",
 ]
+
+# ── AST-based sandbox bypass detection ──────────────────────────────
+# Regex alone cannot catch dynamic import/loading patterns.
+# This AST checker identifies:
+#   1. importlib.import_module() / importlib.__import__()
+#   2. exec() / eval() / compile() that could hide code
+#   3. getattr() on builtins or modules to access blocked names
+#   4. __builtins__ direct access
+#   5. Dynamic attribute access on dangerous modules (os, subprocess, etc.)
+
+_DANGEROUS_MODULES = frozenset({
+    "os", "subprocess", "shutil", "sys", "socket",
+    "http", "urllib", "requests", "ftplib", "smtplib",
+    "pathlib", "importlib",
+})
+
+_DANGEROUS_BUILTIN_NAMES = frozenset({
+    "open", "exec", "eval", "compile", "__import__",
+    "getattr", "setattr", "delattr", "globals", "locals",
+    "vars", "dir", "type",
+})
+
+
+def _ast_check_sandbox_bypass(code: str) -> str | None:
+    """AST-based check for sandbox bypass patterns.
+
+    Returns a description string if a bypass is detected, None if safe.
+    Catches patterns that regex-based SAFE_MODE_PATTERNS miss:
+    - importlib.import_module('os')
+    - exec("import os; os.system('id')")
+    - getattr(__builtins__, "open")
+    - getattr(alias, "attr") where alias is a dangerous module
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None  # Syntax errors are caught elsewhere
+
+    # Pass 1: collect import aliases (import socket as s → s = socket)
+    _alias_to_module: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local_name = alias.asname if alias.asname else alias.name
+                _alias_to_module[local_name] = alias.name.split(".")[0]
+
+    def _resolve_name(name: str) -> str | None:
+        """Resolve a name to its real module, checking alias map."""
+        if name in _DANGEROUS_MODULES:
+            return name
+        if name in _alias_to_module:
+            real = _alias_to_module[name]
+            if real in _DANGEROUS_MODULES:
+                return real
+        return None
+
+    for node in ast.walk(tree):
+        # 1. exec() / eval() / compile() — can hide arbitrary code
+        if isinstance(node, ast.Call):
+            func = node.func
+            func_name = ""
+            if isinstance(func, ast.Name):
+                func_name = func.id
+            elif isinstance(func, ast.Attribute):
+                func_name = func.attr
+
+            if func_name in ("exec", "eval", "compile"):
+                return "exec/eval/compile detected (bypasses static analysis)"
+
+            # 2. importlib.import_module() / importlib.__import__()
+            if func_name == "import_module" and isinstance(func, ast.Attribute):
+                if isinstance(func.value, ast.Name) and func.value.id == "importlib":
+                    return "importlib.import_module() detected"
+            if func_name == "__import__":
+                return "__import__() detected"
+
+            # 3. getattr() on builtins or modules
+            if func_name == "getattr" and node.args:
+                first_arg = node.args[0]
+                if isinstance(first_arg, ast.Name):
+                    if first_arg.id in ("__builtins__", "builtins"):
+                        return "getattr on __builtins__ detected"
+                    resolved = _resolve_name(first_arg.id)
+                    if resolved:
+                        return f"getattr on module '{resolved}' detected"
+                if isinstance(first_arg, ast.Attribute):
+                    root = first_arg
+                    while isinstance(root, ast.Attribute):
+                        root = root.value
+                    if isinstance(root, ast.Name):
+                        if root.id in ("__builtins__", "builtins"):
+                            return "getattr on __builtins__ detected"
+                        resolved = _resolve_name(root.id)
+                        if resolved:
+                            return f"getattr on module '{resolved}' detected"
+
+        # 4. __builtins__ direct access
+        if isinstance(node, ast.Attribute) and node.attr == "__builtins__":
+            return "__builtins__ access detected"
+        if isinstance(node, ast.Name) and node.id == "__builtins__":
+            return "__builtins__ access detected"
+
+    return None
 
 RESERVED_IP_RANGES: list[tuple[str, str, str]] = [
     ("198.18.0.0", "198.19.255.255", "RFC 2544 基准测试地址"),
@@ -1017,6 +1121,10 @@ def _validate_python_execute_mode(mode: str, code: str) -> str | None:
     for pattern in patterns:
         if re.search(pattern, code, re.IGNORECASE):
             return pattern
+    # AST-based check for dynamic bypass patterns (importlib, exec, getattr, etc.)
+    ast_result = _ast_check_sandbox_bypass(code)
+    if ast_result:
+        return f"ast:{ast_result}"
     return None
 
 
@@ -1133,6 +1241,19 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
         if mode == "safe":
             return f"[!] safe mode blocked operation: {blocked_pattern}"
         return f"[!] lab mode blocked operation: {blocked_pattern}"
+
+    # AST-based check for dynamic bypass patterns (importlib, exec, getattr, etc.)
+    ast_bypass = _ast_check_sandbox_bypass(code)
+    if ast_bypass:
+        _write_python_audit(
+            agent,
+            purpose=purpose,
+            code=code,
+            mode=mode,
+            outcome="blocked",
+            blocked_reason=f"ast:{ast_bypass}",
+        )
+        return f"[!] Sandbox bypass detected: {ast_bypass}"
 
     max_output_chars = getattr(safety, "python_execute_max_output_chars", 8000)
     tmp_path = ""
