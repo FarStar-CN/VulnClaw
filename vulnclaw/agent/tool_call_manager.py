@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import re
-import sys
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:

@@ -12,8 +12,6 @@ from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
-logger = logging.getLogger(__name__)
-
 from vulnclaw.agent.blackboard import Blackboard
 from vulnclaw.agent.reasoning_state import ReasoningState
 
@@ -36,6 +34,8 @@ from vulnclaw.config.domain_models import (  # noqa: F401 — re-export
     normalize_action_name,
     validate_action_constraints,
 )
+
+logger = logging.getLogger(__name__)
 
 # ==============================================================================
 # [P17 重构] 子状态类定义

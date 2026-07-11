@@ -9,14 +9,13 @@ import logging
 import sys
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
-logger = logging.getLogger(__name__)
-
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
 
+logger = logging.getLogger(__name__)
 
-from vulnclaw.agent.token_counter import estimate_tokens, truncate_messages
-from vulnclaw.agent.tool_call_manager import (
+from vulnclaw.agent.token_counter import estimate_tokens, truncate_messages  # noqa: E402
+from vulnclaw.agent.tool_call_manager import (  # noqa: E402
     handle_tool_calls,
     handle_tool_calls_with_results,
 )
@@ -231,8 +230,7 @@ async def _call_with_persistent_retries(
             await asyncio.sleep(5)
 
     raise RuntimeError(
-        f"{stage_label} LLM 调用失败：已达到最大重试次数 {max_retries}，"
-        f"最后一次错误: {exc if 'exc' in locals() else '响应为空'}"
+        f"{stage_label} LLM 调用失败：已达到最大重试次数 {max_retries}"
     )
 
 
