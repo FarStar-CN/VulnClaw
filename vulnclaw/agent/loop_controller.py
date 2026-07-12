@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections import Counter
 from typing import TYPE_CHECKING, Any, Callable
@@ -267,6 +268,7 @@ async def auto_pentest(
         except Exception as e:
             result.output = f"[!] Round {round_num} 错误: {e}"
             agent.runtime.consecutive_errors += 1
+            await asyncio.sleep(min(2 ** (agent.runtime.consecutive_errors - 1), 8))
             if agent.runtime.consecutive_errors >= 3:
                 result.should_continue = False
             else:
