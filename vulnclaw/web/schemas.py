@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
@@ -11,6 +12,19 @@ from pydantic import BaseModel, Field, field_validator
 TaskCommand = Literal["run", "recon", "scan", "exploit", "persistent"]
 TaskStatus = Literal["pending", "restoring", "running", "completed", "failed", "stopped"]
 PythonExecuteMode = Literal["safe", "lab", "trusted-local"]
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _reject_control_chars(value: str | None) -> str | None:
+    """Reject strings containing control characters (prompt injection guard)."""
+    if value is None:
+        return None
+    if value != value.replace("\n", "").replace("\r", "").replace("\t", "") or _CONTROL_CHARS_RE.search(value):
+        raise ValueError(
+            "input must not contain control characters (newlines, tabs, or other non-printable chars)"
+        )
+    return value
 
 
 def _validate_http_base_url(value: str | None) -> str | None:
@@ -71,6 +85,11 @@ class TaskOptions(BaseModel):
         default=None, max_length=20, description="Explicit block-list for task actions"
     )
 
+    @field_validator("cve", "cmd")
+    @classmethod
+    def validate_injection_fields(cls, value: str | None) -> str | None:
+        return _reject_control_chars(value)
+
 
 class TaskCreateRequest(BaseModel):
     command: TaskCommand
@@ -87,6 +106,19 @@ class TaskCreateRequest(BaseModel):
     force_fresh: bool = False
     no_import: bool = False
     options: TaskOptions = Field(default_factory=TaskOptions)
+
+    @field_validator("target")
+    @classmethod
+    def validate_target(cls, value: str) -> str:
+        return _reject_control_chars(value)  # type: ignore[return-value]
+
+    @field_validator("additional_targets")
+    @classmethod
+    def validate_additional_targets(cls, value: list[str]) -> list[str]:
+        for i, t in enumerate(value):
+            if isinstance(t, str):
+                _reject_control_chars(t)  # type: ignore[return-value]
+        return value
 
 
 class TaskEvent(BaseModel):
