@@ -64,7 +64,7 @@ VulnClaw 自动执行：
 - **AI Agent 核心** — OpenAI 兼容协议 + Tool Calling + 自主渗透循环
 - **结构化推理 + 自适应反思** — 已知事实/约束/攻击链结构化沉淀；失败自动归类并按 L0-L4 渐进升级 payload 绕过策略
 - **漏洞检测插件体系** — 低耦合插件运行时 + 内置只读 Web 插件，结果自动汇入报告链路（`vulnclaw plugins`）
-- **21 个渗透 Skill** — 7 核心 + 14 专项 Skill（含 CTF Web/Crypto/Misc、osint-recon、secknowledge-skill），含 180 个参考文档
+- **23 个渗透 Skill** — 7 核心 + 16 专项 Skill（含 CTF Web/Crypto/Misc、osint-recon、cve-triage、hackerone、secknowledge-skill），含 176 个参考文档
 - **编解码/加解密工具** — 29 种操作（Base64/Hex/URL/AES/JWT/Morse 等），LLM 可精确调用，不再靠猜测
 - **Python 代码执行** — 内置 `python_execute` 工具，适合 payload 构造和响应解析；当前仍属高风险实验能力，不应视为强隔离沙箱
 - **持续性渗透测试** — 周期循环（默认 100 轮/周期 × 10 周期 = 1000 轮），每周期自动生成报告，直到手动终止
@@ -664,23 +664,25 @@ mcp:
 | reporting         | 报告生成流程       |
 | waf-bypass        | WAF 绕过技巧库     |
 
-### 专项 Skill (14)
+### 专项 Skill (16)
 
 | Skill                     | 参考文档数 | 说明                                         |
 | ------------------------- | ---------- | -------------------------------------------- |
-| web-pentest               | 4          | Web 应用渗透                                 |
+| web-pentest               | 3          | Web 应用渗透                                 |
 | android-pentest           | 9          | 安卓应用渗透                                 |
 | client-reverse            | 20         | 客户端逆向分析                               |
-| web-security-advanced     | 34         | Web 安全进阶（注入、绕过、利用链）           |
+| web-security-advanced     | 33         | Web 安全进阶（注入、绕过、利用链）           |
 | ai-mcp-security           | 7          | AI/MCP 安全测试                              |
 | intranet-pentest-advanced | 15         | 内网渗透进阶                                 |
-| pentest-tools             | 18         | 渗透工具速查                                 |
-| rapid-checklist           | 3          | 快速检查清单                                 |
+| pentest-tools             | 16         | 渗透工具速查                                 |
+| rapid-checklist           | 2          | 快速检查清单                                 |
 | crypto-toolkit            | 3          | 编解码/加解密（29 种操作，注册为内置工具）   |
-| **ctf-web**               | 9          | CTF Web 攻击知识库（PHP绕过/RCE/SSTI/反序列化） |
+| **ctf-web**               | 8          | CTF Web 攻击知识库（PHP绕过/RCE/SSTI/反序列化） |
 | **ctf-crypto**            | 6          | CTF 密码学攻击知识库（RSA/AES/ECC/PRNG/格攻击） |
 | **ctf-misc**              | 6          | CTF 杂项知识库（PyJail/BashJail/编码链/VM逆向） |
 | **osint-recon**           | 7          | OSINT 开源情报收集（四维模型：服务器/网站/域名/人员） |
+| **cve-triage**            | 1          | CVE 查询与三级评估（映射服务版本到已知 CVE，按 CVSS/可利用性排序） |
+| **hackerone**             | 1          | HackerOne 赏金 scope-guard（强制 program scope 后逐个移交 pentest-flow） |
 | **secknowledge-skill**    | 39         | Web+AI 安全测试知识库，面向 CTF/SRC/众测场景（WooYun/先知/GAARM/OWASP 方法论） |
 
 Skill 会根据用户输入自动调度，无需手动选择。专项 Skill 含 `references/` 目录下的详细方法论文档，LLM 可通过 `load_skill_reference` 工具按需加载。

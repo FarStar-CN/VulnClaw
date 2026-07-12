@@ -57,7 +57,7 @@ Suitable for authorized pentests, CTF competitions, security training, and red t
 - **MCP Toolchain** — Ships with 11 MCP service configs and 23 tool definitions; `fetch` / `memory` currently run in stable `local` mode, while most other MCP integrations remain preview or placeholder until full session lifecycle management is completed
 - **Native traffic evidence store** — A VulnClaw-owned capture store: in-scope request/response pairs land in an append-only JSONL index plus per-request raw blobs under `evidence/traffic/`. Built-in `traffic_list` / `traffic_view` / `traffic_repeat` / `traffic_sitemap` tools read and replay the store (`traffic_repeat` re-issues with overrides), and a verified finding's report inlines the exact raw request/response that proved it. The mitmproxy proxy and headless Playwright capture backends are optional extras (`pip install vulnclaw[traffic]`), gated behind availability detection; their automatic wiring into the sandbox run loop lands with the sandbox / run-directory PRDs. Burp/chrome-devtools stay optional interactive overlays, normalized into the same store
 - **AI Agent Core** — OpenAI-compatible protocol + Tool Calling + autonomous pentest loop
-- **21 Pentest Skills** — 7 core + 14 specialized skills (incl. CTF Web/Crypto/Misc, osint-recon, secknowledge-skill), 180 reference documents
+- **23 Pentest Skills** — 7 core + 16 specialized skills (incl. CTF Web/Crypto/Misc, osint-recon, cve-triage, hackerone, secknowledge-skill), 176 reference documents
 - **Encode/Decode & Crypto Tools** — 29 operations (Base64/Hex/URL/AES/JWT/Morse etc.), LLM calls them directly, no guessing
 - **Python Code Execution** — Built-in `python_execute` tool for payload crafting and response parsing; currently still a high-risk experimental capability, not a strong isolation sandbox
 - **Persistent Pentesting** — Cyclic runs (100 rounds/cycle × 10 cycles = 1000 rounds), auto-reports every cycle, runs until you stop it
@@ -552,23 +552,25 @@ vulnclaw config provider minimax   # one-command switch
 | reporting          | Report generation                  |
 | waf-bypass        | WAF bypass techniques              |
 
-### Specialized Skills (14)
+### Specialized Skills (16)
 
 | Skill                      | Ref Docs | Description                                          |
 | -------------------------- | -------- | ---------------------------------------------------- |
-| web-pentest                | 4        | Web application pentesting                            |
+| web-pentest                | 3        | Web application pentesting                            |
 | android-pentest            | 9        | Android application pentesting                        |
 | client-reverse            | 20       | Client-side reverse engineering                      |
-| web-security-advanced      | 34       | Advanced web security (injection, bypass, chains)     |
+| web-security-advanced      | 33       | Advanced web security (injection, bypass, chains)     |
 | ai-mcp-security            | 7        | AI/MCP security testing                              |
 | intranet-pentest-advanced  | 15       | Advanced internal network pentesting                  |
-| pentest-tools              | 18       | Pentest tool quick reference                         |
-| rapid-checklist            | 3        | Rapid validation checklists                          |
+| pentest-tools              | 16       | Pentest tool quick reference                         |
+| rapid-checklist            | 2        | Rapid validation checklists                          |
 | crypto-toolkit             | 3        | Encode/decode/crypto (29 ops, registered as built-in)|
-| ctf-web                   | 9        | CTF Web attacks (PHP bypass/RCE/SSTI/deserialization)|
+| ctf-web                   | 8        | CTF Web attacks (PHP bypass/RCE/SSTI/deserialization)|
 | ctf-crypto                | 6        | CTF cryptography (RSA/AES/ECC/PRNG/lattice attacks)  |
 | ctf-misc                  | 6        | CTF Misc (PyJail/BashJail/encoding chains/VM RE)    |
 | osint-recon               | 7        | OSINT four-dimension model (server/web/domain/person)|
+| cve-triage                | 1        | CVE lookup and triage (map service versions to CVEs, rank by CVSS/exploitability) |
+| hackerone                 | 1        | HackerOne bounty scope-guard (enforce program scope, then hand each in-scope asset to pentest-flow) |
 | secknowledge-skill        | 39       | Web+AI security testing knowledge base for CTF/SRC/bug bounty workflows |
 
 Skills are auto-dispatched based on user input — no manual selection needed. Specialized skills include detailed methodology documents in `references/`, loadable via the `load_skill_reference` tool.

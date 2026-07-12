@@ -99,6 +99,7 @@
 
   "status.idle": "Idle",
   "status.queued": "Queued",
+  "status.restoring": "Restoring",
   "status.running": "Running",
   "status.completed": "Completed",
   "status.failed": "Failed",

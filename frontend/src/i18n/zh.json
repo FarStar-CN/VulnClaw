@@ -99,6 +99,7 @@
 
   "status.idle": "空闲",
   "status.queued": "排队中",
+  "status.restoring": "恢复中",
   "status.running": "运行中",
   "status.completed": "已完成",
   "status.failed": "失败",

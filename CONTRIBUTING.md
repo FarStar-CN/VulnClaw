@@ -32,7 +32,23 @@ VulnClaw/
 |   |   |-- ctf_mode.py          # CTF flag 识别与验证
 |   |   |-- skill_context.py     # Skill 上下文选择
 |   |   |-- kb_context.py        # 知识库上下文注入
-|   |   `-- think_filter.py      # think 标签显示与隐藏
+|   |   |-- think_filter.py      # think 标签显示与隐藏
+|   |   |-- agent_context.py     # AgentCore 与 helper 之间的 typed seam
+|   |   |-- agent_graph.py       # 可持久化、可恢复的多 Agent 生命周期图
+|   |   |-- blackboard.py        # 黑板图模型（Fact/Intent 双原语状态空间搜索）
+|   |   |-- solver.py            # 目标驱动的 OODA 求解循环
+|   |   |-- parallel_agents.py   # 有界并行多 Agent 协调
+|   |   |-- team.py              # 角色化团队规划与自适应委派
+|   |   |-- roles.py             # 角色注册与硬工具白名单
+|   |   |-- reflexion.py         # 失败自省与自我纠正
+|   |   |-- reasoning_state.py   # 结构化推理状态
+|   |   |-- constraint_policy.py # 任务/阶段/工具约束策略裁决
+|   |   |-- finding_similarity.py # finding 语义相似度去重
+|   |   |-- memory.py            # 短/中/长期 Agent 记忆管理
+|   |   |-- network_scan.py      # 网络扫描规划与薄弱环节分析
+|   |   |-- recon_tools.py       # 信息收集工具（空间测绘/子域/JS/目录枚举）
+|   |   |-- token_counter.py     # token 估算与滑动窗口截断
+|   |   `-- chatgpt_proxy.py     # ChatGPT 后端 OpenAI 兼容代理（Responses API）
 |   |-- cli/
 |   |   |-- main.py              # CLI 命令、doctor、web 启动、target-state CLI
 |   |   |-- tui.py               # TUI 数据类、仪表盘渲染、配色常量

@@ -191,6 +191,26 @@ REPORT_TEMPLATE = """\
 """
 
 
+def _severity_count_context(verified_findings: list[VulnerabilityFinding]) -> dict[str, int]:
+    """Tally verified findings by severity into report context keys.
+
+    Unknown severities fall back to Medium; Info rolls up into the Low bucket.
+    """
+    counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
+    for finding in verified_findings:
+        sev = finding.severity
+        if sev in counts:
+            counts[sev] += 1
+        else:
+            counts["Medium"] += 1
+    return {
+        "critical_count": counts["Critical"],
+        "high_count": counts["High"],
+        "medium_count": counts["Medium"],
+        "low_count": counts["Low"] + counts["Info"],
+    }
+
+
 def generate_report(
     session: SessionState,
     output_path: Optional[str] = None,
@@ -223,14 +243,6 @@ def generate_report(
         if hasattr(session, "get_manual_review_findings")
         else []
     )
-
-    severity_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
-    for finding in verified_findings:
-        sev = finding.severity
-        if sev in severity_counts:
-            severity_counts[sev] += 1
-        else:
-            severity_counts["Medium"] += 1
 
     seen_vuln_types = set()
     recommendations = []
@@ -274,10 +286,7 @@ def generate_report(
         "started_at": session.started_at,
         "generated_at": datetime.now().isoformat(),
         "version": __version__,
-        "critical_count": severity_counts["Critical"],
-        "high_count": severity_counts["High"],
-        "medium_count": severity_counts["Medium"],
-        "low_count": severity_counts["Low"] + severity_counts["Info"],
+        **_severity_count_context(verified_findings),
         "task_constraints_summary": _format_task_constraints_summary(session),
         "attack_surface_summary": _summarize_attack_surface(session),
         "constraint_violations": list(getattr(session, "constraint_violations", [])),
@@ -642,15 +651,6 @@ def generate_persistent_cycle_report(
         else []
     )
 
-    # Count verified findings by severity only (pending doesn't count as real result)
-    severity_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
-    for finding in verified_findings:
-        sev = finding.severity
-        if sev in severity_counts:
-            severity_counts[sev] += 1
-        else:
-            severity_counts["Medium"] += 1
-
     # ★ 本周期新增已验证 findings（只统计 verified）
     if prev_verified_ids is not None:
         # 按 finding_id 身份判定本周期新验证的漏洞，避免用"全部 findings 增量"
@@ -715,10 +715,7 @@ def generate_persistent_cycle_report(
         "version": __version__,
         "cycle_findings": cycle_findings,
         "all_findings": all_findings,  # ★ 包含所有 findings（包括 pending）
-        "critical_count": severity_counts["Critical"],
-        "high_count": severity_counts["High"],
-        "medium_count": severity_counts["Medium"],
-        "low_count": severity_counts["Low"] + severity_counts["Info"],
+        **_severity_count_context(verified_findings),
         "recent_steps": recent_steps,
         "recommendations": recommendations,
         "manual_review_count": len(manual_review_findings),
