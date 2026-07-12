@@ -207,7 +207,7 @@ def _completion_is_grounded(goal: str, evidence: str) -> tuple[bool, str]:
     return False, "目标要求 flag，但任何真实工具输出中都没有出现 flag，判定为未验证/疑似幻觉"
 
 
-def _extract_json(text: str) -> Optional[dict]:
+def extract_json(text: str) -> Optional[dict]:
     """从 LLM 回复中稳健地抽取一个 JSON 对象。"""
     if not text:
         return None
@@ -243,7 +243,7 @@ def _extract_json(text: str) -> Optional[dict]:
     return None
 
 
-async def _structured_call(agent: AgentContext, prompt: str, *, max_tokens: int = 900) -> str:
+async def structured_call(agent: AgentContext, prompt: str, *, max_tokens: int = 900) -> str:
     """无工具的结构化 LLM 调用（用于 Reason / Conclude）。"""
     client = agent._get_client()
     messages = [{"role": "user", "content": prompt}]
@@ -474,8 +474,8 @@ def _add_fallback_recovery_intents(board: Blackboard, max_intents: int) -> int:
 
 
 async def reason_step(agent: AgentContext, board: Blackboard, max_intents: int) -> dict:
-    raw = await _structured_call(agent, _reason_prompt(board, max_intents), max_tokens=1200)
-    parsed = _extract_json(raw)
+    raw = await structured_call(agent, _reason_prompt(board, max_intents), max_tokens=1200)
+    parsed = extract_json(raw)
     return parsed or {}
 
 
@@ -485,10 +485,10 @@ async def frontier_recovery_step(
     max_intents: int,
     streak: int,
 ) -> dict:
-    raw = await _structured_call(
+    raw = await structured_call(
         agent, _frontier_recovery_prompt(board, max_intents, streak), max_tokens=1200
     )
-    parsed = _extract_json(raw)
+    parsed = extract_json(raw)
     return parsed or {}
 
 
@@ -553,10 +553,10 @@ async def explore_step(
     # 无论 explore 如何结束（轮数耗尽/advance/dead-end/空转），都进入 conclude 阶段。
     # conclude 基于真实工具输出总结，偏向保留有价值的发现。
     intent_evidence = "\n".join(evidence_buffer[evidence_start:])[-6000:]
-    raw = await _structured_call(
+    raw = await structured_call(
         agent, _conclude_prompt(board, intent, intent_evidence), max_tokens=600
     )
-    parsed = _extract_json(raw) or {}
+    parsed = extract_json(raw) or {}
     advanced = bool(parsed.get("advanced"))
     fact = str(parsed.get("fact", "")).strip()
     if not fact:
@@ -933,3 +933,8 @@ async def _explore_batch(
         else:
             results.append(r)
     return results
+
+
+# Backward-compatible aliases for old private names.
+_extract_json = extract_json
+_structured_call = structured_call

@@ -86,7 +86,7 @@ def validate_plan(raw: TeamPlan | dict[str, Any], *, fallback_goal: str) -> Team
 
 async def make_team_plan(agent: Any, origin: str, goal: str, facts: list[str]) -> TeamPlan:
     """Ask the Adviser for a structured team plan."""
-    from vulnclaw.agent.solver import _extract_json, _structured_call
+    from vulnclaw.agent.solver import extract_json, structured_call
 
     if not hasattr(agent, "_get_client"):
         return _fallback_plan(goal)
@@ -105,12 +105,12 @@ async def make_team_plan(agent: Any, origin: str, goal: str, facts: list[str]) -
     agent.active_role = "adviser"
     try:
         try:
-            raw = await _structured_call(agent, prompt, max_tokens=1200)
+            raw = await structured_call(agent, prompt, max_tokens=1200)
         except Exception:
             return _fallback_plan(goal)
     finally:
         agent.active_role = previous_role
-    return validate_plan(_extract_json(raw) or {}, fallback_goal=goal)
+    return validate_plan(extract_json(raw) or {}, fallback_goal=goal)
 
 
 async def ask_adviser(
@@ -121,7 +121,7 @@ async def ask_adviser(
     step_result: Any,
 ) -> TeamDecision:
     """Ask the Adviser whether to continue, re-plan, or stop after a step."""
-    from vulnclaw.agent.solver import _extract_json, _structured_call
+    from vulnclaw.agent.solver import extract_json, structured_call
 
     if not hasattr(agent, "_get_client"):
         return TeamDecision(action="continue", reason="no adviser LLM client available")
@@ -142,12 +142,12 @@ async def ask_adviser(
     agent.active_role = "adviser"
     try:
         try:
-            raw = await _structured_call(agent, prompt, max_tokens=600)
+            raw = await structured_call(agent, prompt, max_tokens=600)
         except Exception:
             return TeamDecision(action="continue", reason="adviser structured call failed")
     finally:
         agent.active_role = previous_role
-    return _coerce_decision(_extract_json(raw) or {})
+    return _coerce_decision(extract_json(raw) or {})
 
 
 async def run_team_pentest(
