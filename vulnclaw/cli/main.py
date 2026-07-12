@@ -3182,6 +3182,19 @@ def web(
         raise typer.Exit(1)
 
     from vulnclaw.web.app import create_app
+    from vulnclaw.web.auth import generate_token
+
+    token = generate_token()
+    if allow_remote:
+        console.print(
+            Panel(
+                f"Token: [bold]{token}[/]\n\n"
+                "Use this token in the Authorization header:\n"
+                f"[dim]Authorization: Bearer {token}[/]",
+                title="Web UI Auth Token",
+                border_style="yellow",
+            )
+        )
 
     uvicorn.run(create_app(), host=host, port=port, log_level="info")
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 
+from vulnclaw.web.auth import AuthMiddleware
 from vulnclaw.web.schemas import (
     ConfigUpdateRequest,
     ProviderModelsRequest,
@@ -100,6 +101,7 @@ def create_app():
 
     app = FastAPI(title="VulnClaw Web UI", version="0.3.3")
     app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(AuthMiddleware)
 
     @app.get("/api/health")
     async def health():
