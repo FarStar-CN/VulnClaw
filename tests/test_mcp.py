@@ -213,7 +213,7 @@ class TestMCPLifecycleManager:
         manager = MCPLifecycleManager(config)
         started = manager.start_enabled_servers()
         # At least fetch and memory should be registered
-        assert started >= 0  # May or may not actually start depending on env
+        assert started >= 0, f"Expected non-negative server count, got {started}"
 
     def test_get_tool_schemas(self):
         from vulnclaw.config.schema import VulnClawConfig

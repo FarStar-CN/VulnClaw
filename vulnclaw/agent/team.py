@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
 from vulnclaw.agent.parallel_agents import merge_session_state
 from vulnclaw.agent.roles import ROLE_REGISTRY, get_role, tool_allowed_for_role
+
+logger = logging.getLogger(__name__)
 
 TeamRole = Literal["adviser", "researcher", "developer", "executor"]
 TeamDecisionAction = Literal["continue", "replan", "stop"]
@@ -205,8 +208,24 @@ async def run_team_pentest(
                         on_event=on_event,
                     )
                     for idx in wave
-                )
+                ),
+                return_exceptions=True,
             )
+            # Handle exceptions from failed steps
+            for i, step_result in enumerate(step_results):
+                if isinstance(step_result, Exception):
+                    logger.error(
+                        "Team step %d failed with exception: %s",
+                        wave[i],
+                        step_result,
+                    )
+                    # Create a minimal error result so the wave can continue
+                    step_results[i] = {
+                        "completed": False,
+                        "reason": f"Step failed: {step_result}",
+                        "steps": 0,
+                        "facts": 0,
+                    }
             result.worker_results.extend(step_results)
             remaining_steps -= sum(_steps_used(step_result, step_budget) for step_result in step_results)
 
