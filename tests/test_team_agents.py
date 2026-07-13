@@ -131,7 +131,7 @@ async def test_make_team_plan_uses_adviser_role_and_json_extraction(monkeypatch)
         ]}
         """
 
-    monkeypatch.setattr(solver, "_structured_call", fake_structured_call)
+    monkeypatch.setattr(solver, "structured_call", fake_structured_call)
 
     class PlannerAgent(FakeAgent):
         def _get_client(self):

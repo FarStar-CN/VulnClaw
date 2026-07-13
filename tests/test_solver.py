@@ -39,9 +39,9 @@ def test_flag_evidence_helpers():
 
 
 def test_extract_json_handles_fences_and_noise():
-    assert solver._extract_json('```json\n{"complete": "ok"}\n```') == {"complete": "ok"}
-    assert solver._extract_json('prefix {"intents": []} suffix') == {"intents": []}
-    assert solver._extract_json("not json at all") is None
+    assert solver.extract_json('```json\n{"complete": "ok"}\n```') == {"complete": "ok"}
+    assert solver.extract_json('prefix {"intents": []} suffix') == {"intents": []}
+    assert solver.extract_json("not json at all") is None
 
 
 def test_reason_prompt_requires_frontier_recovery_without_open_intents():
