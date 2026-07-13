@@ -1272,7 +1272,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
             tmp_path = f.name
 
         base_env = {"PYTHONIOENCODING": "utf-8"}
-        env = {**os.environ, **base_env} if mode == "trusted-local" else base_env
+        env = {**{k: v for k, v in os.environ.items() if not k.startswith("VULNCLAW_")}, **base_env} if mode == "trusted-local" else base_env
 
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
