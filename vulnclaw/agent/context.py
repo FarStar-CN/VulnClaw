@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import re
@@ -680,6 +681,7 @@ class SessionState(BaseModel):
 
     # ★ 漏洞去重追踪（PrivateAttr）
     _finding_ids_cache: set[str] = PrivateAttr(default_factory=set)
+    _content_hash: str = PrivateAttr(default="")
     _checkpoint_callback: Callable[["SessionState", str], None] | None = PrivateAttr(
         default=None
     )
@@ -1047,6 +1049,7 @@ class SessionState(BaseModel):
 
         [P18 修改] 确保 executed_steps 被序列化到 JSON 中，
         保持向后兼容性。
+        [Perf] 对比 MD5 内容哈希，跳过未变更的写入。
         """
         if path is None:
             from vulnclaw.config.settings import SESSIONS_DIR
@@ -1059,8 +1062,15 @@ class SessionState(BaseModel):
         # [P18 兼容] 获取序列化数据并添加 executed_steps
         data = self.model_dump(mode="json")
         data["executed_steps"] = self.executed_steps
+        content = json.dumps(data, ensure_ascii=False, indent=2)
+
+        content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+        if content_hash == self._content_hash:
+            return path
+        self._content_hash = content_hash
+
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.write(content)
         return path
 
     @classmethod
