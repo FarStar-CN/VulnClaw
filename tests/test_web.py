@@ -1239,9 +1239,12 @@ class TestWebApp:
 
     def test_web_target_preview_and_diff_endpoints(self, monkeypatch):
         import vulnclaw.web.app as web_app
+        import vulnclaw.web.auth as web_auth
 
         if not web_app.FASTAPI_AVAILABLE:
             pytest.skip("FastAPI is not installed in this environment")
+
+        monkeypatch.setattr(web_auth, "verify_token", lambda _token: True)
 
         monkeypatch.setattr(
             web_app,
@@ -1269,11 +1272,16 @@ class TestWebApp:
 
         app = web_app.create_app()
         client = pytest.importorskip("fastapi.testclient").TestClient(app)
+        headers = {"Authorization": "Bearer test-token"}
 
-        preview = client.get("/api/target-preview/example.com")
+        preview = client.get("/api/target-preview/example.com", headers=headers)
         assert preview.status_code == 200
         assert preview.json()["schema_version"] == 2
 
-        diff = client.get("/api/target-diff/example.com", params={"from_snapshot_id": "snap_a"})
+        diff = client.get(
+            "/api/target-diff/example.com",
+            params={"from_snapshot_id": "snap_a"},
+            headers=headers,
+        )
         assert diff.status_code == 200
         assert diff.json()["from_snapshot_id"] == "snap_a"
