@@ -1214,6 +1214,9 @@ class DashboardScreen(Screen):
                 self._s["_prompt"] = None
                 self._set_bar("")
                 cb(True)
+                # [修改] 2026-07-17 - 确认回调可能异步请求 launch (deep/continuous /run), 在此消费
+                if self._consume_launch_action():
+                    return
             elif text.lower() in ("n", "no"):
                 self._s["_prompt"] = None
                 self._set_bar("")
@@ -1310,7 +1313,21 @@ class DashboardScreen(Screen):
 
         return "\n".join(lines)
 
+    def _consume_launch_action(self) -> bool:
+        # [新增] 2026-07-17 - 修复 deep/continuous 模式 /run 确认后不启动的问题:
+        # 确认弹窗回调是异步执行的, 此时 _dispatch 早已返回 None,
+        # on_input_submitted 永远看不到 session["_action"] == "launch",
+        # 因此必须在弹窗/提示收尾处消费它并启动执行
+        if self._s.get("_action") != "launch":
+            return False
+        self._s["_action"] = None
+        self._s["_launch"] = False
+        self._start_execution()
+        return True
+
     def _post_popup_refresh(self) -> None:
+        if self._consume_launch_action():
+            return
         # If language was switched via popup, refresh dashboard text immediately
         # then recompose the whole UI for full hot-reload (commit 201e8ec pattern).
         if self._s.pop("_needs_recompose", False):
