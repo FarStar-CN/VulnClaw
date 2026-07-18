@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -12,14 +13,18 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
 
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
+import httpx
+
+from vulnclaw.agent.agent_state import clip_text, one_line
 from vulnclaw.agent.constraint_policy import validate_tool_action
 from vulnclaw.agent.network_scan import (
     attach_network_scan_to_session,
@@ -34,6 +39,7 @@ from vulnclaw.agent.network_scan import (
     without_privileged_nmap_args,
 )
 from vulnclaw.agent.roles import role_tool_violation, tool_allowed_for_role
+from vulnclaw.agent.tool_result_overrides import set_raw_tool_output_override
 
 # 修改者: Nyaecho
 # 修改时间: 2026-07-08
@@ -254,6 +260,26 @@ def enforce_traffic_repeat_constraints(
     return None
 
 
+def _agent_state_for_tool(agent: AgentContext) -> Any:
+    state = getattr(getattr(agent, "context", None), "state", None)
+    return getattr(state, "agent_state", None)
+
+
+def execute_evidence_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
+    agent_state = _agent_state_for_tool(agent)
+    if agent_state is None:
+        return "[!] AgentState is not available"
+    if tool_name == "evidence_list":
+        return agent_state.format_evidence_list(limit=int(args.get("limit", 20) or 20))
+    if tool_name == "evidence_view":
+        return agent_state.format_evidence_view(
+            str(args.get("evidence_id", "") or ""),
+            offset=int(args.get("offset", 0) or 0),
+            limit=int(args.get("limit", 12000) or 12000),
+        )
+    return f"[!] Unknown evidence tool: {tool_name}"
+
+
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
     """Execute a tool call via MCP manager or built-in tools."""
     violation = role_tool_violation(getattr(agent, "active_role", None), tool_name)
@@ -293,6 +319,12 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
                 return violation
         # traffic_repeat issues a real network request; keep the loop responsive.
         return await asyncio.to_thread(dispatch_traffic_tool, store, tool_name, args)
+
+    if tool_name in {"evidence_list", "evidence_view"}:
+        return execute_evidence_tool(agent, tool_name, args)
+
+    if tool_name == "http_probe_batch":
+        return await execute_http_probe_batch(agent, args)
 
     if tool_name == "python_execute":
         return await execute_python(agent, args)
@@ -511,13 +543,138 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
         {
             "type": "function",
             "function": {
+                "name": "evidence_list",
+                "description": (
+                    "List raw evidence records saved from prior tool calls. Use this when you need "
+                    "to orient yourself or find an evidence id for a previous large output."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum recent evidence records to list (default 20).",
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "evidence_view",
+                "description": (
+                    "View raw saved evidence by id. Use offset/limit only for missing chunks of "
+                    "large output; do not reread the same id/range. Redundant ranges may be "
+                    "suppressed to prevent evidence-reading loops."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Evidence id from evidence_list or a prior tool result, e.g. e001.",
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Character offset for paging through raw output (default 0).",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum characters to return, capped internally (default 12000).",
+                        },
+                    },
+                    "required": ["evidence_id"],
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "http_probe_batch",
+                "description": (
+                    "Batch HTTP probe tool for comparing many URL/parameter/header/body variants "
+                    "in one call. Use it when repeated fetch/python_execute calls would only differ "
+                    "by payload, query params, raw URL encoding, headers, or POST body. It returns "
+                    "status/length/hash/title/body signals, full response bodies and same-body groups."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Optional base URL used to resolve relative request urls.",
+                        },
+                        "requests": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "method": {
+                                        "type": "string",
+                                        "description": "GET/POST/HEAD/OPTIONS; default GET.",
+                                    },
+                                    "url": {
+                                        "type": "string",
+                                        "description": "Full or relative URL. Params are encoded via params.",
+                                    },
+                                    "raw_url": {
+                                        "type": "string",
+                                        "description": "Full or relative URL sent exactly as supplied; params is ignored.",
+                                    },
+                                    "params": {
+                                        "type": "object",
+                                        "description": "Query parameters for url mode.",
+                                    },
+                                    "headers": {"type": "object", "description": "Per-request headers."},
+                                    "cookies": {"type": "object", "description": "Per-request cookies."},
+                                    "data": {
+                                        "description": "Form body or raw body for POST/OPTIONS probes."
+                                    },
+                                    "json": {"description": "JSON body for POST/OPTIONS probes."},
+                                    "label": {"type": "string", "description": "Short label for the variant."},
+                                },
+                            },
+                            "description": "Probe variants, max 30 per call.",
+                        },
+                        "timeout": {"type": "number", "description": "Per-request timeout seconds, 1-30."},
+                        "follow_redirects": {
+                            "type": "boolean",
+                            "description": "Whether to follow redirects; default true.",
+                        },
+                        "verify_tls": {
+                            "type": "boolean",
+                            "description": "Verify TLS certificates; default true.",
+                        },
+                        "max_body_chars": {
+                            "type": "integer",
+                            "description": "Optional max body chars per response; omitted or 0 returns full bodies.",
+                        },
+                    },
+                    "required": ["requests"],
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
                 "name": "python_execute",
                 "description": (
                     "执行 Python 代码片段。用于：构造复杂 HTTP 请求并解析响应、"
                     "做编码转换和数据处理、批量测试不同 payload、比较响应差异、"
                     "执行数学计算等。代码在受限环境中执行，超时 30 秒。"
                     "预装库：requests, beautifulsoup4, pycryptodome, base64, json, re 等。"
-                    "重要：构造 HTTP 请求时请使用此工具而非猜测响应内容。"
+                    "普通 HTTP/HTTPS 请求优先使用 fetch 或 http_probe_batch，避免用 Python 手写请求浪费上下文；"
+                    "只有需要复杂解析、生成 payload 或批量逻辑时再使用此工具。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -583,14 +740,14 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
             "function": {
                 "name": "nmap_scan",
                 "description": (
-                    "nmap 网络端口扫描工具。信息收集时用于发现目标开放端口、服务版本和操作系统指纹。\n"
+                    "nmap 网络端口扫描工具。适合在端口、服务版本或网络暴露面会影响下一步判断时使用。\n"
                     "用法示例：\n"
                     "  扫描常见端口: scan_type=top_ports, target=1.2.3.4\n"
                     "  SYN扫描: scan_type=syn, target=1.2.3.4（需要管理员权限）\n"
                     "  服务版本检测: scan_type=service, target=1.2.3.4\n"
                     "  漏洞扫描: scan_type=vuln, target=1.2.3.4\n"
                     "  全量扫描: scan_type=full, target=1.2.3.4\n"
-                    "优先使用 nmap_scan 而非 python_execute 构造 socket 扫描，nmap 更专业更准确。"
+                    "如果只需验证一个具体 HTTP/Web 行为，可以选择其他更轻量工具。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -690,7 +847,7 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
                 "name": "space_search",
                 "description": (
                     "空间测绘资产搜索（FOFA/Hunter/Quake/Shodan/ZoomEye/0.zone 零零信安）。"
-                    "信息收集阶段用于被动发现目标资产、IP、端口、子域、标题、组件指纹，不直接接触目标。"
+                    "可在需要被动发现目标资产、IP、端口、子域、标题或组件指纹时使用，不直接接触目标。"
                     "给 domain 自动按各引擎语法构造 domain 查询；也可传完整 query 语法。"
                     "engine=all 时并发查询所有已配置 key 的引擎。"
                 ),
@@ -723,7 +880,7 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
                 "name": "subdomain_enum",
                 "description": (
                     "子域名枚举。先用已配置的空间测绘引擎被动聚合，再用内置小字典做 DNS 解析爆破，"
-                    "返回去重后的存活子域名列表。优先于 python_execute 自己写爆破。"
+                    "返回去重后的存活子域名列表；是否需要枚举由模型根据当前任务判断。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -749,7 +906,7 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
                     "JS 信息收集（参考 URLFinder）。抓取目标页面及其引用的全部 .js 文件，"
                     "提取 API 接口/路径、关联域名、绝对 URL，以及疑似硬编码密钥（AK/SK、token、JWT、私钥等）。"
                     "默认 auto_probe=true：自动对收集到的同源接口逐个做未授权访问探测（仅安全 GET，跳过破坏性接口）。"
-                    "信息收集阶段优先调用，用真实提取的端点反哺后续测试，而非凭空猜接口。"
+                    "适合在页面脚本可能包含端点、路径或硬编码线索时按需调用。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -1103,6 +1260,272 @@ def parse_nmap_xml(xml_output: str, target: str) -> str:
     return "\n".join(lines) or f"nmap 扫描完成（无输出）: {target}"
 
 
+_HTTP_PROBE_ALLOWED_METHODS = {"GET", "POST", "HEAD", "OPTIONS"}
+_HTTP_PROBE_MAX_REQUESTS = 30
+_HTTP_PROBE_DEFAULT_TIMEOUT = 10.0
+_HTTP_PROBE_DEFAULT_BODY_CHARS_LIMIT = 0
+
+
+async def execute_http_probe_batch(agent: AgentContext, args: dict[str, Any]) -> str:
+    """Run HTTP probes for URL/param/header/body variants."""
+
+    specs = args.get("requests", [])
+    if not isinstance(specs, list) or not specs:
+        return "[!] http_probe_batch requires a non-empty requests array"
+    specs = specs[:_HTTP_PROBE_MAX_REQUESTS]
+
+    base_url = str(args.get("base_url", "") or "").strip()
+    timeout = _bounded_float(args.get("timeout", _HTTP_PROBE_DEFAULT_TIMEOUT), 1.0, 30.0)
+    follow_redirects = bool(args.get("follow_redirects", True))
+    verify_tls = bool(args.get("verify_tls", True))
+    max_body_chars = _coerce_nonnegative_int(
+        args.get("max_body_chars"),
+        default=_HTTP_PROBE_DEFAULT_BODY_CHARS_LIMIT,
+    )
+
+    prepared: list[dict[str, Any]] = []
+    for index, raw_spec in enumerate(specs, start=1):
+        if not isinstance(raw_spec, dict):
+            prepared.append({"index": index, "error": "request spec must be an object"})
+            continue
+        prepared.append(_prepare_http_probe_request(agent, base_url, index, raw_spec))
+
+    def _run() -> str:
+        results: list[dict[str, Any]] = []
+        with httpx.Client(
+            follow_redirects=follow_redirects,
+            timeout=timeout,
+            verify=verify_tls,
+            headers={"User-Agent": "VulnClaw-http_probe_batch/1.0"},
+        ) as client:
+            for item in prepared:
+                if item.get("error"):
+                    results.append(item)
+                    continue
+                results.append(_execute_one_http_probe(client, item, max_body_chars))
+        return _format_http_probe_batch(results)
+
+    return await asyncio.to_thread(_run)
+
+
+def _bounded_float(value: Any, lower: float, upper: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return lower
+    return max(lower, min(parsed, upper))
+
+
+def _coerce_nonnegative_int(value: Any, *, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
+
+
+def _prepare_http_probe_request(
+    agent: AgentContext,
+    base_url: str,
+    index: int,
+    spec: dict[str, Any],
+) -> dict[str, Any]:
+    method = str(spec.get("method", "GET") or "GET").upper()
+    label = str(spec.get("label", "") or "")
+    if method not in _HTTP_PROBE_ALLOWED_METHODS:
+        return {"index": index, "label": label, "error": f"method {method} is not allowed"}
+
+    uses_raw_url = bool(spec.get("raw_url"))
+    requested_url = str(spec.get("raw_url") or spec.get("url") or base_url or "").strip()
+    if not requested_url:
+        return {"index": index, "label": label, "error": "missing url/raw_url/base_url"}
+    url = _resolve_probe_url(base_url, requested_url)
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return {"index": index, "label": label, "url": url, "error": "url must be http(s)"}
+
+    host_violation = enforce_host_path_constraints(
+        agent,
+        host=parsed.hostname.lower(),
+        path=(parsed.path or "/").rstrip("/") or "/",
+        target=parsed.hostname,
+    )
+    if host_violation:
+        return {"index": index, "label": label, "url": url, "error": host_violation}
+
+    port = infer_port_from_url(url)
+    if port is not None:
+        port_violation = enforce_port_constraints(agent, [port], target=parsed.hostname)
+        if port_violation:
+            return {"index": index, "label": label, "url": url, "error": port_violation}
+
+    return {
+        "index": index,
+        "label": label,
+        "method": method,
+        "url": url,
+        "raw_url": uses_raw_url,
+        "params": None if uses_raw_url else _object_or_none(spec.get("params")),
+        "headers": _string_dict(spec.get("headers")),
+        "cookies": _string_dict(spec.get("cookies")),
+        "data": spec.get("data", spec.get("body")),
+        "json": spec.get("json") if "json" in spec else None,
+    }
+
+
+def _resolve_probe_url(base_url: str, requested_url: str) -> str:
+    parsed = urlparse(requested_url)
+    if parsed.scheme:
+        return requested_url
+    if not base_url:
+        return requested_url
+    return urljoin(base_url.rstrip("/") + "/", requested_url)
+
+
+def _object_or_none(value: Any) -> Any:
+    return value if isinstance(value, (dict, list, tuple, str)) else None
+
+
+def _string_dict(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): str(v) for k, v in value.items() if k is not None and v is not None}
+
+
+def _execute_one_http_probe(
+    client: httpx.Client,
+    item: dict[str, Any],
+    max_body_chars: int,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        response = client.request(
+            item["method"],
+            item["url"],
+            params=item.get("params"),
+            headers=item.get("headers") or None,
+            cookies=item.get("cookies") or None,
+            data=item.get("data"),
+            json=item.get("json"),
+        )
+        duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+        body = response.text or ""
+        body_output, body_truncated = _body_with_optional_limit(body, max_body_chars)
+        digest = hashlib.sha256(response.content or b"").hexdigest()[:12]
+        return {
+            **item,
+            "status": response.status_code,
+            "effective_url": str(response.url),
+            "length": len(response.content or b""),
+            "hash": digest,
+            "title": _extract_html_title(body),
+            "signals": _http_body_signals(body, 800),
+            "body_chars": len(body),
+            "body": body_output,
+            "body_truncated": body_truncated,
+            "duration_ms": duration_ms,
+            "location": response.headers.get("location", ""),
+            "content_type": response.headers.get("content-type", ""),
+        }
+    except httpx.HTTPError as exc:
+        duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+        return {
+            **item,
+            "error": f"{exc.__class__.__name__}: {one_line(str(exc), 220)}",
+            "duration_ms": duration_ms,
+        }
+
+
+def _extract_html_title(body: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", body or "", re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return one_line(re.sub(r"<[^>]+>", "", match.group(1)), 120)
+
+
+def _http_body_signals(body: str, limit: int) -> str:
+    text = str(body or "")
+    lines: list[str] = []
+    markers = (
+        "flag",
+        "ctf{",
+        "error",
+        "exception",
+        "sql",
+        "warning",
+        "<form",
+        "<input",
+        "href=",
+        "token",
+        "admin",
+        "select",
+        "union",
+    )
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        if any(marker in lower for marker in markers):
+            lines.append(one_line(stripped, 240))
+        if len(lines) >= 5:
+            break
+    if lines:
+        return clip_text("\n".join(lines), limit)
+    visible = re.sub(r"<[^>]+>", " ", text)
+    visible = re.sub(r"\s+", " ", visible).strip()
+    return clip_text(visible, min(limit, 500))
+
+
+def _body_with_optional_limit(body: str, max_body_chars: int) -> tuple[str, bool]:
+    text = str(body or "")
+    if max_body_chars > 0 and len(text) > max_body_chars:
+        return text[:max_body_chars], True
+    return text, False
+
+
+def _format_http_probe_batch(results: list[dict[str, Any]]) -> str:
+    lines = [f"# http_probe_batch results ({len(results)} request(s))"]
+    hashes: dict[str, list[str]] = {}
+    for item in results:
+        label = f" {item['label']}" if item.get("label") else ""
+        if item.get("error"):
+            url = item.get("url", "")
+            duration = f" {item.get('duration_ms')}ms" if item.get("duration_ms") is not None else ""
+            lines.append(f"[{item['index']}] ERROR{label}{duration} {url} :: {item['error']}")
+            continue
+        hash_value = str(item.get("hash", ""))
+        hashes.setdefault(hash_value, []).append(str(item["index"]))
+        raw_note = " raw-url" if item.get("raw_url") else ""
+        location = f" location={item['location']}" if item.get("location") else ""
+        title = f" title={item['title']!r}" if item.get("title") else ""
+        content_type = (
+            f" type={one_line(item.get('content_type', ''), 80)}"
+            if item.get("content_type")
+            else ""
+        )
+        body_text = str(item.get("body", "") or "")
+        body_note = (
+            f" truncated_to={len(body_text)}" if item.get("body_truncated") else ""
+        )
+        lines.append(
+            f"[{item['index']}] {item['method']}{raw_note}{label} "
+            f"{item['status']} len={item['length']} hash={item['hash']} "
+            f"{item['duration_ms']}ms{location}{content_type}{title}\n"
+            f"    url={item['effective_url']}\n"
+            f"    signals={item['signals'] or '(empty body)'}\n"
+            f"    body_length={item.get('body_chars', 0)}{body_note}\n"
+            f"    body:\n{body_text if body_text else '(empty body)'}"
+        )
+
+    same_body_groups = [ids for ids in hashes.values() if len(ids) > 1]
+    if same_body_groups:
+        lines.append("Same-body groups: " + "; ".join(",".join(ids) for ids in same_body_groups))
+    return "\n".join(lines)
+
+
 def _resolve_python_execute_mode(agent: AgentContext) -> str:
     safety = getattr(agent.config, "safety", None)
     if safety is None:
@@ -1255,7 +1678,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
         )
         return f"[!] Sandbox bypass detected: {ast_bypass}"
 
-    max_output_chars = getattr(safety, "python_execute_max_output_chars", 8000)
+    max_output_chars = getattr(safety, "python_execute_max_output_chars", 0)
     tmp_path = ""
     try:
         with tempfile.NamedTemporaryFile(
@@ -1308,16 +1731,30 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
 
         if not output_parts:
             _write_python_audit(agent, purpose=purpose, code=code, mode=mode, outcome="success")
+            set_raw_tool_output_override(
+                agent,
+                tool="python_execute",
+                arguments=args,
+                output="[+] Python executed successfully with no output",
+            )
             return f"{warning_prefix}[+] Python executed successfully with no output"
 
         output = "\n".join(output_parts)
         for sig in ["[DONE]", "[COMPLETE]"]:
             output = output.replace(sig, f"[BLOCKED_{sig[1:-1]}]")
-        if len(output) > max_output_chars:
+        raw_return = f"[+] Python execution result ({mode}):\n{output}"
+        display_output = output
+        if max_output_chars > 0 and len(display_output) > max_output_chars:
             clip = max_output_chars // 2
-            output = output[:clip] + "\n...[truncated]...\n" + output[-clip:]
+            display_output = display_output[:clip] + "\n...[truncated]...\n" + display_output[-clip:]
         _write_python_audit(agent, purpose=purpose, code=code, mode=mode, outcome="success")
-        return f"{warning_prefix}[+] Python execution result ({mode}):\n{output}"
+        set_raw_tool_output_override(
+            agent,
+            tool="python_execute",
+            arguments=args,
+            output=raw_return,
+        )
+        return f"{warning_prefix}[+] Python execution result ({mode}):\n{display_output}"
     except subprocess.TimeoutExpired:
         try:
             os.unlink(tmp_path)

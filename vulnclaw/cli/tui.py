@@ -1084,7 +1084,7 @@ class ReplSlashResult:
 
 
 def dispatch_repl_slash(text: str) -> ReplSlashResult:
-    """Resolve a ``/`` or ``/.`` line into an intent for the classic REPL.
+    """Resolve a ``/`` or ``/.`` line into a request for the classic REPL.
 
     Pure: performs no I/O and mutates no state, so the loop stays in control of
     printing and target restoration. See :class:`ReplSlashResult`.

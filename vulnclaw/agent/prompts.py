@@ -552,7 +552,7 @@ def build_system_prompt(
         mcp_tools: List of available MCP tool schemas.
         enable_personnel_dim: Whether to include dimension 4 (personnel/social eng)
             in the RECON_INSTRUCTION. Defaults to True for backward compatibility.
-            Set to False when user has no social engineering intent.
+            Set to False when user has no social engineering purpose.
 
     Returns:
         Assembled system prompt string.

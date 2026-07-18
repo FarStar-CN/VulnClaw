@@ -27,6 +27,7 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
         ),
         allowed_tool_globs=(
             "load_skill_reference",
+            "evidence_*",
             "space_search",
             "subdomain_enum",
             "js_recon",
@@ -36,6 +37,7 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
             "cve_lookup",
             "topology_build",
             "fetch",
+            "http_probe_batch",
             "search*",
             "*search*",
         ),
@@ -53,6 +55,7 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
         ),
         allowed_tool_globs=(
             "load_skill_reference",
+            "evidence_*",
             "python_execute",
             "crypto_decode",
             "cve_lookup",
@@ -75,6 +78,7 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
         ),
         allowed_tool_globs=(
             "load_skill_reference",
+            "evidence_*",
             "python_execute",
             "crypto_decode",
             "nmap_scan",

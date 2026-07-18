@@ -1,11 +1,11 @@
-"""VulnClaw MCP Router — route natural language intents to MCP tool calls."""
+"""VulnClaw MCP Router — route natural language requests to MCP tool calls."""
 
 from __future__ import annotations
 
 import re
 from typing import Any, Optional
 
-# ── Intent → Tool mapping ───────────────────────────────────────────
+# ── Request → Tool mapping ──────────────────────────────────────────
 
 INTENT_TOOL_MAP: dict[str, list[dict[str, Any]]] = {
     # Browser automation
@@ -42,7 +42,7 @@ INTENT_TOOL_MAP: dict[str, list[dict[str, Any]]] = {
 
 
 class MCPRouter:
-    """Routes natural language intents to MCP tool calls."""
+    """Routes natural language requests to MCP tool calls."""
 
     def route(self, user_input: str) -> list[dict[str, Any]]:
         """Analyze user input and return suggested tool calls.

@@ -105,11 +105,33 @@ def infer_tool_action(tool_name: str, args: dict[str, object]) -> str:
     if normalized_tool == "fetch":
         url = str(args.get("url", "") or "").lower()
         method = str(args.get("method", "GET") or "GET").upper()
-        body = str(args.get("body", "") or "").lower()
-        if any(marker in url or marker in body for marker in EXPLOIT_PAYLOAD_MARKERS):
+        payload_surface = " ".join(
+            str(args.get(key, "") or "").lower()
+            for key in ("body", "data", "form", "json", "params", "headers")
+        )
+        if any(marker in url or marker in payload_surface for marker in EXPLOIT_PAYLOAD_MARKERS):
             return "exploit"
         # 方法本身不代表利用：GET/HEAD/OPTIONS 属侦察，其它（POST 测表单等）属扫描
         if method in ("GET", "HEAD", "OPTIONS"):
+            return "recon"
+        return "scan"
+
+    if normalized_tool == "http_probe_batch":
+        requests = args.get("requests", [])
+        if not isinstance(requests, list):
+            requests = []
+        joined_parts: list[str] = []
+        methods: list[str] = []
+        for item in requests:
+            if not isinstance(item, dict):
+                continue
+            methods.append(str(item.get("method", "GET") or "GET").upper())
+            for key in ("url", "raw_url", "params", "data", "body", "json"):
+                joined_parts.append(str(item.get(key, "") or "").lower())
+        joined = " ".join(joined_parts)
+        if any(marker in joined for marker in EXPLOIT_PAYLOAD_MARKERS):
+            return "exploit"
+        if all(method in ("GET", "HEAD", "OPTIONS") for method in methods or ["GET"]):
             return "recon"
         return "scan"
 

@@ -45,13 +45,105 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "evidence_list",
+                "description": (
+                    "List raw evidence records saved from prior tool calls. Use this to find an "
+                    "evidence id for previous output when you need to revisit prior results."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "description": "Recent records to list."}
+                    },
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "evidence_view",
+                "description": (
+                    "View raw saved evidence by id. Use offset/limit only for missing chunks of "
+                    "large output; do not reread the same id/range. Redundant ranges may be "
+                    "suppressed to prevent evidence-reading loops."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Evidence id, e.g. e001.",
+                        },
+                        "offset": {"type": "integer", "description": "Character offset."},
+                        "limit": {
+                            "type": "integer",
+                            "description": (
+                                "Maximum characters; omitted or 0 returns all remaining content."
+                            ),
+                        },
+                    },
+                    "required": ["evidence_id"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "http_probe_batch",
+                "description": (
+                    "Batch HTTP probe tool for comparing URL/parameter/header/body variants "
+                    "in one call. Returns status/length/hash/title/body signals and full response bodies."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "base_url": {"type": "string"},
+                        "requests": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "method": {"type": "string"},
+                                    "url": {"type": "string"},
+                                    "raw_url": {"type": "string"},
+                                    "params": {"type": "object"},
+                                    "headers": {"type": "object"},
+                                    "cookies": {"type": "object"},
+                                    "data": {},
+                                    "json": {},
+                                    "label": {"type": "string"},
+                                },
+                            },
+                        },
+                        "timeout": {"type": "number"},
+                        "follow_redirects": {"type": "boolean"},
+                        "verify_tls": {"type": "boolean"},
+                        "max_body_chars": {"type": "integer"},
+                    },
+                    "required": ["requests"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
                 "name": "python_execute",
                 "description": (
                     "执行 Python 代码片段。用于：构造复杂 HTTP 请求并解析响应、"
                     "做编码转换和数据处理、批量测试不同 payload、比较响应差异、"
                     "执行数学计算等。代码在受限环境中执行，超时 30 秒。"
                     "预装库：requests, beautifulsoup4, pycryptodome, base64, json, re 等。"
-                    "重要：构造 HTTP 请求时请使用此工具而非猜测响应内容。"
+                    "普通 HTTP/HTTPS 请求优先使用 fetch 或 http_probe_batch，避免用 Python 手写请求浪费上下文；"
+                    "只有需要复杂解析、生成 payload 或批量逻辑时再使用此工具。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -117,14 +209,14 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
             "function": {
                 "name": "nmap_scan",
                 "description": (
-                    "nmap 网络端口扫描工具。信息收集时用于发现目标开放端口、服务版本和操作系统指纹。\n"
+                    "nmap 网络端口扫描工具。适合在端口、服务版本或网络暴露面会影响下一步判断时使用。\n"
                     "用法示例：\n"
                     "  扫描常见端口: scan_type=top_ports, target=1.2.3.4\n"
                     "  SYN扫描: scan_type=syn, target=1.2.3.4（需要管理员权限）\n"
                     "  服务版本检测: scan_type=service, target=1.2.3.4\n"
                     "  漏洞扫描: scan_type=vuln, target=1.2.3.4\n"
                     "  全量扫描: scan_type=full, target=1.2.3.4\n"
-                    "优先使用 nmap_scan 而非 python_execute 构造 socket 扫描，nmap 更专业更准确。"
+                    "如果只需验证一个具体 HTTP/Web 行为，可以选择其他更轻量工具。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -224,7 +316,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                 "name": "space_search",
                 "description": (
                     "空间测绘资产搜索（FOFA/Hunter/Quake/Shodan/ZoomEye/0.zone 零零信安）。"
-                    "信息收集阶段用于被动发现目标资产、IP、端口、子域、标题、组件指纹，不直接接触目标。"
+                    "可在需要被动发现目标资产、IP、端口、子域、标题或组件指纹时使用，不直接接触目标。"
                     "给 domain 自动按各引擎语法构造 domain 查询；也可传完整 query 语法。"
                     "engine=all 时并发查询所有已配置 key 的引擎。"
                 ),
@@ -257,7 +349,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                 "name": "subdomain_enum",
                 "description": (
                     "子域名枚举。先用已配置的空间测绘引擎被动聚合，再用内置小字典做 DNS 解析爆破，"
-                    "返回去重后的存活子域名列表。优先于 python_execute 自己写爆破。"
+                    "返回去重后的存活子域名列表；是否需要枚举由模型根据当前任务判断。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -283,7 +375,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                     "JS 信息收集（参考 URLFinder）。抓取目标页面及其引用的全部 .js 文件，"
                     "提取 API 接口/路径、关联域名、绝对 URL，以及疑似硬编码密钥（AK/SK、token、JWT、私钥等）。"
                     "默认 auto_probe=true：自动对收集到的同源接口逐个做未授权访问探测（仅安全 GET，跳过破坏性接口）。"
-                    "信息收集阶段优先调用，用真实提取的端点反哺后续测试，而非凭空猜接口。"
+                    "适合在页面脚本可能包含端点、路径或硬编码线索时按需调用。"
                 ),
                 "parameters": {
                     "type": "object",

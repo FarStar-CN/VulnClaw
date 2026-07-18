@@ -8,7 +8,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI_Compatible-green)](https://platform.openai.com/)
 [![MCP](https://img.shields.io/badge/Toolchain-MCP-orange)](https://modelcontextprotocol.io/)
-[![PyPI](https://img.shields.io/badge/PyPI-v0.3.3-blueviolet)](https://pypi.org/project/vulnclaw/)
+[![PyPI](https://img.shields.io/badge/PyPI-v0.3.4-blueviolet)](https://pypi.org/project/vulnclaw/)
 [![Security](https://img.shields.io/badge/Scope-Authorized_Only-red)](#-security-notice)
 [![AtomGitStars](https://atomgit.com/Unclecheng-li/VulnClaw/star/badge.svg)](https://atomgit.com/Unclecheng-li/VulnClaw)
 <br>
@@ -54,19 +54,22 @@ Suitable for authorized pentests, CTF competitions, security training, and red t
 
 ## Features
 
-- **Goal-Driven Solver Engine (default)** — Abandons fixed-round workflows; terminates on "goal reached / exploration frontier exhausted / safety budget hit", auto-converges
-- **Blackboard State-Space Search** — Models pentest as a search from origin to goal: Facts (confirmed truths) + Intents (exploration directions), structurally prevents dead loops
+- **Model-Led Solver Engine (default)** — Claude Code/Codex-style autonomous loop: the model decides the next action, tool usage, completion, user questions, or no-path termination
+- **AgentState Evidence Memory** — Tool results are stored in `AgentState.evidence` and returned to the model in full by default; `evidence_list` / `evidence_view` revisit prior evidence on demand
+- **Lightweight Correction Layer** — Records repeated calls, degraded tools, timing, and new observations; repeated reads of the same evidence range are suppressed and evidence-only stalls trigger a stall guard without restoring the old stage planner
 - **Evidence-Level Anti-Hallucination Gate** — Claims about flags/conclusions must appear verbatim in real tool output to be accepted; prevents fabricated flags
-- **Natural Language Driven** — Describe your intent in plain English, auto-identifies phases and tools
+- **Natural Language Driven** — Describe your goal in plain English, auto-identifies phases and tools
 - **13 LLM Providers** — OpenAI / Anthropic / MiniMax / DeepSeek / Zhipu / Moonshot / Qwen / SiliconFlow / Doubao / Baichuan / StepFun / SenseTime / Yi, one-command switch
 - **MCP Toolchain** — 4 MCP services: `fetch` / `memory` run locally out-of-the-box, `chrome-devtools` / `burp` connect to external MCP servers for browser automation and HTTP interception
+- **Enhanced fetch request tool** — Defaults to GET, returns the full response body, and supports HTTP/HTTPS, custom method/headers/params/cookies/body/data/form/json, timeout/redirect/TLS controls; TLS verification is off by default for CTF/lab HTTPS targets
 - **Native Traffic Evidence Store** — In-scope request/response pairs land in an append-only JSONL index under `evidence/traffic/`. Built-in `traffic_list` / `traffic_view` / `traffic_repeat` / `traffic_sitemap` tools read and replay the store
 - **AI Agent Core** — OpenAI-compatible protocol + Tool Calling + autonomous pentest loop
 - **Structured Reasoning + Adaptive Reflection** — Facts/constraints/attack chains structured and injected into prompts; failures auto-classified with L0-L4 payload escalation
 - **Vulnerability Detection Plugin System** — Low-coupling plugin runtime + built-in read-only Web plugins, results auto-merged into reports (`vulnclaw plugins`)
-- **23 Pentest Skills** — 7 core + 16 specialized skills (incl. CTF Web/Crypto/Misc, osint-recon, cve-triage, hackerone, secknowledge-skill), 176 reference documents
+- **50 Specialized Skills** — CTF, Web, intranet, reversing, vulnerability validation, and authorized red-team knowledge; methodology lives in skills/KB instead of being hard-coded into solve
 - **Encode/Decode & Crypto Tools** — 29 operations (Base64/Hex/URL/AES/JWT/Morse etc.), LLM calls them directly, no guessing
 - **Python Code Execution** — Built-in `python_execute` tool for payload crafting and response parsing; currently still a high-risk experimental capability, not a strong isolation sandbox
+- **Batch HTTP Probing** — Built-in `http_probe_batch` compares URL/parameter/header/body/raw-URL variants in one call and returns each response body in full by default to reduce repeated LLM/tool rounds
 - **Persistent Pentesting** — Cyclic runs (100 rounds/cycle × 10 cycles = 1000 rounds), auto-reports every cycle
 - **Thinking Process Control** — `think on/off` toggles LLM reasoning visibility
 - **Sandbox Mode Prompting** — Unlocks AI security testing capabilities, for CTF and authorized pentest scenarios
@@ -324,26 +327,35 @@ vulnclaw web --port 8080      # custom port
 
 ### Solver Engine
 
-VulnClaw defaults to the **goal-driven solver engine** (switch back to fixed-round with `vulnclaw config set session.engine rounds`).
+VulnClaw defaults to the **model-led solve engine** (switch back to fixed-round with `vulnclaw config set session.engine rounds`).
 
-**Blackboard + OODA Loop:** Models pentest as a directed search from origin (target) to goal (flag / shell / confirmed high-severity vuln).
+**Model-Led Loop:** The framework no longer decomposes a task into forced "research directions", and it no longer schedules directory scans, JS reconnaissance, or SQLi checks by phase templates. solve provides the target, conversation context, evidence memory, and tool catalog; the model decides the next action.
 
 | Primitive | Meaning |
 |-----------|---------|
-| **Fact** | An objective truth confirmed by real tool output (a foothold for exploration) |
-| **Intent** | A declared exploration direction (not yet executed), originating from a Fact, producing a new Fact upon conclusion |
+| **Model context** | Target, user constraints, recent messages, evidence summaries, and executed tool calls |
+| **Tool catalog** | `fetch`, browser, directory enumeration, JS recon, encode/decode, Python, skill lookup, and other capabilities exposed only as optional hands |
+| **AgentState evidence** | Every real tool result is stored in `AgentState.evidence`; tool output is fed back to the model in full by default; `python_execute` returns full stdout/stderr unless a positive limit is explicitly configured |
+| **High-signal memory** | Source SQL, HTML forms/inputs, linked PHP/API files, and JavaScript endpoint construction are pinned as durable facts so later probes do not bury the actual entry point |
+| **Lightweight correction layer** | Observes tool lifecycle only: timing, degraded failures, repeated calls, high-signal target facts, and small semantic deltas become next-turn hints; it does not plan stages or schedule tools |
+| **Evidence gate** | `FINAL:` conclusions must cite or match real evidence; unsupported flags/conclusions are rejected and the model continues |
+| **Automatic solve report** | After completion, solve generates a Markdown replay report with reasoning chain, key evidence, raw replay request, curl command, response excerpt, and evidence index |
 
 ```
-REASON (read full graph) → Goal reached? / Propose new direction / None
+MODEL DECIDES → optional tool call → AgentState records full raw evidence + correction hints
         │
-EXPLORE (pick an Intent) → Execute with tools → Write confirmed conclusion back as a Fact
+continue reasoning / continue tool use / ASK_USER / NO_PATH / FINAL
         │
-Terminate: Goal reached / Exploration frontier exhausted / Safety budget hit
+FINAL passes evidence gate → accepted; otherwise the rejection is fed back and solve continues
 ```
 
-**Evidence-Level Anti-Hallucination Gate:** Records all real tool output as the sole trusted evidence. Claims must appear verbatim in real output to be accepted; fabricated claims are discarded.
+**Context Strategy:** solve keeps ordinary conversation history by default. It does not compact unless the model context is close to full, the user runs `/compact`, or auto-compaction is explicitly enabled. Tool output enters the model context in full by default and is stored in `AgentState.evidence`; `fetch` / `http_probe_batch` `max_body_chars` and `python_execute_max_output_chars` clip output only when explicitly set to a positive value. Terminal echo is human-only display: long tool results are collapsed into previews while the full content still reaches the model and evidence store. High-signal facts extracted from raw output are pinned separately from recent evidence, including forms, parameters, JS endpoints, linked PHP/API files, and visible SQL/source snippets. `evidence_list` / `evidence_view` are for revisiting prior evidence. Repeated reads of an already covered evidence range are short-circuited, and multiple evidence-only turns with no new evidence trigger a stall guard requiring a non-evidence tool, `FINAL`, `ASK_USER`, or `NO_PATH`. After a tool call, solve no longer forces an extra `Summarizing...` LLM call; it returns deterministic tool results and lets the next model turn continue from AgentState.
 
-**Structured Reasoning + Adaptive Reflection:** Failures auto-classified with L0-L4 payload escalation; persistent mode preserves failure memory across cycles.
+**Evidence-Level Anti-Hallucination Gate:** Records all real tool output as the sole trusted evidence. Claims about flags/conclusions must appear in real output or cite evidence ids before they are accepted.
+
+**Automatic Solve Report:** When solve reaches the goal, VulnClaw deterministically renders a Markdown replay report from `AgentState` and prints it by default. It does not make another LLM call; replay packets, curl commands and response excerpts come from real `fetch` / `http_probe_batch` evidence.
+
+**Authorized Red-Team Skills:** Authorized red-team detail packs from `codex-redteam-mode` are imported as skills/knowledge for on-demand use; jailbreak, refusal-bypass, and session-patching content is not imported.
 
 ### Core Modules
 
@@ -351,10 +363,10 @@ Terminate: Goal reached / Exploration frontier exhausted / Safety budget hit
 |--------|------|-------------|
 | **CLI/TUI Entry** | `cli/main.py` + `cli/tui.py` | Typer commands + REPL + TUI |
 | **Agent Core** | `agent/core.py` | AgentCore coordination entrypoint |
-| **Solver Engine** | `agent/solver.py` + `agent/blackboard.py` | OODA loop + Fact/Intent blackboard |
+| **Solver Engine** | `agent/solver.py` + `agent/agent_state.py` | Model-led loop + AgentState evidence / steps / completion gate |
 | **Reasoning / Reflection** | `agent/reasoning_state.py` + `reflexion.py` | Structured facts/constraints/attack chains + L0-L4 escalation |
 | **Plugin System** | `plugins/` | Low-coupling vulnerability detection plugin runtime |
-| **Skill Dispatcher** | `skills/loader.py` + `dispatcher.py` | Intent-based dynamic dispatch |
+| **Skill Dispatcher** | `skills/loader.py` + `dispatcher.py` | Task-aware dynamic dispatch |
 | **MCP Orchestration** | `mcp/registry.py` + `lifecycle.py` + `router.py` | Service registry + lifecycle + tool routing |
 | **Config** | `config/schema.py` + `settings.py` | Pydantic + YAML + 13 provider presets |
 | **Report Generator** | `report/generator.py` + `poc_builder.py` | Markdown reports + PoC scripts |
@@ -366,12 +378,12 @@ Terminate: Goal reached / Exploration frontier exhausted / Safety budget hit
 
 | MCP Service | Tools | Mode | Use Case | Status |
 |---|---|---|---|---|
-| fetch | 1 | Local (httpx) | HTTP requests, API testing | Out-of-the-box |
+| fetch | 1 | Local (httpx) | HTTP/HTTPS requests, GET/POST/PUT methods, headers/params/cookies/body/json/form, API testing | Out-of-the-box |
 | memory | 2 | Local (JSON) | Context memory, state persist | Out-of-the-box |
 | chrome-devtools | 31+ | stdio MCP | Browser automation, screenshots, JS execution | Requires setup |
 | burp | Multiple | stdio MCP | HTTP interception, replay, vuln scanning | Requires setup |
 
-> Plus 5 built-in Agent tools (`python_execute` + `nmap_scan` + `crypto_decode` + `brute_force_login` + `load_skill_reference`) — no MCP needed.
+> Plus built-in Agent tools (`http_probe_batch`, `python_execute`, `nmap_scan`, `crypto_decode`, `brute_force_login`, `load_skill_reference`, `evidence_list`, `evidence_view`, etc.) — no MCP needed.
 
 <details>
 <summary><strong>Chrome DevTools MCP Setup</strong></summary>
@@ -475,7 +487,7 @@ mcp:
 | **osint-recon** | 7 | OSINT four-dimension model (server/web/domain/person) |
 | **cve-triage** | 1 | CVE lookup and triage |
 | **hackerone** | 1 | HackerOne bounty scope-guard |
-| **secknowledge-skill** | 39 | Web+AI security testing knowledge base |
+| **secknowledge-skill** | 40 | Web+AI security testing knowledge base |
 
 Skills are auto-dispatched based on user input — no manual selection needed. Specialized skills include detailed methodology documents in `references/`, loadable via the `load_skill_reference` tool.
 
@@ -539,10 +551,14 @@ vulnclaw config set session.show_thinking false  # hide thinking process
 | `llm.model` | per provider | Model name |
 | `llm.temperature` | 0.1 | Sampling temperature |
 | `llm.max_tokens` | 4096 | Max output tokens |
-| `session.engine` | solve | `solve` (goal-driven) / `rounds` (legacy fixed-round) |
-| `session.solve_max_steps` | 40 | Solver exploration step safety cap |
-| `session.solve_max_intents` | 3 | Max new exploration directions per Reason |
-| `session.solve_max_tool_rounds` | 6 | Max tool call rounds per Intent |
+| `session.engine` | solve | `solve` (model-led) / `team` (role team) / `rounds` (legacy fixed-round) |
+| `session.solve_max_steps` | 240 | Runaway safety budget for solve; not a planned round count |
+| `session.solve_max_directions` | 3 | Deprecated compatibility field; model-led solve no longer uses research direction counts |
+| `session.solve_max_tool_rounds` | 6 | Deprecated compatibility field; model-led solve lets the model decide tool cadence |
+| `session.solve_auto_compact` | false | Allow solve to compact context automatically; disabled by default to preserve context |
+| `session.solve_compact_trigger_ratio` | 0.9 | Context usage ratio that triggers auto-compaction when enabled |
+| `session.solve_auto_report` | true | Generate a Markdown replay report when solve completes |
+| `session.solve_report_show` | true | Print the generated solve report body in the terminal |
 | `session.max_rounds` | 15 | Max rounds |
 | `session.output_dir` | ./vulnclaw-output | Report output directory |
 | `session.report_format` | markdown | Report format (markdown / html) |
