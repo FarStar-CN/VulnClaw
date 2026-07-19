@@ -206,31 +206,30 @@ class TestBudget:
 
 
 class TestPromptIntegration:
-    def test_context_includes_names_reason_and_ref_hints_not_corpus(self):
+    def test_context_includes_reference_index_not_skill_body(self):
         from vulnclaw.agent.skill_context import get_active_skill_context
 
         ctx = get_active_skill_context("对这个APP做逆向分析")
         assert ctx is not None
-        # primary body present
-        assert "逆向" in ctx or "reverse" in ctx.lower()
-        # resolver reason embedded
-        assert "skill routing:" in ctx
-        # reference hints, on-demand
+        assert "optional reference material only" in ctx.lower()
+        assert "primary reference: client-reverse" in ctx
+        # resolver reason embedded as reference routing metadata
+        assert "reference routing:" in ctx
+        # reference hints are on-demand
         assert "load_skill_reference" in ctx
-        # not the whole corpus: an unrelated skill's marker should be absent
+        # not the whole corpus: unrelated markers and primary workflow body are absent
         assert "GAARM" not in ctx
+        assert "## 当前 Skill" not in ctx
 
     def test_non_security_input_yields_no_context(self):
         from vulnclaw.agent.skill_context import get_active_skill_context
 
         assert get_active_skill_context("你好今天天气怎么样") is None
 
-    def test_no_input_falls_back_to_pentest_flow(self):
+    def test_no_input_yields_no_default_playbook(self):
         from vulnclaw.agent.skill_context import get_active_skill_context
 
-        ctx = get_active_skill_context(None)
-        assert ctx is not None
-        assert "渗透" in ctx
+        assert get_active_skill_context(None) is None
 
 
 # ── Auditability / provenance ────────────────────────────────────────
@@ -327,6 +326,7 @@ class TestRuntimeWiring:
         assert state.active_skill_selection["primary"] == "client-reverse"
         # The recorded reason is embedded in the very context that was returned.
         assert state.active_skill_selection["reason"].split(" ")[0] in ctx
+        assert "optional reference material only" in ctx.lower()
 
     def test_ascii_vuln_hint_requires_token_boundary(self):
         """`rce` must not fire inside `source` (non-security input stays clean)."""

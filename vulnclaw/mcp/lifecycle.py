@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import subprocess
 import time
 from contextlib import suppress
@@ -11,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from vulnclaw.config.schema import MCPServerConfig, VulnClawConfig
+from vulnclaw.config.source_render import render_highlighted_source_block
 
 # 修改者: Nyaecho
 # 修改时间: 2026-07-08
@@ -49,6 +52,17 @@ _BENIGN_SHUTDOWN_KEYWORDS = (
     "generator didn't stop",
 )
 
+_FETCH_METHOD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
+_FETCH_DEFAULT_TIMEOUT = 30.0
+_FETCH_MAX_TIMEOUT = 120.0
+_FETCH_DEFAULT_BODY_CHARS_LIMIT = 0
+
+
+def _suppress_cleanup_errors() -> suppress:
+    """Suppress cleanup noise, including AnyIO cancel-scope cancellations."""
+
+    return suppress(Exception, asyncio.CancelledError)
+
 
 def _is_benign_shutdown_exception(exc: BaseException) -> bool:
     if hasattr(exc, "exceptions"):
@@ -59,6 +73,24 @@ def _is_benign_shutdown_exception(exc: BaseException) -> bool:
         if any(kw in msg for kw in _BENIGN_SHUTDOWN_KEYWORDS):
             return True
     return isinstance(exc, (GeneratorExit, asyncio.CancelledError))
+
+
+def _is_tls_verification_error(exc: BaseException) -> bool:
+    """Return true for certificate verification failures wrapped by httpx/httpcore."""
+
+    current: BaseException | None = exc
+    seen = 0
+    while current is not None and seen < 8:
+        message = str(current).lower()
+        if (
+            "certificate_verify_failed" in message
+            or "certificate verify failed" in message
+            or "unable to get local issuer certificate" in message
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+        seen += 1
+    return False
 
 
 class MCPLifecycleManager(ProbeMixin):
@@ -83,6 +115,7 @@ class MCPLifecycleManager(ProbeMixin):
         self.registry = MCPRegistry()
         self._processes: dict[str, subprocess.Popen] = {}
         self._mcp_clients: dict[str, Any] = {}  # Server attach capability cache
+        self._runtime_tool_aliases: dict[tuple[str, str], str] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_exception_handler_loop: asyncio.AbstractEventLoop | None = None
         self._task_constraints: Any = None
@@ -391,8 +424,27 @@ class MCPLifecycleManager(ProbeMixin):
     def _register_runtime_tools(self, server_name: str, tools: list[dict[str, Any]]) -> None:
         """Replace static known tools with tools discovered from the live MCP server."""
         self.registry.clear_server_tools(server_name)
+        for key in list(self._runtime_tool_aliases):
+            if key[0] == server_name:
+                self._runtime_tool_aliases.pop(key, None)
         for tool in tools:
-            self.registry.register_tool(server_name, tool)
+            runtime_name = str(tool.get("name", ""))
+            public_name = self._public_runtime_tool_name(server_name, runtime_name)
+            if not public_name:
+                continue
+            if public_name != runtime_name:
+                self._runtime_tool_aliases[(server_name, public_name)] = runtime_name
+            public_tool = dict(tool)
+            public_tool["name"] = public_name
+            self.registry.register_tool(server_name, public_tool)
+
+    def _public_runtime_tool_name(self, server_name: str, runtime_name: str) -> str:
+        """Return the project-facing name for a discovered runtime MCP tool."""
+        if server_name == "burp" and runtime_name.startswith("runtime_"):
+            candidate = runtime_name.removeprefix("runtime_")
+            if candidate in {"send_http1_request", "get_proxy_http_history"}:
+                return candidate
+        return runtime_name
 
     async def _call_stdio_server(
         self, server_name: str, tool_name: str, arguments: dict[str, Any]
@@ -467,9 +519,9 @@ class MCPLifecycleManager(ProbeMixin):
             await session.__aenter__()
             await session.initialize()
         except BaseException:
-            with suppress(Exception):
+            with _suppress_cleanup_errors():
                 await session.__aexit__(None, None, None)
-            with suppress(Exception):
+            with _suppress_cleanup_errors():
                 await cm.__aexit__(None, None, None)
             raise
 
@@ -485,7 +537,7 @@ class MCPLifecycleManager(ProbeMixin):
         # 关闭旧 context_manager，避免 GC 回收时 cancel scope 跨 task 冲突
         old_cm = client_meta.get("context_manager") if isinstance(client_meta, dict) else None
         if old_cm is not None and old_cm is not cm:
-            with suppress(Exception):
+            with _suppress_cleanup_errors():
                 await old_cm.__aexit__(None, None, None)
 
         self._mcp_clients[server_name] = {
@@ -552,10 +604,10 @@ class MCPLifecycleManager(ProbeMixin):
         except BaseException as exc:
             # Clean up partial state
             if session is not None:
-                with suppress(Exception):
+                with _suppress_cleanup_errors():
                     await session.__aexit__(None, None, None)
             if cm is not None:
-                with suppress(Exception):
+                with _suppress_cleanup_errors():
                     await cm.__aexit__(None, None, None)
             # Extract root cause from ExceptionGroup
             detail = str(exc)
@@ -625,10 +677,10 @@ class MCPLifecycleManager(ProbeMixin):
             await session.initialize()
         except BaseException as exc:
             if session is not None:
-                with suppress(Exception):
+                with _suppress_cleanup_errors():
                     await session.__aexit__(None, None, None)
             if cm is not None:
-                with suppress(Exception):
+                with _suppress_cleanup_errors():
                     await cm.__aexit__(None, None, None)
             detail = str(exc)
             if hasattr(exc, "exceptions"):
@@ -834,18 +886,44 @@ class MCPLifecycleManager(ProbeMixin):
             "fetch": [
                 {
                     "name": "fetch",
-                    "description": "Fetch a URL and return the content",
+                    "description": (
+                        "Send an HTTP/HTTPS request and return status, headers and the full response body. "
+                        "Defaults to GET; supports custom methods, headers, query params and request bodies."
+                    ),
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "url": {"type": "string", "description": "URL to fetch"},
+                            "url": {"type": "string", "description": "HTTP/HTTPS URL to request"},
                             "method": {
                                 "type": "string",
-                                "description": "HTTP method",
+                                "description": "HTTP method, e.g. GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS",
                                 "default": "GET",
                             },
-                            "headers": {"type": "object", "description": "HTTP headers"},
-                            "body": {"type": "string", "description": "Request body"},
+                            "headers": {"type": "object", "description": "HTTP request headers"},
+                            "params": {"type": "object", "description": "Query parameters"},
+                            "cookies": {"type": "object", "description": "Per-request cookies"},
+                            "body": {"type": "string", "description": "Raw request body"},
+                            "data": {
+                                "description": "Form-like data or raw data body; use form for explicit form fields"
+                            },
+                            "form": {"type": "object", "description": "Form fields sent as application/x-www-form-urlencoded"},
+                            "json": {"description": "JSON request body"},
+                            "timeout": {
+                                "type": "number",
+                                "description": "Request timeout seconds, 1-120, default 30",
+                            },
+                            "follow_redirects": {
+                                "type": "boolean",
+                                "description": "Follow redirects, default true",
+                            },
+                            "verify_tls": {
+                                "type": "boolean",
+                                "description": "Verify TLS certificates, default false for CTF/lab compatibility",
+                            },
+                            "max_body_chars": {
+                                "type": "integer",
+                                "description": "Optional response body character limit; omitted or 0 returns the full body.",
+                            },
                         },
                         "required": ["url"],
                     },
@@ -1333,34 +1411,191 @@ class MCPLifecycleManager(ProbeMixin):
         try:
             import httpx
 
-            url = args.get("url", "")
-            method = args.get("method", "GET").upper()
-            headers = args.get("headers", {})
-            body = args.get("body")
+            request = self._prepare_fetch_request(args)
 
             jar = getattr(self, "_fetch_cookies", None)
             if jar is None:
                 jar = httpx.Cookies()
                 self._fetch_cookies = jar
 
-            async with httpx.AsyncClient(verify=False, timeout=30.0, cookies=jar) as client:
-                response = await client.request(
-                    method=method,
-                    url=url,
-                    headers=headers,
-                    content=body,
-                )
-                jar.extract_cookies(response)
+            try:
+                async with httpx.AsyncClient(
+                    verify=request["verify_tls"],
+                    timeout=request["timeout"],
+                    follow_redirects=request["follow_redirects"],
+                    cookies=jar,
+                ) as client:
+                    response = await client.request(**request["kwargs"])
+                    jar.extract_cookies(response)
+            except httpx.TransportError as exc:
+                if request["verify_tls"] and _is_tls_verification_error(exc):
+                    request = {**request, "verify_tls": False, "tls_retry": True}
+                    async with httpx.AsyncClient(
+                        verify=False,
+                        timeout=request["timeout"],
+                        follow_redirects=request["follow_redirects"],
+                        cookies=jar,
+                    ) as client:
+                        response = await client.request(**request["kwargs"])
+                        jar.extract_cookies(response)
+                else:
+                    raise
 
-            result = f"Status: {response.status_code}\n"
-            result += f"Headers: {dict(response.headers)}\n"
-            result += f"Body (first 2000 chars): {response.text[:2000]}"
-            return result
+            return self._format_fetch_response(response, request)
 
         except ImportError:
             return "[!] httpx 未安装，无法执行 fetch 请求"
         except Exception as e:
             return f"[!] fetch 请求失败: {e}"
+
+    def _prepare_fetch_request(self, args: dict) -> dict[str, Any]:
+        url = str(args.get("url", "") or "").strip()
+        if not url:
+            raise ValueError("fetch requires url")
+
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("fetch only supports absolute http/https URLs")
+
+        method = str(args.get("method", "GET") or "GET").strip().upper()
+        if not _FETCH_METHOD_RE.fullmatch(method):
+            raise ValueError(f"invalid HTTP method for fetch: {method!r}")
+
+        request_kwargs: dict[str, Any] = {
+            "method": method,
+            "url": url,
+            "headers": self._coerce_fetch_string_map(args.get("headers"), "headers"),
+        }
+
+        params = args.get("params")
+        if params is not None:
+            request_kwargs["params"] = params
+
+        cookies = self._coerce_fetch_string_map(args.get("cookies"), "cookies")
+        if cookies:
+            request_kwargs["cookies"] = cookies
+
+        body_kwargs, body_mode = self._fetch_body_kwargs(args)
+        request_kwargs.update(body_kwargs)
+
+        return {
+            "method": method,
+            "url": url,
+            "kwargs": request_kwargs,
+            "body_mode": body_mode,
+            "timeout": self._bounded_float(
+                args.get("timeout"),
+                lower=1.0,
+                upper=_FETCH_MAX_TIMEOUT,
+                default=_FETCH_DEFAULT_TIMEOUT,
+            ),
+            "follow_redirects": self._coerce_fetch_bool(args.get("follow_redirects"), True),
+            "verify_tls": self._coerce_fetch_bool(args.get("verify_tls"), False),
+            "max_body_chars": self._coerce_nonnegative_int(
+                args.get("max_body_chars"),
+                default=_FETCH_DEFAULT_BODY_CHARS_LIMIT,
+            ),
+        }
+
+    @staticmethod
+    def _coerce_fetch_string_map(value: Any, name: str) -> dict[str, str]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError(f"fetch {name} must be an object")
+        return {str(key): str(item) for key, item in value.items()}
+
+    @staticmethod
+    def _fetch_body_kwargs(args: dict) -> tuple[dict[str, Any], str | None]:
+        if args.get("json") is not None:
+            return {"json": args["json"]}, "json"
+        if args.get("form") is not None:
+            return {"data": args["form"]}, "form"
+        if args.get("data") is not None:
+            return {"data": args["data"]}, "data"
+        if args.get("body") is not None:
+            return {"content": args["body"]}, "body"
+        return {}, None
+
+    @staticmethod
+    def _bounded_float(value: Any, *, lower: float, upper: float, default: float) -> float:
+        if value is None:
+            return default
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return default
+        return min(max(number, lower), upper)
+
+    @staticmethod
+    def _coerce_fetch_bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "y", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "n", "off"}:
+                return False
+        return bool(value)
+
+    @staticmethod
+    def _coerce_nonnegative_int(value: Any, *, default: int = 0) -> int:
+        if value is None:
+            return default
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0, number)
+
+    def _format_fetch_response(self, response: Any, request: dict[str, Any]) -> str:
+        lines = [f"Request: {request['method']} {request['url']}"]
+        if request.get("tls_retry"):
+            lines.append(
+                "TLS verification failed; retried once with verify_tls=false for lab/CTF compatibility."
+            )
+        final_url = str(response.url)
+        if final_url != request["url"]:
+            lines.append(f"Final URL: {final_url}")
+        if response.history:
+            redirect_chain = " -> ".join(
+                str(item.status_code) for item in [*response.history, response]
+            )
+            lines.append(f"Redirects: {redirect_chain}")
+        lines.append(f"Status: {response.status_code}")
+        lines.append(f"Headers: {dict(response.headers)}")
+        if request.get("body_mode"):
+            lines.append(f"Request body mode: {request['body_mode']}")
+
+        body_text = response.text
+        max_body_chars = request["max_body_chars"]
+        decoded_source = render_highlighted_source_block(body_text, max_chars=max_body_chars)
+        if decoded_source:
+            lines.append(decoded_source)
+        if max_body_chars > 0 and len(body_text) > max_body_chars:
+            lines.append(
+                f"Body (first {max_body_chars} chars, truncated from {len(body_text)}): "
+                f"{body_text[:max_body_chars]}"
+            )
+        else:
+            lines.append(f"Body (length {len(body_text)} chars): {body_text}")
+
+        content_type = response.headers.get("content-type", "").lower()
+        if "json" in content_type and body_text.strip():
+            try:
+                parsed_body = response.json()
+            except ValueError:
+                pass
+            else:
+                rendered_json = json.dumps(parsed_body, ensure_ascii=False, indent=2)
+                json_limit = max_body_chars
+                if json_limit > 0 and len(rendered_json) > json_limit:
+                    rendered_json = f"{rendered_json[:json_limit]}..."
+                lines.append(f"JSON: {rendered_json}")
+        return "\n".join(lines)
 
     async def _call_memory(self, tool_name: str, args: dict) -> str:
         """Execute a memory tool call (local implementation)."""
@@ -1387,8 +1622,9 @@ class MCPLifecycleManager(ProbeMixin):
         session = await self._get_or_create_session(server_name)
         config = self.config.mcp.servers.get(server_name)
         timeout_s = self._tool_timeout_seconds(config) if config else 300.0
+        runtime_tool_name = self._runtime_tool_aliases.get((server_name, tool_name), tool_name)
         result = await asyncio.wait_for(
-            session.call_tool(tool_name, arguments=args), timeout=timeout_s
+            session.call_tool(runtime_tool_name, arguments=args), timeout=timeout_s
         )
         rendered, structured, is_error = self._render_mcp_call_result(result)
         if is_error:

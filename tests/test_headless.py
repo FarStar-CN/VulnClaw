@@ -46,7 +46,7 @@ class TestScanModePresets:
         profile = scan_mode_profile(config, "standard")
         s = config.session
         assert profile.max_steps == s.solve_max_steps
-        assert profile.max_intents == s.solve_max_intents
+        assert profile.max_directions == s.solve_max_directions
         assert profile.max_tool_rounds == s.solve_max_tool_rounds
         assert profile.max_parallel == s.solve_max_parallel
         assert profile.max_rounds == s.max_rounds

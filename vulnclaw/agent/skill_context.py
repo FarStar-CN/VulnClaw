@@ -1,13 +1,13 @@
-"""Skill context selection helpers for AgentCore.
+"""Skill reference selection helpers for AgentCore.
 
-Thin adapter over the deterministic :mod:`vulnclaw.skills.resolver`. It derives
-typed routing signals (phase, target type, vuln hints, technologies) from the
-turn's request and session state, resolves a single bundle, records its
-provenance on the session, and renders it as a prompt block (concise primary
-body, support summaries, resolver reason, on-demand reference hints).
+Skills are reference material, not execution scripts.  This module keeps the
+deterministic resolver and provenance trail, but prompt rendering deliberately
+exposes only a compact reference index: selected skill names, descriptions,
+resolver reason, and on-demand reference names.  The actual skill/reference body
+is loaded only when the model chooses ``load_skill_reference``.
 
-Resolving *once* per turn is deliberate: the recorded provenance (attached to
-findings) must name the same bundle that was placed in the prompt.
+Resolving once per turn is deliberate: the recorded provenance attached to
+findings names the same reference bundle that was offered to the model.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from vulnclaw.skills.loader import load_skill_by_name
 from vulnclaw.skills.resolver import SkillQuery, SkillResolver, SkillSelection
 from vulnclaw.skills.routing import keyword_present, normalize_token
 
-# Internal (Chinese) phase labels → resolver's canonical phase tokens. The IDLE
+# Internal Chinese phase labels -> resolver's canonical phase tokens.  The IDLE
 # label is intentionally absent so "not started" contributes no phase signal.
 _PHASE_TOKEN: dict[str, str] = {
     "信息收集": "recon",
@@ -28,7 +28,7 @@ _PHASE_TOKEN: dict[str, str] = {
     "报告生成": "reporting",
 }
 
-# Free-text vuln keyword (bilingual) → canonical vulnerability_class token.
+# Free-text vulnerability keywords (bilingual) -> canonical routing token.
 _VULN_HINT_KEYWORDS: dict[str, str] = {
     "sql注入": "sqli",
     "sqli": "sqli",
@@ -57,12 +57,13 @@ _VULN_HINT_KEYWORDS: dict[str, str] = {
     "横向": "lateral_movement",
 }
 
-# Technology keywords worth passing as a routing signal.
+# Technology keywords worth passing as routing signals.
 _TECH_KEYWORDS = ("php", "java", "python", "nodejs", "node.js", "wordpress", "django", "spring")
 
 
 def _infer_target_type(target: Optional[str], text: str) -> Optional[str]:
-    """Conservatively infer a target type from the target string / request text."""
+    """Conservatively infer a target type from the target string/request text."""
+
     blob = f"{target or ''} {text}".lower()
     if target:
         low = target.lower()
@@ -70,7 +71,7 @@ def _infer_target_type(target: Optional[str], text: str) -> Optional[str]:
             return "web"
         if _looks_like_ip(low):
             return "network"
-    if any(kw in blob for kw in ("apk", "安卓", "android")):
+    if any(keyword in blob for keyword in ("apk", "安卓", "android")):
         return "android"
     if "http://" in blob or "https://" in blob:
         return "web"
@@ -133,7 +134,8 @@ def resolve_active_skill_selection(
     user_input: Optional[str] = None,
     **kwargs: Any,
 ) -> Optional[SkillSelection]:
-    """Resolve the active skill bundle for a turn, or None on no input/error."""
+    """Resolve the optional reference bundle for a turn, or None."""
+
     task_summary = kwargs.get("task_summary")
     if not (user_input or task_summary):
         return None
@@ -145,12 +147,12 @@ def resolve_active_skill_selection(
 
 
 def apply_skill_selection(state: Any, user_input: Optional[str] = None) -> Optional[str]:
-    """Resolve, record provenance on ``state``, and return the prompt context.
+    """Resolve, record provenance on ``state``, and return a reference index.
 
-    Single entry point for :class:`AgentCore`: resolves the bundle once from the
-    session's phase/target/recon signals, stores the selection so findings this
-    turn inherit it, and returns the formatted context for the same bundle.
+    Skill bodies are never injected automatically.  A selected bundle only tells
+    the model which reference files may be useful if it decides to load them.
     """
+
     phase_label = getattr(getattr(state, "phase", None), "value", None)
     selection = resolve_active_skill_selection(
         user_input,
@@ -165,52 +167,46 @@ def apply_skill_selection(state: Any, user_input: Optional[str] = None) -> Optio
 
     if selection and selection.primary:
         return format_selection_context(selection)
-    if user_input:
-        # Explicit input that matched nothing (non-security) → inject nothing.
-        return None
-    return _default_playbook()
+    return None
 
 
 def get_active_skill_context(user_input: Optional[str] = None, **kwargs: Any) -> Optional[str]:
-    """Get prompt context for the most relevant bundle (no provenance recording).
+    """Get the most relevant optional reference index without recording provenance."""
 
-    Standalone helper for callers that only need the rendered context. Non-
-    security input yields nothing; absent any input, the ``pentest-flow``
-    playbook is the session default.
-    """
     if user_input or kwargs.get("task_summary"):
         selection = resolve_active_skill_selection(user_input, **kwargs)
         if selection and selection.primary:
             return format_selection_context(selection)
-        return None
-    return _default_playbook()
-
-
-def _default_playbook() -> Optional[str]:
-    try:
-        skill = load_skill_by_name("pentest-flow")
-        if skill:
-            return skill.get("content", "")
-    except Exception:
-        pass
     return None
 
 
 def format_selection_context(selection: SkillSelection) -> str:
-    """Render a resolved bundle into a prompt block."""
-    parts: list[str] = []
+    """Render a resolved bundle as optional reference material.
+
+    The primary skill instructions are intentionally not injected here.  This
+    keeps the model in control of strategy and makes ``load_skill_reference`` an
+    explicit, model-chosen read action.
+    """
+
+    parts: list[str] = [
+        "These skills are optional reference material only. They are not mandatory "
+        "workflows, phases, checklists, or tool schedules. Use or ignore them based "
+        "on the current evidence and your own reasoning."
+    ]
 
     primary = load_skill_by_name(selection.primary) if selection.primary else None
     if primary:
-        parts.append(primary.get("content", ""))
+        desc = primary.get("description", "").strip()
+        summary = desc.splitlines()[0] if desc else "(no description)"
+        parts.append(f"- primary reference: {selection.primary} — {summary}")
 
     for name in selection.supporting:
         skill = load_skill_by_name(name)
         if not skill:
             continue
         desc = skill.get("description", "").strip()
-        summary = desc.splitlines()[0] if desc else ""
-        parts.append(f"## 支持 Skill: {name}\n{summary}")
+        summary = desc.splitlines()[0] if desc else "(no description)"
+        parts.append(f"- supporting reference: {name} — {summary}")
 
     refs = primary.get("references", []) if primary else []
     if refs:
@@ -218,11 +214,13 @@ def format_selection_context(selection: SkillSelection) -> str:
         if len(refs) > 10:
             ref_list += f", ... ({len(refs)} total)"
         parts.append(
-            "## 可用参考文档\n"
-            f"以下参考文档可在需要时通过 load_skill_reference 加载: {ref_list}"
+            "Available reference files, load only if useful with "
+            f"`load_skill_reference`: {ref_list}"
         )
 
     if selection.reason:
-        parts.append(f"<!-- skill routing: {selection.reason} -->")
+        parts.append(
+            f"<!-- reference routing: {selection.reason}; confidence={selection.confidence:.2f} -->"
+        )
 
-    return "\n\n".join(p for p in parts if p)
+    return "\n\n".join(part for part in parts if part)

@@ -427,12 +427,7 @@ class TestAutoStreamRobustness:
             _Chunk(reasoning="round1 reasoning"),
             _Chunk(tool_calls=[_TCDelta(index=0, id="c1", name="t", arguments="{}")]),
         ])
-        # 第二轮总结：自带新的 reasoning + content
-        second_round = _SyncStream([
-            _Chunk(reasoning="round2 reasoning"),
-            _Chunk(content="summary"),
-        ])
-        mock_client.chat.completions.create.side_effect = [first_round, second_round]
+        mock_client.chat.completions.create.side_effect = [first_round]
 
         async def fake_handle(agent_obj, message):
             return [{"tool_call_id": "c1", "content": "result"}], []
@@ -448,7 +443,7 @@ class TestAutoStreamRobustness:
 
         # round1 的 reasoning 不应在最终文本里重复出现
         assert result.count("round1 reasoning") <= 1
-        # 最终文本应来自第二轮总结
-        assert "summary" in result
-        # round2 reasoning 仅出现一次
-        assert result.count("round2 reasoning") == 1
+        # 工具后不再触发第二轮 Summarizing LLM 调用，返回确定性工具摘要。
+        assert "工具调用已执行" in result
+        assert "result" in result
+        assert mock_client.chat.completions.create.call_count == 1

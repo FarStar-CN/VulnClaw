@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
+from vulnclaw.web.auth import AuthMiddleware
 from vulnclaw.web.schemas import (
     ConfigUpdateRequest,
     ProviderModelsRequest,
@@ -79,6 +81,17 @@ def resolve_web_asset(path: str) -> Path:
     return resolve_web_index()
 
 
+@contextmanager
+def _report_fs_errors():
+    """Map report filesystem errors onto HTTP responses (missing -> 404, denied -> 403)."""
+    try:
+        yield
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
 def create_app():
     """Create the Web UI backend app."""
     if not FASTAPI_AVAILABLE:
@@ -86,8 +99,9 @@ def create_app():
             "FastAPI is not installed. Install the web extra first: pip install vulnclaw[web]"
         )
 
-    app = FastAPI(title="VulnClaw Web UI", version="0.3.3")
+    app = FastAPI(title="VulnClaw Web UI", version="0.3.5")
     app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(AuthMiddleware)
 
     @app.get("/api/health")
     async def health():
@@ -209,37 +223,25 @@ def create_app():
 
     @app.get("/api/reports/content")
     async def report_content(path: str):
-        try:
+        with _report_fs_errors():
             content = read_report_content(path)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
         return content.model_dump(mode="json")
 
     @app.get("/api/reports/download")
     async def report_download(path: str):
-        try:
+        with _report_fs_errors():
             report_path = resolve_report_path(path)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
         media_type = "text/html" if report_path.suffix.lower() == ".html" else "text/markdown"
         return FileResponse(report_path, media_type=media_type, filename=report_path.name)
 
     @app.post("/api/reports/target")
     async def report_target(request: ReportGenerateRequest):
-        try:
+        with _report_fs_errors():
             path = generate_target_report(
                 request.target,
                 request.output_path,
                 request.report_format,
             )
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
         return {"status": "ok", "path": path}
 
     @app.get("/")

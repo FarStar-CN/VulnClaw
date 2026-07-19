@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,8 @@ from typing import Any, Optional
 # 修改时间: 2026-07-08
 # 修改原因: 消除 V2 违规 — 叶子类型已移至 config/domain_models.py。
 from vulnclaw.config.domain_models import VulnerabilityFinding
+
+logger = logging.getLogger(__name__)
 
 
 class VerificationStatus(str, Enum):
@@ -663,7 +666,7 @@ class VulnerabilityVerifier:
         )
 
         # 记录排除原因，但不加入报告
-        print(f"[VERIFIER] 排除漏洞: {original.title} | 原因: {vf.rejection_reason}")
+        logger.info("排除漏洞: %s | 原因: %s", original.title, vf.rejection_reason)
 
     def get_verified_report_findings(self) -> list[VulnerabilityFinding]:
         """获取可写入报告的漏洞列表.

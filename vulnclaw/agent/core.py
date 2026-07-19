@@ -491,6 +491,15 @@ class AgentCore:
     ) -> list[AgentResult]:
         """Autonomous penetration test loop."""
         selected_engine = engine or getattr(self.config.session, "engine", "solve")
+        if selected_engine == "solve":
+            await self.solve(
+                user_input,
+                target=target,
+                max_steps=getattr(self.config.session, "solve_max_steps", max_rounds),
+                max_tool_rounds=getattr(self.config.session, "solve_max_tool_rounds", 6),
+                stream_sink=stream_sink,
+            )
+            return []
         if selected_engine == "team":
             from vulnclaw.agent.team import run_team_pentest
 
@@ -499,7 +508,7 @@ class AgentCore:
                 user_input=user_input,
                 target=target,
                 max_steps=getattr(self.config.session, "solve_max_steps", max_rounds),
-                max_intents=getattr(self.config.session, "solve_max_intents", 3),
+                max_directions=getattr(self.config.session, "solve_max_directions", 3),
                 max_tool_rounds=getattr(self.config.session, "solve_max_tool_rounds", 4),
                 max_parallel=getattr(self.config.session, "solve_max_parallel", 3),
                 stream_sink=stream_sink,
@@ -513,7 +522,7 @@ class AgentCore:
         """Build context string for the current round in auto loop."""
         return build_round_context(self, round_num, max_rounds)
 
-    # ── 目标驱动求解循环（黑板图 OODA，无固定轮数）──────────────────
+    # ── 模型主导自主引擎（AgentState 证据记忆 + 证据闸门）────────────────
 
     async def solve(
         self,
@@ -521,13 +530,14 @@ class AgentCore:
         target: Optional[str] = None,
         *,
         goal: Optional[str] = None,
-        max_steps: int = 40,
-        max_intents: int = 3,
-        max_tool_rounds: int = 4,
+        max_steps: int = 80,
+        max_directions: int | None = None,
+        max_intents: int | None = None,
+        max_tool_rounds: int = 6,
         stream_sink: Optional["StreamSink"] = None,
         on_event: Optional[Callable[[str, dict], None]] = None,
     ) -> Any:
-        """以「目标达成 / 探索前沿耗尽 / 安全预算」为终止条件求解，而非固定轮数。"""
+        """运行模型主导 solve；旧方向/intent 参数仅作调用兼容。"""
         from vulnclaw.agent.solver import solve as run_solve
 
         detected_target = target or self._detect_target(user_input)
@@ -538,15 +548,14 @@ class AgentCore:
 
         resolved_goal = goal or user_input
         origin = detected_target or self.context.state.target or user_input
-        max_parallel = getattr(self.config.session, "solve_max_parallel", 1)
         return await run_solve(
             self,
             origin=origin,
             goal=resolved_goal,
             max_steps=max_steps,
+            max_directions=max_directions,
             max_intents=max_intents,
             max_tool_rounds=max_tool_rounds,
-            max_parallel=max_parallel,
             stream_sink=stream_sink,
             on_event=on_event,
         )

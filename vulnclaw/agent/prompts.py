@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 # ── Base Identity ───────────────────────────────────────────────────
@@ -515,6 +516,26 @@ AUTO_PENTEST_INSTRUCTION = """\
 """
 
 
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _sanitize_target(value: str) -> str:
+    """Strip control characters and normalize a target string for safe prompt embedding.
+
+    Removes newlines, tabs, carriage returns and other C0/C1 control characters
+    that could be abused for prompt injection.  The result is a single-line
+    printable string suitable for concatenation into the system prompt.
+
+    Raises ``ValueError`` if the resulting value is empty.
+    """
+    cleaned = value.replace("\n", "").replace("\r", "").replace("\t", "")
+    cleaned = _CONTROL_CHARS_RE.sub("", cleaned)
+    cleaned = cleaned.strip()
+    if not cleaned:
+        raise ValueError("target must not be empty after sanitization")
+    return cleaned
+
+
 def build_system_prompt(
     target: Optional[str] = None,
     phase: Optional[str] = None,
@@ -527,11 +548,12 @@ def build_system_prompt(
     Args:
         target: Current target identifier (IP/URL).
         phase: Current pentest phase name.
-        skill_context: Additional context from loaded Skill.
+        skill_context: Optional skill reference index. Skill bodies are not
+            automatically injected; the model may load references explicitly.
         mcp_tools: List of available MCP tool schemas.
         enable_personnel_dim: Whether to include dimension 4 (personnel/social eng)
             in the RECON_INSTRUCTION. Defaults to True for backward compatibility.
-            Set to False when user has no social engineering intent.
+            Set to False when user has no social engineering purpose.
 
     Returns:
         Assembled system prompt string.
@@ -540,18 +562,16 @@ def build_system_prompt(
 
     # Target info
     if target:
-        parts.append(f"\n## 当前目标\n当前渗透测试目标: {target}\n")
+        safe_target = _sanitize_target(target)
+        parts.append(f"\n## 当前目标\n当前渗透测试目标: {safe_target}\n")
 
     # Phase description
     if phase and phase in PHASE_DESCRIPTIONS:
         parts.append(PHASE_DESCRIPTIONS[phase])
 
-    # Skill context
+    # Optional skill references
     if skill_context:
-        parts.append(f"\n## 当前 Skill 上下文\n{skill_context}\n")
-
-    # WAF bypass knowledge (always include for MVP)
-    parts.append(WAF_BYPASS_KNOWLEDGE)
+        parts.append(f"\n## Optional Skill References\n{skill_context}\n")
 
     # MCP tools list
     if mcp_tools:

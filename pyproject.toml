@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vulnclaw"
-version = "0.3.3"
-description = "🦞 AI-powered penetration testing CLI tool for cybersecurity professionals"
+version = "0.3.5"
+description = "AI-powered penetration testing CLI tool for cybersecurity professionals"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"

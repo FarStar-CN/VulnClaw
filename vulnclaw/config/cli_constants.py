@@ -36,7 +36,7 @@ ROOT_OPTIONS: tuple[tuple[str, str], ...] = (
 COMMON_TASK_FLAGS: tuple[tuple[str, str], ...] = (
     (
         "--prompt TEXT",
-        "Replace the built-in task prompt entirely. Use this when the default command intent is "
+        "Replace the built-in task prompt entirely. Use this when the default command goal is "
         "close but you need exact wording, credentials context, a lab note, or a custom workflow.",
     ),
     (
@@ -114,11 +114,12 @@ COMMANDS: tuple[ManualTopic, ...] = (
         ),
         notes=(
             "Requires configured LLM credentials (llm.api_key or auth_mode) before the task starts.",
-            "By default (session.engine=solve) this runs the goal-driven solve loop — no fixed round "
-            "count, bounded by session.solve_max_steps/solve_max_intents/solve_max_tool_rounds — and "
-            "stops when the exploration frontier is exhausted, same underlying engine as `vulnclaw "
-            "solve`. Set session.engine=rounds to use the legacy fixed-round auto_pentest loop "
-            "instead (bounded by session.max_rounds).",
+            "By default (session.engine=solve) this runs the model-led solve loop: tools are "
+            "available capabilities, not a forced workflow. session.solve_max_steps is only a "
+            "runaway safety cap. The loop stops when the model reaches verified completion, asks "
+            "the user, finds no viable path, or hits that cap. Set session.engine=rounds to use the legacy fixed-round "
+            "auto_pentest "
+            "loop instead (bounded by session.max_rounds).",
             "Use --allow-actions recon,scan when you want broad coverage but no exploitation.",
         ),
         examples=(
@@ -128,9 +129,9 @@ COMMANDS: tuple[ManualTopic, ...] = (
     ),
     ManualTopic(
         name="solve",
-        summary="Goal-driven solve loop with no fixed round count.",
+        summary="Model-led solve loop with evidence memory and no fixed round count.",
         usage=(
-            "vulnclaw solve TARGET [--goal TEXT] [--max-steps N] [--max-intents N] "
+            "vulnclaw solve TARGET [--goal TEXT] [--max-steps N] [--max-directions N] "
             "[--max-tool-rounds N] [--resume/--no-resume] [--snapshot ID]"
         ),
         flags=(
@@ -143,25 +144,25 @@ COMMANDS: tuple[ManualTopic, ...] = (
             ("--prompt TEXT", "Custom task description that overrides the auto-generated one."),
             (
                 "--max-steps N",
-                "Safety cap on explore steps (not a fixed workflow length; default 40).",
+                "Runaway safety cap for model-led turns (not a fixed workflow length).",
             ),
-            ("--max-intents N", "Max new intents generated per reason step (default 3)."),
+            ("--max-directions N", "Deprecated compatibility option; ignored by model-led solve."),
             (
                 "--max-tool-rounds N",
-                "Max tool-calling rounds per intent exploration (default 4).",
+                "Compatibility option; model-led solve decides tool use per step.",
             ),
             ("--resume / --no-resume", "Resume saved target history by default."),
             ("--snapshot ID", "Resume from a specific target-state snapshot instead of the latest one."),
         ),
         notes=(
-            "Unlike run/persistent, solve has no fixed round count: it searches a Fact/Intent graph "
-            "from the target toward the goal and stops on success or when no path remains.",
+            "Unlike run/persistent, solve has no fixed round count. The model chooses each next "
+            "action and the framework keeps evidence memory plus an evidence gate for completion.",
             "This is the same engine `run` uses by default (session.engine=solve); `solve` exposes "
             "its tuning knobs directly on the command line instead of through config.",
         ),
         examples=(
             "vulnclaw solve https://lab.example --goal 'get a shell'",
-            "vulnclaw solve 10.10.10.5 --max-steps 60 --max-intents 4",
+            "vulnclaw solve 10.10.10.5 --max-steps 60",
         ),
     ),
     ManualTopic(
@@ -354,8 +355,9 @@ COMMANDS: tuple[ManualTopic, ...] = (
             "llm.max_context_tokens, llm.temperature, llm.reasoning_effort. Use `vulnclaw login` "
             "instead of llm.api_key for OAuth-based ChatGPT-subscription auth.",
             "Useful session keys: session.output_dir, session.report_format, session.max_rounds, "
-            "session.engine (solve|rounds), session.solve_max_steps, session.solve_max_intents, "
-            "session.solve_max_tool_rounds, session.solve_max_parallel, session.show_thinking, "
+            "session.engine (solve|rounds), session.solve_max_steps, session.solve_auto_compact, "
+            "session.solve_compact_trigger_ratio, session.solve_max_tool_rounds (compat), "
+            "session.solve_max_parallel (team/legacy), session.show_thinking, "
             "session.persistent_rounds_per_cycle, session.persistent_max_cycles, "
             "session.persistent_auto_report, session.language, session.reasoning_state_enabled, "
             "session.reflexion_enabled, session.plugin_runtime_enabled. The repl_parallel_* keys "

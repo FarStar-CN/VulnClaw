@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 from vulnclaw.agent.constraint_policy import validate_action_constraints
 from vulnclaw.agent.context import TaskConstraints
@@ -14,9 +15,43 @@ from vulnclaw.orchestrator import run_agent_task
 from vulnclaw.web.schemas import TaskCreateRequest
 from vulnclaw.web.task_manager import WebTaskManager
 
+_INJECTION_RE = re.compile(r"[\n\r\t\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _validate_request_inputs(request: TaskCreateRequest) -> None:
+    """Reject user-supplied strings that contain control characters (prompt injection).
+
+    This is a defense-in-depth layer on top of Pydantic validators.  It covers
+    *every* free-text field that is interpolated into prompts or passed to the
+    agent, not just the fields guarded by Pydantic ``@field_validator``.
+    """
+    string_fields = {
+        "target": request.target,
+        "command": request.command,
+        "cve": request.options.cve,
+        "cmd": request.options.cmd,
+        "only_host": request.options.only_host,
+        "only_path": request.options.only_path,
+        "blocked_host": request.options.blocked_host,
+        "blocked_path": request.options.blocked_path,
+        "run_name": request.run_name,
+    }
+    for name, value in string_fields.items():
+        if isinstance(value, str) and _INJECTION_RE.search(value):
+            raise ValueError(
+                f"Field '{name}' contains control characters (newlines/tabs/etc.) — rejected to prevent prompt injection"
+            )
+    if request.additional_targets:
+        for i, t in enumerate(request.additional_targets):
+            if isinstance(t, str) and _INJECTION_RE.search(t):
+                raise ValueError(
+                    f"Field 'additional_targets[{i}]' contains control characters — rejected to prevent prompt injection"
+                )
+
 
 def start_task(manager: WebTaskManager, request: TaskCreateRequest) -> str:
     """Create and schedule a new task."""
+    _validate_request_inputs(request)
     record = manager.create_task(request)
     task = asyncio.create_task(_run_task(manager, record.task_id, request))
     manager.bind_runtime_task(record.task_id, task)

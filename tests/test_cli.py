@@ -123,7 +123,7 @@ class TestCLI:
         monkeypatch.setattr(kb_store, "KB_DIR", tmp_path)
         result = runner.invoke(app, ["kb", "update"])
         assert result.exit_code == 0
-        assert "Knowledge base updated" in result.output or result.output
+        assert "Knowledge base updated" in result.output, f"Expected 'Knowledge base updated' in output: {result.output[:200]}"
         assert (tmp_path / "index.json").exists()
 
     def test_cli_doctor_reports_registered_tools(self, runner):
@@ -269,7 +269,7 @@ class TestCLI:
 
         result = runner.invoke(app, ["report", "https://example.com", "--target"])
         assert result.exit_code == 0
-        assert "Report generated" in result.output or "报告已生成" in result.output or "报告已生成" in result.output or result.output
+        assert "Report generated" in result.output or "报告已生成" in result.output, f"Expected report confirmation in output: {result.output[:200]}"
 
     def test_repl_report_command_uses_current_session_or_target_state(self, runner, monkeypatch):
         import vulnclaw.cli.main as cli_main
@@ -401,12 +401,13 @@ class TestCLI:
 
         monkeypatch.setattr(team, "run_team_pentest", fake_run_team_pentest)
 
-        class DummyBoard:
+        class DummyResearch:
             def get_summary(self):
                 return {
                     "completed": False,
-                    "facts": 1,
-                    "intents": 0,
+                    "steps": 1,
+                    "evidence": 1,
+                    "tool_calls": 0,
                     "complete_reason": "",
                 }
 
@@ -414,7 +415,7 @@ class TestCLI:
             mcp_manager = None
 
             def __init__(self, *_args):
-                self.context = SimpleNamespace(state=SimpleNamespace(board=DummyBoard()))
+                self.context = SimpleNamespace(state=SimpleNamespace(agent_state=DummyResearch()))
 
         async def fake_orchestrated(*, command, target, resume, snapshot, runner):
             await runner(DummyAgent(), config)
@@ -990,6 +991,92 @@ class TestCLI:
 
         assert result == "launch"
         assert session["_nl_text"] == "Use VulnClaw skill ctf-web. find the flag"
+
+    def _make_textual_session(self, monkeypatch, mode):
+        """Build a Textual TUI session with _start_execution stubbed out."""
+        from types import SimpleNamespace
+
+        import vulnclaw.cli.tui as tui_mod
+        import vulnclaw.cli.tui_textual as textual_mod
+
+        session = {
+            "config": SimpleNamespace(
+                llm=SimpleNamespace(provider="test", model="m", api_key="x")
+            ),
+            "state": tui_mod.TuiState(target="https://example.com", mode=mode),
+            "launcher": None,
+            "_action": None,
+            "_prompt": None,
+            "_message": "",
+            "_launch": False,
+        }
+        launched = []
+        monkeypatch.setattr(
+            textual_mod.DashboardScreen,
+            "_start_execution",
+            lambda screen, draft=None, **kw: launched.append(draft),
+        )
+        return textual_mod, session, launched
+
+    @pytest.mark.parametrize("mode", ["deep", "continuous"])
+    async def test_textual_extra_confirm_mode_run_confirmed_launches(self, mode, monkeypatch):
+        """/run in deep/continuous mode: pressing y in the confirm popup must
+        start execution (the async confirm callback sets session["_action"]
+        after _dispatch already returned, so it must be consumed later)."""
+        textual_mod, session, launched = self._make_textual_session(monkeypatch, mode)
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            await pilot.press(*"/run", "escape", "enter")
+            await pilot.pause()
+            popup = app.screen.query_one(textual_mod.SecondaryPopup)
+            assert popup.has_class("open")
+            await pilot.press("y")
+            await pilot.pause()
+            await pilot.pause()
+
+        assert launched, "confirming /run with y should start execution"
+        assert session["_action"] is None
+
+    async def test_textual_deep_mode_run_confirm_via_input_launches(self, monkeypatch):
+        """Answering the deep-mode confirm by typing y in the main input must
+        also start execution (legacy _handle_prompt path)."""
+        from textual.widgets import Input
+
+        textual_mod, session, launched = self._make_textual_session(monkeypatch, "deep")
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            await pilot.press(*"/run", "escape", "enter")
+            await pilot.pause()
+            app.screen.query_one("#cmd-input", Input).focus()
+            await pilot.press("y", "enter")
+            await pilot.pause()
+            await pilot.pause()
+
+        assert launched, "confirming /run with y should start execution"
+
+    async def test_textual_deep_mode_run_declined_does_not_launch(self, monkeypatch):
+        """Pressing n in the deep-mode confirm popup must not start execution."""
+        textual_mod, session, launched = self._make_textual_session(monkeypatch, "deep")
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            await pilot.press(*"/run", "escape", "enter")
+            await pilot.pause()
+            await pilot.press("n")
+            await pilot.pause()
+            await pilot.pause()
+
+        assert not launched
+        assert session["_action"] is None
+
+    async def test_textual_standard_mode_run_launches_without_confirm(self, monkeypatch):
+        """/run in standard mode launches directly, no confirm popup."""
+        textual_mod, session, launched = self._make_textual_session(monkeypatch, "standard")
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            await pilot.press(*"/run", "escape", "enter")
+            await pilot.pause()
+
+        assert launched
 
     def test_skill_slash_with_args_requires_target_by_default(self, monkeypatch):
         import vulnclaw.cli.tui as tui_mod

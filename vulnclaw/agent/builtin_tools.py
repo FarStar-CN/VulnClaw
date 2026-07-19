@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import base64
+import hashlib
 import json
 import os
 import re
@@ -11,14 +14,19 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
 
-from urllib.parse import urlparse
+from urllib.parse import quote, urljoin, urlparse
 
+import httpx
+
+from vulnclaw.agent.agent_state import clip_text, one_line
 from vulnclaw.agent.constraint_policy import validate_tool_action
 from vulnclaw.agent.network_scan import (
     attach_network_scan_to_session,
@@ -33,6 +41,11 @@ from vulnclaw.agent.network_scan import (
     without_privileged_nmap_args,
 )
 from vulnclaw.agent.roles import role_tool_violation, tool_allowed_for_role
+from vulnclaw.agent.tool_result_overrides import set_raw_tool_output_override
+from vulnclaw.config.source_render import (
+    render_highlighted_source_block,
+    strip_highlighted_source,
+)
 
 # 修改者: Nyaecho
 # 修改时间: 2026-07-08
@@ -63,6 +76,109 @@ BLOCKED_PATTERNS: list[str] = [
     r"open\s*\(\s*['\"].*vulnclaw.*config",
     r"open\s*\(\s*['\"].*\.vulnclaw",
 ]
+
+# ── AST-based sandbox bypass detection ──────────────────────────────
+# Regex alone cannot catch dynamic import/loading patterns.
+# This AST checker identifies:
+#   1. importlib.import_module() / importlib.__import__()
+#   2. exec() / eval() / compile() that could hide code
+#   3. getattr() on builtins or modules to access blocked names
+#   4. __builtins__ direct access
+#   5. Dynamic attribute access on dangerous modules (os, subprocess, etc.)
+
+_DANGEROUS_MODULES = frozenset({
+    "os", "subprocess", "shutil", "sys", "socket",
+    "http", "urllib", "requests", "ftplib", "smtplib",
+    "pathlib", "importlib",
+})
+
+_DANGEROUS_BUILTIN_NAMES = frozenset({
+    "open", "exec", "eval", "compile", "__import__",
+    "getattr", "setattr", "delattr", "globals", "locals",
+    "vars", "dir", "type",
+})
+
+
+def _ast_check_sandbox_bypass(code: str) -> str | None:
+    """AST-based check for sandbox bypass patterns.
+
+    Returns a description string if a bypass is detected, None if safe.
+    Catches patterns that regex-based SAFE_MODE_PATTERNS miss:
+    - importlib.import_module('os')
+    - exec("import os; os.system('id')")
+    - getattr(__builtins__, "open")
+    - getattr(alias, "attr") where alias is a dangerous module
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None  # Syntax errors are caught elsewhere
+
+    # Pass 1: collect import aliases (import socket as s → s = socket)
+    _alias_to_module: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local_name = alias.asname if alias.asname else alias.name
+                _alias_to_module[local_name] = alias.name.split(".")[0]
+
+    def _resolve_name(name: str) -> str | None:
+        """Resolve a name to its real module, checking alias map."""
+        if name in _DANGEROUS_MODULES:
+            return name
+        if name in _alias_to_module:
+            real = _alias_to_module[name]
+            if real in _DANGEROUS_MODULES:
+                return real
+        return None
+
+    for node in ast.walk(tree):
+        # 1. exec() / eval() / compile() — can hide arbitrary code
+        if isinstance(node, ast.Call):
+            func = node.func
+            func_name = ""
+            if isinstance(func, ast.Name):
+                func_name = func.id
+            elif isinstance(func, ast.Attribute):
+                func_name = func.attr
+
+            if func_name in ("exec", "eval", "compile"):
+                return "exec/eval/compile detected (bypasses static analysis)"
+
+            # 2. importlib.import_module() / importlib.__import__()
+            if func_name == "import_module" and isinstance(func, ast.Attribute):
+                if isinstance(func.value, ast.Name) and func.value.id == "importlib":
+                    return "importlib.import_module() detected"
+            if func_name == "__import__":
+                return "__import__() detected"
+
+            # 3. getattr() on builtins or modules
+            if func_name == "getattr" and node.args:
+                first_arg = node.args[0]
+                if isinstance(first_arg, ast.Name):
+                    if first_arg.id in ("__builtins__", "builtins"):
+                        return "getattr on __builtins__ detected"
+                    resolved = _resolve_name(first_arg.id)
+                    if resolved:
+                        return f"getattr on module '{resolved}' detected"
+                if isinstance(first_arg, ast.Attribute):
+                    root = first_arg
+                    while isinstance(root, ast.Attribute):
+                        root = root.value
+                    if isinstance(root, ast.Name):
+                        if root.id in ("__builtins__", "builtins"):
+                            return "getattr on __builtins__ detected"
+                        resolved = _resolve_name(root.id)
+                        if resolved:
+                            return f"getattr on module '{resolved}' detected"
+
+        # 4. __builtins__ direct access
+        if isinstance(node, ast.Attribute) and node.attr == "__builtins__":
+            return "__builtins__ access detected"
+        if isinstance(node, ast.Name) and node.id == "__builtins__":
+            return "__builtins__ access detected"
+
+    return None
 
 RESERVED_IP_RANGES: list[tuple[str, str, str]] = [
     ("198.18.0.0", "198.19.255.255", "RFC 2544 基准测试地址"),
@@ -150,6 +266,569 @@ def enforce_traffic_repeat_constraints(
     return None
 
 
+def _agent_state_for_tool(agent: AgentContext) -> Any:
+    state = getattr(getattr(agent, "context", None), "state", None)
+    return getattr(state, "agent_state", None)
+
+
+def execute_evidence_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
+    agent_state = _agent_state_for_tool(agent)
+    if agent_state is None:
+        return "[!] AgentState is not available"
+    if tool_name == "evidence_list":
+        return agent_state.format_evidence_list(limit=int(args.get("limit", 20) or 20))
+    if tool_name == "evidence_view":
+        return agent_state.format_evidence_view(
+            str(args.get("evidence_id", "") or ""),
+            offset=int(args.get("offset", 0) or 0),
+            limit=int(args.get("limit", 12000) or 12000),
+        )
+    if tool_name == "evidence_search":
+        return agent_state.format_evidence_search(
+            str(args.get("query", "") or ""),
+            evidence_id=str(args.get("evidence_id", "") or ""),
+            regex=bool(args.get("regex", False)),
+            context_chars=int(args.get("context_chars", 180) or 180),
+            limit=int(args.get("limit", 12) or 12),
+        )
+    return f"[!] Unknown evidence tool: {tool_name}"
+
+
+def _resolve_workdir(raw_workdir: Any) -> Path:
+    workdir = Path(str(raw_workdir or os.getcwd())).expanduser()
+    return workdir.resolve()
+
+
+def _validate_command_url_scope(agent: AgentContext, command: str) -> str | None:
+    for match in re.finditer(r"https?://[^\s'\"<>]+", command):
+        parsed = urlparse(match.group(0))
+        host = (parsed.hostname or "").lower()
+        path = parsed.path.rstrip("/")
+        violation = enforce_host_path_constraints(
+            agent,
+            host=host,
+            path=path,
+            target=host,
+        )
+        if violation:
+            return violation
+    return None
+
+
+def _shell_argv(command: str, shell_name: str) -> list[str] | str:
+    normalized = (shell_name or "").strip().lower()
+    if os.name == "nt":
+        if normalized in {"cmd", "cmd.exe"}:
+            return ["cmd.exe", "/c", command]
+        executable = "pwsh.exe" if normalized in {"pwsh", "pwsh.exe"} else "powershell.exe"
+        return [executable, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
+    return command
+
+
+async def execute_shell_command(agent: AgentContext, args: dict[str, Any]) -> str:
+    """Run a local shell command and return command output as model-visible evidence."""
+
+    command = str(args.get("command") or args.get("cmd") or "").strip()
+    if not command:
+        return "[!] shell_command requires command"
+    scope_violation = _validate_command_url_scope(agent, command)
+    if scope_violation:
+        return scope_violation
+
+    try:
+        workdir = _resolve_workdir(args.get("workdir"))
+    except OSError as exc:
+        return f"[!] shell_command invalid workdir: {exc}"
+    if not workdir.exists() or not workdir.is_dir():
+        return f"[!] shell_command workdir does not exist or is not a directory: {workdir}"
+
+    timeout_ms = int(args.get("timeout_ms") or 10000)
+    timeout_ms = max(1000, min(timeout_ms, 120000))
+    max_output_chars = int(args.get("max_output_chars") or 0)
+    shell_name = str(args.get("shell") or "")
+    argv = _shell_argv(command, shell_name)
+    use_shell = os.name != "nt"
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    started = time.perf_counter()
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                argv,
+                cwd=str(workdir),
+                shell=use_shell,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_ms / 1000,
+                env=env,
+            ),
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = "\n".join(part for part in (exc.stdout or "", exc.stderr or "") if part)
+        return (
+            f"[!] shell_command timed out after {timeout_ms}ms\n"
+            f"Command: {command}\n"
+            f"Workdir: {workdir}\n"
+            f"Output:\n{output}"
+        )
+    except FileNotFoundError as exc:
+        return f"[!] shell_command failed: shell executable not found ({exc})"
+    except Exception as exc:
+        return f"[!] shell_command failed: {exc.__class__.__name__}: {exc}"
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    parts = [
+        f"Command: {command}",
+        f"Workdir: {workdir}",
+        f"Exit code: {result.returncode}",
+        f"Wall time: {elapsed_ms}ms",
+        "Output:",
+    ]
+    output = ""
+    if result.stdout:
+        output += result.stdout
+    if result.stderr:
+        output += ("\n" if output else "") + "[stderr]\n" + result.stderr
+    if not output:
+        output = "(no output)"
+    raw_output = "\n".join(parts + [output])
+    if max_output_chars > 0 and len(raw_output) > max_output_chars:
+        clip = max_output_chars // 2
+        return raw_output[:clip] + "\n...[truncated by max_output_chars]...\n" + raw_output[-clip:]
+    return raw_output
+
+
+def _strip_highlighted_source(raw: str) -> str:
+    return strip_highlighted_source(raw)
+
+
+def _source_signal_lines(source: str, *, context: int = 1) -> list[str]:
+    markers = (
+        "highlight_file", "show_source", "unserialize", "serialize", "__destruct",
+        "__wakeup", "__tostring", "eval", "assert", "system", "exec(",
+        "shell_exec", "passthru", "call_user_func", "preg_match", "$_cookie",
+        "$_get", "$_post", "$_request", "class ", "function ", "->", "::",
+    )
+    lines = source.splitlines()
+    selected: dict[int, str] = {}
+    for index, line in enumerate(lines):
+        lower = line.lower()
+        if any(marker in lower for marker in markers):
+            for neighbor in range(max(0, index - context), min(len(lines), index + context + 1)):
+                selected[neighbor + 1] = lines[neighbor]
+    return [f"L{line_no}: {line}" for line_no, line in sorted(selected.items())]
+
+
+def _extract_html_surfaces(raw: str) -> list[str]:
+    surfaces: list[str] = []
+    for pattern, label in (
+        (r"(?is)<form\b[^>]*>", "form"),
+        (r"(?is)<input\b[^>]*>", "input"),
+        (r"(?is)<textarea\b[^>]*>", "textarea"),
+        (r"(?is)<select\b[^>]*>", "select"),
+    ):
+        for match in re.finditer(pattern, raw or ""):
+            surfaces.append(f"{label}: {one_line(match.group(0), 260)}")
+    return surfaces[:80]
+
+
+def _extract_endpoints(raw: str) -> list[str]:
+    endpoints: list[str] = []
+    patterns = [
+        r"""(?i)\b(?:href|src|action)\s*=\s*["']([^"']{1,300})["']""",
+        r"""(?i)\b(?:fetch|open)\s*\(\s*["']([^"']{1,300})["']""",
+        r"""(?i)\burl\s*:\s*["']([^"']{1,300})["']""",
+    ]
+    for pattern in patterns:
+        for endpoint in re.findall(pattern, raw or ""):
+            if endpoint and endpoint not in endpoints:
+                endpoints.append(endpoint)
+    return endpoints[:120]
+
+
+async def execute_source_extract(agent: AgentContext, args: dict[str, Any]) -> str:
+    """Normalize highlighted HTML/source evidence and extract vulnerability signals."""
+
+    raw = str(args.get("text") or "")
+    source_label = "inline text"
+    evidence_id = str(args.get("evidence_id") or "").strip()
+    if evidence_id:
+        agent_state = _agent_state_for_tool(agent)
+        if agent_state is None:
+            return "[!] AgentState is not available"
+        for evidence in agent_state.evidence:
+            if evidence.id == evidence_id:
+                raw = evidence.content
+                source_label = f"evidence {evidence_id}"
+                break
+        else:
+            return f"[!] evidence not found: {evidence_id}"
+    if not raw.strip():
+        return "[!] source_extract requires evidence_id or text"
+
+    normalized = _strip_highlighted_source(raw)
+    signal_lines = _source_signal_lines(normalized)
+    surfaces = _extract_html_surfaces(raw)
+    endpoints = _extract_endpoints(raw)
+    parts = [f"# source_extract — {source_label}"]
+    if signal_lines:
+        parts.append("\n## High-signal source lines")
+        parts.extend(signal_lines)
+    if surfaces:
+        parts.append("\n## HTML form/input surfaces")
+        parts.extend(f"- {item}" for item in surfaces)
+    if endpoints:
+        parts.append("\n## Endpoints")
+        parts.extend(f"- {endpoint}" for endpoint in endpoints)
+    parts.append("\n## Normalized source/text")
+    parts.append(normalized)
+    return "\n".join(parts)
+
+
+_PHP_SERIALIZE_LENGTH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([OC]):([0-9]+):")
+_PHP_SERIALIZE_STRING_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])s:([0-9]+):")
+
+
+def _runtime_diff_candidates(args: dict[str, Any]) -> list[tuple[str, str]]:
+    """Build a compact candidate table for parser/filter differential probing."""
+
+    payload = str(args.get("payload") or "")
+    explicit = args.get("candidates") or []
+    mutations = args.get("mutations") or ["signed_lengths", "leading_zero_lengths"]
+    if isinstance(mutations, str):
+        mutations = [mutations]
+    mutation_set = {str(item).strip().lower() for item in mutations if str(item).strip()}
+
+    candidates: list[tuple[str, str]] = []
+    if payload:
+        candidates.append(("original", payload))
+
+    if "signed_lengths" in mutation_set and payload:
+        signed = _PHP_SERIALIZE_LENGTH_TOKEN_RE.sub(r"\1:+\2:", payload)
+        if signed != payload:
+            candidates.append(("signed object/class lengths", signed))
+
+    if "leading_zero_lengths" in mutation_set and payload:
+        padded = _PHP_SERIALIZE_LENGTH_TOKEN_RE.sub(
+            lambda match: f"{match.group(1)}:0{match.group(2)}:",
+            payload,
+        )
+        if padded != payload:
+            candidates.append(("zero-padded object/class lengths", padded))
+
+    if "lowercase_type" in mutation_set and payload:
+        lowered = _PHP_SERIALIZE_LENGTH_TOKEN_RE.sub(
+            lambda match: f"{match.group(1).lower()}:{match.group(2)}:",
+            payload,
+        )
+        if lowered != payload:
+            candidates.append(("lowercase object/class token", lowered))
+
+    if "uppercase_string_type" in mutation_set and payload:
+        upper_s = _PHP_SERIALIZE_STRING_TOKEN_RE.sub(r"S:\1:", payload)
+        if upper_s != payload:
+            candidates.append(("uppercase string token", upper_s))
+
+    if isinstance(explicit, list):
+        for index, item in enumerate(explicit, start=1):
+            if isinstance(item, dict):
+                value = str(item.get("payload") or item.get("value") or "")
+                label = str(item.get("label") or f"candidate {index}")
+            else:
+                value = str(item or "")
+                label = f"candidate {index}"
+            if value:
+                candidates.append((label, value))
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for label, value in candidates:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append((label, value))
+    return deduped[:40]
+
+
+def _parse_python_regex(pattern: str) -> tuple[str, int]:
+    """Parse a PCRE-style /pattern/flags string for lightweight local checks."""
+
+    raw = str(pattern or "")
+    flags = 0
+    if len(raw) >= 2 and raw.startswith("/"):
+        escaped = False
+        for index in range(len(raw) - 1, 0, -1):
+            if raw[index] != "/" or escaped:
+                escaped = raw[index] == "\\" and not escaped
+                continue
+            body = raw[1:index]
+            suffix = raw[index + 1 :]
+            if "i" in suffix:
+                flags |= re.IGNORECASE
+            if "s" in suffix:
+                flags |= re.DOTALL
+            if "m" in suffix:
+                flags |= re.MULTILINE
+            return body, flags
+    return raw, flags
+
+
+def _execute_regex_diff_probe(args: dict[str, Any]) -> str:
+    filter_regex = str(args.get("filter_regex") or args.get("regex") or "")
+    candidates = _runtime_diff_candidates(args)
+    if not filter_regex:
+        return "[!] runtime_diff_probe regex mode requires filter_regex"
+    if not candidates:
+        return "[!] runtime_diff_probe requires payload or candidates"
+
+    pattern, flags = _parse_python_regex(filter_regex)
+    lines = [
+        "# runtime_diff_probe - regex",
+        f"filter_regex={filter_regex}",
+        f"candidate_count={len(candidates)}",
+    ]
+    try:
+        compiled = re.compile(pattern, flags)
+    except re.error as exc:
+        return f"[!] runtime_diff_probe invalid regex for Python check: {exc}"
+
+    for index, (label, value) in enumerate(candidates, start=1):
+        hit = bool(compiled.search(value))
+        lines.extend(
+            [
+                f"\n[{index}] {label}",
+                f"filter_hit={str(hit).lower()}",
+                f"length={len(value)}",
+                f"urlencoded={quote(value, safe='')}",
+                f"raw={value}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _strip_php_open_close_tags(code: str) -> str:
+    text = str(code or "").strip()
+    text = re.sub(r"^\s*<\?php", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\?>\s*$", "", text)
+    return text.strip()
+
+
+def _b64_php_string(value: str) -> str:
+    return base64.b64encode(str(value or "").encode("utf-8", errors="replace")).decode("ascii")
+
+
+def _detect_target_runtime(agent: AgentContext, args: dict[str, Any]) -> str:
+    explicit = str(args.get("target_runtime") or "").strip()
+    if explicit:
+        return one_line(explicit, 120)
+    agent_state = _agent_state_for_tool(agent)
+    if agent_state is None:
+        return ""
+    for evidence in reversed(getattr(agent_state, "evidence", [])[-24:]):
+        text = "\n".join(
+            part
+            for part in (
+                getattr(evidence, "summary", ""),
+                getattr(evidence, "preview", ""),
+                getattr(evidence, "content", "")[:4000],
+            )
+            if part
+        )
+        match = re.search(r"\bPHP/([0-9]+(?:\.[0-9]+){0,2})\b", text, re.IGNORECASE)
+        if match:
+            return f"PHP/{match.group(1)}"
+        match = re.search(r"\bPHP\s+([0-9]+(?:\.[0-9]+){0,2})\b", text, re.IGNORECASE)
+        if match:
+            return f"PHP/{match.group(1)}"
+    return ""
+
+
+def _build_php_runtime_diff_script(
+    *,
+    filter_regex: str,
+    candidates: list[tuple[str, str]],
+    class_defs: str,
+) -> str:
+    entries = []
+    for label, payload in candidates:
+        entries.append(
+            "array('label'=>base64_decode('%s'),'payload'=>base64_decode('%s'))"
+            % (_b64_php_string(label), _b64_php_string(payload))
+        )
+    class_block = _strip_php_open_close_tags(class_defs)
+    return "\n".join(
+        [
+            "<?php",
+            "error_reporting(E_ALL);",
+            class_block,
+            "$filter = base64_decode('%s');" % _b64_php_string(filter_regex),
+            "$candidates = array(%s);" % ",".join(entries),
+            "echo \"# runtime_diff_probe - php_serialize\\n\";",
+            "echo \"local_php_version=\" . PHP_VERSION . \"\\n\";",
+            "echo \"filter_regex=\" . $filter . \"\\n\";",
+            "echo \"candidate_count=\" . count($candidates) . \"\\n\";",
+            "foreach ($candidates as $i => $item) {",
+            "    $label = $item['label'];",
+            "    $payload = $item['payload'];",
+            "    echo \"\\n[\" . ($i + 1) . \"] \" . $label . \"\\n\";",
+            "    echo \"length=\" . strlen($payload) . \"\\n\";",
+            "    if ($filter !== '') {",
+            "        $hit = @preg_match($filter, $payload);",
+            "        echo \"filter_hit=\" . var_export($hit, true) . \"\\n\";",
+            "    } else {",
+            "        echo \"filter_hit=not_tested\\n\";",
+            "    }",
+            "    ob_start();",
+            "    $result = @unserialize($payload);",
+            "    $ok = !($result === false && $payload !== 'b:0;');",
+            "    if (is_object($result)) {",
+            "        $result_class = get_class($result);",
+            "    } else {",
+            "        $result_class = '';",
+            "    }",
+            "    $result_type = gettype($result);",
+            "    unset($result);",
+            "    $side = ob_get_clean();",
+            "    echo \"unserialize_ok=\" . ($ok ? 'true' : 'false') . \"\\n\";",
+            "    echo \"result_type=\" . $result_type . \"\\n\";",
+            "    if ($result_class !== '') { echo \"result_class=\" . $result_class . \"\\n\"; }",
+            "    if ($side !== '') { echo \"side_effect_output=\" . json_encode($side) . \"\\n\"; }",
+            "    echo \"urlencoded=\" . rawurlencode($payload) . \"\\n\";",
+            "    echo \"raw=\" . $payload . \"\\n\";",
+            "}",
+            "?>",
+        ]
+    )
+
+
+async def _execute_php_serialize_diff_probe(
+    args: dict[str, Any],
+    *,
+    target_runtime: str = "",
+) -> str:
+    filter_regex = str(args.get("filter_regex") or args.get("regex") or "")
+    candidates = _runtime_diff_candidates(args)
+    if not candidates:
+        return "[!] runtime_diff_probe requires payload or candidates"
+
+    php = shutil.which("php")
+    if not php:
+        return "[!] runtime_diff_probe php_serialize mode requires php in PATH"
+
+    timeout_ms = max(1000, min(int(args.get("timeout_ms") or 10000), 120000))
+    max_output_chars = int(args.get("max_output_chars") or 0)
+    class_defs = str(args.get("class_defs") or "")
+    script = _build_php_runtime_diff_script(
+        filter_regex=filter_regex,
+        candidates=candidates,
+        class_defs=class_defs,
+    )
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="vulnclaw-runtime-diff-"))
+    script_path = tmp_dir / "probe.php"
+    script_path.write_text(script, encoding="utf-8")
+    started = time.perf_counter()
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [php, str(script_path)],
+                cwd=str(tmp_dir),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_ms / 1000,
+            ),
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = "\n".join(part for part in (exc.stdout or "", exc.stderr or "") if part)
+        return (
+            f"[!] runtime_diff_probe timed out after {timeout_ms}ms\n"
+            f"Output:\n{output}"
+        )
+    finally:
+        try:
+            script_path.unlink(missing_ok=True)
+            tmp_dir.rmdir()
+        except Exception:
+            pass
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    output = result.stdout or ""
+    if result.stderr:
+        output += ("\n" if output else "") + "[stderr]\n" + result.stderr
+    if not output:
+        output = "(no output)"
+    raw = "\n".join(
+        [
+            f"Command: {php} {script_path.name}",
+            f"Exit code: {result.returncode}",
+            f"Wall time: {elapsed_ms}ms",
+            "Output:",
+            output,
+        ]
+    )
+    local_match = re.search(r"local_php_version=([0-9]+(?:\.[0-9]+){0,2})", output)
+    local_runtime = f"PHP/{local_match.group(1)}" if local_match else ""
+    has_signed_candidate = any(label == "signed object/class lengths" for label, _ in candidates)
+    target_is_php5 = bool(re.search(r"PHP/5(?:\.|$)", target_runtime, re.IGNORECASE))
+    if target_runtime and local_runtime and target_runtime.lower() != local_runtime.lower():
+        if target_is_php5 and has_signed_candidate:
+            for label, payload in candidates:
+                if label != "signed object/class lengths":
+                    continue
+                raw += (
+                    "\n[remote_verification_required] signed object/class length candidate "
+                    f"targets {target_runtime} and bypasses digit-only object filters. "
+                    "REMOTE VERIFICATION OUTRANKS LOCAL unserialize_ok=false when the local "
+                    "PHP runtime is newer/different. Replay this exact candidate against the "
+                    "remote endpoint before declaring the bypass dead.\n"
+                    f"remote_candidate_raw={payload}\n"
+                    f"remote_candidate_urlencoded={quote(payload, safe='')}"
+                )
+        note = (
+            f"[compatibility_note] target_runtime={target_runtime}; local_runtime={local_runtime}. "
+            "Local parser behavior may differ from the target; do not discard filter-missed "
+            "candidates solely because the local runtime rejected them."
+        )
+        if target_is_php5 and has_signed_candidate:
+            note += (
+                " PHP 5.x serialized parsers may accept signed object/class length tokens "
+                "such as O:+n:/C:+n: while regex filters like /[oc]:\\d+:/i miss them; "
+                "remote-verify the exact URL-encoded signed candidate."
+            )
+        raw += "\n" + note
+    if max_output_chars > 0 and len(raw) > max_output_chars:
+        clip = max_output_chars // 2
+        return raw[:clip] + "\n...[truncated by max_output_chars]...\n" + raw[-clip:]
+    return raw
+
+
+async def execute_runtime_diff_probe(agent: AgentContext, args: dict[str, Any]) -> str:
+    """Run compact local parser/filter differential checks.
+
+    This tool is intentionally general-purpose: the model decides when a target
+    has a regex/string filter in front of a runtime parser and needs a fast
+    local table of "accepted by parser, missed by filter" candidates.
+    """
+
+    mode = str(args.get("mode") or args.get("parser") or "regex").strip().lower()
+    if mode in {"regex", "generic", "filter"}:
+        return _execute_regex_diff_probe(args)
+    if mode in {"php_serialize", "php_unserialize", "php-serialize", "php"}:
+        return await _execute_php_serialize_diff_probe(
+            args,
+            target_runtime=_detect_target_runtime(agent, args),
+        )
+    return "[!] runtime_diff_probe mode must be regex or php_serialize"
+
+
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
     """Execute a tool call via MCP manager or built-in tools."""
     violation = role_tool_violation(getattr(agent, "active_role", None), tool_name)
@@ -189,6 +868,21 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
                 return violation
         # traffic_repeat issues a real network request; keep the loop responsive.
         return await asyncio.to_thread(dispatch_traffic_tool, store, tool_name, args)
+
+    if tool_name in {"evidence_list", "evidence_view", "evidence_search"}:
+        return execute_evidence_tool(agent, tool_name, args)
+
+    if tool_name == "source_extract":
+        return await execute_source_extract(agent, args)
+
+    if tool_name == "runtime_diff_probe":
+        return await execute_runtime_diff_probe(agent, args)
+
+    if tool_name == "shell_command":
+        return await execute_shell_command(agent, args)
+
+    if tool_name == "http_probe_batch":
+        return await execute_http_probe_batch(agent, args)
 
     if tool_name == "python_execute":
         return await execute_python(agent, args)
@@ -384,7 +1078,11 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
             "type": "function",
             "function": {
                 "name": "load_skill_reference",
-                "description": "加载指定 Skill 的参考文档，获取详细的渗透测试方法论、工作流或命令参考。当系统提示中提到'可用参考文档'时，使用此工具获取具体内容。",
+                "description": (
+                    "Load an optional Skill reference document. Returned content is reference "
+                    "material only, not a mandatory workflow, phase plan, or tool schedule; "
+                    "the model decides whether it is useful for the current evidence."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -407,13 +1105,342 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
         {
             "type": "function",
             "function": {
+                "name": "evidence_list",
+                "description": (
+                    "List raw evidence records saved from prior tool calls. Use this when you need "
+                    "to orient yourself or find an evidence id for a previous large output."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum recent evidence records to list (default 20).",
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "evidence_view",
+                "description": (
+                    "View raw saved evidence by id. Use offset/limit only for missing chunks of "
+                    "large output; do not reread the same id/range. Redundant ranges may be "
+                    "suppressed to prevent evidence-reading loops."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Evidence id from evidence_list or a prior tool result, e.g. e001.",
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Character offset for paging through raw output (default 0).",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum characters to return, capped internally (default 12000).",
+                        },
+                    },
+                    "required": ["evidence_id"],
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "evidence_search",
+                "description": (
+                    "Search raw saved evidence by substring or regex and return bounded snippets "
+                    "with evidence ids and offsets. Use this before rereading a large body when "
+                    "you need to find source/sink/parameter/token/flag text inside prior raw output."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Substring or regex to search for, e.g. unserialize, flag, name=\"id\".",
+                        },
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Optional evidence id to search inside, e.g. e004.",
+                        },
+                        "regex": {
+                            "type": "boolean",
+                            "description": "Interpret query as a regex. Default false.",
+                        },
+                        "context_chars": {
+                            "type": "integer",
+                            "description": "Characters of raw context around each match. Default 180.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum matches to return. Default 12, capped internally.",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "source_extract",
+                "description": (
+                    "Normalize messy HTML/highlight_file/source evidence into readable text and "
+                    "extract high-signal PHP/web surfaces such as forms, endpoints, unserialize, "
+                    "magic methods, eval sinks, taint sources and filters. Use it when raw body "
+                    "contains highlighted or noisy source code."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Evidence id to normalize, e.g. e004. Prefer this for saved fetch/http outputs.",
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Inline raw HTML/source text to normalize when no evidence id exists.",
+                        },
+                    },
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "runtime_diff_probe",
+                "description": (
+                    "Run a compact local parser/filter differential table. Use when evidence shows "
+                    "a regex/string filter before a runtime parser/interpreter and you need to find "
+                    "inputs accepted by the parser but missed by the filter. Supports generic regex "
+                    "checks and PHP serialize/unserialize checks; this is local verification only."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "description": "regex or php_serialize. Default regex.",
+                        },
+                        "filter_regex": {
+                            "type": "string",
+                            "description": "Observed filter regex, e.g. /[oc]:\\d+:/i.",
+                        },
+                        "payload": {
+                            "type": "string",
+                            "description": "Canonical payload to mutate and compare against the filter/parser.",
+                        },
+                        "candidates": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "payload": {"type": "string"},
+                                },
+                            },
+                            "description": "Optional explicit candidate payloads to test.",
+                        },
+                        "mutations": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional mutation names. For php_serialize: signed_lengths, "
+                                "leading_zero_lengths, lowercase_type, uppercase_string_type."
+                            ),
+                        },
+                        "class_defs": {
+                            "type": "string",
+                            "description": (
+                                "PHP class definitions for php_serialize mode, without <?php tags. "
+                                "Use minimal local definitions needed to validate unserialize behavior."
+                            ),
+                        },
+                        "target_runtime": {
+                            "type": "string",
+                            "description": (
+                                "Optional target runtime/version observed from headers/source, e.g. "
+                                "PHP/5.6.40. If omitted, VulnClaw tries to infer it from evidence."
+                            ),
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Local runtime timeout in milliseconds, default 10000.",
+                        },
+                        "max_output_chars": {
+                            "type": "integer",
+                            "description": (
+                                "Optional command-level output cap before evidence storage; omitted "
+                                "or 0 keeps raw output intact, while large active-context observations "
+                                "may still be represented by a high-signal preview."
+                            ),
+                        },
+                    },
+                    "required": ["filter_regex"],
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "shell_command",
+                "description": (
+                    "Run a local shell command when local verification or exact request fidelity is "
+                    "useful. Good uses include php -r serialization checks, curl requests with raw "
+                    "cookies/headers, rg/Select-String over saved files, and small one-off scripts. "
+                    "Set workdir when the command depends on files. Raw stdout/stderr are saved as "
+                    "evidence; large active-context observations are bounded high-signal previews."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Shell command to run."},
+                        "workdir": {
+                            "type": "string",
+                            "description": "Working directory. Defaults to the VulnClaw process cwd.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Command timeout in milliseconds, default 10000, capped at 120000.",
+                        },
+                        "shell": {
+                            "type": "string",
+                            "description": "Windows: powershell (default), pwsh, or cmd. Other OSes use the default shell.",
+                        },
+                        "max_output_chars": {
+                            "type": "integer",
+                            "description": (
+                                "Optional command-level output cap before evidence storage; omitted "
+                                "or 0 keeps raw output intact, while large active-context observations "
+                                "may still be represented by a high-signal preview."
+                            ),
+                        },
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "http_probe_batch",
+                "description": (
+                    "Batch HTTP probe tool for comparing many URL/parameter/header/body variants "
+                    "in one call. Use it when repeated fetch/python_execute calls would only differ "
+                    "by payload, query params, raw URL encoding, headers, or POST body. It returns "
+                    "status/length/hash/title/body signals, the audited request surface, same-body "
+                    "groups, and raw response bodies saved as evidence. Large active-context "
+                    "observations are bounded high-signal previews."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "base_url": {
+                            "type": "string",
+                            "description": "Optional base URL used to resolve relative request urls.",
+                        },
+                        "requests": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "method": {
+                                        "type": "string",
+                                        "description": "GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS; default GET.",
+                                    },
+                                    "url": {
+                                        "type": "string",
+                                        "description": "Full or relative URL. Params are encoded via params.",
+                                    },
+                                    "raw_url": {
+                                        "type": "string",
+                                        "description": "Full or relative URL sent exactly as supplied; params is ignored.",
+                                    },
+                                    "params": {
+                                        "type": "object",
+                                        "description": "Query parameters for url mode.",
+                                    },
+                                    "headers": {
+                                        "type": "object",
+                                        "description": (
+                                            "Per-request headers. For exact Cookie payloads or values "
+                                            "containing semicolons/quotes/braces, prefer headers.Cookie "
+                                            "with the already-encoded raw value."
+                                        ),
+                                    },
+                                    "cookies": {
+                                        "type": "object",
+                                        "description": (
+                                            "Simple per-request cookies. Use headers.Cookie instead "
+                                            "when cookie serialization/encoding must be exact."
+                                        ),
+                                    },
+                                    "data": {
+                                        "description": "Form body or raw body for POST/OPTIONS probes."
+                                    },
+                                    "json": {"description": "JSON body for POST/OPTIONS probes."},
+                                    "label": {"type": "string", "description": "Short label for the variant."},
+                                },
+                            },
+                            "description": "Probe variants, max 30 per call.",
+                        },
+                        "timeout": {"type": "number", "description": "Per-request timeout seconds, 1-30."},
+                        "follow_redirects": {
+                            "type": "boolean",
+                            "description": "Whether to follow redirects; default true.",
+                        },
+                        "verify_tls": {
+                            "type": "boolean",
+                            "description": "Verify TLS certificates; default false for CTF/lab compatibility.",
+                        },
+                        "max_body_chars": {
+                            "type": "integer",
+                            "description": "Optional max body chars per response; omitted or 0 returns full bodies.",
+                        },
+                    },
+                    "required": ["requests"],
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
                 "name": "python_execute",
                 "description": (
                     "执行 Python 代码片段。用于：构造复杂 HTTP 请求并解析响应、"
                     "做编码转换和数据处理、批量测试不同 payload、比较响应差异、"
                     "执行数学计算等。代码在受限环境中执行，超时 30 秒。"
                     "预装库：requests, beautifulsoup4, pycryptodome, base64, json, re 等。"
-                    "重要：构造 HTTP 请求时请使用此工具而非猜测响应内容。"
+                    "普通 HTTP/HTTPS 请求优先使用 fetch 或 http_probe_batch，避免用 Python 手写请求浪费上下文；"
+                    "只有需要复杂解析、生成 payload 或批量逻辑时再使用此工具。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -479,14 +1506,14 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
             "function": {
                 "name": "nmap_scan",
                 "description": (
-                    "nmap 网络端口扫描工具。信息收集时用于发现目标开放端口、服务版本和操作系统指纹。\n"
+                    "nmap 网络端口扫描工具。适合在端口、服务版本或网络暴露面会影响下一步判断时使用。\n"
                     "用法示例：\n"
                     "  扫描常见端口: scan_type=top_ports, target=1.2.3.4\n"
                     "  SYN扫描: scan_type=syn, target=1.2.3.4（需要管理员权限）\n"
                     "  服务版本检测: scan_type=service, target=1.2.3.4\n"
                     "  漏洞扫描: scan_type=vuln, target=1.2.3.4\n"
                     "  全量扫描: scan_type=full, target=1.2.3.4\n"
-                    "优先使用 nmap_scan 而非 python_execute 构造 socket 扫描，nmap 更专业更准确。"
+                    "如果只需验证一个具体 HTTP/Web 行为，可以选择其他更轻量工具。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -586,7 +1613,7 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
                 "name": "space_search",
                 "description": (
                     "空间测绘资产搜索（FOFA/Hunter/Quake/Shodan/ZoomEye/0.zone 零零信安）。"
-                    "信息收集阶段用于被动发现目标资产、IP、端口、子域、标题、组件指纹，不直接接触目标。"
+                    "可在需要被动发现目标资产、IP、端口、子域、标题或组件指纹时使用，不直接接触目标。"
                     "给 domain 自动按各引擎语法构造 domain 查询；也可传完整 query 语法。"
                     "engine=all 时并发查询所有已配置 key 的引擎。"
                 ),
@@ -619,7 +1646,7 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
                 "name": "subdomain_enum",
                 "description": (
                     "子域名枚举。先用已配置的空间测绘引擎被动聚合，再用内置小字典做 DNS 解析爆破，"
-                    "返回去重后的存活子域名列表。优先于 python_execute 自己写爆破。"
+                    "返回去重后的存活子域名列表；是否需要枚举由模型根据当前任务判断。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -645,7 +1672,7 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
                     "JS 信息收集（参考 URLFinder）。抓取目标页面及其引用的全部 .js 文件，"
                     "提取 API 接口/路径、关联域名、绝对 URL，以及疑似硬编码密钥（AK/SK、token、JWT、私钥等）。"
                     "默认 auto_probe=true：自动对收集到的同源接口逐个做未授权访问探测（仅安全 GET，跳过破坏性接口）。"
-                    "信息收集阶段优先调用，用真实提取的端点反哺后续测试，而非凭空猜接口。"
+                    "适合在页面脚本可能包含端点、路径或硬编码线索时按需调用。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -999,6 +2026,348 @@ def parse_nmap_xml(xml_output: str, target: str) -> str:
     return "\n".join(lines) or f"nmap 扫描完成（无输出）: {target}"
 
 
+_HTTP_PROBE_ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+_HTTP_PROBE_MAX_REQUESTS = 30
+_HTTP_PROBE_DEFAULT_TIMEOUT = 10.0
+_HTTP_PROBE_DEFAULT_BODY_CHARS_LIMIT = 0
+_HTTP_PROBE_SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "x-auth-token",
+    "x-access-token",
+}
+
+
+async def execute_http_probe_batch(agent: AgentContext, args: dict[str, Any]) -> str:
+    """Run HTTP probes for URL/param/header/body variants."""
+
+    specs = args.get("requests", [])
+    if not isinstance(specs, list) or not specs:
+        return "[!] http_probe_batch requires a non-empty requests array"
+    specs = specs[:_HTTP_PROBE_MAX_REQUESTS]
+
+    base_url = str(args.get("base_url", "") or "").strip()
+    timeout = _bounded_float(args.get("timeout", _HTTP_PROBE_DEFAULT_TIMEOUT), 1.0, 30.0)
+    follow_redirects = bool(args.get("follow_redirects", True))
+    verify_tls = bool(args.get("verify_tls", False))
+    max_body_chars = _coerce_nonnegative_int(
+        args.get("max_body_chars"),
+        default=_HTTP_PROBE_DEFAULT_BODY_CHARS_LIMIT,
+    )
+
+    prepared: list[dict[str, Any]] = []
+    for index, raw_spec in enumerate(specs, start=1):
+        if not isinstance(raw_spec, dict):
+            prepared.append({"index": index, "error": "request spec must be an object"})
+            continue
+        prepared.append(_prepare_http_probe_request(agent, base_url, index, raw_spec))
+
+    def _run() -> str:
+        results: list[dict[str, Any]] = []
+        with httpx.Client(
+            follow_redirects=follow_redirects,
+            timeout=timeout,
+            verify=verify_tls,
+            headers={"User-Agent": "VulnClaw-http_probe_batch/1.0"},
+        ) as client:
+            for item in prepared:
+                if item.get("error"):
+                    results.append(item)
+                    continue
+                results.append(_execute_one_http_probe(client, item, max_body_chars))
+        return _format_http_probe_batch(results)
+
+    return await asyncio.to_thread(_run)
+
+
+def _bounded_float(value: Any, lower: float, upper: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return lower
+    return max(lower, min(parsed, upper))
+
+
+def _coerce_nonnegative_int(value: Any, *, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
+
+
+def _prepare_http_probe_request(
+    agent: AgentContext,
+    base_url: str,
+    index: int,
+    spec: dict[str, Any],
+) -> dict[str, Any]:
+    method = str(spec.get("method", "GET") or "GET").upper()
+    label = str(spec.get("label", "") or "")
+    if method not in _HTTP_PROBE_ALLOWED_METHODS:
+        return {"index": index, "label": label, "error": f"method {method} is not allowed"}
+
+    uses_raw_url = bool(spec.get("raw_url"))
+    requested_url = str(spec.get("raw_url") or spec.get("url") or base_url or "").strip()
+    if not requested_url:
+        return {"index": index, "label": label, "error": "missing url/raw_url/base_url"}
+    url = _resolve_probe_url(base_url, requested_url)
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return {"index": index, "label": label, "url": url, "error": "url must be http(s)"}
+
+    host_violation = enforce_host_path_constraints(
+        agent,
+        host=parsed.hostname.lower(),
+        path=(parsed.path or "/").rstrip("/") or "/",
+        target=parsed.hostname,
+    )
+    if host_violation:
+        return {"index": index, "label": label, "url": url, "error": host_violation}
+
+    port = infer_port_from_url(url)
+    if port is not None:
+        port_violation = enforce_port_constraints(agent, [port], target=parsed.hostname)
+        if port_violation:
+            return {"index": index, "label": label, "url": url, "error": port_violation}
+
+    return {
+        "index": index,
+        "label": label,
+        "method": method,
+        "url": url,
+        "raw_url": uses_raw_url,
+        "params": None if uses_raw_url else _object_or_none(spec.get("params")),
+        "headers": _string_dict(spec.get("headers")),
+        "cookies": _string_dict(spec.get("cookies")),
+        "data": spec.get("data", spec.get("body")),
+        "json": spec.get("json") if "json" in spec else None,
+    }
+
+
+def _resolve_probe_url(base_url: str, requested_url: str) -> str:
+    parsed = urlparse(requested_url)
+    if parsed.scheme:
+        return requested_url
+    if not base_url:
+        return requested_url
+    return urljoin(base_url.rstrip("/") + "/", requested_url)
+
+
+def _object_or_none(value: Any) -> Any:
+    return value if isinstance(value, (dict, list, tuple, str)) else None
+
+
+def _string_dict(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): str(v) for k, v in value.items() if k is not None and v is not None}
+
+
+def _jsonish_one_line(value: Any, limit: int = 700) -> str:
+    if isinstance(value, (dict, list, tuple)):
+        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    else:
+        rendered = str(value)
+    return one_line(rendered, limit)
+
+
+def _masked_probe_headers(headers: dict[str, str]) -> dict[str, str]:
+    masked: dict[str, str] = {}
+    for key, value in (headers or {}).items():
+        normalized = str(key).lower()
+        if normalized in _HTTP_PROBE_SENSITIVE_HEADER_NAMES:
+            masked[str(key)] = "[masked]"
+        else:
+            masked[str(key)] = str(value)
+    return masked
+
+
+def _cookies_need_exact_header(cookies: dict[str, str]) -> bool:
+    for value in (cookies or {}).values():
+        text = str(value)
+        if any(marker in text for marker in (";", "{", "}", '"', "'", "\r", "\n")):
+            return True
+    return False
+
+
+def _probe_request_surface_lines(item: dict[str, Any]) -> list[str]:
+    lines = [f"request={item.get('method', 'GET')} {item.get('url', '')}"]
+    if item.get("params") is not None:
+        lines.append(f"params={_jsonish_one_line(item.get('params'))}")
+    headers = item.get("headers") or {}
+    if headers:
+        lines.append(f"headers={_jsonish_one_line(_masked_probe_headers(headers))}")
+    cookies = item.get("cookies") or {}
+    if cookies:
+        note = (
+            " [exact-cookie-note: value contains raw delimiters; prefer headers.Cookie "
+            "when byte-exact delivery matters]"
+            if _cookies_need_exact_header(cookies)
+            else ""
+        )
+        lines.append(f"cookies={_jsonish_one_line(cookies)}{note}")
+    if item.get("data") is not None:
+        lines.append(f"body={_jsonish_one_line(item.get('data'))}")
+    if item.get("json") is not None:
+        lines.append(f"json={_jsonish_one_line(item.get('json'))}")
+    return lines
+
+
+def _execute_one_http_probe(
+    client: httpx.Client,
+    item: dict[str, Any],
+    max_body_chars: int,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        response = client.request(
+            item["method"],
+            item["url"],
+            params=item.get("params"),
+            headers=item.get("headers") or None,
+            cookies=item.get("cookies") or None,
+            data=item.get("data"),
+            json=item.get("json"),
+        )
+        duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+        body = response.text or ""
+        body_output, body_truncated = _body_with_optional_limit(body, max_body_chars)
+        digest = hashlib.sha256(response.content or b"").hexdigest()[:12]
+        return {
+            **item,
+            "status": response.status_code,
+            "effective_url": str(response.url),
+            "length": len(response.content or b""),
+            "hash": digest,
+            "response_headers": dict(response.headers),
+            "title": _extract_html_title(body),
+            "signals": _http_body_signals(body, 800),
+            "decoded_source": render_highlighted_source_block(body, max_chars=max_body_chars),
+            "body_chars": len(body),
+            "body": body_output,
+            "body_truncated": body_truncated,
+            "duration_ms": duration_ms,
+            "location": response.headers.get("location", ""),
+            "content_type": response.headers.get("content-type", ""),
+        }
+    except httpx.HTTPError as exc:
+        duration_ms = max(0, int((time.perf_counter() - started) * 1000))
+        return {
+            **item,
+            "error": f"{exc.__class__.__name__}: {one_line(str(exc), 220)}",
+            "duration_ms": duration_ms,
+        }
+
+
+def _extract_html_title(body: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", body or "", re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return one_line(re.sub(r"<[^>]+>", "", match.group(1)), 120)
+
+
+def _http_body_signals(body: str, limit: int) -> str:
+    text = str(body or "")
+    lines: list[str] = []
+    markers = (
+        "flag",
+        "ctf{",
+        "error",
+        "exception",
+        "sql",
+        "warning",
+        "<form",
+        "<input",
+        "href=",
+        "token",
+        "admin",
+        "select",
+        "union",
+    )
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        if any(marker in lower for marker in markers):
+            lines.append(one_line(stripped, 240))
+        if len(lines) >= 5:
+            break
+    if lines:
+        return clip_text("\n".join(lines), limit)
+    visible = re.sub(r"<[^>]+>", " ", text)
+    visible = re.sub(r"\s+", " ", visible).strip()
+    return clip_text(visible, min(limit, 500))
+
+
+def _body_with_optional_limit(body: str, max_body_chars: int) -> tuple[str, bool]:
+    text = str(body or "")
+    if max_body_chars > 0 and len(text) > max_body_chars:
+        return text[:max_body_chars], True
+    return text, False
+
+
+def _format_http_probe_batch(results: list[dict[str, Any]]) -> str:
+    lines = [f"# http_probe_batch results ({len(results)} request(s))"]
+    hashes: dict[str, list[str]] = {}
+    for item in results:
+        label = f" {item['label']}" if item.get("label") else ""
+        if item.get("error"):
+            url = item.get("url", "")
+            duration = f" {item.get('duration_ms')}ms" if item.get("duration_ms") is not None else ""
+            request_surface = "\n".join(
+                f"    {line}" for line in _probe_request_surface_lines(item)
+            )
+            surface = f"\n{request_surface}" if request_surface else ""
+            lines.append(f"[{item['index']}] ERROR{label}{duration} {url} :: {item['error']}{surface}")
+            continue
+        hash_value = str(item.get("hash", ""))
+        hashes.setdefault(hash_value, []).append(str(item["index"]))
+        raw_note = " raw-url" if item.get("raw_url") else ""
+        location = f" location={item['location']}" if item.get("location") else ""
+        title = f" title={item['title']!r}" if item.get("title") else ""
+        content_type = (
+            f" type={one_line(item.get('content_type', ''), 80)}"
+            if item.get("content_type")
+            else ""
+        )
+        body_text = str(item.get("body", "") or "")
+        body_note = (
+            f" truncated_to={len(body_text)}" if item.get("body_truncated") else ""
+        )
+        lines.append(
+            "\n".join(
+                [
+                    (
+                        f"[{item['index']}] {item['method']}{raw_note}{label} "
+                        f"{item['status']} len={item['length']} hash={item['hash']} "
+                        f"{item['duration_ms']}ms{location}{content_type}{title}"
+                    ),
+                    f"    url={item['effective_url']}",
+                    f"    response_headers={_jsonish_one_line(item.get('response_headers', {}), 1800)}",
+                    *[f"    {line}" for line in _probe_request_surface_lines(item)],
+                    *[
+                        f"    {line}"
+                        for line in str(item.get("decoded_source") or "").splitlines()
+                    ],
+                    f"    signals={item['signals'] or '(empty body)'}",
+                    f"    body_length={item.get('body_chars', 0)}{body_note}",
+                    f"    body:\n{body_text if body_text else '(empty body)'}",
+                ]
+            )
+        )
+
+    same_body_groups = [ids for ids in hashes.values() if len(ids) > 1]
+    if same_body_groups:
+        lines.append("Same-body groups: " + "; ".join(",".join(ids) for ids in same_body_groups))
+    return "\n".join(lines)
+
+
 def _resolve_python_execute_mode(agent: AgentContext) -> str:
     safety = getattr(agent.config, "safety", None)
     if safety is None:
@@ -1017,6 +2386,10 @@ def _validate_python_execute_mode(mode: str, code: str) -> str | None:
     for pattern in patterns:
         if re.search(pattern, code, re.IGNORECASE):
             return pattern
+    # AST-based check for dynamic bypass patterns (importlib, exec, getattr, etc.)
+    ast_result = _ast_check_sandbox_bypass(code)
+    if ast_result:
+        return f"ast:{ast_result}"
     return None
 
 
@@ -1134,7 +2507,20 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
             return f"[!] safe mode blocked operation: {blocked_pattern}"
         return f"[!] lab mode blocked operation: {blocked_pattern}"
 
-    max_output_chars = getattr(safety, "python_execute_max_output_chars", 8000)
+    # AST-based check for dynamic bypass patterns (importlib, exec, getattr, etc.)
+    ast_bypass = _ast_check_sandbox_bypass(code)
+    if ast_bypass:
+        _write_python_audit(
+            agent,
+            purpose=purpose,
+            code=code,
+            mode=mode,
+            outcome="blocked",
+            blocked_reason=f"ast:{ast_bypass}",
+        )
+        return f"[!] Sandbox bypass detected: {ast_bypass}"
+
+    max_output_chars = getattr(safety, "python_execute_max_output_chars", 0)
     tmp_path = ""
     try:
         with tempfile.NamedTemporaryFile(
@@ -1151,7 +2537,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
             tmp_path = f.name
 
         base_env = {"PYTHONIOENCODING": "utf-8"}
-        env = {**os.environ, **base_env} if mode == "trusted-local" else base_env
+        env = {**{k: v for k, v in os.environ.items() if not k.startswith("VULNCLAW_")}, **base_env} if mode == "trusted-local" else base_env
 
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -1187,16 +2573,30 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
 
         if not output_parts:
             _write_python_audit(agent, purpose=purpose, code=code, mode=mode, outcome="success")
+            set_raw_tool_output_override(
+                agent,
+                tool="python_execute",
+                arguments=args,
+                output="[+] Python executed successfully with no output",
+            )
             return f"{warning_prefix}[+] Python executed successfully with no output"
 
         output = "\n".join(output_parts)
         for sig in ["[DONE]", "[COMPLETE]"]:
             output = output.replace(sig, f"[BLOCKED_{sig[1:-1]}]")
-        if len(output) > max_output_chars:
+        raw_return = f"[+] Python execution result ({mode}):\n{output}"
+        display_output = output
+        if max_output_chars > 0 and len(display_output) > max_output_chars:
             clip = max_output_chars // 2
-            output = output[:clip] + "\n...[truncated]...\n" + output[-clip:]
+            display_output = display_output[:clip] + "\n...[truncated]...\n" + display_output[-clip:]
         _write_python_audit(agent, purpose=purpose, code=code, mode=mode, outcome="success")
-        return f"{warning_prefix}[+] Python execution result ({mode}):\n{output}"
+        set_raw_tool_output_override(
+            agent,
+            tool="python_execute",
+            arguments=args,
+            output=raw_return,
+        )
+        return f"{warning_prefix}[+] Python execution result ({mode}):\n{display_output}"
     except subprocess.TimeoutExpired:
         try:
             os.unlink(tmp_path)

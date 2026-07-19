@@ -567,6 +567,7 @@ async def execute_js_recon(agent: AgentContext, args: dict[str, Any]) -> str:
                 "auth_header": args.get("auth_header"),
                 "max_endpoints": int(args.get("max_endpoints", 60) or 60),
             },
+            client=client,
         )
         out.append("\n" + probe_out)
 
@@ -716,7 +717,9 @@ async def _probe_endpoints(
     return results
 
 
-async def execute_unauth_test(agent: AgentContext, args: dict[str, Any]) -> str:
+async def execute_unauth_test(
+    agent: AgentContext, args: dict[str, Any], client: Any = None,
+) -> str:
     """对一批接口逐个做未授权访问探测（仅安全 GET，跳过破坏性接口）。"""
     cfg = _get_recon_cfg(agent)
     base = str(args.get("base_url") or args.get("url") or "").strip()
@@ -740,9 +743,13 @@ async def execute_unauth_test(agent: AgentContext, args: dict[str, Any]) -> str:
     auth = _parse_auth_header(args.get("auth_header"))
     cap = int(args.get("max_endpoints", 60) or 60)
     try:
-        async with _make_client(cfg) as client:
+        if client is not None:
             sem = asyncio.Semaphore(cfg.max_concurrency)
             rows = await _probe_endpoints(client, base, endpoints, auth, cap, sem)
+        else:
+            async with _make_client(cfg) as new_client:
+                sem = asyncio.Semaphore(cfg.max_concurrency)
+                rows = await _probe_endpoints(new_client, base, endpoints, auth, cap, sem)
     except Exception as e:
         return f"[!] unauth_test 执行错误: {e}"
 

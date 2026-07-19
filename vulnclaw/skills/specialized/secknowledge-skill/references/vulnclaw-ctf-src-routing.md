@@ -24,7 +24,7 @@ Keep VulnClaw's existing specialist skills in the loop:
 | Scenario | Load These References First |
 | --- | --- |
 | SRC initial triage | `testing-methodology.md`, `web-deployment-security.md` |
-| SQL injection | `web-sqli.md`, `testing-methodology.md` |
+| SQL injection | `web-sqli.md`, `web-sqli-fushuling-one-pass.md`, `testing-methodology.md` |
 | XSS or DOM sink testing | `web-xss.md`, `testing-methodology.md` |
 | RCE or command injection | `web-rce.md`, `web-upload.md` |
 | File upload / traversal / leak | `web-upload.md`, `web-traversal.md`, `web-leak.md` |

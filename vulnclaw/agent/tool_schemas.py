@@ -22,7 +22,11 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "load_skill_reference",
-                "description": "加载指定 Skill 的参考文档，获取详细的渗透测试方法论、工作流或命令参考。当系统提示中提到'可用参考文档'时，使用此工具获取具体内容。",
+                "description": (
+                    "Load an optional Skill reference document. Returned content is reference "
+                    "material only, not a mandatory workflow, phase plan, or tool schedule; "
+                    "the model decides whether it is useful for the current evidence."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -45,13 +49,316 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "evidence_list",
+                "description": (
+                    "List raw evidence records saved from prior tool calls. Use this to find an "
+                    "evidence id for previous output when you need to revisit prior results."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "description": "Recent records to list."}
+                    },
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "evidence_view",
+                "description": (
+                    "View raw saved evidence by id. Use offset/limit only for missing chunks of "
+                    "large output; do not reread the same id/range. Redundant ranges may be "
+                    "suppressed to prevent evidence-reading loops."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Evidence id, e.g. e001.",
+                        },
+                        "offset": {"type": "integer", "description": "Character offset."},
+                        "limit": {
+                            "type": "integer",
+                            "description": (
+                                "Maximum characters; omitted or 0 returns all remaining content."
+                            ),
+                        },
+                    },
+                    "required": ["evidence_id"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "evidence_search",
+                "description": (
+                    "Search raw saved evidence by substring or regex and return bounded snippets "
+                    "with evidence ids and offsets. Use this before rereading a large body when "
+                    "you need to find source/sink/parameter/token/flag text inside prior raw output."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Substring or regex to search for, e.g. unserialize, flag, name=\"id\".",
+                        },
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Optional evidence id to search inside, e.g. e004.",
+                        },
+                        "regex": {
+                            "type": "boolean",
+                            "description": "Interpret query as a regex. Default false.",
+                        },
+                        "context_chars": {
+                            "type": "integer",
+                            "description": "Characters of raw context around each match. Default 180.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum matches to return. Default 12, capped internally.",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "source_extract",
+                "description": (
+                    "Normalize messy HTML/highlight_file/source evidence into readable text and "
+                    "extract high-signal PHP/web surfaces such as forms, endpoints, unserialize, "
+                    "magic methods, eval sinks, taint sources and filters. Use it when raw body "
+                    "contains highlighted or noisy source code."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Evidence id to normalize, e.g. e004.",
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Inline raw HTML/source text to normalize when no evidence id exists.",
+                        },
+                    },
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "runtime_diff_probe",
+                "description": (
+                    "Run a compact local parser/filter differential table. Use when evidence shows "
+                    "a regex/string filter before a runtime parser/interpreter and you need to find "
+                    "inputs accepted by the parser but missed by the filter. Supports generic regex "
+                    "checks and PHP serialize/unserialize checks; this is local verification only."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "description": "regex or php_serialize. Default regex.",
+                        },
+                        "filter_regex": {
+                            "type": "string",
+                            "description": "Observed filter regex, e.g. /[oc]:\\d+:/i.",
+                        },
+                        "payload": {
+                            "type": "string",
+                            "description": "Canonical payload to mutate and compare against the filter/parser.",
+                        },
+                        "candidates": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "payload": {"type": "string"},
+                                },
+                            },
+                            "description": "Optional explicit candidate payloads to test.",
+                        },
+                        "mutations": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional mutation names. For php_serialize: signed_lengths, "
+                                "leading_zero_lengths, lowercase_type, uppercase_string_type."
+                            ),
+                        },
+                        "class_defs": {
+                            "type": "string",
+                            "description": (
+                                "PHP class definitions for php_serialize mode, without <?php tags. "
+                                "Use minimal local definitions needed to validate unserialize behavior."
+                            ),
+                        },
+                        "target_runtime": {
+                            "type": "string",
+                            "description": (
+                                "Optional target runtime/version observed from headers/source, e.g. "
+                                "PHP/5.6.40. If omitted, VulnClaw tries to infer it from evidence."
+                            ),
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Local runtime timeout in milliseconds, default 10000.",
+                        },
+                        "max_output_chars": {
+                            "type": "integer",
+                            "description": (
+                                "Optional command-level output cap before evidence storage; omitted "
+                                "or 0 keeps raw output intact, while large active-context observations "
+                                "may still be represented by a high-signal preview."
+                            ),
+                        },
+                    },
+                    "required": ["filter_regex"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "shell_command",
+                "description": (
+                    "Run a local shell command when local verification or exact request fidelity is "
+                    "useful. Good uses include php -r serialization checks, curl requests with raw "
+                    "cookies/headers, rg/Select-String over saved files, and small one-off scripts. "
+                    "Set workdir when the command depends on files. Raw stdout/stderr are saved as "
+                    "evidence; large active-context observations are bounded high-signal previews."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Shell command to run."},
+                        "workdir": {
+                            "type": "string",
+                            "description": "Working directory. Defaults to the VulnClaw process cwd.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Command timeout in milliseconds, default 10000, capped at 120000.",
+                        },
+                        "shell": {
+                            "type": "string",
+                            "description": "Windows: powershell (default), pwsh, or cmd. Other OSes use the default shell.",
+                        },
+                        "max_output_chars": {
+                            "type": "integer",
+                            "description": (
+                                "Optional command-level output cap before evidence storage; omitted "
+                                "or 0 keeps raw output intact, while large active-context observations "
+                                "may still be represented by a high-signal preview."
+                            ),
+                        },
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "http_probe_batch",
+                "description": (
+                    "Batch HTTP probe tool for comparing URL/parameter/header/body variants "
+                    "in one call. Returns status/length/hash/title/response headers/body signals, "
+                    "audited request surfaces and raw response bodies saved as evidence. Large "
+                    "active-context observations are high-signal previews. Supports "
+                    "GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "base_url": {"type": "string"},
+                        "requests": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "method": {
+                                        "type": "string",
+                                        "description": "GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS; default GET.",
+                                    },
+                                    "url": {"type": "string"},
+                                    "raw_url": {"type": "string"},
+                                    "params": {"type": "object"},
+                                    "headers": {
+                                        "type": "object",
+                                        "description": (
+                                            "Per-request headers. For exact Cookie payloads or values "
+                                            "containing semicolons/quotes/braces, prefer headers.Cookie "
+                                            "with the already-encoded raw value."
+                                        ),
+                                    },
+                                    "cookies": {
+                                        "type": "object",
+                                        "description": (
+                                            "Simple per-request cookies. Use headers.Cookie instead "
+                                            "when cookie serialization/encoding must be exact."
+                                        ),
+                                    },
+                                    "data": {},
+                                    "json": {},
+                                    "label": {"type": "string"},
+                                },
+                            },
+                        },
+                        "timeout": {"type": "number"},
+                        "follow_redirects": {"type": "boolean"},
+                        "verify_tls": {
+                            "type": "boolean",
+                            "description": "Verify TLS certificates; default false for CTF/lab compatibility.",
+                        },
+                        "max_body_chars": {"type": "integer"},
+                    },
+                    "required": ["requests"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
                 "name": "python_execute",
                 "description": (
                     "执行 Python 代码片段。用于：构造复杂 HTTP 请求并解析响应、"
                     "做编码转换和数据处理、批量测试不同 payload、比较响应差异、"
                     "执行数学计算等。代码在受限环境中执行，超时 30 秒。"
                     "预装库：requests, beautifulsoup4, pycryptodome, base64, json, re 等。"
-                    "重要：构造 HTTP 请求时请使用此工具而非猜测响应内容。"
+                    "普通 HTTP/HTTPS 请求优先使用 fetch 或 http_probe_batch，避免用 Python 手写请求浪费上下文；"
+                    "只有需要复杂解析、生成 payload 或批量逻辑时再使用此工具。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -117,14 +424,14 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
             "function": {
                 "name": "nmap_scan",
                 "description": (
-                    "nmap 网络端口扫描工具。信息收集时用于发现目标开放端口、服务版本和操作系统指纹。\n"
+                    "nmap 网络端口扫描工具。适合在端口、服务版本或网络暴露面会影响下一步判断时使用。\n"
                     "用法示例：\n"
                     "  扫描常见端口: scan_type=top_ports, target=1.2.3.4\n"
                     "  SYN扫描: scan_type=syn, target=1.2.3.4（需要管理员权限）\n"
                     "  服务版本检测: scan_type=service, target=1.2.3.4\n"
                     "  漏洞扫描: scan_type=vuln, target=1.2.3.4\n"
                     "  全量扫描: scan_type=full, target=1.2.3.4\n"
-                    "优先使用 nmap_scan 而非 python_execute 构造 socket 扫描，nmap 更专业更准确。"
+                    "如果只需验证一个具体 HTTP/Web 行为，可以选择其他更轻量工具。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -224,7 +531,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                 "name": "space_search",
                 "description": (
                     "空间测绘资产搜索（FOFA/Hunter/Quake/Shodan/ZoomEye/0.zone 零零信安）。"
-                    "信息收集阶段用于被动发现目标资产、IP、端口、子域、标题、组件指纹，不直接接触目标。"
+                    "可在需要被动发现目标资产、IP、端口、子域、标题或组件指纹时使用，不直接接触目标。"
                     "给 domain 自动按各引擎语法构造 domain 查询；也可传完整 query 语法。"
                     "engine=all 时并发查询所有已配置 key 的引擎。"
                 ),
@@ -257,7 +564,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                 "name": "subdomain_enum",
                 "description": (
                     "子域名枚举。先用已配置的空间测绘引擎被动聚合，再用内置小字典做 DNS 解析爆破，"
-                    "返回去重后的存活子域名列表。优先于 python_execute 自己写爆破。"
+                    "返回去重后的存活子域名列表；是否需要枚举由模型根据当前任务判断。"
                 ),
                 "parameters": {
                     "type": "object",
@@ -283,7 +590,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                     "JS 信息收集（参考 URLFinder）。抓取目标页面及其引用的全部 .js 文件，"
                     "提取 API 接口/路径、关联域名、绝对 URL，以及疑似硬编码密钥（AK/SK、token、JWT、私钥等）。"
                     "默认 auto_probe=true：自动对收集到的同源接口逐个做未授权访问探测（仅安全 GET，跳过破坏性接口）。"
-                    "信息收集阶段优先调用，用真实提取的端点反哺后续测试，而非凭空猜接口。"
+                    "适合在页面脚本可能包含端点、路径或硬编码线索时按需调用。"
                 ),
                 "parameters": {
                     "type": "object",
