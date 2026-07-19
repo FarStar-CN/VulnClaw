@@ -521,8 +521,8 @@ class TestTerminalStreamSinkRealOutput:
         assert "Port" in result
         assert "open" in result
 
-    def test_sink_truncates_long_tool_result(self):
-        """测试超长工具结果被截断"""
+    def test_sink_collapses_long_tool_result_for_terminal_only(self):
+        """Long tool results are collapsed for humans without breaking tool flow."""
         import io
 
         from rich.console import Console
@@ -533,13 +533,59 @@ class TestTerminalStreamSinkRealOutput:
         console = Console(file=output, force_terminal=True)
         sink = TerminalStreamSink(console, show_thinking=False)
 
-        long_result = "A" * 500
+        long_result = "[tool:fetch] [evidence:e123]\n" + "A" * 5000
         sink.on_tool_result(long_result)
         sink.on_stream_end()
 
         result = output.getvalue()
-        # 应该被截断到 200 字符左右
-        assert len(result) < 300
+        assert result.count("A") < 5000
+        assert "terminal preview collapsed" in result
+        assert "e123" in result
+
+    def test_sink_prints_payload_like_rich_markup_as_plain_text(self):
+        """SQL payloads such as [/**/] must not be parsed as Rich markup."""
+        import io
+
+        from rich.console import Console
+
+        from vulnclaw.cli.main import TerminalStreamSink
+
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=True)
+        sink = TerminalStreamSink(console, show_thinking=False)
+
+        sink.on_tool_result("payload=[/**/]union[/**/]select")
+        sink.on_tool_call("fetch", '{"url":"https://example.com/?id=1[/**/]and"}')
+        sink.on_stream_end()
+
+        result = output.getvalue()
+        assert "[/**/]" in result
+        assert "payload=" in result
+
+    def test_solve_event_printer_prints_payload_as_plain_text(self):
+        """Observation summaries may contain SQL payload markers."""
+        import io
+
+        from rich.console import Console
+
+        from vulnclaw.cli.main import _make_solve_event_printer
+
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=True)
+        printer = _make_solve_event_printer(console)
+
+        printer(
+            "agent_observation",
+            {
+                "reason": "try [/**/] union",
+                "tools": ["fetch"],
+                "evidence": "payload [/**/] observed",
+            },
+        )
+
+        result = output.getvalue()
+        assert "[/**/]" in result
+        assert "payload" in result
 
 
 class TestStreamFallback:

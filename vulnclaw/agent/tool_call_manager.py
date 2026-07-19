@@ -424,7 +424,7 @@ def _record_tool_result_with_record(
 ) -> tuple[str, Any | None, str]:
     """Persist raw tool output and return prompt preview plus evidence record."""
 
-    if func_name in {"evidence_list", "evidence_view"}:
+    if func_name in {"evidence_list", "evidence_view", "evidence_search"}:
         raw = str(tool_result)
         _record_tool_call_without_new_evidence(
             agent,
@@ -507,7 +507,7 @@ def _record_tool_call_without_new_evidence(
     if agent_state is None:
         return
     evidence_id = ""
-    if func_name == "evidence_view":
+    if func_name in {"evidence_view", "evidence_search"}:
         evidence_id = str(func_args.get("evidence_id", "") or "").strip()
     agent_state.record_tool_call(
         tool=func_name,
@@ -529,7 +529,7 @@ def _append_correction_note(content: str, pre_hint: str, post_hint: str) -> str:
     notes = [item for item in (pre_hint, post_hint) if item]
     if not notes:
         return content
-    return f"{content}\n[correction] {' '.join(notes)}"
+    return f"{content}\n[diagnostic] {' '.join(notes)}"
 
 
 def safe_parse_tool_args(arguments: str | None) -> dict[str, Any]:

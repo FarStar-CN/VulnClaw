@@ -12,6 +12,7 @@ def _make_agent(tmp_path, reflexion_enabled=True):
     config.session.reflexion_enabled = reflexion_enabled
     config.session.reflexion_max_same_vuln_fails = 2
     config.session.reflexion_max_total_no_progress = 5
+    config.session.engine = "rounds"
     return AgentCore(config)
 
 

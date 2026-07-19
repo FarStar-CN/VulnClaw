@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-DEFAULT_EVIDENCE_PREVIEW_CHARS = 0
+DEFAULT_EVIDENCE_PREVIEW_CHARS = 6000
 DEFAULT_EVIDENCE_VIEW_CHARS = 0
 FULL_EVIDENCE_RANGE_END = 2**63 - 1
 MAX_STORED_EVIDENCE = 240
@@ -25,7 +25,7 @@ MAX_STORED_STEPS = 400
 MAX_STORED_PROGRESS_SIGNALS = 160
 MAX_STORED_PINNED_FACTS = 80
 MAX_STORED_CORRECTION_HINTS = 24
-OBSERVATION_ONLY_TOOLS = frozenset({"evidence_list", "evidence_view"})
+OBSERVATION_ONLY_TOOLS = frozenset({"evidence_list", "evidence_view", "evidence_search"})
 
 _FLAG_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{1,20}\{[^{}\n]{1,200}\}")
 _STATUS_RE = re.compile(r"(?:Status|HTTP/\d(?:\.\d)?)\s*:?\s*(\d{3})", re.IGNORECASE)
@@ -91,41 +91,77 @@ def _important_lines(text: str, limit: int = 18) -> list[str]:
         "admin",
         "endpoint",
         "api/",
+        "highlight_file",
+        "show_source",
+        "source",
+        "<?php",
+        "$_get",
+        "$_post",
+        "$_request",
+        "$_cookie",
+        "unserialize",
+        "serialize",
+        "__wakeup",
+        "__destruct",
+        "__tostring",
+        "class ",
+        "function ",
+        "eval(",
+        "assert(",
+        "system(",
+        "shell_exec",
+        "preg_match",
     )
     selected: list[str] = []
-    for line in str(text or "").splitlines():
+    for line_no, line in enumerate(str(text or "").splitlines(), start=1):
         stripped = line.strip()
         if not stripped:
             continue
         lower = stripped.lower()
         if any(marker in lower for marker in markers):
-            selected.append(one_line(stripped, 260))
+            selected.append(f"L{line_no}: {one_line(stripped, 260)}")
         if len(selected) >= limit:
             break
     return selected
 
 
 def make_evidence_preview(content: str, limit: int = DEFAULT_EVIDENCE_PREVIEW_CHARS) -> str:
-    """Build the prompt-facing tool result while preserving raw content separately."""
+    """Build bounded prompt-facing evidence while preserving raw content separately.
+
+    The preview is an active-context working set, not the evidence source of
+    truth. Large raw outputs stay available through evidence_view/evidence_search;
+    this function keeps the model from repeatedly carrying entire HTML bodies,
+    command logs or response blobs in every subsequent LLM request.
+    """
 
     text = str(content or "")
     if limit <= 0:
         return text
     if len(text) <= limit:
         return text
-    lines = _important_lines(text)
-    head_tail = clip_text(text, limit)
+    lines = _important_lines(text, limit=36)
+    header = (
+        "[active-context high-signal preview]\n"
+        f"raw_size={len(text)} chars; full raw evidence is stored separately; "
+        "use evidence_view/evidence_search if a missing byte or wider span matters."
+    )
+    marker = "...[raw omitted from active context; inspect saved evidence for full body]..."
     if not lines:
-        return head_tail
-    return "\n".join(
+        return "\n".join([header, "", "[head/tail context]", clip_text(text, limit, marker=marker)])
+
+    signal_block = "\n".join(["[signal lines]", *lines])
+    remaining = max(1000, limit - len(header) - len(signal_block) - 80)
+    preview = "\n".join(
         [
-            "[important lines]",
-            *lines,
+            header,
             "",
-            "[head/tail preview]",
-            head_tail,
+            signal_block,
+            "",
+            "[head/tail context]",
+            clip_text(text, remaining, marker=marker),
         ]
     )
+    return clip_text(preview, limit, marker="...[preview clipped; inspect saved evidence]...")
 
 
 class EvidenceRecord(BaseModel):
@@ -143,6 +179,8 @@ class EvidenceRecord(BaseModel):
     content: str = ""
     truncated: bool = False
     fingerprint: str = ""
+    content_hash: str = ""
+    duplicate_of: str = ""
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
 
     @property
@@ -346,11 +384,25 @@ class AgentState(BaseModel):
         raw = str(output or "")
         args = dict(arguments or {})
         key_args = json.dumps(args, ensure_ascii=False, sort_keys=True)[:500]
+        content_hash = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:24]
+        duplicate_of = ""
+        for item in self.evidence:
+            if item.content_hash == content_hash:
+                duplicate_of = item.id
+                break
         digest = hashlib.sha256(
             f"{tool}\0{key_args}\0{raw}".encode("utf-8", errors="replace")
         ).hexdigest()[:24]
         self.evidence_seq += 1
-        preview = make_evidence_preview(raw, preview_chars)
+        if duplicate_of:
+            preview = (
+                f"[same raw output as {duplicate_of}; content_hash={content_hash}; "
+                f"raw_size={len(raw)} chars]\n"
+                "Body not repeated in active context. Use evidence_view on this id or the "
+                "original evidence id if exact bytes are needed."
+            )
+        else:
+            preview = make_evidence_preview(raw, preview_chars)
         record = EvidenceRecord(
             id=f"e{self.evidence_seq:03d}",
             tool=tool,
@@ -360,8 +412,10 @@ class AgentState(BaseModel):
             summary=one_line(preview, 300),
             preview=preview,
             content=raw,
-            truncated=len(raw) > len(preview),
+            truncated=bool(duplicate_of) or len(raw) > len(preview),
             fingerprint=digest,
+            content_hash=content_hash,
+            duplicate_of=duplicate_of,
         )
         self.evidence.append(record)
         if len(self.evidence) > MAX_STORED_EVIDENCE:
@@ -595,11 +649,75 @@ class AgentState(BaseModel):
             size = f"{item.size} chars"
             truncated = ", preview truncated" if item.truncated else ""
             lines.append(
-                f"{item.id}: tool={item.tool} status={item.status} size={size}{truncated}\n"
+                f"{item.id}: tool={item.tool} status={item.status} size={size}{truncated}"
+                + (f", same_as={item.duplicate_of}" if item.duplicate_of else "")
+                + f" hash={item.content_hash or item.fingerprint}\n"
                 f"  args={one_line(item.key_args, 180)}\n"
                 f"  summary={item.summary}"
             )
         return "\n".join(lines)
+
+    def format_evidence_search(
+        self,
+        query: str,
+        *,
+        evidence_id: str = "",
+        regex: bool = False,
+        context_chars: int = 180,
+        limit: int = 12,
+    ) -> str:
+        """Search raw saved evidence and return bounded snippets with offsets."""
+
+        pattern = str(query or "")
+        if not pattern:
+            return "evidence_search requires a non-empty query."
+        try:
+            max_hits = max(1, min(50, int(limit or 12)))
+        except (TypeError, ValueError):
+            max_hits = 12
+        try:
+            ctx = max(0, min(2000, int(context_chars or 180)))
+        except (TypeError, ValueError):
+            ctx = 180
+
+        items = [self.get_evidence(evidence_id)] if evidence_id else list(self.evidence)
+        records = [item for item in items if item is not None]
+        hits: list[str] = []
+        compiled: re.Pattern[str] | None = None
+        if regex:
+            try:
+                compiled = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
+            except re.error as exc:
+                return f"Invalid regex for evidence_search: {exc}"
+
+        for item in records:
+            raw = item.content or ""
+            if compiled is not None:
+                matches = compiled.finditer(raw)
+            else:
+                escaped = re.escape(pattern)
+                matches = re.finditer(escaped, raw, re.IGNORECASE)
+            for match in matches:
+                start = max(0, match.start() - ctx)
+                end = min(len(raw), match.end() + ctx)
+                snippet = raw[start:end].replace("\r\n", "\n")
+                hits.append(
+                    f"{item.id}@{match.start()}:{match.end()} tool={item.tool} "
+                    f"status={item.status} hash={item.content_hash or item.fingerprint}\n"
+                    f"{snippet}"
+                )
+                if len(hits) >= max_hits:
+                    break
+            if len(hits) >= max_hits:
+                break
+
+        if not hits:
+            scope = f" in {evidence_id}" if evidence_id else ""
+            return f"No raw evidence matches {pattern!r}{scope}."
+        return (
+            f"# evidence_search query={pattern!r} hits={len(hits)} "
+            f"(context_chars={ctx})\n\n" + "\n\n---\n\n".join(hits)
+        )
 
     def format_evidence_view(
         self,
@@ -660,7 +778,7 @@ class AgentState(BaseModel):
                 for item in sorted(degraded, key=lambda x: x.tool)[-8:]
             )
         if self.correction_hints:
-            sections.append("\nCorrection hints:")
+            sections.append("\nDiagnostic notes (optional, not instructions):")
             sections.extend(f"- {item}" for item in self.correction_hints[-6:])
         if self.progress_signals:
             sections.append("\nRecent progress signals:")
@@ -686,7 +804,9 @@ class AgentState(BaseModel):
                 sections.append(
                     f"- {item.id} tool={item.tool} status={item.status} "
                     f"summary={item.summary} raw={item.size} chars"
-                    + ("; use evidence_view for raw/chunks" if item.truncated else "")
+                    + (f" same_as={item.duplicate_of}" if item.duplicate_of else "")
+                    + f" hash={item.content_hash or item.fingerprint}"
+                    + ("; use evidence_view/evidence_search for raw/chunks" if item.truncated else "")
                 )
         else:
             sections.append("\nRecent evidence: none yet")

@@ -163,7 +163,6 @@ class TestScanModeWiring:
         agent = captured["agent"]
         defaults = VulnClawConfig().session
         assert agent.solve_kwargs["max_steps"] == defaults.solve_max_steps
-        assert agent.solve_kwargs["max_intents"] == defaults.solve_max_intents
         assert agent.solve_kwargs["max_tool_rounds"] == defaults.solve_max_tool_rounds
 
     def test_quick_mode_turns_fan_out_off(self, runner, monkeypatch, tmp_path):
@@ -290,7 +289,7 @@ class TestWorkflowDocs:
     DOCS_DIR = Path(__file__).resolve().parent.parent / "docs" / "ci"
 
     def _run_flags(self, yaml_path: Path) -> list[str]:
-        data = yaml.safe_load(yaml_path.read_text())
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
         steps = data["jobs"]["vulnclaw"]["steps"]
         run_lines = [s["run"] for s in steps if "run" in s and "vulnclaw run" in s.get("run", "")]
         assert run_lines, f"no `vulnclaw run` step in {yaml_path.name}"
@@ -332,6 +331,8 @@ class TestWorkflowDocs:
         assert "--scan-mode" in flags and "--scope-mode" in flags and "--fail-on" in flags
 
     def test_scheduled_scan_never_breaks_pipeline(self):
-        text = (self.DOCS_DIR / "github-actions-scheduled-scan.yml").read_text()
+        text = (self.DOCS_DIR / "github-actions-scheduled-scan.yml").read_text(
+            encoding="utf-8"
+        )
         assert "--fail-on never" in text
         assert "--scan-mode deep" in text

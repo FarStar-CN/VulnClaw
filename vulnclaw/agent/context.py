@@ -1131,7 +1131,7 @@ class ContextManager:
 
     def __init__(self, max_history: int = 200) -> None:
         self.max_history = max_history
-        self.messages: list[dict[str, str]] = []
+        self.messages: list[dict[str, Any]] = []
         self.state = SessionState()
 
     def add_user_message(self, content: str) -> None:
@@ -1144,14 +1144,30 @@ class ContextManager:
         self.messages.append({"role": "assistant", "content": content})
         self._trim()
 
+    def add_message(self, message: dict[str, Any]) -> None:
+        """Add a raw chat message to context.
+
+        Tool-call transcripts need fields such as ``tool_calls`` and
+        ``tool_call_id``.  Keeping the original Chat Completions message shape
+        lets later model turns see the same cause/effect structure that produced
+        the evidence, instead of only a lossy text summary.
+        """
+        if not isinstance(message, dict):
+            return
+        role = str(message.get("role", "") or "").strip()
+        if not role:
+            return
+        self.messages.append(copy.deepcopy(message))
+        self._trim()
+
     def add_system_message(self, content: str) -> None:
         """Add a system message (inserted at beginning)."""
         # System messages are handled separately in the API call
         pass
 
-    def get_messages(self) -> list[dict[str, str]]:
+    def get_messages(self) -> list[dict[str, Any]]:
         """Get conversation messages for API call."""
-        return self.messages.copy()
+        return copy.deepcopy(self.messages)
 
     def reset(self) -> None:
         """Reset context and session state."""
@@ -1194,7 +1210,7 @@ class ContextManager:
         return summary
 
     @staticmethod
-    def _compress_messages(messages: list[dict[str, str]]) -> str:
+    def _compress_messages(messages: list[dict[str, Any]]) -> str:
         """Compress a list of messages into a concise summary.
 
         Extracts key findings, tool results, and discoveries from the

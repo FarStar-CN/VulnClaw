@@ -42,6 +42,9 @@ class _Agent:
     """Minimal agent stub whose tool execution is configurable per test."""
 
     def __init__(self, executor, safety: _Safety | None = None) -> None:
+        from vulnclaw.agent.context import ContextManager
+
+        self.context = ContextManager()
         self.mcp_manager = None
         self.config = _Config(safety or _Safety())
         self._executor = executor
@@ -75,7 +78,8 @@ async def test_parallel_executes_all_calls_and_preserves_order():
     # Order preserved: result i corresponds to tool_call i.
     for i, r in enumerate(results):
         assert r["tool_call_id"] == f"c{i}"
-        assert r["content"] == f"[tool:probe] ran:{i}"
+        assert r["content"].startswith("[tool:probe] [evidence:e")
+        assert f"ran:{i}" in r["content"]
     # 5 calls of 0.05s each run concurrently → well under serial 0.25s.
     assert elapsed < 0.2
 
@@ -94,12 +98,32 @@ async def test_error_isolation_one_failure_does_not_block_others():
 
     results, skipped = await handle_tool_calls_with_results(agent, message)
 
-    # The failing call (n=2) is dropped; the other 3 succeed.
+    # The failing call is returned as tool-visible failure evidence; the model
+    # can choose a fallback without the OpenAI tool-call protocol breaking.
     assert skipped == []
-    returned_ids = {r["tool_call_id"] for r in results}
-    assert returned_ids == {"c0", "c1", "c3"}
-    # Surviving results keep their original relative order.
-    assert [r["tool_call_id"] for r in results] == ["c0", "c1", "c3"]
+    assert [r["tool_call_id"] for r in results] == ["c0", "c1", "c2", "c3"]
+    assert "Tool probe failed locally" in results[2]["content"]
+    assert agent.context.state.agent_state.evidence[-1].tool == "probe"
+
+
+@pytest.mark.asyncio
+async def test_local_cancel_scope_failure_is_returned_to_model():
+    async def executor(func_name, func_args):
+        raise asyncio.CancelledError("Cancelled via cancel scope test")
+
+    agent = _Agent(executor, _Safety(tool_parallel=False, tool_max_concurrent=1))
+    message = _make_message([("c0", "navigate_page", '{"url":"https://example.com"}')])
+
+    results, skipped = await handle_tool_calls_with_results(agent, message)
+
+    assert skipped == []
+    assert len(results) == 1
+    assert results[0]["tool_call_id"] == "c0"
+    assert "Tool navigate_page failed locally" in results[0]["content"]
+    assert results[0]["duration_ms"] >= 0
+    assert "tool-health evidence" in results[0]["correction"]
+    assert agent.context.state.agent_state.evidence[0].tool == "navigate_page"
+    assert agent.context.state.agent_state.tool_health["navigate_page"].status == "degraded"
 
 
 @pytest.mark.asyncio
@@ -165,7 +189,89 @@ async def test_single_call_runs_without_parallel_overhead():
 
     assert skipped == []
     assert len(results) == 1
-    assert results[0]["content"] == "[tool:probe] ok"
+    assert results[0]["content"].startswith("[tool:probe] [evidence:e")
+    assert "ok" in results[0]["content"]
+    assert results[0]["duration_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_bounded_tool_result_is_returned_inline_by_default():
+    marker = "TAIL_MARKER_select-waf.php"
+
+    async def executor(func_name, func_args):
+        return "A" * 5000 + marker
+
+    agent = _Agent(executor, _Safety(tool_parallel=True, tool_max_concurrent=5))
+    message = _make_message([("c0", "fetch", '{"url":"https://example.com/"}')])
+
+    results, skipped = await handle_tool_calls_with_results(agent, message)
+
+    assert skipped == []
+    assert marker in results[0]["content"]
+    assert "raw output stored" not in results[0]["content"]
+    record = agent.context.state.agent_state.evidence[0]
+    assert record.truncated is False
+    assert record.preview.endswith(marker)
+
+
+@pytest.mark.asyncio
+async def test_large_tool_result_uses_high_signal_preview_and_stores_raw():
+    marker = "TAIL_MARKER_select-waf.php"
+
+    async def executor(func_name, func_args):
+        return "A" * 9000 + "\n<form><input name=\"id\"></form>\n" + marker
+
+    agent = _Agent(executor, _Safety(tool_parallel=True, tool_max_concurrent=5))
+    message = _make_message([("c0", "fetch", '{"url":"https://example.com/"}')])
+
+    results, skipped = await handle_tool_calls_with_results(agent, message)
+
+    assert skipped == []
+    content = results[0]["content"]
+    assert "raw output stored" in content
+    assert "active-context high-signal preview" in content
+    assert 'input name="id"' in content
+    record = agent.context.state.agent_state.evidence[0]
+    assert record.truncated is True
+    assert marker in record.content
+    assert marker in agent.context.state.agent_state.format_evidence_search(marker)
+
+
+@pytest.mark.asyncio
+async def test_redundant_evidence_view_is_suppressed_and_recorded():
+    executed: list[dict] = []
+    agent: _Agent
+
+    async def executor(func_name, func_args):
+        executed.append(dict(func_args))
+        return agent.context.state.agent_state.format_evidence_view(**func_args)
+
+    agent = _Agent(executor, _Safety(tool_parallel=False, tool_max_concurrent=1))
+    record = agent.context.state.agent_state.remember_tool_result(
+        tool="fetch",
+        arguments={"url": "http://t/"},
+        output="A" * 2000,
+        status=200,
+    )
+    args = f'{{"evidence_id":"{record.id}","offset":0,"limit":12000}}'
+
+    first, _ = await handle_tool_calls_with_results(
+        agent,
+        _make_message([("c0", "evidence_view", args)]),
+    )
+    second, _ = await handle_tool_calls_with_results(
+        agent,
+        _make_message([("c1", "evidence_view", args)]),
+    )
+
+    assert len(executed) == 1
+    assert record.content in first[0]["content"]
+    assert "Redundant evidence_view suppressed" in second[0]["content"]
+    assert record.content not in second[0]["content"]
+    assert [item.tool for item in agent.context.state.agent_state.tool_calls[-2:]] == [
+        "evidence_view",
+        "evidence_view",
+    ]
 
 
 @pytest.mark.asyncio

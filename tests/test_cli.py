@@ -401,12 +401,13 @@ class TestCLI:
 
         monkeypatch.setattr(team, "run_team_pentest", fake_run_team_pentest)
 
-        class DummyBoard:
+        class DummyResearch:
             def get_summary(self):
                 return {
                     "completed": False,
-                    "facts": 1,
-                    "intents": 0,
+                    "steps": 1,
+                    "evidence": 1,
+                    "tool_calls": 0,
                     "complete_reason": "",
                 }
 
@@ -414,7 +415,7 @@ class TestCLI:
             mcp_manager = None
 
             def __init__(self, *_args):
-                self.context = SimpleNamespace(state=SimpleNamespace(board=DummyBoard()))
+                self.context = SimpleNamespace(state=SimpleNamespace(agent_state=DummyResearch()))
 
         async def fake_orchestrated(*, command, target, resume, snapshot, runner):
             await runner(DummyAgent(), config)

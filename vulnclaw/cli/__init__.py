@@ -93,10 +93,10 @@ class TerminalStreamSink:
             evidence_id = _extract_evidence_id(result_summary)
             hint = (
                 f"\n[terminal-only preview: {len(preview)}/{len(str(result_summary or ''))} chars shown; "
-                "full output was sent to the model"
+                "full output is stored as evidence"
             )
             if evidence_id:
-                hint += f"; saved as {evidence_id}, use evidence_view to revisit"
+                hint += f"; saved as {evidence_id}, use evidence_search/evidence_view to revisit"
             hint += "]"
             preview = f"{preview}{hint}"
         _print_styled_plain(self._console, "→ 工具结果: ", preview)

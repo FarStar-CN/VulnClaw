@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from vulnclaw.config.schema import MCPServerConfig, VulnClawConfig
+from vulnclaw.config.source_render import render_highlighted_source_block
 
 # 修改者: Nyaecho
 # 修改时间: 2026-07-08
@@ -72,6 +73,24 @@ def _is_benign_shutdown_exception(exc: BaseException) -> bool:
         if any(kw in msg for kw in _BENIGN_SHUTDOWN_KEYWORDS):
             return True
     return isinstance(exc, (GeneratorExit, asyncio.CancelledError))
+
+
+def _is_tls_verification_error(exc: BaseException) -> bool:
+    """Return true for certificate verification failures wrapped by httpx/httpcore."""
+
+    current: BaseException | None = exc
+    seen = 0
+    while current is not None and seen < 8:
+        message = str(current).lower()
+        if (
+            "certificate_verify_failed" in message
+            or "certificate verify failed" in message
+            or "unable to get local issuer certificate" in message
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+        seen += 1
+    return False
 
 
 class MCPLifecycleManager(ProbeMixin):
@@ -1399,14 +1418,28 @@ class MCPLifecycleManager(ProbeMixin):
                 jar = httpx.Cookies()
                 self._fetch_cookies = jar
 
-            async with httpx.AsyncClient(
-                verify=request["verify_tls"],
-                timeout=request["timeout"],
-                follow_redirects=request["follow_redirects"],
-                cookies=jar,
-            ) as client:
-                response = await client.request(**request["kwargs"])
-                jar.extract_cookies(response)
+            try:
+                async with httpx.AsyncClient(
+                    verify=request["verify_tls"],
+                    timeout=request["timeout"],
+                    follow_redirects=request["follow_redirects"],
+                    cookies=jar,
+                ) as client:
+                    response = await client.request(**request["kwargs"])
+                    jar.extract_cookies(response)
+            except httpx.TransportError as exc:
+                if request["verify_tls"] and _is_tls_verification_error(exc):
+                    request = {**request, "verify_tls": False, "tls_retry": True}
+                    async with httpx.AsyncClient(
+                        verify=False,
+                        timeout=request["timeout"],
+                        follow_redirects=request["follow_redirects"],
+                        cookies=jar,
+                    ) as client:
+                        response = await client.request(**request["kwargs"])
+                        jar.extract_cookies(response)
+                else:
+                    raise
 
             return self._format_fetch_response(response, request)
 
@@ -1520,6 +1553,10 @@ class MCPLifecycleManager(ProbeMixin):
 
     def _format_fetch_response(self, response: Any, request: dict[str, Any]) -> str:
         lines = [f"Request: {request['method']} {request['url']}"]
+        if request.get("tls_retry"):
+            lines.append(
+                "TLS verification failed; retried once with verify_tls=false for lab/CTF compatibility."
+            )
         final_url = str(response.url)
         if final_url != request["url"]:
             lines.append(f"Final URL: {final_url}")
@@ -1535,6 +1572,9 @@ class MCPLifecycleManager(ProbeMixin):
 
         body_text = response.text
         max_body_chars = request["max_body_chars"]
+        decoded_source = render_highlighted_source_block(body_text, max_chars=max_body_chars)
+        if decoded_source:
+            lines.append(decoded_source)
         if max_body_chars > 0 and len(body_text) > max_body_chars:
             lines.append(
                 f"Body (first {max_body_chars} chars, truncated from {len(body_text)}): "

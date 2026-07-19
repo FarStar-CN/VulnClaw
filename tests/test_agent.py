@@ -654,12 +654,13 @@ class TestPromptBuilder:
         assert "fetch" in prompt
         assert "URL to fetch" in prompt
 
-    def test_waf_bypass_knowledge_included(self):
+    def test_methodology_not_forced_into_base_prompt(self):
         from vulnclaw.agent.prompts import build_system_prompt
 
         prompt = build_system_prompt()
-        assert "WAF" in prompt
-        assert "base64" in prompt
+        assert "WAF 绕过" not in prompt
+        assert "base64" not in prompt
+        assert "工具使用" in prompt
 
     def test_core_contract_included(self):
         from vulnclaw.agent.prompts import build_system_prompt
@@ -761,11 +762,10 @@ class TestAgentCore:
         assert agent._detect_target("没有目标的输入") is None
 
     def test_skill_context_no_input(self):
-        """Without user_input, should fallback to pentest-flow."""
+        """Without user_input, skills should not inject a default workflow."""
         agent = self._make_agent()
         context = agent._get_active_skill_context(user_input=None)
-        assert context is not None
-        assert "渗透" in context
+        assert context is None
 
     def test_skill_context_with_input(self):
         """With user_input, should dispatch to the right Skill."""
@@ -787,8 +787,8 @@ class TestAgentCore:
             user_input="Use VulnClaw skill secknowledge-skill. test this target"
         )
         assert context is not None
-        assert "SRC" in context
-        assert "GAARM" in context
+        assert "optional reference material" in context
+        assert "secknowledge-skill" in context
 
     def test_build_openai_tools_includes_skill_ref(self):
         """Tools should include load_skill_reference."""
@@ -856,8 +856,8 @@ class TestAgentCore:
 
         messages = cm.get_messages()
         assert len(messages) <= 5
-        assert messages[0]["role"] == "system"
-        assert "之前的会话摘要" in messages[0]["content"]
+        assert messages[0]["role"] in {"user", "assistant"}
+        assert all(message["role"] != "system" for message in messages)
 
     def test_completion_signal_detection(self):
         agent = self._make_agent()
@@ -1701,7 +1701,9 @@ class TestAgentCoreLoop:
 
         monkeypatch.setattr(loop_controller, "call_llm_auto", _fake_call_llm_auto)
         # Use input that skips recon (so RECON_MIN_ROUNDS doesn't block [DONE])
-        results = await agent.auto_pentest("扫描 example.com 的 SQL注入漏洞", max_rounds=5)
+        results = await agent.auto_pentest(
+            "扫描 example.com 的 SQL注入漏洞", max_rounds=5, engine="rounds"
+        )
 
         assert len(results) == 1
         assert results[0].should_continue is False
@@ -1725,7 +1727,7 @@ class TestAgentCoreLoop:
             return text
 
         monkeypatch.setattr(loop_controller, "call_llm_auto", _fake_call_llm_auto)
-        results = await agent.auto_pentest("NSSCTF 解题找 flag", max_rounds=10)
+        results = await agent.auto_pentest("NSSCTF 解题找 flag", max_rounds=10, engine="rounds")
 
         # Should claim flag on round 1
         assert agent.runtime.claimed_flag == "flag{test123}"
@@ -1745,7 +1747,9 @@ class TestAgentCoreLoop:
             return "尝试 sql注入测试，使用 UNION SELECT，未成功。"
 
         monkeypatch.setattr(loop_controller, "call_llm_auto", _fake_call_llm_auto)
-        results = await agent.auto_pentest("扫描 example.com 的 SQL注入漏洞", max_rounds=5)
+        results = await agent.auto_pentest(
+            "扫描 example.com 的 SQL注入漏洞", max_rounds=5, engine="rounds"
+        )
 
         # Same path repeated without progress → counter increases
         assert agent.runtime.same_path_fail_count >= 3
@@ -1765,6 +1769,7 @@ class TestAgentCoreLoop:
         results = await agent.auto_pentest(
             "对 https://example.com 做信息收集。 Only allowed actions: recon",
             max_rounds=3,
+            engine="rounds",
         )
 
         assert len(results) == 1
@@ -1808,7 +1813,7 @@ class TestAgentCoreLoop:
             return "访问 https://victim.local/admin 访问失败，连接超时。"
 
         monkeypatch.setattr(loop_controller, "call_llm_auto", _fake_call_llm_auto)
-        await agent.auto_pentest("测试 victim.local", max_rounds=5)
+        await agent.auto_pentest("测试 victim.local", max_rounds=5, engine="rounds")
 
         # victim.local should be tracked as failed
         assert "victim.local" in agent.runtime.failed_targets

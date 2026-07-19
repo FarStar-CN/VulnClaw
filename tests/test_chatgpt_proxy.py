@@ -185,6 +185,7 @@ def mock_backend(monkeypatch):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     monkeypatch.setenv("VULNCLAW_CHATGPT_BACKEND_URL", f"http://127.0.0.1:{port}/responses")
     monkeypatch.setattr(cp, "_resolve_credentials", lambda: ("tok-123", "acct-9"))
+    monkeypatch.setattr(cp, "list_backend_models", lambda token, account_id: ["gpt-5.5"])
     yield received
     srv.shutdown()
 

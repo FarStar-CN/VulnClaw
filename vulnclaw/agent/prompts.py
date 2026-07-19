@@ -548,7 +548,8 @@ def build_system_prompt(
     Args:
         target: Current target identifier (IP/URL).
         phase: Current pentest phase name.
-        skill_context: Additional context from loaded Skill.
+        skill_context: Optional skill reference index. Skill bodies are not
+            automatically injected; the model may load references explicitly.
         mcp_tools: List of available MCP tool schemas.
         enable_personnel_dim: Whether to include dimension 4 (personnel/social eng)
             in the RECON_INSTRUCTION. Defaults to True for backward compatibility.
@@ -568,12 +569,9 @@ def build_system_prompt(
     if phase and phase in PHASE_DESCRIPTIONS:
         parts.append(PHASE_DESCRIPTIONS[phase])
 
-    # Skill context
+    # Optional skill references
     if skill_context:
-        parts.append(f"\n## 当前 Skill 上下文\n{skill_context}\n")
-
-    # WAF bypass knowledge (always include for MVP)
-    parts.append(WAF_BYPASS_KNOWLEDGE)
+        parts.append(f"\n## Optional Skill References\n{skill_context}\n")
 
     # MCP tools list
     if mcp_tools:

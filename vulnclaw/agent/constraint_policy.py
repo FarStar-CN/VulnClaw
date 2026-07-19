@@ -42,7 +42,15 @@ def validate_phase_transition(
 
 
 # 纯本地/知识类工具：不与目标交互，不纳入「动作范围」约束
-LOCAL_META_TOOLS = {"load_skill_reference", "crypto_decode"}
+LOCAL_META_TOOLS = {
+    "evidence_list",
+    "evidence_search",
+    "evidence_view",
+    "load_skill_reference",
+    "crypto_decode",
+    "source_extract",
+    "runtime_diff_probe",
+}
 
 # 真正代表「利用」意图的攻击载荷特征——与传输方式（HTTP 方法/网络库）无关
 EXPLOIT_PAYLOAD_MARKERS = [
@@ -141,6 +149,26 @@ def infer_tool_action(tool_name: str, args: dict[str, object]) -> str:
             return "exploit"
         # 用 requests/httpx/urllib/socket 做 HTTP 探测属扫描，而非利用
         if any(m in code for m in ("requests.", "httpx.", "urllib", "http.client", "socket")):
+            return "scan"
+        return "recon"
+
+    if normalized_tool == "shell_command":
+        command = str(args.get("command", "") or args.get("cmd", "") or "").lower()
+        if any(marker in command for marker in EXPLOIT_PAYLOAD_MARKERS + PYTHON_EXPLOIT_MARKERS):
+            return "exploit"
+        if any(
+            marker in command
+            for marker in (
+                "curl ",
+                "wget ",
+                "invoke-webrequest",
+                "invoke-restmethod",
+                "iwr ",
+                "irm ",
+                "http://",
+                "https://",
+            )
+        ):
             return "scan"
         return "recon"
 

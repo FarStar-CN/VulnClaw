@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -20,6 +21,7 @@ from vulnclaw.agent.tool_call_manager import (  # noqa: E402
 )
 
 _CONTEXT_USABLE_RATIO = 0.9
+_DEFAULT_AUTO_TOOL_ROUNDS = 6
 
 
 def _fit_context_window(agent: AgentContext, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -48,6 +50,123 @@ def _fit_context_window(agent: AgentContext, messages: list[dict[str, Any]]) -> 
     except Exception:
         logger.warning("上下文截断: %d → %d tokens (预算 %d)", current, estimate_tokens(trimmed), budget)
     return trimmed
+
+
+def _resolve_auto_tool_rounds(agent: AgentContext, max_tool_rounds: int | None = None) -> int:
+    """Resolve the internal follow-up cap for one model-led turn."""
+
+    if isinstance(max_tool_rounds, int) and max_tool_rounds > 0:
+        return max_tool_rounds
+    session = getattr(getattr(agent, "config", None), "session", None)
+    configured = getattr(session, "solve_max_tool_rounds", None)
+    if isinstance(configured, int) and configured > 0:
+        return configured
+    return _DEFAULT_AUTO_TOOL_ROUNDS
+
+
+def _tool_call_to_message_dict(tool_call: Any) -> dict[str, Any]:
+    """Convert provider tool-call objects into Chat Completions message dicts."""
+
+    function = getattr(tool_call, "function", None)
+    return {
+        "id": str(getattr(tool_call, "id", "") or ""),
+        "type": str(getattr(tool_call, "type", "") or "function"),
+        "function": {
+            "name": str(getattr(function, "name", "") or ""),
+            "arguments": str(getattr(function, "arguments", "") or ""),
+        },
+    }
+
+
+def _assistant_tool_message(content: str, tool_calls: list[Any]) -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": content or "",
+        "tool_calls": [_tool_call_to_message_dict(tool_call) for tool_call in tool_calls],
+    }
+
+
+def _tool_result_messages(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for item in tool_results:
+        if not isinstance(item, dict):
+            continue
+        tool_call_id = str(item.get("tool_call_id") or "")
+        if not tool_call_id:
+            tool_call = item.get("tool_call")
+            tool_call_id = str(getattr(tool_call, "id", "") or "")
+        if not tool_call_id:
+            continue
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": str(item.get("content", "") or ""),
+        })
+    return messages
+
+
+def _append_context_message(agent: AgentContext, message: dict[str, Any]) -> None:
+    context = getattr(agent, "context", None)
+    if context is None:
+        return
+    add_message = getattr(context, "add_message", None)
+    if callable(add_message):
+        add_message(message)
+        return
+    role = message.get("role")
+    content = str(message.get("content", "") or "")
+    if role == "assistant" and content and callable(getattr(context, "add_assistant_message", None)):
+        context.add_assistant_message(content)
+    elif role == "user" and content and callable(getattr(context, "add_user_message", None)):
+        context.add_user_message(content)
+
+
+def _message_from_stream(full_text: str, tool_calls: list[Any]) -> Any:
+    return SimpleNamespace(content=full_text, tool_calls=tool_calls)
+
+
+async def _stream_chat_completion_message(
+    agent: AgentContext,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    stream_sink: "StreamSink",
+) -> Any:
+    """Run one streaming Chat Completions request and return a message-like object."""
+
+    kwargs = build_chat_completion_kwargs(agent, messages, tools)
+    stream_sink.on_status("Thinking...")
+    response = agent._get_client().chat.completions.create(**kwargs, stream=True)
+
+    full_text = ""
+    reasoning_buffer = ""
+    tool_calls_chunks: list[dict] = []
+    stream = _ensure_async_iter(response)
+    if stream is None:
+        raise ValueError("LLM response is not a valid stream object")
+
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        reasoning = getattr(delta, "reasoning_content", None) or ""
+        if reasoning:
+            reasoning_buffer += reasoning
+            stream_sink.on_thinking_token(reasoning)
+
+        content = getattr(delta, "content", None) or ""
+        if content:
+            if reasoning_buffer:
+                full_text += f"<thinking>\n{reasoning_buffer}\n</thinking>\n"
+                reasoning_buffer = ""
+            stream_sink.on_content_token(content)
+            full_text += content
+
+        _collect_tool_call_deltas(delta, tool_calls_chunks)
+
+    if reasoning_buffer:
+        full_text += f"<thinking>\n{reasoning_buffer}\n</thinking>\n"
+    stream_sink.on_stream_end()
+    return _message_from_stream(full_text, _assemble_tool_calls(tool_calls_chunks))
 
 
 def extract_response(message: Any) -> str:
@@ -246,7 +365,7 @@ def _format_tool_results_fallback(
     *,
     assistant_text: str = "",
 ) -> str:
-    """Build a deterministic tool-result summary without a second LLM call."""
+    """Build deterministic tool-result text from the model-facing observations."""
 
     parts = [
         "[tool results processed] 工具调用已执行；未进行额外 LLM 总结；已降级为纯文本结果摘要。"
@@ -260,8 +379,6 @@ def _format_tool_results_fallback(
         content = str(item.get("content", ""))
         duration_ms = item.get("duration_ms")
         correction = str(item.get("correction") or "").strip()
-        if len(content) > 800:
-            content = content[:400] + "\n...[中间省略]...\n" + content[-400:]
         prefix = ""
         tool_call = item.get("tool_call")
         tool_name = getattr(getattr(tool_call, "function", None), "name", "")
@@ -294,11 +411,10 @@ async def call_llm(
     tools = agent._build_openai_tools()
 
     kwargs = build_chat_completion_kwargs(agent, messages, tools)
-
     response, retry_attempts = await _call_with_persistent_retries(
         agent,
         lambda: agent._get_client().chat.completions.create(**kwargs),
-        "单轮",
+        "single turn",
     )
 
     choice = response.choices[0]
@@ -314,11 +430,14 @@ async def call_llm_auto(
     *,
     stream_sink: Optional["StreamSink"] = None,
     include_history: bool = True,
+    max_tool_rounds: int | None = None,
 ) -> str:
     """Call the LLM in auto-pentest mode with round context appended.
 
-    The model-led solve engine normally keeps history and stores raw tool output
-    separately in AgentState so large blobs do not accumulate in chat messages.
+    The model-led solve engine records assistant tool calls and role=tool
+    observations in the chat transcript. Large raw outputs are stored in
+    AgentState evidence and represented here by bounded high-signal previews,
+    which keeps the active context useful without discarding raw evidence.
     """
     if stream_sink is not None:
         return await call_llm_auto_stream(
@@ -327,6 +446,7 @@ async def call_llm_auto(
             round_context,
             stream_sink,
             include_history=include_history,
+            max_tool_rounds=max_tool_rounds,
         )
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -336,26 +456,73 @@ async def call_llm_auto(
     messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
 
-    kwargs = build_chat_completion_kwargs(agent, messages, tools)
+    retry_attempts_total = 0
+    last_tool_results: list[dict[str, Any]] | None = None
+    last_skipped_info: list[str] = []
+    last_assistant_text = ""
+    for _tool_round in range(_resolve_auto_tool_rounds(agent, max_tool_rounds) + 1):
+        messages = _fit_context_window(agent, messages)
+        kwargs = build_chat_completion_kwargs(agent, messages, tools)
+        try:
+            response, retry_attempts = await _call_with_persistent_retries(
+                agent,
+                lambda: agent._get_client().chat.completions.create(**kwargs),
+                "autonomous loop",
+            )
+        except Exception as exc:
+            if last_tool_results is not None:
+                fallback = _format_tool_results_fallback(
+                    last_tool_results,
+                    last_skipped_info,
+                    assistant_text=last_assistant_text,
+                )
+                return _prepend_retry_notice(
+                    f"{fallback}\n[llm follow-up failed] {exc}",
+                    retry_attempts_total,
+                )
+            raise
+        retry_attempts_total += retry_attempts
 
-    response, retry_attempts = await _call_with_persistent_retries(
-        agent,
-        lambda: agent._get_client().chat.completions.create(**kwargs),
-        "自主循环",
-    )
+        choice = response.choices[0]
+        tool_calls = list(getattr(choice.message, "tool_calls", None) or [])
+        if not tool_calls:
+            return _prepend_retry_notice(extract_response(choice.message), retry_attempts_total)
 
-    choice = response.choices[0]
-    if choice.message.tool_calls:
         tool_results, skipped_info = await handle_tool_calls_with_results(agent, choice.message)
-        fallback = _format_tool_results_fallback(
-            tool_results,
-            skipped_info,
-            assistant_text=choice.message.content or "",
+        last_tool_results = tool_results
+        last_skipped_info = skipped_info
+        last_assistant_text = choice.message.content or ""
+        executed_tool_calls = [
+            item.get("tool_call")
+            for item in tool_results
+            if isinstance(item, dict) and item.get("tool_call") is not None
+        ]
+        if not executed_tool_calls:
+            return _prepend_retry_notice(
+                _format_tool_results_fallback(
+                    tool_results,
+                    skipped_info,
+                    assistant_text=choice.message.content or "",
+                ),
+                retry_attempts_total,
+            )
+
+        assistant_message = _assistant_tool_message(
+            extract_response(choice.message),
+            executed_tool_calls,
         )
-        return _prepend_retry_notice(fallback, retry_attempts)
+        tool_messages = _tool_result_messages(tool_results)
+        messages.append(assistant_message)
+        messages.extend(tool_messages)
+        if include_history:
+            _append_context_message(agent, assistant_message)
+            for tool_message in tool_messages:
+                _append_context_message(agent, tool_message)
 
-    return _prepend_retry_notice(extract_response(choice.message), retry_attempts)
-
+    return _prepend_retry_notice(
+        "[tool loop paused] Internal tool follow-up cap reached; continue from the recorded tool evidence.",
+        retry_attempts_total,
+    )
 
 # === Stream LLM Call Helpers ===
 
@@ -529,14 +696,13 @@ async def call_llm_stream(
     if stream_sink is None:
         stream_sink = _NullSink()
 
-    client = agent._get_client()
-
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(agent.context.get_messages())
     messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
 
     kwargs = build_chat_completion_kwargs(agent, messages, tools)
+    client = agent._get_client()
 
     try:
         stream_sink.on_status("Thinking...")
@@ -632,6 +798,7 @@ async def call_llm_auto_stream(
     stream_sink: Optional["StreamSink"] = None,
     *,
     include_history: bool = True,
+    max_tool_rounds: int | None = None,
 ) -> str:
     """Call the LLM in auto-pentest mode with streaming output.
 
@@ -647,8 +814,6 @@ async def call_llm_auto_stream(
     if stream_sink is None:
         stream_sink = _NullSink()
 
-    client = agent._get_client()
-
     messages = [{"role": "system", "content": system_prompt}]
     if include_history:
         messages.extend(agent.context.get_messages())
@@ -656,102 +821,73 @@ async def call_llm_auto_stream(
     messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
 
-    kwargs = build_chat_completion_kwargs(agent, messages, tools)
-
+    last_tool_results: list[dict[str, Any]] | None = None
+    last_skipped_info: list[str] = []
+    last_assistant_text = ""
     try:
-        # First LLM call with streaming
-        stream_sink.on_status("Thinking...")
-        response = client.chat.completions.create(**kwargs, stream=True)
+        for _tool_round in range(_resolve_auto_tool_rounds(agent, max_tool_rounds) + 1):
+            messages = _fit_context_window(agent, messages)
+            message = await _stream_chat_completion_message(agent, messages, tools, stream_sink)
+            tool_calls = list(getattr(message, "tool_calls", None) or [])
+            if not tool_calls:
+                return extract_response(message)
 
-        full_text = ""
-        reasoning_buffer = ""
-        tool_calls_chunks: list[dict] = []
+            for tc in tool_calls:
+                stream_sink.on_tool_call(tc.function.name, tc.function.arguments[:200])
 
-        # 自动适配 sync/async Stream
-        _stream = _ensure_async_iter(response)
-        if _stream is None:
-            raise ValueError("LLM response is not a valid stream object")
-        async for chunk in _stream:
-            if chunk.choices and len(chunk.choices) > 0:
-                delta = chunk.choices[0].delta
+            tool_results, skipped_info = await handle_tool_calls_with_results(agent, message)
+            last_tool_results = tool_results
+            last_skipped_info = skipped_info
+            last_assistant_text = message.content or ""
+            for item in tool_results:
+                if isinstance(item, dict) and "content" in item:
+                    stream_sink.on_tool_result(item["content"])
 
-                # Handle reasoning_content
-                reasoning = getattr(delta, "reasoning_content", None) or ""
-                if reasoning:
-                    reasoning_buffer += reasoning
-                    stream_sink.on_thinking_token(reasoning)
-
-                # Handle content
-                content = getattr(delta, "content", None) or ""
-                if content:
-                    if reasoning_buffer:
-                        full_text += f"<thinking>\n{reasoning_buffer}\n</thinking>\n"
-                        reasoning_buffer = ""
-                    stream_sink.on_content_token(content)
-                    full_text += content
-
-                # Handle tool_calls
-                _collect_tool_call_deltas(delta, tool_calls_chunks)
-
-        stream_sink.on_stream_end()
-
-        # Flush reasoning（重置缓冲，避免泄漏到第二轮总结流导致重复输出）
-        if reasoning_buffer:
-            full_text += f"<thinking>\n{reasoning_buffer}\n</thinking>\n"
-            reasoning_buffer = ""
-
-        # Check if we have tool calls
-        choice_dummy = type("obj", (object,), {"message": type("obj", (object,), {
-            "content": full_text,
-            "tool_calls": None,
-        })()})()
-
-        # Reconstruct message for tool call handling
-        # We need to check if there are tool calls from the accumulated chunks
-        if tool_calls_chunks:
-            tool_calls = _assemble_tool_calls(tool_calls_chunks)
-
-            if tool_calls:
-                # [修改] 流式聚合后 tool_calls 仅存在于 delta 片段中, 需回填到聚合消息对象以便后续处理
-                # Patch the dummy message with actual tool calls
-                choice_dummy.message.tool_calls = tool_calls
-                # Execute tool calls
-                for tc in tool_calls:
-                    stream_sink.on_tool_call(tc.function.name, tc.function.arguments[:200])
-
-                tool_results, skipped_info = await handle_tool_calls_with_results(agent, choice_dummy.message)
-
-                for tr in tool_results:
-                    if isinstance(tr, dict) and "content" in tr:
-                        stream_sink.on_tool_result(tr["content"])
-
+            executed_tool_calls = [
+                item.get("tool_call")
+                for item in tool_results
+                if isinstance(item, dict) and item.get("tool_call") is not None
+            ]
+            if not executed_tool_calls:
                 return _format_tool_results_fallback(
                     tool_results,
                     skipped_info,
-                    assistant_text=full_text,
+                    assistant_text=message.content or "",
                 )
 
-        # 上下文已由调用方写入，不在此重复添加
-        return full_text
+            assistant_message = _assistant_tool_message(extract_response(message), executed_tool_calls)
+            tool_messages = _tool_result_messages(tool_results)
+            messages.append(assistant_message)
+            messages.extend(tool_messages)
+            if include_history:
+                _append_context_message(agent, assistant_message)
+                for tool_message in tool_messages:
+                    _append_context_message(agent, tool_message)
 
+        return "[tool loop paused] Internal tool follow-up cap reached; continue from the recorded tool evidence."
     except (NotImplementedError, ValueError, Exception) as e:
         error_text = str(e).lower()
+        if last_tool_results is not None:
+            return _format_tool_results_fallback(
+                last_tool_results,
+                last_skipped_info,
+                assistant_text=last_assistant_text,
+            ) + f"\n[llm follow-up failed] {e}"
         if not any(
             marker in error_text
             for marker in [
-                "not supported", "not implemented", "streaming",
+                "not supported", "not implemented", "streaming", "not a valid stream",
             ]
         ):
             raise
 
-    # Fallback to non-streaming
     return await call_llm_auto(
         agent,
         system_prompt,
         round_context,
         include_history=include_history,
+        max_tool_rounds=max_tool_rounds,
     )
-
 
 # === Stream Output Protocol ===
 

@@ -303,7 +303,10 @@ class SessionConfig(BaseModel):
     )
     solve_max_tool_rounds: int = Field(
         default=6,
-        description="Compatibility field; model-led solve lets the model decide tool use per step",
+        description=(
+            "Compatibility safety cap for consecutive internal tool-call follow-ups "
+            "inside one model turn; not a planned workflow length"
+        ),
     )
     solve_max_parallel: int = Field(
         default=1,

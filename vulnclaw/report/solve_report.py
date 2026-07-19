@@ -258,7 +258,11 @@ def _parse_http_probe_batch(
                 body_lines.append(tail)
             continue
         if in_body:
-            if stripped.startswith("[correction]") or stripped.startswith("# Same-body"):
+            if (
+                stripped.startswith("[correction]")
+                or stripped.startswith("[diagnostic]")
+                or stripped.startswith("# Same-body")
+            ):
                 in_body = False
                 continue
             body_lines.append(raw_line.rstrip())

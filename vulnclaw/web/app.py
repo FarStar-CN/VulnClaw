@@ -99,7 +99,7 @@ def create_app():
             "FastAPI is not installed. Install the web extra first: pip install vulnclaw[web]"
         )
 
-    app = FastAPI(title="VulnClaw Web UI", version="0.3.4")
+    app = FastAPI(title="VulnClaw Web UI", version="0.3.5")
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(AuthMiddleware)
 

@@ -22,7 +22,11 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "load_skill_reference",
-                "description": "加载指定 Skill 的参考文档，获取详细的渗透测试方法论、工作流或命令参考。当系统提示中提到'可用参考文档'时，使用此工具获取具体内容。",
+                "description": (
+                    "Load an optional Skill reference document. Returned content is reference "
+                    "material only, not a mandatory workflow, phase plan, or tool schedule; "
+                    "the model decides whether it is useful for the current evidence."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -95,10 +99,202 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "evidence_search",
+                "description": (
+                    "Search raw saved evidence by substring or regex and return bounded snippets "
+                    "with evidence ids and offsets. Use this before rereading a large body when "
+                    "you need to find source/sink/parameter/token/flag text inside prior raw output."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Substring or regex to search for, e.g. unserialize, flag, name=\"id\".",
+                        },
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Optional evidence id to search inside, e.g. e004.",
+                        },
+                        "regex": {
+                            "type": "boolean",
+                            "description": "Interpret query as a regex. Default false.",
+                        },
+                        "context_chars": {
+                            "type": "integer",
+                            "description": "Characters of raw context around each match. Default 180.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum matches to return. Default 12, capped internally.",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "source_extract",
+                "description": (
+                    "Normalize messy HTML/highlight_file/source evidence into readable text and "
+                    "extract high-signal PHP/web surfaces such as forms, endpoints, unserialize, "
+                    "magic methods, eval sinks, taint sources and filters. Use it when raw body "
+                    "contains highlighted or noisy source code."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Evidence id to normalize, e.g. e004.",
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Inline raw HTML/source text to normalize when no evidence id exists.",
+                        },
+                    },
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "runtime_diff_probe",
+                "description": (
+                    "Run a compact local parser/filter differential table. Use when evidence shows "
+                    "a regex/string filter before a runtime parser/interpreter and you need to find "
+                    "inputs accepted by the parser but missed by the filter. Supports generic regex "
+                    "checks and PHP serialize/unserialize checks; this is local verification only."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "description": "regex or php_serialize. Default regex.",
+                        },
+                        "filter_regex": {
+                            "type": "string",
+                            "description": "Observed filter regex, e.g. /[oc]:\\d+:/i.",
+                        },
+                        "payload": {
+                            "type": "string",
+                            "description": "Canonical payload to mutate and compare against the filter/parser.",
+                        },
+                        "candidates": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "payload": {"type": "string"},
+                                },
+                            },
+                            "description": "Optional explicit candidate payloads to test.",
+                        },
+                        "mutations": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional mutation names. For php_serialize: signed_lengths, "
+                                "leading_zero_lengths, lowercase_type, uppercase_string_type."
+                            ),
+                        },
+                        "class_defs": {
+                            "type": "string",
+                            "description": (
+                                "PHP class definitions for php_serialize mode, without <?php tags. "
+                                "Use minimal local definitions needed to validate unserialize behavior."
+                            ),
+                        },
+                        "target_runtime": {
+                            "type": "string",
+                            "description": (
+                                "Optional target runtime/version observed from headers/source, e.g. "
+                                "PHP/5.6.40. If omitted, VulnClaw tries to infer it from evidence."
+                            ),
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Local runtime timeout in milliseconds, default 10000.",
+                        },
+                        "max_output_chars": {
+                            "type": "integer",
+                            "description": (
+                                "Optional command-level output cap before evidence storage; omitted "
+                                "or 0 keeps raw output intact, while large active-context observations "
+                                "may still be represented by a high-signal preview."
+                            ),
+                        },
+                    },
+                    "required": ["filter_regex"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
+                "name": "shell_command",
+                "description": (
+                    "Run a local shell command when local verification or exact request fidelity is "
+                    "useful. Good uses include php -r serialization checks, curl requests with raw "
+                    "cookies/headers, rg/Select-String over saved files, and small one-off scripts. "
+                    "Set workdir when the command depends on files. Raw stdout/stderr are saved as "
+                    "evidence; large active-context observations are bounded high-signal previews."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Shell command to run."},
+                        "workdir": {
+                            "type": "string",
+                            "description": "Working directory. Defaults to the VulnClaw process cwd.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Command timeout in milliseconds, default 10000, capped at 120000.",
+                        },
+                        "shell": {
+                            "type": "string",
+                            "description": "Windows: powershell (default), pwsh, or cmd. Other OSes use the default shell.",
+                        },
+                        "max_output_chars": {
+                            "type": "integer",
+                            "description": (
+                                "Optional command-level output cap before evidence storage; omitted "
+                                "or 0 keeps raw output intact, while large active-context observations "
+                                "may still be represented by a high-signal preview."
+                            ),
+                        },
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
+    )
+
+    tools.append(
+        {
+            "type": "function",
+            "function": {
                 "name": "http_probe_batch",
                 "description": (
                     "Batch HTTP probe tool for comparing URL/parameter/header/body variants "
-                    "in one call. Returns status/length/hash/title/body signals and full response bodies."
+                    "in one call. Returns status/length/hash/title/response headers/body signals, "
+                    "audited request surfaces and raw response bodies saved as evidence. Large "
+                    "active-context observations are high-signal previews. Supports "
+                    "GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS."
                 ),
                 "parameters": {
                     "type": "object",
@@ -109,12 +305,28 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "method": {"type": "string"},
+                                    "method": {
+                                        "type": "string",
+                                        "description": "GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS; default GET.",
+                                    },
                                     "url": {"type": "string"},
                                     "raw_url": {"type": "string"},
                                     "params": {"type": "object"},
-                                    "headers": {"type": "object"},
-                                    "cookies": {"type": "object"},
+                                    "headers": {
+                                        "type": "object",
+                                        "description": (
+                                            "Per-request headers. For exact Cookie payloads or values "
+                                            "containing semicolons/quotes/braces, prefer headers.Cookie "
+                                            "with the already-encoded raw value."
+                                        ),
+                                    },
+                                    "cookies": {
+                                        "type": "object",
+                                        "description": (
+                                            "Simple per-request cookies. Use headers.Cookie instead "
+                                            "when cookie serialization/encoding must be exact."
+                                        ),
+                                    },
                                     "data": {},
                                     "json": {},
                                     "label": {"type": "string"},
@@ -123,7 +335,10 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                         },
                         "timeout": {"type": "number"},
                         "follow_redirects": {"type": "boolean"},
-                        "verify_tls": {"type": "boolean"},
+                        "verify_tls": {
+                            "type": "boolean",
+                            "description": "Verify TLS certificates; default false for CTF/lab compatibility.",
+                        },
                         "max_body_chars": {"type": "integer"},
                     },
                     "required": ["requests"],

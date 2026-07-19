@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -15,12 +16,13 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
 
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 
@@ -40,6 +42,10 @@ from vulnclaw.agent.network_scan import (
 )
 from vulnclaw.agent.roles import role_tool_violation, tool_allowed_for_role
 from vulnclaw.agent.tool_result_overrides import set_raw_tool_output_override
+from vulnclaw.config.source_render import (
+    render_highlighted_source_block,
+    strip_highlighted_source,
+)
 
 # 修改者: Nyaecho
 # 修改时间: 2026-07-08
@@ -277,7 +283,550 @@ def execute_evidence_tool(agent: AgentContext, tool_name: str, args: dict[str, A
             offset=int(args.get("offset", 0) or 0),
             limit=int(args.get("limit", 12000) or 12000),
         )
+    if tool_name == "evidence_search":
+        return agent_state.format_evidence_search(
+            str(args.get("query", "") or ""),
+            evidence_id=str(args.get("evidence_id", "") or ""),
+            regex=bool(args.get("regex", False)),
+            context_chars=int(args.get("context_chars", 180) or 180),
+            limit=int(args.get("limit", 12) or 12),
+        )
     return f"[!] Unknown evidence tool: {tool_name}"
+
+
+def _resolve_workdir(raw_workdir: Any) -> Path:
+    workdir = Path(str(raw_workdir or os.getcwd())).expanduser()
+    return workdir.resolve()
+
+
+def _validate_command_url_scope(agent: AgentContext, command: str) -> str | None:
+    for match in re.finditer(r"https?://[^\s'\"<>]+", command):
+        parsed = urlparse(match.group(0))
+        host = (parsed.hostname or "").lower()
+        path = parsed.path.rstrip("/")
+        violation = enforce_host_path_constraints(
+            agent,
+            host=host,
+            path=path,
+            target=host,
+        )
+        if violation:
+            return violation
+    return None
+
+
+def _shell_argv(command: str, shell_name: str) -> list[str] | str:
+    normalized = (shell_name or "").strip().lower()
+    if os.name == "nt":
+        if normalized in {"cmd", "cmd.exe"}:
+            return ["cmd.exe", "/c", command]
+        executable = "pwsh.exe" if normalized in {"pwsh", "pwsh.exe"} else "powershell.exe"
+        return [executable, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command]
+    return command
+
+
+async def execute_shell_command(agent: AgentContext, args: dict[str, Any]) -> str:
+    """Run a local shell command and return command output as model-visible evidence."""
+
+    command = str(args.get("command") or args.get("cmd") or "").strip()
+    if not command:
+        return "[!] shell_command requires command"
+    scope_violation = _validate_command_url_scope(agent, command)
+    if scope_violation:
+        return scope_violation
+
+    try:
+        workdir = _resolve_workdir(args.get("workdir"))
+    except OSError as exc:
+        return f"[!] shell_command invalid workdir: {exc}"
+    if not workdir.exists() or not workdir.is_dir():
+        return f"[!] shell_command workdir does not exist or is not a directory: {workdir}"
+
+    timeout_ms = int(args.get("timeout_ms") or 10000)
+    timeout_ms = max(1000, min(timeout_ms, 120000))
+    max_output_chars = int(args.get("max_output_chars") or 0)
+    shell_name = str(args.get("shell") or "")
+    argv = _shell_argv(command, shell_name)
+    use_shell = os.name != "nt"
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    started = time.perf_counter()
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                argv,
+                cwd=str(workdir),
+                shell=use_shell,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_ms / 1000,
+                env=env,
+            ),
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = "\n".join(part for part in (exc.stdout or "", exc.stderr or "") if part)
+        return (
+            f"[!] shell_command timed out after {timeout_ms}ms\n"
+            f"Command: {command}\n"
+            f"Workdir: {workdir}\n"
+            f"Output:\n{output}"
+        )
+    except FileNotFoundError as exc:
+        return f"[!] shell_command failed: shell executable not found ({exc})"
+    except Exception as exc:
+        return f"[!] shell_command failed: {exc.__class__.__name__}: {exc}"
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    parts = [
+        f"Command: {command}",
+        f"Workdir: {workdir}",
+        f"Exit code: {result.returncode}",
+        f"Wall time: {elapsed_ms}ms",
+        "Output:",
+    ]
+    output = ""
+    if result.stdout:
+        output += result.stdout
+    if result.stderr:
+        output += ("\n" if output else "") + "[stderr]\n" + result.stderr
+    if not output:
+        output = "(no output)"
+    raw_output = "\n".join(parts + [output])
+    if max_output_chars > 0 and len(raw_output) > max_output_chars:
+        clip = max_output_chars // 2
+        return raw_output[:clip] + "\n...[truncated by max_output_chars]...\n" + raw_output[-clip:]
+    return raw_output
+
+
+def _strip_highlighted_source(raw: str) -> str:
+    return strip_highlighted_source(raw)
+
+
+def _source_signal_lines(source: str, *, context: int = 1) -> list[str]:
+    markers = (
+        "highlight_file", "show_source", "unserialize", "serialize", "__destruct",
+        "__wakeup", "__tostring", "eval", "assert", "system", "exec(",
+        "shell_exec", "passthru", "call_user_func", "preg_match", "$_cookie",
+        "$_get", "$_post", "$_request", "class ", "function ", "->", "::",
+    )
+    lines = source.splitlines()
+    selected: dict[int, str] = {}
+    for index, line in enumerate(lines):
+        lower = line.lower()
+        if any(marker in lower for marker in markers):
+            for neighbor in range(max(0, index - context), min(len(lines), index + context + 1)):
+                selected[neighbor + 1] = lines[neighbor]
+    return [f"L{line_no}: {line}" for line_no, line in sorted(selected.items())]
+
+
+def _extract_html_surfaces(raw: str) -> list[str]:
+    surfaces: list[str] = []
+    for pattern, label in (
+        (r"(?is)<form\b[^>]*>", "form"),
+        (r"(?is)<input\b[^>]*>", "input"),
+        (r"(?is)<textarea\b[^>]*>", "textarea"),
+        (r"(?is)<select\b[^>]*>", "select"),
+    ):
+        for match in re.finditer(pattern, raw or ""):
+            surfaces.append(f"{label}: {one_line(match.group(0), 260)}")
+    return surfaces[:80]
+
+
+def _extract_endpoints(raw: str) -> list[str]:
+    endpoints: list[str] = []
+    patterns = [
+        r"""(?i)\b(?:href|src|action)\s*=\s*["']([^"']{1,300})["']""",
+        r"""(?i)\b(?:fetch|open)\s*\(\s*["']([^"']{1,300})["']""",
+        r"""(?i)\burl\s*:\s*["']([^"']{1,300})["']""",
+    ]
+    for pattern in patterns:
+        for endpoint in re.findall(pattern, raw or ""):
+            if endpoint and endpoint not in endpoints:
+                endpoints.append(endpoint)
+    return endpoints[:120]
+
+
+async def execute_source_extract(agent: AgentContext, args: dict[str, Any]) -> str:
+    """Normalize highlighted HTML/source evidence and extract vulnerability signals."""
+
+    raw = str(args.get("text") or "")
+    source_label = "inline text"
+    evidence_id = str(args.get("evidence_id") or "").strip()
+    if evidence_id:
+        agent_state = _agent_state_for_tool(agent)
+        if agent_state is None:
+            return "[!] AgentState is not available"
+        for evidence in agent_state.evidence:
+            if evidence.id == evidence_id:
+                raw = evidence.content
+                source_label = f"evidence {evidence_id}"
+                break
+        else:
+            return f"[!] evidence not found: {evidence_id}"
+    if not raw.strip():
+        return "[!] source_extract requires evidence_id or text"
+
+    normalized = _strip_highlighted_source(raw)
+    signal_lines = _source_signal_lines(normalized)
+    surfaces = _extract_html_surfaces(raw)
+    endpoints = _extract_endpoints(raw)
+    parts = [f"# source_extract — {source_label}"]
+    if signal_lines:
+        parts.append("\n## High-signal source lines")
+        parts.extend(signal_lines)
+    if surfaces:
+        parts.append("\n## HTML form/input surfaces")
+        parts.extend(f"- {item}" for item in surfaces)
+    if endpoints:
+        parts.append("\n## Endpoints")
+        parts.extend(f"- {endpoint}" for endpoint in endpoints)
+    parts.append("\n## Normalized source/text")
+    parts.append(normalized)
+    return "\n".join(parts)
+
+
+_PHP_SERIALIZE_LENGTH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([OC]):([0-9]+):")
+_PHP_SERIALIZE_STRING_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])s:([0-9]+):")
+
+
+def _runtime_diff_candidates(args: dict[str, Any]) -> list[tuple[str, str]]:
+    """Build a compact candidate table for parser/filter differential probing."""
+
+    payload = str(args.get("payload") or "")
+    explicit = args.get("candidates") or []
+    mutations = args.get("mutations") or ["signed_lengths", "leading_zero_lengths"]
+    if isinstance(mutations, str):
+        mutations = [mutations]
+    mutation_set = {str(item).strip().lower() for item in mutations if str(item).strip()}
+
+    candidates: list[tuple[str, str]] = []
+    if payload:
+        candidates.append(("original", payload))
+
+    if "signed_lengths" in mutation_set and payload:
+        signed = _PHP_SERIALIZE_LENGTH_TOKEN_RE.sub(r"\1:+\2:", payload)
+        if signed != payload:
+            candidates.append(("signed object/class lengths", signed))
+
+    if "leading_zero_lengths" in mutation_set and payload:
+        padded = _PHP_SERIALIZE_LENGTH_TOKEN_RE.sub(
+            lambda match: f"{match.group(1)}:0{match.group(2)}:",
+            payload,
+        )
+        if padded != payload:
+            candidates.append(("zero-padded object/class lengths", padded))
+
+    if "lowercase_type" in mutation_set and payload:
+        lowered = _PHP_SERIALIZE_LENGTH_TOKEN_RE.sub(
+            lambda match: f"{match.group(1).lower()}:{match.group(2)}:",
+            payload,
+        )
+        if lowered != payload:
+            candidates.append(("lowercase object/class token", lowered))
+
+    if "uppercase_string_type" in mutation_set and payload:
+        upper_s = _PHP_SERIALIZE_STRING_TOKEN_RE.sub(r"S:\1:", payload)
+        if upper_s != payload:
+            candidates.append(("uppercase string token", upper_s))
+
+    if isinstance(explicit, list):
+        for index, item in enumerate(explicit, start=1):
+            if isinstance(item, dict):
+                value = str(item.get("payload") or item.get("value") or "")
+                label = str(item.get("label") or f"candidate {index}")
+            else:
+                value = str(item or "")
+                label = f"candidate {index}"
+            if value:
+                candidates.append((label, value))
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for label, value in candidates:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append((label, value))
+    return deduped[:40]
+
+
+def _parse_python_regex(pattern: str) -> tuple[str, int]:
+    """Parse a PCRE-style /pattern/flags string for lightweight local checks."""
+
+    raw = str(pattern or "")
+    flags = 0
+    if len(raw) >= 2 and raw.startswith("/"):
+        escaped = False
+        for index in range(len(raw) - 1, 0, -1):
+            if raw[index] != "/" or escaped:
+                escaped = raw[index] == "\\" and not escaped
+                continue
+            body = raw[1:index]
+            suffix = raw[index + 1 :]
+            if "i" in suffix:
+                flags |= re.IGNORECASE
+            if "s" in suffix:
+                flags |= re.DOTALL
+            if "m" in suffix:
+                flags |= re.MULTILINE
+            return body, flags
+    return raw, flags
+
+
+def _execute_regex_diff_probe(args: dict[str, Any]) -> str:
+    filter_regex = str(args.get("filter_regex") or args.get("regex") or "")
+    candidates = _runtime_diff_candidates(args)
+    if not filter_regex:
+        return "[!] runtime_diff_probe regex mode requires filter_regex"
+    if not candidates:
+        return "[!] runtime_diff_probe requires payload or candidates"
+
+    pattern, flags = _parse_python_regex(filter_regex)
+    lines = [
+        "# runtime_diff_probe - regex",
+        f"filter_regex={filter_regex}",
+        f"candidate_count={len(candidates)}",
+    ]
+    try:
+        compiled = re.compile(pattern, flags)
+    except re.error as exc:
+        return f"[!] runtime_diff_probe invalid regex for Python check: {exc}"
+
+    for index, (label, value) in enumerate(candidates, start=1):
+        hit = bool(compiled.search(value))
+        lines.extend(
+            [
+                f"\n[{index}] {label}",
+                f"filter_hit={str(hit).lower()}",
+                f"length={len(value)}",
+                f"urlencoded={quote(value, safe='')}",
+                f"raw={value}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _strip_php_open_close_tags(code: str) -> str:
+    text = str(code or "").strip()
+    text = re.sub(r"^\s*<\?php", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\?>\s*$", "", text)
+    return text.strip()
+
+
+def _b64_php_string(value: str) -> str:
+    return base64.b64encode(str(value or "").encode("utf-8", errors="replace")).decode("ascii")
+
+
+def _detect_target_runtime(agent: AgentContext, args: dict[str, Any]) -> str:
+    explicit = str(args.get("target_runtime") or "").strip()
+    if explicit:
+        return one_line(explicit, 120)
+    agent_state = _agent_state_for_tool(agent)
+    if agent_state is None:
+        return ""
+    for evidence in reversed(getattr(agent_state, "evidence", [])[-24:]):
+        text = "\n".join(
+            part
+            for part in (
+                getattr(evidence, "summary", ""),
+                getattr(evidence, "preview", ""),
+                getattr(evidence, "content", "")[:4000],
+            )
+            if part
+        )
+        match = re.search(r"\bPHP/([0-9]+(?:\.[0-9]+){0,2})\b", text, re.IGNORECASE)
+        if match:
+            return f"PHP/{match.group(1)}"
+        match = re.search(r"\bPHP\s+([0-9]+(?:\.[0-9]+){0,2})\b", text, re.IGNORECASE)
+        if match:
+            return f"PHP/{match.group(1)}"
+    return ""
+
+
+def _build_php_runtime_diff_script(
+    *,
+    filter_regex: str,
+    candidates: list[tuple[str, str]],
+    class_defs: str,
+) -> str:
+    entries = []
+    for label, payload in candidates:
+        entries.append(
+            "array('label'=>base64_decode('%s'),'payload'=>base64_decode('%s'))"
+            % (_b64_php_string(label), _b64_php_string(payload))
+        )
+    class_block = _strip_php_open_close_tags(class_defs)
+    return "\n".join(
+        [
+            "<?php",
+            "error_reporting(E_ALL);",
+            class_block,
+            "$filter = base64_decode('%s');" % _b64_php_string(filter_regex),
+            "$candidates = array(%s);" % ",".join(entries),
+            "echo \"# runtime_diff_probe - php_serialize\\n\";",
+            "echo \"local_php_version=\" . PHP_VERSION . \"\\n\";",
+            "echo \"filter_regex=\" . $filter . \"\\n\";",
+            "echo \"candidate_count=\" . count($candidates) . \"\\n\";",
+            "foreach ($candidates as $i => $item) {",
+            "    $label = $item['label'];",
+            "    $payload = $item['payload'];",
+            "    echo \"\\n[\" . ($i + 1) . \"] \" . $label . \"\\n\";",
+            "    echo \"length=\" . strlen($payload) . \"\\n\";",
+            "    if ($filter !== '') {",
+            "        $hit = @preg_match($filter, $payload);",
+            "        echo \"filter_hit=\" . var_export($hit, true) . \"\\n\";",
+            "    } else {",
+            "        echo \"filter_hit=not_tested\\n\";",
+            "    }",
+            "    ob_start();",
+            "    $result = @unserialize($payload);",
+            "    $ok = !($result === false && $payload !== 'b:0;');",
+            "    if (is_object($result)) {",
+            "        $result_class = get_class($result);",
+            "    } else {",
+            "        $result_class = '';",
+            "    }",
+            "    $result_type = gettype($result);",
+            "    unset($result);",
+            "    $side = ob_get_clean();",
+            "    echo \"unserialize_ok=\" . ($ok ? 'true' : 'false') . \"\\n\";",
+            "    echo \"result_type=\" . $result_type . \"\\n\";",
+            "    if ($result_class !== '') { echo \"result_class=\" . $result_class . \"\\n\"; }",
+            "    if ($side !== '') { echo \"side_effect_output=\" . json_encode($side) . \"\\n\"; }",
+            "    echo \"urlencoded=\" . rawurlencode($payload) . \"\\n\";",
+            "    echo \"raw=\" . $payload . \"\\n\";",
+            "}",
+            "?>",
+        ]
+    )
+
+
+async def _execute_php_serialize_diff_probe(
+    args: dict[str, Any],
+    *,
+    target_runtime: str = "",
+) -> str:
+    filter_regex = str(args.get("filter_regex") or args.get("regex") or "")
+    candidates = _runtime_diff_candidates(args)
+    if not candidates:
+        return "[!] runtime_diff_probe requires payload or candidates"
+
+    php = shutil.which("php")
+    if not php:
+        return "[!] runtime_diff_probe php_serialize mode requires php in PATH"
+
+    timeout_ms = max(1000, min(int(args.get("timeout_ms") or 10000), 120000))
+    max_output_chars = int(args.get("max_output_chars") or 0)
+    class_defs = str(args.get("class_defs") or "")
+    script = _build_php_runtime_diff_script(
+        filter_regex=filter_regex,
+        candidates=candidates,
+        class_defs=class_defs,
+    )
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="vulnclaw-runtime-diff-"))
+    script_path = tmp_dir / "probe.php"
+    script_path.write_text(script, encoding="utf-8")
+    started = time.perf_counter()
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [php, str(script_path)],
+                cwd=str(tmp_dir),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_ms / 1000,
+            ),
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = "\n".join(part for part in (exc.stdout or "", exc.stderr or "") if part)
+        return (
+            f"[!] runtime_diff_probe timed out after {timeout_ms}ms\n"
+            f"Output:\n{output}"
+        )
+    finally:
+        try:
+            script_path.unlink(missing_ok=True)
+            tmp_dir.rmdir()
+        except Exception:
+            pass
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    output = result.stdout or ""
+    if result.stderr:
+        output += ("\n" if output else "") + "[stderr]\n" + result.stderr
+    if not output:
+        output = "(no output)"
+    raw = "\n".join(
+        [
+            f"Command: {php} {script_path.name}",
+            f"Exit code: {result.returncode}",
+            f"Wall time: {elapsed_ms}ms",
+            "Output:",
+            output,
+        ]
+    )
+    local_match = re.search(r"local_php_version=([0-9]+(?:\.[0-9]+){0,2})", output)
+    local_runtime = f"PHP/{local_match.group(1)}" if local_match else ""
+    has_signed_candidate = any(label == "signed object/class lengths" for label, _ in candidates)
+    target_is_php5 = bool(re.search(r"PHP/5(?:\.|$)", target_runtime, re.IGNORECASE))
+    if target_runtime and local_runtime and target_runtime.lower() != local_runtime.lower():
+        if target_is_php5 and has_signed_candidate:
+            for label, payload in candidates:
+                if label != "signed object/class lengths":
+                    continue
+                raw += (
+                    "\n[remote_verification_required] signed object/class length candidate "
+                    f"targets {target_runtime} and bypasses digit-only object filters. "
+                    "REMOTE VERIFICATION OUTRANKS LOCAL unserialize_ok=false when the local "
+                    "PHP runtime is newer/different. Replay this exact candidate against the "
+                    "remote endpoint before declaring the bypass dead.\n"
+                    f"remote_candidate_raw={payload}\n"
+                    f"remote_candidate_urlencoded={quote(payload, safe='')}"
+                )
+        note = (
+            f"[compatibility_note] target_runtime={target_runtime}; local_runtime={local_runtime}. "
+            "Local parser behavior may differ from the target; do not discard filter-missed "
+            "candidates solely because the local runtime rejected them."
+        )
+        if target_is_php5 and has_signed_candidate:
+            note += (
+                " PHP 5.x serialized parsers may accept signed object/class length tokens "
+                "such as O:+n:/C:+n: while regex filters like /[oc]:\\d+:/i miss them; "
+                "remote-verify the exact URL-encoded signed candidate."
+            )
+        raw += "\n" + note
+    if max_output_chars > 0 and len(raw) > max_output_chars:
+        clip = max_output_chars // 2
+        return raw[:clip] + "\n...[truncated by max_output_chars]...\n" + raw[-clip:]
+    return raw
+
+
+async def execute_runtime_diff_probe(agent: AgentContext, args: dict[str, Any]) -> str:
+    """Run compact local parser/filter differential checks.
+
+    This tool is intentionally general-purpose: the model decides when a target
+    has a regex/string filter in front of a runtime parser and needs a fast
+    local table of "accepted by parser, missed by filter" candidates.
+    """
+
+    mode = str(args.get("mode") or args.get("parser") or "regex").strip().lower()
+    if mode in {"regex", "generic", "filter"}:
+        return _execute_regex_diff_probe(args)
+    if mode in {"php_serialize", "php_unserialize", "php-serialize", "php"}:
+        return await _execute_php_serialize_diff_probe(
+            args,
+            target_runtime=_detect_target_runtime(agent, args),
+        )
+    return "[!] runtime_diff_probe mode must be regex or php_serialize"
 
 
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
@@ -320,8 +869,17 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
         # traffic_repeat issues a real network request; keep the loop responsive.
         return await asyncio.to_thread(dispatch_traffic_tool, store, tool_name, args)
 
-    if tool_name in {"evidence_list", "evidence_view"}:
+    if tool_name in {"evidence_list", "evidence_view", "evidence_search"}:
         return execute_evidence_tool(agent, tool_name, args)
+
+    if tool_name == "source_extract":
+        return await execute_source_extract(agent, args)
+
+    if tool_name == "runtime_diff_probe":
+        return await execute_runtime_diff_probe(agent, args)
+
+    if tool_name == "shell_command":
+        return await execute_shell_command(agent, args)
 
     if tool_name == "http_probe_batch":
         return await execute_http_probe_batch(agent, args)
@@ -520,7 +1078,11 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
             "type": "function",
             "function": {
                 "name": "load_skill_reference",
-                "description": "加载指定 Skill 的参考文档，获取详细的渗透测试方法论、工作流或命令参考。当系统提示中提到'可用参考文档'时，使用此工具获取具体内容。",
+                "description": (
+                    "Load an optional Skill reference document. Returned content is reference "
+                    "material only, not a mandatory workflow, phase plan, or tool schedule; "
+                    "the model decides whether it is useful for the current evidence."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -597,12 +1159,203 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
         {
             "type": "function",
             "function": {
+                "name": "evidence_search",
+                "description": (
+                    "Search raw saved evidence by substring or regex and return bounded snippets "
+                    "with evidence ids and offsets. Use this before rereading a large body when "
+                    "you need to find source/sink/parameter/token/flag text inside prior raw output."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Substring or regex to search for, e.g. unserialize, flag, name=\"id\".",
+                        },
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Optional evidence id to search inside, e.g. e004.",
+                        },
+                        "regex": {
+                            "type": "boolean",
+                            "description": "Interpret query as a regex. Default false.",
+                        },
+                        "context_chars": {
+                            "type": "integer",
+                            "description": "Characters of raw context around each match. Default 180.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum matches to return. Default 12, capped internally.",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "source_extract",
+                "description": (
+                    "Normalize messy HTML/highlight_file/source evidence into readable text and "
+                    "extract high-signal PHP/web surfaces such as forms, endpoints, unserialize, "
+                    "magic methods, eval sinks, taint sources and filters. Use it when raw body "
+                    "contains highlighted or noisy source code."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "evidence_id": {
+                            "type": "string",
+                            "description": "Evidence id to normalize, e.g. e004. Prefer this for saved fetch/http outputs.",
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Inline raw HTML/source text to normalize when no evidence id exists.",
+                        },
+                    },
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "runtime_diff_probe",
+                "description": (
+                    "Run a compact local parser/filter differential table. Use when evidence shows "
+                    "a regex/string filter before a runtime parser/interpreter and you need to find "
+                    "inputs accepted by the parser but missed by the filter. Supports generic regex "
+                    "checks and PHP serialize/unserialize checks; this is local verification only."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "description": "regex or php_serialize. Default regex.",
+                        },
+                        "filter_regex": {
+                            "type": "string",
+                            "description": "Observed filter regex, e.g. /[oc]:\\d+:/i.",
+                        },
+                        "payload": {
+                            "type": "string",
+                            "description": "Canonical payload to mutate and compare against the filter/parser.",
+                        },
+                        "candidates": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "payload": {"type": "string"},
+                                },
+                            },
+                            "description": "Optional explicit candidate payloads to test.",
+                        },
+                        "mutations": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional mutation names. For php_serialize: signed_lengths, "
+                                "leading_zero_lengths, lowercase_type, uppercase_string_type."
+                            ),
+                        },
+                        "class_defs": {
+                            "type": "string",
+                            "description": (
+                                "PHP class definitions for php_serialize mode, without <?php tags. "
+                                "Use minimal local definitions needed to validate unserialize behavior."
+                            ),
+                        },
+                        "target_runtime": {
+                            "type": "string",
+                            "description": (
+                                "Optional target runtime/version observed from headers/source, e.g. "
+                                "PHP/5.6.40. If omitted, VulnClaw tries to infer it from evidence."
+                            ),
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Local runtime timeout in milliseconds, default 10000.",
+                        },
+                        "max_output_chars": {
+                            "type": "integer",
+                            "description": (
+                                "Optional command-level output cap before evidence storage; omitted "
+                                "or 0 keeps raw output intact, while large active-context observations "
+                                "may still be represented by a high-signal preview."
+                            ),
+                        },
+                    },
+                    "required": ["filter_regex"],
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "shell_command",
+                "description": (
+                    "Run a local shell command when local verification or exact request fidelity is "
+                    "useful. Good uses include php -r serialization checks, curl requests with raw "
+                    "cookies/headers, rg/Select-String over saved files, and small one-off scripts. "
+                    "Set workdir when the command depends on files. Raw stdout/stderr are saved as "
+                    "evidence; large active-context observations are bounded high-signal previews."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Shell command to run."},
+                        "workdir": {
+                            "type": "string",
+                            "description": "Working directory. Defaults to the VulnClaw process cwd.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Command timeout in milliseconds, default 10000, capped at 120000.",
+                        },
+                        "shell": {
+                            "type": "string",
+                            "description": "Windows: powershell (default), pwsh, or cmd. Other OSes use the default shell.",
+                        },
+                        "max_output_chars": {
+                            "type": "integer",
+                            "description": (
+                                "Optional command-level output cap before evidence storage; omitted "
+                                "or 0 keeps raw output intact, while large active-context observations "
+                                "may still be represented by a high-signal preview."
+                            ),
+                        },
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
+    )
+
+    append_tool(
+        {
+            "type": "function",
+            "function": {
                 "name": "http_probe_batch",
                 "description": (
                     "Batch HTTP probe tool for comparing many URL/parameter/header/body variants "
                     "in one call. Use it when repeated fetch/python_execute calls would only differ "
                     "by payload, query params, raw URL encoding, headers, or POST body. It returns "
-                    "status/length/hash/title/body signals, full response bodies and same-body groups."
+                    "status/length/hash/title/body signals, the audited request surface, same-body "
+                    "groups, and raw response bodies saved as evidence. Large active-context "
+                    "observations are bounded high-signal previews."
                 ),
                 "parameters": {
                     "type": "object",
@@ -618,7 +1371,7 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
                                 "properties": {
                                     "method": {
                                         "type": "string",
-                                        "description": "GET/POST/HEAD/OPTIONS; default GET.",
+                                        "description": "GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS; default GET.",
                                     },
                                     "url": {
                                         "type": "string",
@@ -632,8 +1385,21 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
                                         "type": "object",
                                         "description": "Query parameters for url mode.",
                                     },
-                                    "headers": {"type": "object", "description": "Per-request headers."},
-                                    "cookies": {"type": "object", "description": "Per-request cookies."},
+                                    "headers": {
+                                        "type": "object",
+                                        "description": (
+                                            "Per-request headers. For exact Cookie payloads or values "
+                                            "containing semicolons/quotes/braces, prefer headers.Cookie "
+                                            "with the already-encoded raw value."
+                                        ),
+                                    },
+                                    "cookies": {
+                                        "type": "object",
+                                        "description": (
+                                            "Simple per-request cookies. Use headers.Cookie instead "
+                                            "when cookie serialization/encoding must be exact."
+                                        ),
+                                    },
                                     "data": {
                                         "description": "Form body or raw body for POST/OPTIONS probes."
                                     },
@@ -650,7 +1416,7 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
                         },
                         "verify_tls": {
                             "type": "boolean",
-                            "description": "Verify TLS certificates; default true.",
+                            "description": "Verify TLS certificates; default false for CTF/lab compatibility.",
                         },
                         "max_body_chars": {
                             "type": "integer",
@@ -1260,10 +2026,18 @@ def parse_nmap_xml(xml_output: str, target: str) -> str:
     return "\n".join(lines) or f"nmap 扫描完成（无输出）: {target}"
 
 
-_HTTP_PROBE_ALLOWED_METHODS = {"GET", "POST", "HEAD", "OPTIONS"}
+_HTTP_PROBE_ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 _HTTP_PROBE_MAX_REQUESTS = 30
 _HTTP_PROBE_DEFAULT_TIMEOUT = 10.0
 _HTTP_PROBE_DEFAULT_BODY_CHARS_LIMIT = 0
+_HTTP_PROBE_SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "x-auth-token",
+    "x-access-token",
+}
 
 
 async def execute_http_probe_batch(agent: AgentContext, args: dict[str, Any]) -> str:
@@ -1277,7 +2051,7 @@ async def execute_http_probe_batch(agent: AgentContext, args: dict[str, Any]) ->
     base_url = str(args.get("base_url", "") or "").strip()
     timeout = _bounded_float(args.get("timeout", _HTTP_PROBE_DEFAULT_TIMEOUT), 1.0, 30.0)
     follow_redirects = bool(args.get("follow_redirects", True))
-    verify_tls = bool(args.get("verify_tls", True))
+    verify_tls = bool(args.get("verify_tls", False))
     max_body_chars = _coerce_nonnegative_int(
         args.get("max_body_chars"),
         default=_HTTP_PROBE_DEFAULT_BODY_CHARS_LIMIT,
@@ -1394,6 +2168,56 @@ def _string_dict(value: Any) -> dict[str, str]:
     return {str(k): str(v) for k, v in value.items() if k is not None and v is not None}
 
 
+def _jsonish_one_line(value: Any, limit: int = 700) -> str:
+    if isinstance(value, (dict, list, tuple)):
+        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    else:
+        rendered = str(value)
+    return one_line(rendered, limit)
+
+
+def _masked_probe_headers(headers: dict[str, str]) -> dict[str, str]:
+    masked: dict[str, str] = {}
+    for key, value in (headers or {}).items():
+        normalized = str(key).lower()
+        if normalized in _HTTP_PROBE_SENSITIVE_HEADER_NAMES:
+            masked[str(key)] = "[masked]"
+        else:
+            masked[str(key)] = str(value)
+    return masked
+
+
+def _cookies_need_exact_header(cookies: dict[str, str]) -> bool:
+    for value in (cookies or {}).values():
+        text = str(value)
+        if any(marker in text for marker in (";", "{", "}", '"', "'", "\r", "\n")):
+            return True
+    return False
+
+
+def _probe_request_surface_lines(item: dict[str, Any]) -> list[str]:
+    lines = [f"request={item.get('method', 'GET')} {item.get('url', '')}"]
+    if item.get("params") is not None:
+        lines.append(f"params={_jsonish_one_line(item.get('params'))}")
+    headers = item.get("headers") or {}
+    if headers:
+        lines.append(f"headers={_jsonish_one_line(_masked_probe_headers(headers))}")
+    cookies = item.get("cookies") or {}
+    if cookies:
+        note = (
+            " [exact-cookie-note: value contains raw delimiters; prefer headers.Cookie "
+            "when byte-exact delivery matters]"
+            if _cookies_need_exact_header(cookies)
+            else ""
+        )
+        lines.append(f"cookies={_jsonish_one_line(cookies)}{note}")
+    if item.get("data") is not None:
+        lines.append(f"body={_jsonish_one_line(item.get('data'))}")
+    if item.get("json") is not None:
+        lines.append(f"json={_jsonish_one_line(item.get('json'))}")
+    return lines
+
+
 def _execute_one_http_probe(
     client: httpx.Client,
     item: dict[str, Any],
@@ -1420,8 +2244,10 @@ def _execute_one_http_probe(
             "effective_url": str(response.url),
             "length": len(response.content or b""),
             "hash": digest,
+            "response_headers": dict(response.headers),
             "title": _extract_html_title(body),
             "signals": _http_body_signals(body, 800),
+            "decoded_source": render_highlighted_source_block(body, max_chars=max_body_chars),
             "body_chars": len(body),
             "body": body_output,
             "body_truncated": body_truncated,
@@ -1494,7 +2320,11 @@ def _format_http_probe_batch(results: list[dict[str, Any]]) -> str:
         if item.get("error"):
             url = item.get("url", "")
             duration = f" {item.get('duration_ms')}ms" if item.get("duration_ms") is not None else ""
-            lines.append(f"[{item['index']}] ERROR{label}{duration} {url} :: {item['error']}")
+            request_surface = "\n".join(
+                f"    {line}" for line in _probe_request_surface_lines(item)
+            )
+            surface = f"\n{request_surface}" if request_surface else ""
+            lines.append(f"[{item['index']}] ERROR{label}{duration} {url} :: {item['error']}{surface}")
             continue
         hash_value = str(item.get("hash", ""))
         hashes.setdefault(hash_value, []).append(str(item["index"]))
@@ -1511,13 +2341,25 @@ def _format_http_probe_batch(results: list[dict[str, Any]]) -> str:
             f" truncated_to={len(body_text)}" if item.get("body_truncated") else ""
         )
         lines.append(
-            f"[{item['index']}] {item['method']}{raw_note}{label} "
-            f"{item['status']} len={item['length']} hash={item['hash']} "
-            f"{item['duration_ms']}ms{location}{content_type}{title}\n"
-            f"    url={item['effective_url']}\n"
-            f"    signals={item['signals'] or '(empty body)'}\n"
-            f"    body_length={item.get('body_chars', 0)}{body_note}\n"
-            f"    body:\n{body_text if body_text else '(empty body)'}"
+            "\n".join(
+                [
+                    (
+                        f"[{item['index']}] {item['method']}{raw_note}{label} "
+                        f"{item['status']} len={item['length']} hash={item['hash']} "
+                        f"{item['duration_ms']}ms{location}{content_type}{title}"
+                    ),
+                    f"    url={item['effective_url']}",
+                    f"    response_headers={_jsonish_one_line(item.get('response_headers', {}), 1800)}",
+                    *[f"    {line}" for line in _probe_request_surface_lines(item)],
+                    *[
+                        f"    {line}"
+                        for line in str(item.get("decoded_source") or "").splitlines()
+                    ],
+                    f"    signals={item['signals'] or '(empty body)'}",
+                    f"    body_length={item.get('body_chars', 0)}{body_note}",
+                    f"    body:\n{body_text if body_text else '(empty body)'}",
+                ]
+            )
         )
 
     same_body_groups = [ids for ids in hashes.values() if len(ids) > 1]
