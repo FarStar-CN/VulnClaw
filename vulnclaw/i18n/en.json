@@ -246,6 +246,8 @@
   "tui.prompt_blocked_path": "Blocked Path",
   "tui.prompt_allowed_actions": "Allowed Actions (comma-separated)",
   "tui.prompt_blocked_actions": "Blocked Actions (comma-separated)",
+  "tui.prompt_action_matrix": "Set action constraints",
+  "tui.action_matrix_hint": "Up/Down: move  Space: cycle allow/block  Enter: submit  Esc: cancel",
   "tui.prompt_resume": "Resume? (y/n, current: {state})",
   "tui.prompt_select_provider": "Select Provider (current: {provider}):",
   "tui.prompt_enter_model": "Model (current: {model}):",
