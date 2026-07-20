@@ -1102,8 +1102,8 @@ class TestCLI:
             await pilot.pause()
             assert lv.index == 2
             assert popup._matrix_states[2] == "block"
-            assert popup.query_one("#matrix-allow-2", Static).content == "[ ]"
-            assert popup.query_one("#matrix-block-2", Static).content == "[x]"
+            assert popup.query_one("#matrix-allow-2", Static).content == "[#808080]·[/]"
+            assert popup.query_one("#matrix-block-2", Static).content == "[bold #e06c75]✗[/]"
             assert received == []
             assert popup.has_class("open")
 
@@ -1114,8 +1114,8 @@ class TestCLI:
             await pilot.click("#matrix-allow-2")
             await pilot.pause()
             assert popup._matrix_states[2] == "allow"
-            assert popup.query_one("#matrix-allow-2", Static).content == "[x]"
-            assert popup.query_one("#matrix-block-2", Static).content == "[ ]"
+            assert popup.query_one("#matrix-allow-2", Static).content == "[bold #7fd88f]✓[/]"
+            assert popup.query_one("#matrix-block-2", Static).content == "[#808080]·[/]"
             assert received == []
             assert popup.has_class("open")
 
