@@ -76,3 +76,18 @@ def test_board_roundtrips_through_pydantic():
     assert restored.goal == "g"
     assert restored.fact_ids() == ["f001"]
     assert restored.open_intents()[0].description == "b"
+
+
+def test_prompt_graph_renders_english_labels_without_changing_status_ids(i18n_language):
+    board = Blackboard()
+    board.add_intent("inspect login")
+    board.record_tool_call("fetch", "url=/login", intent_id="i001")
+
+    i18n_language("en")
+    text = board.to_prompt_graph()
+
+    assert "goal: (Not set)" in text
+    assert "origin: (Not set)" in text
+    assert "  (None yet)" in text
+    assert "executed_tools (do not repeat an already executed tool + arguments):" in text
+    assert "i001 [open]" in text

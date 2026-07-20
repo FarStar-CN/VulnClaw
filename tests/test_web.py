@@ -744,6 +744,79 @@ class TestWebServices:
         assert saved is not None
         assert saved.status == "completed"
 
+    @pytest.mark.asyncio
+    async def test_web_task_service_initializes_i18n_from_config_language(
+        self, monkeypatch, i18n_language
+    ):
+        """A persistent-cycle run started outside the CLI (background/orchestrated
+        Web task) must honor ``session.language`` before any prompt/report code
+        runs — not just the CLI entrypoints."""
+        import vulnclaw.web.services.task_service as task_service
+        from vulnclaw.agent.context import SessionState
+        from vulnclaw.config.schema import VulnClawConfig
+        from vulnclaw.i18n import current_lang
+        from vulnclaw.web.schemas import TaskCreateRequest
+        from vulnclaw.web.task_manager import WebTaskManager
+
+        # Start from the opposite language so we can prove the flip happened.
+        i18n_language("zh")
+
+        config = VulnClawConfig()
+        config.session.language = "en"
+        monkeypatch.setattr(task_service, "load_config", lambda: config)
+
+        class DummyLifecycle:
+            def __init__(self, config):
+                self.config = config
+
+            def start_enabled_servers(self):
+                return 0
+
+            def stop_all(self):
+                return None
+
+        observed_lang: dict[str, str] = {}
+
+        class DummyAgent:
+            def __init__(self, config, mcp_manager):
+                self.config = config
+                self.mcp_manager = mcp_manager
+                self.context = type(
+                    "Ctx", (), {"state": SessionState(target="https://example.com")}
+                )()
+                self.runtime = type("Runtime", (), {})()
+
+            @property
+            def session_state(self):
+                return self.context.state
+
+            async def persistent_pentest(self, **kwargs):
+                # Language must already be resolved from config by the time the
+                # agent/report code runs — not left at whatever was active before.
+                observed_lang["lang"] = current_lang()
+                return []
+
+        monkeypatch.setattr(task_service, "MCPLifecycleManager", DummyLifecycle)
+        monkeypatch.setattr(task_service, "AgentCore", DummyAgent)
+
+        async def fake_run_agent_task(*, agent, command, target, runner=None, **kwargs):
+            if runner is not None:
+                await runner(agent)
+            return type("RunResult", (), {"restore_result": None, "summary": {}})()
+
+        monkeypatch.setattr(task_service, "run_agent_task", fake_run_agent_task)
+
+        manager = WebTaskManager()
+        request = TaskCreateRequest(command="persistent", target="https://example.com")
+        record = manager.create_task(request)
+
+        assert current_lang() == "zh"
+
+        await task_service._run_task(manager, record.task_id, request)
+
+        assert observed_lang.get("lang") == "en"
+        assert current_lang() == "en"
+
     def test_web_config_service_updates_safety_fields(self, monkeypatch):
         import vulnclaw.web.services.config_service as config_service
         from vulnclaw.config.schema import VulnClawConfig

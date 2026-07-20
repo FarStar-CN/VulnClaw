@@ -112,6 +112,11 @@
   "phase.exploit": "Exploit",
   "phase.report": "Report",
   "phase.none": "No phase",
+  "phase.idle": "Idle",
+  "phase.vuln_discovery": "Vulnerability Discovery",
+  "phase.exploitation": "Exploitation",
+  "phase.post_exploitation": "Post-exploitation",
+  "phase.reporting": "Reporting",
 
   "command.recon": "Quick Recon",
   "command.run": "Standard Scan",

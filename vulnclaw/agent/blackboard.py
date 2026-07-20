@@ -15,6 +15,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from vulnclaw.i18n import _
+
 
 class IntentStatus(str, Enum):
     OPEN = "open"  # 已声明，待探索
@@ -170,7 +172,11 @@ class Blackboard(BaseModel):
     # ── 渲染 ────────────────────────────────────────────────────────
     def to_prompt_graph(self, *, include_concluded: bool = True) -> str:
         """把图渲染成给 LLM 阅读的紧凑文本（YAML 风格）。"""
-        lines: list[str] = [f"goal: {self.goal or '(未设定)'}", f"origin: {self.origin or '(未设定)'}"]
+        not_set = _("agent.blackboard.not_set")
+        lines: list[str] = [
+            f"goal: {self.goal or not_set}",
+            f"origin: {self.origin or not_set}",
+        ]
 
         lines.append("facts:")
         if self.facts:
@@ -178,7 +184,7 @@ class Blackboard(BaseModel):
                 src = f"  ({fact.source})" if fact.source else ""
                 lines.append(f"  - {fact.id}: {fact.description}{src}")
         else:
-            lines.append("  (暂无)")
+            lines.append(_("agent.blackboard.none_yet"))
 
         lines.append("intents:")
         shown = self.intents if include_concluded else self.active_intents()
@@ -189,11 +195,11 @@ class Blackboard(BaseModel):
                 note = f"  // {intent.note}" if intent.note else ""
                 lines.append(f"  - {intent.id} [{intent.status.value}]{frm}{res}: {intent.description}{note}")
         else:
-            lines.append("  (暂无)")
+            lines.append(_("agent.blackboard.none_yet"))
 
         tc_summary = self.tool_call_summary(30)
         if tc_summary:
-            lines.append("executed_tools (禁止重复调用已执行的工具+参数):")
+            lines.append(_("agent.blackboard.executed_tools"))
             lines.append(tc_summary)
 
         return "\n".join(lines)

@@ -1,6 +1,7 @@
 """Tests for KB retrieval graceful degradation (keyword fallback)."""
 
 import vulnclaw.kb.retriever as retriever_mod
+from vulnclaw.i18n import current_lang, init_i18n
 from vulnclaw.kb.retriever import (
     KeywordRetriever,
     KnowledgeRetriever,
@@ -161,8 +162,16 @@ class TestContextCaching:
 
         monkeypatch.setattr(kbc, "_collect_kb_context", counting)
 
-        first = kbc.build_kb_context(agent, "test sqli on target")
-        second = kbc.build_kb_context(agent, "test sqli on target")
+        # KB injection is gated by language (ticket #65); pin zh explicitly
+        # so this test is deterministic regardless of the host's ambient
+        # LANG/VULNCLAW_LANG env vars.
+        previous_lang = current_lang()
+        init_i18n(lang="zh")
+        try:
+            first = kbc.build_kb_context(agent, "test sqli on target")
+            second = kbc.build_kb_context(agent, "test sqli on target")
+        finally:
+            init_i18n(lang=previous_lang)
 
         assert first == second
         assert calls["n"] == 1, "second identical query should hit the cache"
@@ -176,6 +185,111 @@ class TestContextCaching:
         agent._kb_retriever = KnowledgeRetriever(store=store)
 
         assert kbc.build_kb_context(agent, "anything") == ""
+
+
+# ── Language gate (ticket #65) ────────────────────────────────────────
+
+
+class TestKbContextLanguageGate:
+    """English runs must never see the (predominantly Chinese) KB corpus.
+
+    See the scoping-decision docstring in ``vulnclaw.agent.kb_context`` —
+    the chosen approach is to gate injection by language rather than
+    translate or maintain a dual corpus.
+    """
+
+    def test_en_gate_suppresses_kb_context(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(retriever_mod, "CHROMADB_AVAILABLE", False)
+        from vulnclaw.agent import kb_context as kbc
+
+        store = _seed_store(tmp_path)
+        agent = _FakeAgent()
+        agent._kb_retriever = KnowledgeRetriever(store=store)
+
+        previous_lang = current_lang()
+        init_i18n(lang="en")
+        try:
+            result = kbc.build_kb_context(agent, "sql injection waf bypass")
+            assert result == ""
+        finally:
+            init_i18n(lang=previous_lang)
+
+    def test_zh_keeps_full_kb_behavior(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(retriever_mod, "CHROMADB_AVAILABLE", False)
+        from vulnclaw.agent import kb_context as kbc
+
+        store = _seed_store(tmp_path)
+        agent = _FakeAgent()
+        agent._kb_retriever = KnowledgeRetriever(store=store)
+
+        previous_lang = current_lang()
+        init_i18n(lang="zh")
+        try:
+            result = kbc.build_kb_context(agent, "sql injection waf bypass")
+            assert result != ""
+            assert "SQL 注入绕过技巧" in result
+        finally:
+            init_i18n(lang=previous_lang)
+
+    def test_assembled_system_prompt_has_no_chinese_kb_text_under_en(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end: build_dynamic_system_prompt must not leak Chinese KB
+        text into an English-language assembled prompt."""
+        monkeypatch.setattr(retriever_mod, "CHROMADB_AVAILABLE", False)
+        from vulnclaw.agent import kb_context as kbc
+        from vulnclaw.agent.system_prompt import build_dynamic_system_prompt
+
+        store = _seed_store(tmp_path)
+        agent = _FakeAgent()
+        agent._kb_retriever = KnowledgeRetriever(store=store)
+
+        previous_lang = current_lang()
+        init_i18n(lang="en")
+        try:
+            kb_ctx = kbc.build_kb_context(agent, "sql injection waf bypass")
+            prompt = build_dynamic_system_prompt(
+                target=None,
+                phase=None,
+                skill_context=None,
+                mcp_tools=[],
+                enable_personnel_dim=True,
+                auto_mode=False,
+                user_input="sql injection waf bypass",
+                kb_context=kb_ctx,
+            )
+            assert "SQL 注入绕过技巧" not in prompt
+            assert "知识库参考" not in prompt
+        finally:
+            init_i18n(lang=previous_lang)
+
+    def test_assembled_system_prompt_keeps_full_kb_under_zh(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(retriever_mod, "CHROMADB_AVAILABLE", False)
+        from vulnclaw.agent import kb_context as kbc
+        from vulnclaw.agent.system_prompt import build_dynamic_system_prompt
+
+        store = _seed_store(tmp_path)
+        agent = _FakeAgent()
+        agent._kb_retriever = KnowledgeRetriever(store=store)
+
+        previous_lang = current_lang()
+        init_i18n(lang="zh")
+        try:
+            kb_ctx = kbc.build_kb_context(agent, "sql injection waf bypass")
+            prompt = build_dynamic_system_prompt(
+                target=None,
+                phase=None,
+                skill_context=None,
+                mcp_tools=[],
+                enable_personnel_dim=True,
+                auto_mode=False,
+                user_input="sql injection waf bypass",
+                kb_context=kb_ctx,
+            )
+            assert "SQL 注入绕过技巧" in prompt
+            assert "知识库参考" in prompt
+        finally:
+            init_i18n(lang=previous_lang)
 
 
 # ── Full-corpus loading from store ───────────────────────────────────

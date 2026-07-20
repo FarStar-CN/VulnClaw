@@ -6,6 +6,11 @@ from vulnclaw.agent.reflexion import FailureCategory
 from vulnclaw.config.schema import VulnClawConfig
 
 
+@pytest.fixture(autouse=True)
+def _use_chinese_by_default(i18n_language):
+    i18n_language("zh")
+
+
 def _make_agent(tmp_path, reflexion_enabled=True):
     config = VulnClawConfig()
     config.session.output_dir = tmp_path

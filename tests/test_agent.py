@@ -13,18 +13,45 @@ class TestPentestPhase:
     def test_phase_values(self):
         from vulnclaw.agent.context import PentestPhase
 
-        assert PentestPhase.IDLE.value == "就绪"
-        assert PentestPhase.RECON.value == "信息收集"
-        assert PentestPhase.VULN_DISCOVERY.value == "漏洞发现"
-        assert PentestPhase.EXPLOITATION.value == "漏洞利用"
-        assert PentestPhase.POST_EXPLOITATION.value == "后渗透"
-        assert PentestPhase.REPORTING.value == "报告生成"
+        assert PentestPhase.IDLE.value == "idle"
+        assert PentestPhase.RECON.value == "recon"
+        assert PentestPhase.VULN_DISCOVERY.value == "vuln_discovery"
+        assert PentestPhase.EXPLOITATION.value == "exploitation"
+        assert PentestPhase.POST_EXPLOITATION.value == "post_exploitation"
+        assert PentestPhase.REPORTING.value == "reporting"
 
     def test_phase_is_str(self):
         from vulnclaw.agent.context import PentestPhase
 
         # PentestPhase inherits from str, Enum
         assert isinstance(PentestPhase.RECON, str)
+
+    def test_phase_display_is_localized_from_canonical_id(self):
+        from vulnclaw.agent.context import PentestPhase, phase_display_name
+
+        assert phase_display_name(PentestPhase.RECON, "zh") == "信息收集"
+        assert phase_display_name("recon", "en") == "Recon"
+        assert phase_display_name("vuln_discovery", "en") == "Vulnerability Discovery"
+
+    def test_legacy_localized_phase_deserializes_to_canonical_identity(self):
+        from vulnclaw.agent.context import PentestPhase, SessionState
+
+        for legacy_label in ("信息收集", "Recon"):
+            restored = SessionState(phase=legacy_label)
+            assert restored.phase is PentestPhase.RECON
+            assert restored.model_dump(mode="json")["phase"] == "recon"
+
+    def test_canonicalizer_rejects_localized_labels(self):
+        """Migration of localized labels stays at the persistence boundary only."""
+        from vulnclaw.agent.context import PentestPhase, SessionState
+        from vulnclaw.config.domain_models import phase_canonical_id
+
+        # SessionState still migrates a persisted Chinese label to its identity...
+        assert SessionState(phase="信息收集").phase is PentestPhase.RECON
+        # ...but the runtime canonicalizer must not treat display text as identity.
+        assert phase_canonical_id("信息收集") is None
+        assert phase_canonical_id("recon") == "recon"
+        assert phase_canonical_id(PentestPhase.RECON) == "recon"
 
 
 class TestVulnerabilityFinding:
@@ -84,14 +111,18 @@ class TestSessionState:
         assert state.executed_steps == []
 
     def test_advance_phase(self):
-        from vulnclaw.agent.context import PentestPhase, SessionState
+        from vulnclaw.agent.context import PentestPhase, SessionState, phase_display_name
 
         state = SessionState()
         state.advance_phase(PentestPhase.RECON)
         assert state.phase == PentestPhase.RECON
         # Should record the phase change in steps
         assert len(state.executed_steps) == 1
-        assert "信息收集" in state.executed_steps[0]
+        assert phase_display_name(PentestPhase.RECON) in state.executed_steps[0]
+
+        summary = state.get_step_summary()
+        assert set(summary["phases"]) == {"recon"}
+        assert summary["phases"]["recon"]["display"] == phase_display_name("recon")
 
     def test_add_finding(self):
         from vulnclaw.agent.context import SessionState, VulnerabilityFinding
@@ -286,7 +317,7 @@ class TestTargetState:
         restored = store_mod.hydrate_session_from_target_state("https://example.com")
         assert restored is not None
         assert restored.resume_meta["resume_strategy"] == "verify_pending_findings"
-        assert restored.phase.value == "漏洞发现"
+        assert restored.phase.value == "vuln_discovery"
         raw = store_mod.load_target_state("https://example.com")
         assert raw is not None
         assert "finding_meta" in raw
@@ -335,7 +366,7 @@ class TestTargetState:
         restored = store_mod.hydrate_session_from_target_state("https://example.com")
         assert restored is not None
         assert restored.resume_meta["resume_strategy"] == "exploit_expand"
-        assert restored.phase.value == "漏洞利用"
+        assert restored.phase.value == "exploitation"
         assert "priority_findings" in restored.resume_meta
         assert "next_actions" in restored.resume_meta
 
@@ -614,9 +645,20 @@ class TestPromptBuilder:
     def test_basic_prompt(self):
         from vulnclaw.agent.prompts import build_system_prompt
 
-        prompt = build_system_prompt()
+        prompt = build_system_prompt(lang="zh")
         assert "VulnClaw" in prompt
         assert "渗透测试" in prompt
+
+    def test_basic_prompt_english(self):
+        from vulnclaw.agent.prompts import build_system_prompt
+
+        prompt = build_system_prompt(lang="en")
+        assert "VulnClaw" in prompt
+        assert "penetration" in prompt.lower()
+        # The English contract must instruct the model to reply in English.
+        assert "reply in english" in prompt.lower()
+        # No stray Chinese should leak into the English prompt.
+        assert not any("一" <= c <= "鿿" for c in prompt)
 
     def test_prompt_with_target(self):
         from vulnclaw.agent.prompts import build_system_prompt
@@ -627,8 +669,14 @@ class TestPromptBuilder:
     def test_prompt_with_phase(self):
         from vulnclaw.agent.prompts import build_system_prompt
 
-        prompt = build_system_prompt(phase="信息收集")
-        assert "信息收集" in prompt
+        prompt = build_system_prompt(phase="recon", lang="zh")
+        assert "## 当前阶段：信息收集" in prompt
+
+    def test_prompt_with_phase_english(self):
+        from vulnclaw.agent.prompts import build_system_prompt
+
+        prompt = build_system_prompt(phase="recon", lang="en")
+        assert "## Current Phase: Recon" in prompt
 
     def test_prompt_with_skill_context(self):
         from vulnclaw.agent.prompts import build_system_prompt
@@ -664,17 +712,37 @@ class TestPromptBuilder:
     def test_core_contract_included(self):
         from vulnclaw.agent.prompts import build_system_prompt
 
-        prompt = build_system_prompt()
+        prompt = build_system_prompt(lang="zh")
         assert "沙盒模式" in prompt
         assert "证据冲突" in prompt
 
     def test_all_phases_render(self):
         from vulnclaw.agent.prompts import build_system_prompt
 
-        phases = ["信息收集", "漏洞发现", "漏洞利用", "后渗透", "报告生成"]
-        for phase in phases:
-            prompt = build_system_prompt(phase=phase)
-            assert phase in prompt
+        phases = {
+            "recon": "信息收集",
+            "vuln_discovery": "漏洞发现",
+            "exploitation": "漏洞利用",
+            "post_exploitation": "后渗透",
+            "reporting": "报告生成",
+        }
+        for phase_id, phase_name in phases.items():
+            prompt = build_system_prompt(phase=phase_id, lang="zh")
+            assert f"## 当前阶段：{phase_name}" in prompt
+
+    def test_all_phases_render_english(self):
+        from vulnclaw.agent.prompts import build_system_prompt
+
+        phases = {
+            "recon": "Recon",
+            "vuln_discovery": "Vulnerability Discovery",
+            "exploitation": "Exploitation",
+            "post_exploitation": "Post-exploitation",
+            "reporting": "Reporting",
+        }
+        for phase_id, phase_name in phases.items():
+            prompt = build_system_prompt(phase=phase_id, lang="en")
+            assert f"## Current Phase: {phase_name}" in prompt
 
 
 # ── core.py ──────────────────────────────────────────────────────────
@@ -804,11 +872,32 @@ class TestAgentCore:
         assert "VulnClaw" in prompt
 
     def test_build_system_prompt_auto_mode(self):
+        from vulnclaw.i18n import init_i18n
+
         agent = self._make_agent()
-        prompt = agent._build_system_prompt(
-            target="10.0.0.1", auto_mode=True, user_input="渗透测试"
-        )
+        init_i18n(lang="zh")
+        try:
+            prompt = agent._build_system_prompt(
+                target="10.0.0.1", auto_mode=True, user_input="渗透测试"
+            )
+        finally:
+            init_i18n()
         assert "自主渗透" in prompt
+
+    def test_build_system_prompt_auto_mode_english(self):
+        from vulnclaw.i18n import init_i18n
+
+        agent = self._make_agent()
+        init_i18n(lang="en")
+        try:
+            prompt = agent._build_system_prompt(
+                target="10.0.0.1", auto_mode=True, user_input="pentest"
+            )
+        finally:
+            init_i18n()
+        # The auto-pentest instruction block is rendered in English.
+        assert "Autonomous" in prompt
+        assert "自主渗透" not in prompt
 
     def test_recon_personnel_dimension_requires_confirmed_facts(self):
         agent = self._make_agent()
@@ -982,9 +1071,10 @@ class TestAgentCore:
         assert agent.runtime.is_ctf_mode is False
         assert agent.runtime.consecutive_errors == 0
 
-    def test_build_round_context_consumes_user_vuln_hint_rounds(self):
+    def test_build_round_context_consumes_user_vuln_hint_rounds(self, i18n_language):
         from vulnclaw.agent.context import PentestPhase
 
+        i18n_language("zh")
         agent = self._make_agent()
         agent.context.state.advance_phase(PentestPhase.VULN_DISCOVERY)
         agent._reset_runtime_state(
@@ -1770,7 +1860,7 @@ class TestAgentCoreLoop:
         assert len(results) == 1
         assert results[0].should_continue is False
         assert "constraint_violation" in results[0].output
-        assert agent.context.state.phase.value == "信息收集"
+        assert agent.context.state.phase.value == "recon"
 
     def test_constraint_policy_normalizes_actions_and_validates_phase(self):
         from vulnclaw.agent.constraint_policy import (

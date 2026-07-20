@@ -11,6 +11,7 @@ from vulnclaw.config.domain_models import (
     PentestPhase,
     TaskConstraints,
     normalize_action_name,
+    phase_display_name,
     validate_action_constraints,
 )
 
@@ -38,7 +39,7 @@ def validate_phase_transition(
     violation = validate_action_constraints(action, constraints)
     if violation is None:
         return None
-    return f"{violation} (phase transition to {next_phase.value})"
+    return f"{violation} (phase transition to {phase_display_name(next_phase)})"
 
 
 # 纯本地/知识类工具：不与目标交互，不纳入「动作范围」约束

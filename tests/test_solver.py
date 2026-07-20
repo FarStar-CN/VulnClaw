@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from vulnclaw.agent import solver
 from vulnclaw.agent.blackboard import Blackboard, IntentStatus
+from vulnclaw.i18n import _
 
 
 def _fake_agent(tool_outputs: list[str] | None = None):
@@ -64,6 +65,167 @@ def test_reason_prompt_does_not_force_recovery_with_open_intents():
     prompt = solver._reason_prompt(board, max_intents=3)
 
     assert "Frontier recovery rule" not in prompt
+
+
+async def test_explore_step_preserves_progress_from_english_recon_evidence(
+    monkeypatch, i18n_language
+):
+    board = Blackboard(origin="http://example.com", goal="find endpoints")
+    intent = board.add_intent("inspect JavaScript")
+    evidence_buffer: list[str] = []
+    context = SimpleNamespace(
+        state=SimpleNamespace(target="example.com"),
+        add_assistant_message=lambda *args: None,
+    )
+    agent = SimpleNamespace(
+        context=context,
+        _build_system_prompt=lambda *args, **kwargs: "system",
+    )
+
+    i18n_language("en")
+
+    async def fake_call_llm_auto(*args, **kwargs):
+        evidence_buffer.append(_("agent.recon.paths_heading", count=1))
+        return "Recon completed without an explicit progress claim."
+
+    async def fake_structured_call(*args, **kwargs):
+        return '{"advanced": false, "fact": "Found /api/users"}'
+
+    monkeypatch.setattr(solver, "call_llm_auto", fake_call_llm_auto)
+    monkeypatch.setattr(solver, "structured_call", fake_structured_call)
+
+    advanced, fact = await solver.explore_step(
+        agent,
+        board,
+        intent,
+        max_tool_rounds=1,
+        evidence_buffer=evidence_buffer,
+    )
+
+    assert advanced is True
+    assert fact == "Found /api/users"
+
+
+async def test_explore_step_zero_hits_english_not_progress(monkeypatch, i18n_language):
+    """Verify that zero-result English output (e.g., '0 hits') does NOT count as progress."""
+    board = Blackboard(origin="http://example.com", goal="find endpoints")
+    intent = board.add_intent("directory enumeration")
+    evidence_buffer: list[str] = []
+    context = SimpleNamespace(
+        state=SimpleNamespace(target="example.com"),
+        add_assistant_message=lambda *args: None,
+    )
+    agent = SimpleNamespace(
+        context=context,
+        _build_system_prompt=lambda *args, **kwargs: "system",
+    )
+
+    i18n_language("en")
+
+    async def fake_call_llm_auto(*args, **kwargs):
+        # Simulate zero-result output: "0 hits" should NOT be treated as progress
+        evidence_buffer.append("# Directory Enumeration — http://example.com  20 requests, 0 hits")
+        evidence_buffer.append("  (No valid hits)")
+        return "No directories found."
+
+    async def fake_structured_call(*args, **kwargs):
+        return '{"advanced": false, "fact": "No directories found"}'
+
+    monkeypatch.setattr(solver, "call_llm_auto", fake_call_llm_auto)
+    monkeypatch.setattr(solver, "structured_call", fake_structured_call)
+
+    advanced, fact = await solver.explore_step(
+        agent,
+        board,
+        intent,
+        max_tool_rounds=1,
+        evidence_buffer=evidence_buffer,
+    )
+
+    # Zero-result output should NOT be treated as progress
+    assert advanced is False
+    assert fact == "No directories found"
+
+
+async def test_explore_step_zero_hits_chinese_not_progress(monkeypatch, i18n_language):
+    """Verify that zero-result Chinese output (e.g., '命中: 0') does NOT count as progress."""
+    board = Blackboard(origin="http://example.com", goal="find endpoints")
+    intent = board.add_intent("目录枚举")
+    evidence_buffer: list[str] = []
+    context = SimpleNamespace(
+        state=SimpleNamespace(target="example.com"),
+        add_assistant_message=lambda *args: None,
+    )
+    agent = SimpleNamespace(
+        context=context,
+        _build_system_prompt=lambda *args, **kwargs: "system",
+    )
+
+    i18n_language("zh")
+
+    async def fake_call_llm_auto(*args, **kwargs):
+        # Simulate zero-result Chinese output: "命中: 0" should NOT be treated as progress
+        evidence_buffer.append("# 目录枚举 — http://example.com  请求 20 条，命中: 0")
+        evidence_buffer.append("  (无有效命中)")
+        return "未发现目录。"
+
+    async def fake_structured_call(*args, **kwargs):
+        return '{"advanced": false, "fact": "未发现目录"}'
+
+    monkeypatch.setattr(solver, "call_llm_auto", fake_call_llm_auto)
+    monkeypatch.setattr(solver, "structured_call", fake_structured_call)
+
+    advanced, fact = await solver.explore_step(
+        agent,
+        board,
+        intent,
+        max_tool_rounds=1,
+        evidence_buffer=evidence_buffer,
+    )
+
+    # Zero-result output should NOT be treated as progress
+    assert advanced is False
+    assert fact == "未发现目录"
+
+
+async def test_explore_step_empty_paths_heading_not_progress(monkeypatch, i18n_language):
+    """Verify that paths heading with zero count does NOT count as progress."""
+    board = Blackboard(origin="http://example.com", goal="find endpoints")
+    intent = board.add_intent("inspect JavaScript")
+    evidence_buffer: list[str] = []
+    context = SimpleNamespace(
+        state=SimpleNamespace(target="example.com"),
+        add_assistant_message=lambda *args: None,
+    )
+    agent = SimpleNamespace(
+        context=context,
+        _build_system_prompt=lambda *args, **kwargs: "system",
+    )
+
+    i18n_language("en")
+
+    async def fake_call_llm_auto(*args, **kwargs):
+        # Paths heading with count=0 should NOT trigger progress
+        evidence_buffer.append(_("agent.recon.paths_heading", count=0))
+        return "No paths found in JavaScript."
+
+    async def fake_structured_call(*args, **kwargs):
+        return '{"advanced": false, "fact": "No paths extracted"}'
+
+    monkeypatch.setattr(solver, "call_llm_auto", fake_call_llm_auto)
+    monkeypatch.setattr(solver, "structured_call", fake_structured_call)
+
+    advanced, fact = await solver.explore_step(
+        agent,
+        board,
+        intent,
+        max_tool_rounds=1,
+        evidence_buffer=evidence_buffer,
+    )
+
+    # Empty paths heading should NOT count as progress
+    assert advanced is False
+    assert fact == "No paths extracted"
 
 
 async def test_solve_completes_when_reason_signals_goal(monkeypatch):

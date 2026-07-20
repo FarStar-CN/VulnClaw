@@ -63,6 +63,27 @@ _ADVANCE_MARKERS = [
     "xss",
     "sql inject",
 ]
+
+# Display strings emitted by recon tools that count as evidence even when a weak
+# conclude model reports no progress. Keep both supported languages because an
+# in-flight session can change its display language between tool calls.
+# Important: markers must match only positive-count evidence, not zero-result output.
+_EVIDENCE_PROGRESS_MARKERS = [
+    "status: 200",
+    "200 ok",
+    '"success"',
+    "'success'",
+    "未授权",
+    "疑似未授权",
+    "返回数据",
+    "possible unauthorized data access",
+    "unauthorized access confirmed",
+    # Match headings only when they indicate positive counts (avoid "0 hits" or empty listings)
+    r"\b[1-9]\d*\s+hit",  # "5 hits", "12 hits" but NOT "0 hits"
+    r"命中\s*[:：]\s*[1-9]",  # "命中: 5" but NOT "命中: 0"
+    r"paths\s+\(([1-9]\d*|[1-9])\)",  # "Paths (5)" but NOT "Paths (0)"
+    r"接口/路径\s*[（(]\s*([1-9]\d*|[1-9])\s*[）)]",  # "接口/路径 (3)" but NOT "(0)"
+]
 # 探索阶段判定「该方向走不通」的信号
 _DEAD_END_MARKERS = [
     "不存在",
@@ -567,11 +588,19 @@ async def explore_step(
     # 强制提升为 advanced=true（防止弱模型的 conclude 丢弃有价值的发现）。
     if not advanced and intent_evidence:
         evidence_lower = intent_evidence.lower()
-        has_data = any(marker in evidence_lower for marker in [
-            "status: 200", "200 ok", '"success"', "'success'",
-            "未授权", "疑似未授权", "返回数据",
-            "接口/路径", "命中",
-        ])
+        has_data = False
+        for marker in _EVIDENCE_PROGRESS_MARKERS:
+            # Support both literal strings and regex patterns
+            if marker.startswith("\\") or "(" in marker or "[" in marker:
+                # Treat as regex pattern
+                if re.search(marker, evidence_lower, re.IGNORECASE):
+                    has_data = True
+                    break
+            else:
+                # Treat as literal string
+                if marker in evidence_lower:
+                    has_data = True
+                    break
         if has_data and fact:
             advanced = True
 

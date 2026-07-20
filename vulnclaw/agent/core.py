@@ -346,7 +346,7 @@ class AgentCore:
         skill_context = self._get_active_skill_context(user_input=user_input)
 
         phase = (
-            self.context.state.phase.value
+            self.context.state.phase
             if self.context.state.phase != PentestPhase.IDLE
             else None
         )

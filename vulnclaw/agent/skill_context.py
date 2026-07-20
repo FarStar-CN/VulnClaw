@@ -14,19 +14,10 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from vulnclaw.config.domain_models import phase_canonical_id
 from vulnclaw.skills.loader import load_skill_by_name
 from vulnclaw.skills.resolver import SkillQuery, SkillResolver, SkillSelection
 from vulnclaw.skills.routing import keyword_present, normalize_token
-
-# Internal (Chinese) phase labels → resolver's canonical phase tokens. The IDLE
-# label is intentionally absent so "not started" contributes no phase signal.
-_PHASE_TOKEN: dict[str, str] = {
-    "信息收集": "recon",
-    "漏洞发现": "vuln_discovery",
-    "漏洞利用": "exploitation",
-    "后渗透": "post_exploitation",
-    "报告生成": "reporting",
-}
 
 # Free-text vuln keyword (bilingual) → canonical vulnerability_class token.
 _VULN_HINT_KEYWORDS: dict[str, str] = {
@@ -119,9 +110,10 @@ def _build_query(
     task_summary: Optional[str] = None,
 ) -> SkillQuery:
     text = f"{user_input or ''} {task_summary or ''}"
+    canonical_phase = phase_canonical_id(phase_label)
     return SkillQuery.from_input(
         user_input,
-        phase=_PHASE_TOKEN.get(phase_label or ""),
+        phase=None if canonical_phase == "idle" else canonical_phase,
         target_type=_infer_target_type(target, text),
         vuln_hints=_extract_vuln_hints(text),
         technologies=_extract_technologies(text, recon_data),
