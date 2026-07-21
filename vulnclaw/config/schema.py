@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 # ── LLM Provider Presets ────────────────────────────────────────────
 
@@ -251,8 +251,8 @@ class SafetyConfig(BaseModel):
         description="Show a security warning before each python_execute invocation",
     )
     python_execute_max_output_chars: int = Field(
-        default=8000,
-        description="Max stdout/stderr characters returned from a python_execute call",
+        default=0,
+        description="Max stdout/stderr characters returned from a python_execute call; 0 means unlimited",
     )
     python_execute_audit_enabled: bool = Field(
         default=True,
@@ -282,25 +282,51 @@ class SessionConfig(BaseModel):
     )
     poc_language: str = Field(default="python", description="Default PoC language: python, bash")
     max_rounds: int = Field(default=15, description="Max autonomous pentest rounds (1-100)")
-    # Autonomous engine: "solve" = goal-driven OODA (default),
-    # "team" = role-specialized supervisor, "rounds" = legacy fixed-round loop
+    # Autonomous engine: "solve" = model-led agent loop with evidence memory (default),
+    # "team" = role-specialized supervisor, "rounds" = legacy fixed-round loop.
     engine: str = Field(
         default="solve",
         description=(
-            "Autonomous engine: solve (goal-driven), team (role-specialized), "
-            "or rounds (legacy)"
+            "Autonomous engine: solve (model-led/evidence-memory), "
+            "team (role-specialized), or rounds (legacy)"
         ),
     )
     # Solve-engine knobs
     solve_max_steps: int = Field(
-        default=40, description="Safety cap on solve explore steps (not a fixed workflow length)"
+        default=240,
+        description="Runaway safety cap for model-led solve turns; not a planned workflow length",
     )
-    solve_max_intents: int = Field(default=3, description="Max new intents per reason step")
+    solve_max_directions: int = Field(
+        default=3,
+        description="Deprecated compatibility field; model-led solve no longer plans research directions",
+        validation_alias=AliasChoices("solve_max_directions", "solve_max_intents"),
+    )
     solve_max_tool_rounds: int = Field(
-        default=6, description="Max tool-calling rounds per intent exploration"
+        default=6,
+        description=(
+            "Compatibility safety cap for consecutive internal tool-call follow-ups "
+            "inside one model turn; not a planned workflow length"
+        ),
     )
     solve_max_parallel: int = Field(
-        default=3, description="Max intents explored concurrently per solve batch (1=serial)"
+        default=1,
+        description="Deprecated for model-led solve; retained for team/legacy integrations",
+    )
+    solve_auto_compact: bool = Field(
+        default=False,
+        description="Auto-compact solve memory before context overflow; otherwise compact only on /compact",
+    )
+    solve_compact_trigger_ratio: float = Field(
+        default=0.9,
+        description="Context-window ratio that may trigger auto compact when solve_auto_compact is enabled",
+    )
+    solve_auto_report: bool = Field(
+        default=True,
+        description="Automatically generate a markdown replay report when model-led solve completes",
+    )
+    solve_report_show: bool = Field(
+        default=True,
+        description="Print the generated solve replay report in the terminal after completion",
     )
     show_thinking: bool = Field(
         default=False, description="Show LLM thinking/reasoning output (default: off)"
@@ -326,6 +352,30 @@ class SessionConfig(BaseModel):
         default=20,
         description="Maximum discovered surfaces considered by REPL parallel auto-mode",
     )
+
+    # ── Persisted TUI scope state ──
+    tui_scope_only_host: str = Field(default="", description="Persisted TUI only-host scope")
+    tui_scope_only_port: str = Field(default="", description="Persisted TUI only-port scope")
+    tui_scope_only_path: str = Field(default="", description="Persisted TUI only-path scope")
+    tui_scope_blocked_host: str = Field(default="", description="Persisted TUI blocked-host scope")
+    tui_scope_blocked_path: str = Field(default="", description="Persisted TUI blocked-path scope")
+    tui_scope_allow_actions: str = Field(default="", description="Persisted TUI allowed actions (comma-sep)")
+    tui_scope_block_actions: str = Field(default="", description="Persisted TUI blocked actions (comma-sep)")
+    tui_scope_mode: str = Field(default="standard", description="Persisted TUI check mode")
+    tui_scope_resume: bool = Field(default=True, description="Persisted TUI resume flag")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @property
+    def solve_max_intents(self) -> int:
+        """Backward-compatible alias for pre-direction configuration files."""
+
+        return self.solve_max_directions
+
+    @solve_max_intents.setter
+    def solve_max_intents(self, value: int) -> None:
+        self.solve_max_directions = int(value)
+
     # Dead-loop detection
     stale_rounds_threshold: int = Field(
         default=5,

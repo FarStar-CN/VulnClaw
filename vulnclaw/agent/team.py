@@ -1,4 +1,4 @@
-"""Role-specialized team planning and adaptive delegation."""
+﻿"""Role-specialized team planning and adaptive delegation."""
 
 from __future__ import annotations
 
@@ -126,17 +126,17 @@ async def ask_adviser(
     if not hasattr(agent, "_get_client"):
         return TeamDecision(action="continue", reason="no adviser LLM client available")
 
-    board = getattr(getattr(agent, "session_state", None), "board", None)
-    board_graph = board.to_prompt_graph() if board is not None else ""
+    research = getattr(getattr(agent, "session_state", None), "research", None)
+    research_summary = research.to_prompt_summary() if research is not None else ""
     prompt = (
         "You are the Adviser reflection pass for a role-specialized team run. "
-        "Use the updated blackboard and just-finished step result to decide the next action. "
+        "Use the updated shared research state and just-finished step result to decide the next action. "
         "Return only JSON with action: continue, replan, or stop. "
         "The evidence gate remains authoritative; use stop only when no further team steps "
         "are useful, not to override unproven completion.\n\n"
         f"Origin: {origin}\nGoal: {goal}\n"
         f"Finished step: {step.role} | {step.objective} | done_when={step.done_when}\n"
-        f"Step result: {step_result}\n\nBlackboard:\n{board_graph}\n"
+        f"Step result: {step_result}\n\nShared research state:\n{research_summary}\n"
     )
     previous_role = getattr(agent, "active_role", None)
     agent.active_role = "adviser"
@@ -159,7 +159,8 @@ async def run_team_pentest(
     adviser: Adviser | None = None,
     agent_factory: AgentFactory | None = None,
     max_steps: int = 40,
-    max_intents: int = 3,
+    max_directions: int | None = None,
+    max_intents: int | None = None,
     max_tool_rounds: int = 4,
     max_replans: int = 2,
     max_parallel: int | None = None,
@@ -167,9 +168,13 @@ async def run_team_pentest(
     on_event: Callable[[str, dict], None] | None = None,
 ) -> TeamRunResult:
     """Run a bounded adaptive team plan against the shared session state."""
+    direction_limit = max_directions if max_directions is not None else max_intents
+    if direction_limit is None:
+        direction_limit = 3
+
     target = target or root_agent.session_state.target or user_input
     root_agent.session_state.target = target
-    _seed_shared_blackboard(root_agent, origin=target, goal=user_input)
+    _seed_agent_state(root_agent, origin=target, goal=user_input)
     agent_factory = agent_factory or _default_agent_factory(root_agent)
     goal = user_input
     facts = _plan_facts(root_agent)
@@ -202,7 +207,7 @@ async def run_team_pentest(
                         agent_factory=agent_factory,
                         target=target,
                         max_steps=step_budget,
-                        max_intents=max_intents,
+                        max_directions=direction_limit,
                         max_tool_rounds=max_tool_rounds,
                         stream_sink=stream_sink,
                         on_event=on_event,
@@ -249,7 +254,7 @@ async def run_team_pentest(
 
                 if decision.action == "stop":
                     result.stopped_by_adviser = True
-                    if getattr(root_agent.session_state.board, "completed", False):
+                    if getattr(root_agent.session_state.agent_state, "completed", False):
                         return result
                     if not _evidence_gate_completed(root_agent):
                         continue
@@ -296,7 +301,7 @@ async def _run_team_step(
     agent_factory: AgentFactory,
     target: str,
     max_steps: int,
-    max_intents: int,
+    max_directions: int,
     max_tool_rounds: int,
     stream_sink: Any = None,
     on_event: Callable[[str, dict], None] | None = None,
@@ -311,7 +316,7 @@ async def _run_team_step(
             target=target,
             goal=step.done_when,
             max_steps=max_steps,
-            max_intents=max_intents,
+            max_directions=max_directions,
             max_tool_rounds=max_tool_rounds,
             stream_sink=stream_sink,
             on_event=on_event,
@@ -320,7 +325,7 @@ async def _run_team_step(
         child.active_role = previous_role
     merge_session_state(root_agent.session_state, child.session_state)
     _preserve_distinct_team_findings(root_agent.session_state, child.session_state)
-    _merge_blackboard(root_agent.session_state.board, child.session_state.board)
+    _merge_agent_state(root_agent.session_state.agent_state, child.session_state.agent_state)
     return result
 
 
@@ -398,21 +403,25 @@ async def _call_adviser(
 
 
 def _plan_facts(agent: Any) -> list[str]:
-    board = getattr(agent.session_state, "board", None)
-    if board is None:
+    agent_state = getattr(agent.session_state, "agent_state", None)
+    if agent_state is None:
         return []
-    return [fact.description for fact in board.facts[-12:]]
+    claims = [claim.claim for claim in getattr(agent_state, "verified_claims", [])[-6:]]
+    evidence = [
+        f"{item.id}: {item.summary}" for item in getattr(agent_state, "evidence", [])[-8:]
+    ]
+    return [*claims, *evidence]
 
 
-def _seed_shared_blackboard(agent: Any, *, origin: str, goal: str) -> None:
-    board = getattr(getattr(agent, "session_state", None), "board", None)
-    if board is None:
+def _seed_agent_state(agent: Any, *, origin: str, goal: str) -> None:
+    agent_state = getattr(getattr(agent, "session_state", None), "agent_state", None)
+    if agent_state is None:
         return
-    board.origin = origin or board.origin
-    board.goal = goal or board.goal
-    seed = f"Team run origin={board.origin}; goal={board.goal}"
-    if not any(fact.description == seed and fact.source == "team_origin" for fact in board.facts):
-        board.add_fact(seed, source="team_origin")
+    agent_state.origin = origin or agent_state.origin
+    agent_state.goal = goal or agent_state.goal
+    seed = f"Team run origin={agent_state.origin}; goal={agent_state.goal}"
+    if seed not in agent_state.compact_summary:
+        agent_state.compact_summary = (agent_state.compact_summary + "\n" + seed).strip()
 
 
 def _surface_plan(agent: Any, plan: TeamPlan, *, stream_sink: Any = None) -> None:
@@ -447,7 +456,7 @@ def _seed_child_session(child: Any, root_agent: Any, step: TeamStep) -> None:
     child.session_state.target = parent.target
     child.session_state.phase = parent.phase
     child.session_state.task_constraints = parent.task_constraints.model_copy(deep=True)
-    child.session_state.board = copy.deepcopy(parent.board)
+    child.session_state.agent_state = copy.deepcopy(parent.agent_state)
     child.session_state.resume_summary = (
         f"Team role {step.role} assigned objective: {step.objective}. "
         f"Done when: {step.done_when}."
@@ -466,8 +475,8 @@ def _step_prompt(step: TeamStep) -> str:
 
 
 def _evidence_gate_completed(agent: Any) -> bool:
-    board = getattr(agent.session_state, "board", None)
-    return bool(getattr(board, "completed", False))
+    agent_state = getattr(agent.session_state, "agent_state", None)
+    return bool(getattr(agent_state, "completed", False))
 
 
 def _preserve_distinct_team_findings(parent: Any, child: Any) -> None:
@@ -487,28 +496,37 @@ def _preserve_distinct_team_findings(parent: Any, child: Any) -> None:
             parent._finding_ids_cache.add(preserved.finding_id)
 
 
-def _merge_blackboard(parent: Any, child: Any) -> None:
-    """Merge child blackboard additions without rewriting existing ids."""
+def _merge_agent_state(parent: Any, child: Any) -> None:
+    """Merge child AgentState additions without rewriting existing ids."""
     if parent is child:
         return
-    parent_fact_desc = {fact.description for fact in parent.facts}
-    for fact in child.facts:
-        if fact.description not in parent_fact_desc:
-            parent.add_fact(fact.description, source=fact.source)
-            parent_fact_desc.add(fact.description)
 
-    parent_intent_desc = {intent.description for intent in parent.intents}
-    for intent in child.intents:
-        if intent.description not in parent_intent_desc:
-            added = parent.add_intent(intent.description)
-            added.status = intent.status
-            added.note = intent.note
-            parent_intent_desc.add(intent.description)
+    seen_evidence = {item.fingerprint for item in getattr(parent, "evidence", [])}
+    for item in getattr(child, "evidence", []):
+        if item.fingerprint not in seen_evidence:
+            parent.evidence.append(copy.deepcopy(item))
+            seen_evidence.add(item.fingerprint)
 
-    for tool_call in child.tool_calls:
+    seen_claims = {item.claim for item in getattr(parent, "verified_claims", [])}
+    for item in getattr(child, "verified_claims", []):
+        if item.claim not in seen_claims:
+            parent.verified_claims.append(copy.deepcopy(item))
+            seen_claims.add(item.claim)
+
+    for tool_call in getattr(child, "tool_calls", []):
         if tool_call not in parent.tool_calls:
-            parent.tool_calls.append(tool_call)
+            parent.tool_calls.append(copy.deepcopy(tool_call))
+
+    for step in getattr(child, "steps", []):
+        if step not in parent.steps:
+            parent.steps.append(copy.deepcopy(step))
+
+    parent.pending_questions.extend(
+        question
+        for question in getattr(child, "pending_questions", [])
+        if question not in parent.pending_questions
+    )
 
     # A worker's `completed` reflects its own step-scoped done_when (solver.solve
-    # overwrites board.goal with the step goal), not the team's overall goal.
+    # overwrites the step goal), not the team's overall goal.
     # Never let a subtask's local completion mark the shared root goal achieved.

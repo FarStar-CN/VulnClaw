@@ -1,4 +1,4 @@
-"""VulnClaw CLI main entry point with REPL and sub-commands."""
+﻿"""VulnClaw CLI main entry point with REPL and sub-commands."""
 
 # ruff: noqa: E402
 
@@ -42,6 +42,7 @@ _configure_windows_console()
 
 import typer
 from rich.panel import Panel
+from rich.text import Text
 
 from vulnclaw import __version__, headless
 from vulnclaw.agent.constraint_policy import validate_action_constraints
@@ -85,6 +86,36 @@ from vulnclaw.target_state.store import (
     load_target_state,
     rollback_target_state,
 )
+
+
+def _emit_solve_report_if_completed(agent: Any, config: Any) -> str:
+    """Generate and optionally print the replay report for a completed solve run."""
+
+    state = getattr(getattr(getattr(agent, "context", None), "state", None), "agent_state", None)
+    if state is None or not getattr(state, "completed", False):
+        return ""
+    session = getattr(config, "session", None)
+    if session is not None and not getattr(session, "solve_auto_report", True):
+        return ""
+    try:
+        from vulnclaw.report.solve_report import generate_solve_report
+
+        report_path = generate_solve_report(state)
+        report_text = report_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        console.print(Panel(f"自动 solve 报告生成失败: {exc}", title="Solve Report", border_style="red"))
+        return ""
+
+    console.print(
+        Panel(
+            f"自动复盘报告已保存:\n{report_path}",
+            title="Solve Report",
+            border_style="cyan",
+        )
+    )
+    if session is None or getattr(session, "solve_report_show", True):
+        console.print(Text(report_text), soft_wrap=True)
+    return str(report_path)
 
 # 鈹€鈹€ REPL 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
@@ -299,6 +330,13 @@ def _run_repl() -> None:
                     console.print(f"[dim]↻ Resuming auto pentest: {last_auto_input[:60]}...[/]")
                 else:
                     continue
+
+            if user_input.lower() in ("/compact", "compact"):
+                summary = agent.context.compact_messages(note="User requested /compact.")
+                console.print(
+                    f"[green]已压缩较早上下文[/green]，保留最近消息；摘要长度 {len(summary)} 字符。"
+                )
+                continue
 
             # Handle slash commands: '/' selects a skill, '/.' a flag skill.
             if user_input.startswith("/"):
@@ -563,25 +601,28 @@ def _run_repl() -> None:
                                     user_input,
                                     target=current_target,
                                     max_steps=config.session.solve_max_steps,
-                                    max_intents=config.session.solve_max_intents,
                                     max_tool_rounds=config.session.solve_max_tool_rounds,
                                     stream_sink=sink,
                                     on_event=_make_solve_event_printer(console),
                                 )
 
                             async def after_result(result):
-                                board = agent.context.state.board.get_summary()
-                                done = board.get("completed")
+                                agent_state = agent.context.state.agent_state.get_summary()
+                                done = agent_state.get("completed")
                                 console.print()
                                 console.print(
                                     Panel(
                                         f"{'✅ 目标达成' if done else '⊘ 未达成'} — "
-                                        f"facts={board.get('facts', 0)} intents={board.get('intents', 0)}\n"
-                                        f"原因: {board.get('complete_reason') or '探索结束'}",
+                                        f"steps={agent_state.get('steps', 0)} "
+                                        f"evidence={agent_state.get('evidence', 0)} "
+                                        f"tools={agent_state.get('tool_calls', 0)}\n"
+                                        f"原因: {agent_state.get('complete_reason') or '仍未达到完成条件'}",
                                         title="Solve",
                                         border_style="green" if done else "yellow",
                                     )
                                 )
+                                if done:
+                                    _emit_solve_report_if_completed(agent, config)
 
                             await _run_repl_agent_call(agent, call=call, after_result=after_result)
 
@@ -967,11 +1008,13 @@ def run(
     max_steps: Optional[int] = typer.Option(
         None, "--max-steps", help="Override the scan-mode explore-step cap"
     ),
-    max_intents: Optional[int] = typer.Option(
-        None, "--max-intents", help="Override the scan-mode max-intents-per-step"
+    max_directions: Optional[int] = typer.Option(
+        None,
+        "--max-directions",
+        help="Deprecated compatibility option; model-led solve ignores research-direction limits",
     ),
     max_tool_rounds: Optional[int] = typer.Option(
-        None, "--max-tool-rounds", help="Override the scan-mode tool-rounds-per-intent"
+        None, "--max-tool-rounds", help="Override the scan-mode tool-use compatibility budget"
     ),
     max_parallel: Optional[int] = typer.Option(
         None, "--max-parallel", help="Override the scan-mode fan-out cap (1 = single agent)"
@@ -1036,7 +1079,7 @@ def run(
         config,
         scan_mode,
         max_steps=max_steps,
-        max_intents=max_intents,
+        max_directions=max_directions,
         max_tool_rounds=max_tool_rounds,
         max_parallel=max_parallel,
         max_rounds=max_rounds,
@@ -1061,7 +1104,7 @@ def run(
         err_console.print(f"[!] {violation}")
         raise typer.Exit(headless.EXIT_ERROR)
 
-    board_holder: dict = {}
+    agent_state_holder: dict = {}
     classification_holder: dict = {}
 
     async def _run():
@@ -1084,7 +1127,6 @@ def run(
                     task_prompt,
                     target=target,
                     max_steps=profile.max_steps,
-                    max_intents=profile.max_intents,
                     max_tool_rounds=profile.max_tool_rounds,
                     stream_sink=sink,
                     on_event=on_event,
@@ -1101,7 +1143,7 @@ def run(
                     target=target,
                     agent_factory=agent_factory,
                     max_steps=profile.max_steps,
-                    max_intents=profile.max_intents,
+                    max_directions=profile.max_directions,
                     max_tool_rounds=profile.max_tool_rounds,
                     # team fan-out reads its own cap (not config), so pass the
                     # resolved scan-mode profile explicitly or quick/--max-parallel
@@ -1124,9 +1166,11 @@ def run(
                     ),
                     stream_sink=sink,
                 )
-            board = getattr(getattr(getattr(agent, "context", None), "state", None), "board", None)
-            if board is not None:
-                board_holder["board"] = board.get_summary()
+            agent_state = getattr(
+                getattr(getattr(agent, "context", None), "state", None), "agent_state", None
+            )
+            if agent_state is not None:
+                agent_state_holder["agent_state"] = agent_state.get_summary()
             classification_holder["classification"] = headless.classify_findings(
                 getattr(agent, "session_state", None)
             )
@@ -1166,12 +1210,14 @@ def run(
         return
 
     orchestrated = asyncio.run(_run())
-    if board_holder.get("board"):
-        board = board_holder["board"]
-        status = "✅ 目标达成" if board.get("completed") else "⊘ 未达成"
+    if agent_state_holder.get("agent_state"):
+        agent_state = agent_state_holder["agent_state"]
+        status = "✅ 目标达成" if agent_state.get("completed") else "⊘ 未达成"
         console.print(
-            f"\n[bold]{status}[/bold] — facts={board.get('facts', 0)} "
-            f"intents={board.get('intents', 0)} 原因: {board.get('complete_reason') or '探索结束'}"
+            f"\n[bold]{status}[/bold] — steps={agent_state.get('steps', 0)} "
+            f"evidence={agent_state.get('evidence', 0)} "
+            f"tools={agent_state.get('tool_calls', 0)} "
+            f"原因: {agent_state.get('complete_reason') or '仍未达到完成条件'}"
         )
     else:
         total_findings = orchestrated.summary["findings_count"]
@@ -1191,11 +1237,15 @@ def solve(
         None, "--prompt", help="Custom task description (overrides auto-generated)"
     ),
     max_steps: int = typer.Option(
-        40, "--max-steps", help="Safety cap on explore steps (NOT a fixed workflow length)"
+        240, "--max-steps", help="Runaway safety budget for autonomous turns (not a planned round count)"
     ),
-    max_intents: int = typer.Option(3, "--max-intents", help="Max new intents per reason step"),
+    max_directions: int = typer.Option(
+        3,
+        "--max-directions",
+        help="Deprecated compatibility option; model-led solve ignores research-direction limits",
+    ),
     max_tool_rounds: int = typer.Option(
-        4, "--max-tool-rounds", help="Max tool-calling rounds per intent exploration"
+        6, "--max-tool-rounds", help="Compatibility option; model-led solve decides tool use per step"
     ),
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
     snapshot: Optional[str] = typer.Option(None, "--snapshot", help="Resume from a snapshot id"),
@@ -1215,11 +1265,7 @@ def solve(
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
 ) -> None:
-    """Goal-driven solve loop — runs until the goal is met or the exploration frontier is exhausted.
-
-    Unlike `run`, this has no fixed round count. It searches a Fact/Intent graph
-    from the target toward the goal and stops on success or when no path remains.
-    """
+    """Model-led solve loop; runs until goal, user input, no path, or safety cap."""
     config = load_config()
     if not has_llm_credentials(config.llm):
         err_console.print("[!] Configure LLM credentials first (api_key or auth_mode).")
@@ -1242,12 +1288,12 @@ def solve(
                 target=target,
                 goal=resolved_goal,
                 max_steps=max_steps,
-                max_intents=max_intents,
                 max_tool_rounds=max_tool_rounds,
                 stream_sink=sink,
                 on_event=on_event,
             )
-            holder["board"] = agent.context.state.board.get_summary()
+            holder["agent_state"] = agent.context.state.agent_state.get_summary()
+            holder["agent"] = agent
             return result
 
         return await _run_cli_orchestrated_task(
@@ -1270,12 +1316,20 @@ def solve(
         )
 
     asyncio.run(_run())
-    board = holder.get("board") or {}
-    status = "✅ 目标达成" if board.get("completed") else "⊘ 未达成"
+    agent_state = holder.get("agent_state") or {}
+    status = "✅ 目标达成" if agent_state.get("completed") else "⊘ 未达成"
     console.print(
-        f"\n[bold]{status}[/bold] — facts={board.get('facts', 0)} "
-        f"intents={board.get('intents', 0)} 原因: {board.get('complete_reason') or '探索结束'}"
+        f"\n[bold]{status}[/bold] — steps={agent_state.get('steps', 0)} "
+        f"evidence={agent_state.get('evidence', 0)} "
+        f"tools={agent_state.get('tool_calls', 0)} "
+        f"原因: {agent_state.get('complete_reason') or '仍未达到完成条件'}"
     )
+    if agent_state.get("completed"):
+        # ``holder`` stores only the summary for status printing, so generate
+        # from the live session state captured on the orchestrated agent below.
+        live_agent = holder.get("agent")
+        if live_agent is not None:
+            _emit_solve_report_if_completed(live_agent, config)
 
 
 @app.command()
@@ -2753,7 +2807,7 @@ def _should_auto_pentest(user_input: str, current_target: Optional[str]) -> bool
     - User mentions a target plus action keywords like "渗透测试" or "打一下"
     - User asks to solve a CTF / find a flag with a target
     - User asks for information gathering / recon / OSINT with a target
-    - A target is present + multi-step intent indicators
+    - A target is present + multi-step task indicators
     """
     input_lower = user_input.lower()
 
@@ -2832,7 +2886,7 @@ def _should_auto_pentest(user_input: str, current_target: Optional[str]) -> bool
         has_target = bool(current_target) or bool(_extract_target_from_input(user_input))
         return has_target
 
-    # Fallback: has target + multi-step intent -> auto
+    # Fallback: has target + multi-step task -> auto
     has_target = bool(current_target) or bool(_extract_target_from_input(user_input))
     if has_target:
         multi_step_indicators = [

@@ -1,4 +1,4 @@
-"""VulnClaw Skill Dispatcher — match user intents to appropriate Skills."""
+"""VulnClaw Skill Dispatcher — match user requests to appropriate Skills."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from vulnclaw.skills.loader import list_core_skills, list_specialized_skills, load_skill_by_name
 
-# ── Intent → Skill mapping ─────────────────────────────────────────
+# ── Request → Skill mapping ────────────────────────────────────────
 
 SKILL_INTENT_MAP: dict[str, list[str]] = {
     # Core skills

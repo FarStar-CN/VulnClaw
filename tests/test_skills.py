@@ -165,6 +165,19 @@ class TestSkillLoader:
         assert "SRC" in content
         assert "GAARM" in content
         assert "web-sqli.md" in content
+        assert "web-sqli-fushuling-one-pass.md" in content
+
+    def test_load_fushuling_sqli_reference(self):
+        """The fushuling SQLi one-pass reference should be loadable."""
+        from vulnclaw.skills.loader import load_skill_reference
+
+        content = load_skill_reference(
+            "secknowledge-skill", "web-sqli-fushuling-one-pass.md"
+        )
+        assert content is not None
+        assert "SQL 注入一命通关" in content
+        assert "fushuling.com" in content
+        assert "sqlmap" in content
 
     def test_load_skill_reference_nonexistent(self):
         from vulnclaw.skills.loader import load_skill_reference

@@ -464,6 +464,41 @@ class TestStreamableHttp:
         assert result["server"] == "streamable-mcp-server"
         assert "do_thing" in str(result["content"])
 
+    async def test_http_session_cleanup_suppresses_cancel_scope_noise(self, monkeypatch):
+        import vulnclaw.mcp.lifecycle as _mod
+
+        m = _manager()
+        m.config.mcp.servers["chrome-devtools"] = _http_server_config("chrome-devtools")
+
+        class BadHttpClient:
+            async def __aenter__(self):
+                return object(), object(), lambda: None
+
+            async def __aexit__(self, exc_type, exc, tb):
+                raise asyncio.CancelledError("Cancelled via cancel scope cleanup")
+
+        def fake_http_client(*args, **kwargs):
+            return BadHttpClient()
+
+        class BadSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def initialize(self):
+                raise RuntimeError("init failed")
+
+            async def __aexit__(self, exc_type, exc, tb):
+                raise asyncio.CancelledError("Cancelled via cancel scope cleanup")
+
+        monkeypatch.setattr(_mod, "streamablehttp_client", fake_http_client)
+        monkeypatch.setattr(_mod, "ClientSession", BadSession)
+
+        with pytest.raises(RuntimeError, match="init failed"):
+            await m._get_or_create_persistent_http_session("chrome-devtools")
+
 
 class TestSseMcp:
     def test_burp_attach_success_registers_runtime_tools(self, monkeypatch):

@@ -54,7 +54,8 @@ def build_system_prompt(
     Args:
         target: Current target identifier (IP/URL).
         phase: Current pentest phase enum, canonical ID, or legacy display name.
-        skill_context: Additional context from a loaded Skill.
+        skill_context: Optional skill reference index. Skill bodies are not
+            automatically injected; the model may load references explicitly.
         mcp_tools: List of available MCP tool schemas.
         enable_personnel_dim: Kept for backward compatibility; the recon
             dimension toggle is applied by ``get_recon_instruction``.
@@ -79,11 +80,9 @@ def build_system_prompt(
             f"{bundle.PHASE_DESCRIPTIONS[phase_id]}"
         )
 
+    # Optional skill references
     if skill_context:
         parts.append(bundle.LABELS["skill_section"].format(context=skill_context))
-
-    # WAF bypass knowledge (always included)
-    parts.append(bundle.WAF_BYPASS_KNOWLEDGE)
 
     if mcp_tools:
         tools_desc = _format_mcp_tools(mcp_tools)

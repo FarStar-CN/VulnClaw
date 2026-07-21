@@ -8,7 +8,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI_Compatible-green)](https://platform.openai.com/)
 [![MCP](https://img.shields.io/badge/Toolchain-MCP-orange)](https://modelcontextprotocol.io/)
-[![PyPI](https://img.shields.io/badge/PyPI-v0.3.3-blueviolet)](https://pypi.org/project/vulnclaw/)
+[![PyPI](https://img.shields.io/badge/PyPI-v0.3.5-blueviolet)](https://pypi.org/project/vulnclaw/)
 [![Security](https://img.shields.io/badge/Scope-Authorized_Only-red)](#-security-notice)
 [![AtomGitStars](https://atomgit.com/Unclecheng-li/VulnClaw/star/badge.svg)](https://atomgit.com/Unclecheng-li/VulnClaw)
 <br>
@@ -20,7 +20,7 @@
 Official Website: https://unclecheng-li.github.io/vulnclaw.com/
 <br>
 
-Built on LLM Agent + MCP Toolchain + Pentest Skill orchestration,
+Built on LLM Agent + MCP Toolchain + optional Skill reference material,
 compatible with OpenAI / Anthropic / MiniMax / DeepSeek and similar models.
 Natural language input → automated "Recon → Vulnerability Discovery → Exploitation → Reporting".
 
@@ -54,19 +54,26 @@ Suitable for authorized pentests, CTF competitions, security training, and red t
 
 ## Features
 
-- **Goal-Driven Solver Engine (default)** — Abandons fixed-round workflows; terminates on "goal reached / exploration frontier exhausted / safety budget hit", auto-converges
-- **Blackboard State-Space Search** — Models pentest as a search from origin to goal: Facts (confirmed truths) + Intents (exploration directions), structurally prevents dead loops
+- **Model-Led Solver Engine (default)** — Claude Code/Codex-style autonomous loop: the model decides the next action, tool usage, completion, user questions, or no-path termination
+- **AgentState Evidence Memory** — Tool results are stored in `AgentState.evidence` with complete raw text preserved; active context receives bounded high-signal previews by default, while `evidence_search` / `evidence_view` revisit raw evidence on demand
+- **Lightweight Correction Layer** — Records repeated calls, degraded tools, timing, and new observations; repeated reads of the same evidence range are suppressed and evidence-only stalls trigger a stall guard without restoring the old stage planner
 - **Evidence-Level Anti-Hallucination Gate** — Claims about flags/conclusions must appear verbatim in real tool output to be accepted; prevents fabricated flags
-- **Natural Language Driven** — Describe your intent in plain English, auto-identifies phases and tools
+- **Natural Language Driven** — Describe your goal in plain English, auto-identifies phases and tools
 - **13 LLM Providers** — OpenAI / Anthropic / MiniMax / DeepSeek / Zhipu / Moonshot / Qwen / SiliconFlow / Doubao / Baichuan / StepFun / SenseTime / Yi, one-command switch
 - **MCP Toolchain** — 4 MCP services: `fetch` / `memory` run locally out-of-the-box, `chrome-devtools` / `burp` connect to external MCP servers for browser automation and HTTP interception
+- **Enhanced fetch request tool** — Defaults to GET, returns the full response body, and supports HTTP/HTTPS, custom method/headers/params/cookies/body/data/form/json, timeout/redirect/TLS controls; TLS verification is off by default for CTF/lab HTTPS targets
 - **Native Traffic Evidence Store** — In-scope request/response pairs land in an append-only JSONL index under `evidence/traffic/`. Built-in `traffic_list` / `traffic_view` / `traffic_repeat` / `traffic_sitemap` tools read and replay the store
 - **AI Agent Core** — OpenAI-compatible protocol + Tool Calling + autonomous pentest loop
 - **Structured Reasoning + Adaptive Reflection** — Facts/constraints/attack chains structured and injected into prompts; failures auto-classified with L0-L4 payload escalation
 - **Vulnerability Detection Plugin System** — Low-coupling plugin runtime + built-in read-only Web plugins, results auto-merged into reports (`vulnclaw plugins`)
-- **23 Pentest Skills** — 7 core + 16 specialized skills (incl. CTF Web/Crypto/Misc, osint-recon, cve-triage, hackerone, secknowledge-skill), 176 reference documents
+- **50 Specialized Skills** — CTF, Web, intranet, reversing, vulnerability validation, and authorized red-team knowledge; skills are exposed as optional reference indexes only, and full reference bodies are loaded only when the model explicitly calls `load_skill_reference`
 - **Encode/Decode & Crypto Tools** — 29 operations (Base64/Hex/URL/AES/JWT/Morse etc.), LLM calls them directly, no guessing
+- **Automatic Source Rendering** — `fetch` / `http_probe_batch` automatically prepend clean source before raw bodies when they see `highlight_file`, highlighted HTML source, or noisy HTML/JS bodies; `http_probe_batch` disables TLS verification by default and records full response headers so runtime clues such as `X-Powered-By` are not lost; built-in `source_extract` remains available for revisiting saved evidence and pinning dangerous sinks, forms, inputs, and endpoints
+- **Local Command Verification** — Built-in `shell_command` supports Codex-style local checks such as `php -r` serialization tests, exact `curl` requests, and `rg`/`Select-String` file searches; raw stdout/stderr are preserved in evidence, and large active-context observations use high-signal previews
+- **Runtime Differential Probing** — Built-in `runtime_diff_probe` helps the model build compact local tables for regex/string-filter vs runtime-parser mismatches, including PHP serialize/unserialize lexical variants, target/local runtime version mismatch notes, and PHP5 signed-length candidates that must be verified remotely instead of being discarded due to newer local PHP behavior
 - **Python Code Execution** — Built-in `python_execute` tool for payload crafting and response parsing; currently still a high-risk experimental capability, not a strong isolation sandbox
+- **Batch HTTP Probing** — Built-in `http_probe_batch` compares URL/parameter/header/body/raw-URL variants in one call, preserves each raw response body in evidence, and shows the audited request surface plus high-signal response preview in model-visible output to reduce repeated LLM/tool rounds
+- **Near-Miss Stop Guard** — solve keeps the evidence gate and adds a generic `NO_PATH` guard: when unresolved high-signal anchors such as source sinks, forms/parameters, request surfaces, local proof or response differentials exist, a single no-output/same-body payload attempt is not accepted as proof that the path is dead
 - **Persistent Pentesting** — Cyclic runs (100 rounds/cycle × 10 cycles = 1000 rounds), auto-reports every cycle
 - **Thinking Process Control** — `think on/off` toggles LLM reasoning visibility
 - **Sandbox Mode Prompting** — Unlocks AI security testing capabilities, for CTF and authorized pentest scenarios
@@ -324,26 +331,36 @@ vulnclaw web --port 8080      # custom port
 
 ### Solver Engine
 
-VulnClaw defaults to the **goal-driven solver engine** (switch back to fixed-round with `vulnclaw config set session.engine rounds`).
+VulnClaw defaults to the **model-led solve engine** (switch back to fixed-round with `vulnclaw config set session.engine rounds`).
 
-**Blackboard + OODA Loop:** Models pentest as a directed search from origin (target) to goal (flag / shell / confirmed high-severity vuln).
+**Model-Led Loop:** The framework no longer decomposes a task into forced "research directions", and it no longer schedules directory scans, JS reconnaissance, or SQLi checks by phase templates. solve provides the target, conversation context, evidence memory, and tool catalog; the model decides the next action.
 
 | Primitive | Meaning |
 |-----------|---------|
-| **Fact** | An objective truth confirmed by real tool output (a foothold for exploration) |
-| **Intent** | A declared exploration direction (not yet executed), originating from a Fact, producing a new Fact upon conclusion |
+| **Model context** | Target, user constraints, recent messages, evidence summaries, and executed tool calls |
+| **Tool catalog** | `fetch`, browser, directory enumeration, JS recon, encode/decode, Python, `shell_command`, `source_extract`, `runtime_diff_probe`, skill lookup, and other capabilities exposed only as optional hands |
+| **Tool transcript** | After tool execution, assistant `tool_calls` and `role=tool` observations are appended to model history; large outputs use high-signal previews so HTML bodies, logs, and response blobs do not repeatedly pollute active context |
+| **AgentState evidence** | Every real tool result is stored in `AgentState.evidence`; raw text is preserved with evidence id/hash/size, and the model can use `evidence_search` / `evidence_view` to revisit exact content |
+| **High-signal memory** | Source SQL, HTML forms/inputs, linked PHP/API files, JavaScript endpoints, `highlight_file` source, and `unserialize`/magic-method/dangerous-sink snippets are pinned as durable facts so later probes do not bury the actual entry point |
+| **Lightweight correction layer** | Observes tool lifecycle only: timing, degraded failures, repeated calls, high-signal target facts, and small semantic deltas become next-turn hints; it does not plan stages or schedule tools |
+| **Evidence gate** | `FINAL:` conclusions must cite or match real evidence; unsupported flags/conclusions are rejected and the model continues |
+| **Automatic solve report** | After completion, solve generates a Markdown replay report with reasoning chain, key evidence, raw replay request, curl command, response excerpt, and evidence index |
 
 ```
-REASON (read full graph) → Goal reached? / Propose new direction / None
+MODEL DECIDES → optional tool call → AgentState records full raw evidence + active-context high-signal preview + correction hints
         │
-EXPLORE (pick an Intent) → Execute with tools → Write confirmed conclusion back as a Fact
+continue reasoning / continue tool use / ASK_USER / NO_PATH / FINAL
         │
-Terminate: Goal reached / Exploration frontier exhausted / Safety budget hit
+FINAL passes evidence gate → accepted; otherwise the rejection is fed back and solve continues
 ```
 
-**Evidence-Level Anti-Hallucination Gate:** Records all real tool output as the sole trusted evidence. Claims must appear verbatim in real output to be accepted; fabricated claims are discarded.
+**Context Strategy:** solve keeps ordinary conversation history by default. It does not compact unless the model context is close to full, the user runs `/compact`, or auto-compaction is explicitly enabled. Tool output is fully stored in `AgentState.evidence`, while large outputs enter active context as bounded high-signal previews containing status, headers/request surface, forms/parameters, endpoints, source sinks/filters, flag-like tokens, key line numbers, raw size and hash. The exact body/stdout/stderr remains available through `evidence_search` or paged `evidence_view`. `fetch` / `http_probe_batch` `max_body_chars`, `python_execute_max_output_chars`, and `shell_command.max_output_chars` clip raw tool output only when explicitly set to a positive value; otherwise raw evidence remains intact. When the same raw output appears again, active context keeps a `same_as=eXXX` reference instead of repeating the body. Terminal echo is human-only display: long tool results are collapsed into previews while full content remains in evidence. High-signal facts extracted from raw output are pinned separately from recent evidence, including forms, parameters, JS endpoints, linked PHP/API files, `highlight_file` source, dangerous sinks, request surfaces, same-body/response differentials, and local proof snippets. `evidence_list` / `evidence_search` / `evidence_view` are for revisiting prior evidence. Repeated reads of an already covered evidence range are short-circuited, and multiple evidence-only turns with no new evidence trigger a stall guard requiring a non-evidence tool, `FINAL`, `ASK_USER`, or `NO_PATH`. After a tool call, solve no longer forces an extra `Summarizing...` LLM call; the normal path uses native Chat Completions tool transcript messages (assistant `tool_calls` + `role=tool`) so the next model sample continues from real observations.
 
-**Structured Reasoning + Adaptive Reflection:** Failures auto-classified with L0-L4 payload escalation; persistent mode preserves failure memory across cycles.
+**Evidence-Level Anti-Hallucination Gate:** Records all real tool output as the sole trusted evidence. Claims about flags/conclusions must appear in real output or cite evidence ids before they are accepted. `NO_PATH` is also gated by the near-miss guard: if unresolved high-signal anchors remain in evidence, the rejection reason is fed back to the model for another concrete verification step instead of stopping immediately.
+
+**Automatic Solve Report:** When solve reaches the goal, VulnClaw deterministically renders a Markdown replay report from `AgentState` and prints it by default. It does not make another LLM call; replay packets, curl commands and response excerpts come from real `fetch` / `http_probe_batch` evidence.
+
+**Authorized Red-Team Skills:** Authorized red-team detail packs from `codex-redteam-mode` are imported as skills/knowledge for on-demand use; jailbreak, refusal-bypass, and session-patching content is not imported.
 
 ### Core Modules
 
@@ -351,10 +368,10 @@ Terminate: Goal reached / Exploration frontier exhausted / Safety budget hit
 |--------|------|-------------|
 | **CLI/TUI Entry** | `cli/main.py` + `cli/tui.py` | Typer commands + REPL + TUI |
 | **Agent Core** | `agent/core.py` | AgentCore coordination entrypoint |
-| **Solver Engine** | `agent/solver.py` + `agent/blackboard.py` | OODA loop + Fact/Intent blackboard |
+| **Solver Engine** | `agent/solver.py` + `agent/agent_state.py` | Model-led loop + AgentState evidence / steps / completion gate |
 | **Reasoning / Reflection** | `agent/reasoning_state.py` + `reflexion.py` | Structured facts/constraints/attack chains + L0-L4 escalation |
 | **Plugin System** | `plugins/` | Low-coupling vulnerability detection plugin runtime |
-| **Skill Dispatcher** | `skills/loader.py` + `dispatcher.py` | Intent-based dynamic dispatch |
+| **Skill reference index** | `skills/loader.py` + `resolver.py` | Task-aware optional references without forced workflow injection |
 | **MCP Orchestration** | `mcp/registry.py` + `lifecycle.py` + `router.py` | Service registry + lifecycle + tool routing |
 | **Config** | `config/schema.py` + `settings.py` | Pydantic + YAML + 13 provider presets |
 | **Report Generator** | `report/generator.py` + `poc_builder.py` | Markdown reports + PoC scripts |
@@ -366,12 +383,12 @@ Terminate: Goal reached / Exploration frontier exhausted / Safety budget hit
 
 | MCP Service | Tools | Mode | Use Case | Status |
 |---|---|---|---|---|
-| fetch | 1 | Local (httpx) | HTTP requests, API testing | Out-of-the-box |
+| fetch | 1 | Local (httpx) | HTTP/HTTPS requests, GET/POST/PUT methods, headers/params/cookies/body/json/form, API testing | Out-of-the-box |
 | memory | 2 | Local (JSON) | Context memory, state persist | Out-of-the-box |
 | chrome-devtools | 31+ | stdio MCP | Browser automation, screenshots, JS execution | Requires setup |
 | burp | Multiple | stdio MCP | HTTP interception, replay, vuln scanning | Requires setup |
 
-> Plus 5 built-in Agent tools (`python_execute` + `nmap_scan` + `crypto_decode` + `brute_force_login` + `load_skill_reference`) — no MCP needed.
+> Plus built-in Agent tools (`http_probe_batch`, `python_execute`, `shell_command`, `source_extract`, `runtime_diff_probe`, `nmap_scan`, `crypto_decode`, `brute_force_login`, `load_skill_reference`, `evidence_list`, `evidence_search`, `evidence_view`, etc.) — no MCP needed.
 
 <details>
 <summary><strong>Chrome DevTools MCP Setup</strong></summary>
@@ -475,9 +492,9 @@ mcp:
 | **osint-recon** | 7 | OSINT four-dimension model (server/web/domain/person) |
 | **cve-triage** | 1 | CVE lookup and triage |
 | **hackerone** | 1 | HackerOne bounty scope-guard |
-| **secknowledge-skill** | 39 | Web+AI security testing knowledge base |
+| **secknowledge-skill** | 40 | Web+AI security testing knowledge base |
 
-Skills are auto-dispatched based on user input — no manual selection needed. Specialized skills include detailed methodology documents in `references/`, loadable via the `load_skill_reference` tool.
+Skills are resolved from user input into an optional reference index. VulnClaw does not automatically inject skill bodies, phase workflows, or methodology scripts into the system prompt. Specialized skills include detailed methodology documents in `references/`, and the model loads them only when it chooses to call `load_skill_reference`.
 
 ### Built-in Encode/Decode & Crypto Tool (`crypto_decode`)
 
@@ -539,10 +556,14 @@ vulnclaw config set session.show_thinking false  # hide thinking process
 | `llm.model` | per provider | Model name |
 | `llm.temperature` | 0.1 | Sampling temperature |
 | `llm.max_tokens` | 4096 | Max output tokens |
-| `session.engine` | solve | `solve` (goal-driven) / `rounds` (legacy fixed-round) |
-| `session.solve_max_steps` | 40 | Solver exploration step safety cap |
-| `session.solve_max_intents` | 3 | Max new exploration directions per Reason |
-| `session.solve_max_tool_rounds` | 6 | Max tool call rounds per Intent |
+| `session.engine` | solve | `solve` (model-led) / `team` (role team) / `rounds` (legacy fixed-round) |
+| `session.solve_max_steps` | 240 | Runaway safety budget for solve; not a planned round count |
+| `session.solve_max_directions` | 3 | Deprecated compatibility field; model-led solve no longer uses research direction counts |
+| `session.solve_max_tool_rounds` | 6 | Compatibility safety cap for consecutive tool follow-ups inside one model turn; not a planned workflow length |
+| `session.solve_auto_compact` | false | Allow solve to compact context automatically; disabled by default to preserve context |
+| `session.solve_compact_trigger_ratio` | 0.9 | Context usage ratio that triggers auto-compaction when enabled |
+| `session.solve_auto_report` | true | Generate a Markdown replay report when solve completes |
+| `session.solve_report_show` | true | Print the generated solve report body in the terminal |
 | `session.max_rounds` | 15 | Max rounds |
 | `session.output_dir` | ./vulnclaw-output | Report output directory |
 | `session.report_format` | markdown | Report format (markdown / html) |

@@ -11,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import AliasChoices, BaseModel, Field, PrivateAttr
 
-from vulnclaw.agent.blackboard import Blackboard
+from vulnclaw.agent.agent_state import AgentState
 from vulnclaw.agent.reasoning_state import ReasoningState
 
 # ──────────────────────────────────────────────────────────────
@@ -325,14 +325,17 @@ class ReasoningSnapshot(BaseModel):
 
     职责域:
     - 推理状态 (reasoning)
-    - 黑板图 (board)
+    - 研究状态 (research)
     - 反思快照 (reflexion_snapshot)
     - 已确认事实 (confirmed_facts)
     - 未验证假设 (unverified_assumptions)
     """
 
     reasoning: ReasoningState = Field(default_factory=ReasoningState)
-    board: Blackboard = Field(default_factory=Blackboard)
+    agent_state: AgentState = Field(
+        default_factory=AgentState,
+        validation_alias=AliasChoices("agent_state", "research", "board"),
+    )
     reflexion_snapshot: dict[str, Any] = Field(default_factory=dict)
     confirmed_facts: list[str] = Field(
         default_factory=list, description="已通过工具验证确认的事实"
@@ -372,6 +375,16 @@ class ReasoningSnapshot(BaseModel):
         """添加未验证假设。"""
         if assumption and assumption not in self.unverified_assumptions:
             self.unverified_assumptions.append(assumption)
+
+    @property
+    def research(self) -> AgentState:
+        """Backward-compatible alias for old serialized snapshot names."""
+
+        return self.agent_state
+
+    @research.setter
+    def research(self, value: AgentState | dict[str, Any]) -> None:
+        self.agent_state = value if isinstance(value, AgentState) else AgentState.model_validate(value)
 
 
 class ConstraintManager(BaseModel):
@@ -619,7 +632,7 @@ class SessionState(BaseModel):
         )
         self._reasoning_snapshot = ReasoningSnapshot(
             reasoning=self.reasoning,
-            board=self.board,
+            agent_state=self.agent_state,
             reflexion_snapshot=self.reflexion_snapshot,
             confirmed_facts=self.confirmed_facts,
             unverified_assumptions=self.unverified_assumptions,
@@ -646,7 +659,10 @@ class SessionState(BaseModel):
     constraint_violations: list[str] = Field(default_factory=list)
     constraint_violation_events: list[ConstraintViolationEvent] = Field(default_factory=list)
     reasoning: ReasoningState = Field(default_factory=ReasoningState)
-    board: Blackboard = Field(default_factory=Blackboard)
+    agent_state: AgentState = Field(
+        default_factory=AgentState,
+        validation_alias=AliasChoices("agent_state", "research", "board"),
+    )
     reflexion_snapshot: dict[str, Any] = Field(default_factory=dict)
     findings: list[VulnerabilityFinding] = Field(default_factory=list)
     recon_data: dict[str, Any] = Field(default_factory=dict)
@@ -698,6 +714,17 @@ class SessionState(BaseModel):
         if self._checkpoint_callback is None:
             return
         self._checkpoint_callback(self, reason)
+
+    @property
+    def research(self) -> AgentState:
+        """Compatibility alias for pre-AgentState integrations."""
+
+        return self.agent_state
+
+    @research.setter
+    def research(self, value: AgentState | dict[str, Any]) -> None:
+        self.agent_state = value if isinstance(value, AgentState) else AgentState.model_validate(value)
+        self._reasoning_snapshot.agent_state = self.agent_state
 
     # ==========================================================================
     # @property 代理（保持向后兼容）
@@ -1108,7 +1135,7 @@ class ContextManager:
 
     def __init__(self, max_history: int = 200) -> None:
         self.max_history = max_history
-        self.messages: list[dict[str, str]] = []
+        self.messages: list[dict[str, Any]] = []
         self.state = SessionState()
 
     def add_user_message(self, content: str) -> None:
@@ -1121,14 +1148,30 @@ class ContextManager:
         self.messages.append({"role": "assistant", "content": content})
         self._trim()
 
+    def add_message(self, message: dict[str, Any]) -> None:
+        """Add a raw chat message to context.
+
+        Tool-call transcripts need fields such as ``tool_calls`` and
+        ``tool_call_id``.  Keeping the original Chat Completions message shape
+        lets later model turns see the same cause/effect structure that produced
+        the evidence, instead of only a lossy text summary.
+        """
+        if not isinstance(message, dict):
+            return
+        role = str(message.get("role", "") or "").strip()
+        if not role:
+            return
+        self.messages.append(copy.deepcopy(message))
+        self._trim()
+
     def add_system_message(self, content: str) -> None:
         """Add a system message (inserted at beginning)."""
         # System messages are handled separately in the API call
         pass
 
-    def get_messages(self) -> list[dict[str, str]]:
+    def get_messages(self) -> list[dict[str, Any]]:
         """Get conversation messages for API call."""
-        return self.messages.copy()
+        return copy.deepcopy(self.messages)
 
     def reset(self) -> None:
         """Reset context and session state."""
@@ -1144,26 +1187,34 @@ class ContextManager:
         if len(self.messages) <= self.max_history:
             return
 
-        # Keep the most recent 70% of messages intact
-        keep_count = int(self.max_history * 0.7)
-        recent = self.messages[-keep_count:]
-        old = self.messages[:-keep_count]
+        self.messages = self.messages[-self.max_history :]
 
-        # Compress old messages into a summary instead of discarding
-        summary = self._compress_messages(old)
+    def compact_messages(self, *, max_recent: int = 24, note: str = "") -> str:
+        """Explicitly compact older conversation messages for `/compact`."""
 
-        self.messages = []
-        if summary:
-            self.messages.append(
-                {
-                    "role": "system",
-                    "content": f"[之前的会话摘要]\n{summary}",
-                }
-            )
-        self.messages.extend(recent)
+        if len(self.messages) <= max_recent:
+            return "No compaction needed."
+
+        recent = self.messages[-max_recent:]
+        old = self.messages[:-max_recent]
+        summary = self._compress_messages(old) or "(older conversation omitted)"
+        if note:
+            summary = f"{note}\n{summary}"
+        self.messages = [
+            {"role": "system", "content": f"[manual compact summary]\n{summary}"},
+            *recent,
+        ]
+        agent_state = getattr(self.state, "agent_state", None)
+        if agent_state is not None:
+            agent_state.compact_summary = (
+                f"{agent_state.compact_summary}\n{summary}"
+                if agent_state.compact_summary
+                else summary
+            ).strip()
+        return summary
 
     @staticmethod
-    def _compress_messages(messages: list[dict[str, str]]) -> str:
+    def _compress_messages(messages: list[dict[str, Any]]) -> str:
         """Compress a list of messages into a concise summary.
 
         Extracts key findings, tool results, and discoveries from the

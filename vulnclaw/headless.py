@@ -3,11 +3,13 @@
 This module owns the three things a CI operator needs and nothing else:
 
 - **Scan-mode presets** (``quick``/``standard``/``deep``) — named bundles of the
-  existing effort knobs (``solve_max_steps``/``solve_max_intents``/
-  ``solve_max_tool_rounds``/``max_rounds``) plus the solve fan-out cap
-  (``solve_max_parallel``). Presets seed from today's ``config.session`` values
-  so a user who tuned their config keeps that tuning in ``standard``; ``quick``
-  and ``deep`` scale it down/up. Explicit CLI flags override the preset.
+  existing effort knobs (``solve_max_steps``/legacy ``solve_max_directions``/
+  legacy ``solve_max_tool_rounds``/``max_rounds``) plus the fan-out cap
+  (``solve_max_parallel``). Legacy fields are retained for compatibility and
+  mode scaling; the default model-led solve no longer performs direction
+  planning. Presets seed from today's ``config.session`` values so a user who
+  tuned their config keeps that tuning in ``standard``; ``quick`` and ``deep``
+  scale it down/up. Explicit CLI flags override the preset.
 - **The exit-code contract** — ``run --non-interactive`` maps the resulting
   finding set onto a distinct exit code so a pipeline can tell a clean scan
   from a broken one from one that confirmed a real vulnerability.
@@ -60,18 +62,29 @@ DEFAULT_SCOPE_MODE = "full"
 
 @dataclass
 class ScanProfile:
-    """Resolved effort knobs + fan-out cap for a single ``run``.
+    """Resolved effort knobs + compatibility caps for a single ``run``.
 
     ``scan_mode`` seeds every field; explicit CLI flags then override individual
-    ones via :func:`resolve_scan_profile`.
+    ones via :func:`resolve_scan_profile`. ``max_directions`` is a legacy field:
+    model-led solve accepts it but does not use it for direction planning.
     """
 
     max_steps: int
-    max_intents: int
+    max_directions: int
     max_tool_rounds: int
     max_parallel: int
     max_rounds: int
     scan_mode: str = DEFAULT_SCAN_MODE
+
+    @property
+    def max_intents(self) -> int:
+        """Backward-compatible alias for older callers."""
+
+        return self.max_directions
+
+    @max_intents.setter
+    def max_intents(self, value: int) -> None:
+        self.max_directions = int(value)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -87,7 +100,7 @@ def scan_mode_profile(config: Any, scan_mode: str = DEFAULT_SCAN_MODE) -> ScanPr
     """
     session = config.session
     steps = int(session.solve_max_steps)
-    intents = int(session.solve_max_intents)
+    directions = int(session.solve_max_directions)
     tool_rounds = int(session.solve_max_tool_rounds)
     parallel = int(session.solve_max_parallel)
     rounds = int(session.max_rounds)
@@ -98,7 +111,7 @@ def scan_mode_profile(config: Any, scan_mode: str = DEFAULT_SCAN_MODE) -> ScanPr
         # Shallow, single-agent, fast: fan-out off.
         return ScanProfile(
             max_steps=max(1, steps // 3),
-            max_intents=max(1, intents - 1),
+            max_directions=max(1, directions - 1),
             max_tool_rounds=max(1, tool_rounds // 2),
             max_parallel=1,
             max_rounds=max(1, rounds // 2),
@@ -108,7 +121,7 @@ def scan_mode_profile(config: Any, scan_mode: str = DEFAULT_SCAN_MODE) -> ScanPr
         # High rounds/steps, full fan-out (~12 concurrent).
         return ScanProfile(
             max_steps=steps * 2,
-            max_intents=intents + 2,
+            max_directions=directions + 2,
             max_tool_rounds=tool_rounds + 2,
             max_parallel=max(parallel * 4, 12),
             max_rounds=rounds * 2,
@@ -117,7 +130,7 @@ def scan_mode_profile(config: Any, scan_mode: str = DEFAULT_SCAN_MODE) -> ScanPr
     # standard: today's config values, light fan-out as configured.
     return ScanProfile(
         max_steps=steps,
-        max_intents=intents,
+        max_directions=directions,
         max_tool_rounds=tool_rounds,
         max_parallel=parallel,
         max_rounds=rounds,
@@ -130,6 +143,7 @@ def resolve_scan_profile(
     scan_mode: str = DEFAULT_SCAN_MODE,
     *,
     max_steps: Optional[int] = None,
+    max_directions: Optional[int] = None,
     max_intents: Optional[int] = None,
     max_tool_rounds: Optional[int] = None,
     max_parallel: Optional[int] = None,
@@ -143,8 +157,9 @@ def resolve_scan_profile(
     profile = scan_mode_profile(config, scan_mode)
     if max_steps is not None:
         profile.max_steps = max_steps
-    if max_intents is not None:
-        profile.max_intents = max_intents
+    direction_override = max_directions if max_directions is not None else max_intents
+    if direction_override is not None:
+        profile.max_directions = direction_override
     if max_tool_rounds is not None:
         profile.max_tool_rounds = max_tool_rounds
     if max_parallel is not None:

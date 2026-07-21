@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from types import SimpleNamespace
 
@@ -38,7 +38,7 @@ class FakeAgent:
         target=None,
         goal=None,
         max_steps=0,
-        max_intents=0,
+        max_directions=0,
         max_tool_rounds=0,
         stream_sink=None,
         on_event=None,
@@ -60,7 +60,10 @@ class FakeAgent:
             )
         )
         self.session_state.notes.append(f"{self.active_role} note")
-        self.session_state.board.add_fact(f"{self.active_role} board fact", source="team-test")
+        self.session_state.agent_state.record_verified_claim(
+            f"{self.active_role} research fact",
+            evidence_ids=[],
+        )
         FakeAgent.active_solves -= 1
         return SimpleNamespace(completed=False, reason="worker done", steps=1)
 
@@ -147,7 +150,7 @@ async def test_make_team_plan_uses_adviser_role_and_json_extraction(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_run_team_pentest_defaults_to_single_executor_step_and_seeds_board():
+async def test_run_team_pentest_defaults_to_single_executor_step_and_seeds_agent_state():
     from vulnclaw.agent.team import run_team_pentest
 
     root = FakeAgent()
@@ -174,9 +177,9 @@ async def test_run_team_pentest_defaults_to_single_executor_step_and_seeds_board
     ]
     assert [call[0] for child in children for call in child.calls] == ["executor"]
     assert [call[2] for child in children for call in child.calls] == [4]
-    assert root.session_state.board.origin == "https://example.com"
-    assert root.session_state.board.goal == "Capture the flag"
-    assert root.session_state.board.facts[0].source == "team_origin"
+    assert root.session_state.agent_state.origin == "https://example.com"
+    assert root.session_state.agent_state.goal == "Capture the flag"
+    assert "Team run origin=https://example.com" in root.session_state.agent_state.compact_summary
     assert len(root.session_state.findings) == 1
     assert root.session_state.notes[-1:] == ["executor note"]
     assert root.active_role is None
@@ -199,7 +202,7 @@ async def test_run_team_pentest_runs_roles_and_merges_worker_state():
             TeamStep(
                 role="researcher",
                 objective="Collect login facts",
-                done_when="Facts are in the shared board",
+                done_when="Facts are in shared research state",
             ),
             TeamStep(
                 role="developer",
@@ -234,12 +237,15 @@ async def test_run_team_pentest_runs_roles_and_merges_worker_state():
     assert len(root.session_state.findings) == 3
     assert root.last_team_plan == (
         "[team-plan]\n"
-        "1. researcher: Collect login facts (done when: Facts are in the shared board)\n"
+        "1. researcher: Collect login facts (done when: Facts are in shared research state)\n"
         "2. developer: Build candidate payloads (done when: Payloads are ready)\n"
         "3. executor: Run authorized verification (done when: Tool output verifies the finding)"
     )
     assert root.session_state.notes[-3:] == ["researcher note", "developer note", "executor note"]
-    assert any(fact.description == "executor board fact" for fact in root.session_state.board.facts)
+    assert any(
+        claim.claim == "executor research fact"
+        for claim in root.session_state.agent_state.verified_claims
+    )
     assert root.active_role is None
 
 
@@ -304,7 +310,7 @@ async def test_adviser_stop_does_not_override_evidence_gate():
     assert result.stopped_by_adviser is True
     assert [call[0] for child in result.worker_results for call in []] == []
     assert len(result.worker_results) == 3
-    assert root.session_state.board.completed is False
+    assert root.session_state.agent_state.completed is False
 
 
 @pytest.mark.asyncio

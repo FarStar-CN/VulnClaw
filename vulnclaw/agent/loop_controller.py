@@ -1,4 +1,4 @@
-"""Autonomous / persistent loop helpers for AgentCore."""
+﻿"""Autonomous / persistent loop helpers for AgentCore."""
 
 from __future__ import annotations
 
@@ -346,6 +346,7 @@ async def persistent_pentest(
                 rendered = agent.context.state.task_constraints.to_prompt_block()
                 if rendered:
                     constraints_block = f"\n\n{rendered}"
+            selected_engine = getattr(agent.config.session, "engine", "solve")
             results = await agent.auto_pentest(
                 user_input=(
                     _(
@@ -364,6 +365,9 @@ async def persistent_pentest(
                 stream_sink=stream_sink,
             )
             cycle_results_list = results if results else cycle_results_list
+            if selected_engine == "solve":
+                agent_state = agent.context.state.agent_state
+                should_stop = bool(agent_state.completed or agent_state.pending_questions)
         except KeyboardInterrupt:
             should_stop = True
             cycle_results_list = cycle_results_list or []

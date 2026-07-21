@@ -8,7 +8,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI_Compatible-green)](https://platform.openai.com/)
 [![MCP](https://img.shields.io/badge/Toolchain-MCP-orange)](https://modelcontextprotocol.io/)
-[![PyPI](https://img.shields.io/badge/PyPI-v0.3.3-blueviolet)](https://pypi.org/project/vulnclaw/)
+[![PyPI](https://img.shields.io/badge/PyPI-v0.3.5-blueviolet)](https://pypi.org/project/vulnclaw/)
 [![Security](https://img.shields.io/badge/Scope-Authorized_Only-red)](#-安全声明)
 [![AtomGitStars](https://atomgit.com/Unclecheng-li/VulnClaw/star/badge.svg)](https://atomgit.com/Unclecheng-li/VulnClaw)
 <br>
@@ -20,7 +20,7 @@
 项目官网：https://unclecheng-li.github.io/vulnclaw.com/
 <br>
 
-基于 LLM Agent + MCP 工具链 + 渗透 Skill 编排，
+基于 LLM Agent + MCP 工具链 + 可选 Skill 参考资料，
 配合 OpenAI / Anthropic / MiniMax / DeepSeek 等兼容模型，
 自然语言输入 → 自动完成「信息收集 → 漏洞发现 → 漏洞利用 → 报告生成」全流程。
 
@@ -54,19 +54,26 @@ VulnClaw 自动执行：
 
 ## 特性
 
-- **目标驱动求解引擎（默认）** — 抛弃固定轮数工作流，以「目标达成 / 探索前沿耗尽 / 安全预算」为终止条件，自动收敛
-- **黑板图状态空间搜索** — 把渗透建模为从 origin 向 goal 的搜索：Fact（已确认事实）+ Intent（探索方向），结构上杜绝"原地打转"
+- **模型主导求解引擎（默认）** — 类似 Claude Code/Codex 的自主循环，模型自己决定下一步、何时调用工具、何时完成/询问/判定无路可走
+- **AgentState 证据记忆** — 工具结果统一写入 `AgentState.evidence`，raw 原文完整保留；active context 默认只注入高信号预览，`evidence_search` / `evidence_view` 用于按需回查原始证据
+- **轻量纠偏层** — 工具调用前后记录重复调用、失败降级、耗时和新发现等信号；重复读取同一 evidence 范围会被抑制，连续证据空转会触发 stall guard，但不恢复旧阶段规划器
 - **证据级反幻觉闸门** — 声称的 flag/结论必须在真实工具输出里逐字符出现才被采信，杜绝凭空编造 flag 的假胜利
 - **自然语言驱动** — 用人话描述渗透意图，自动识别阶段和工具
 - **13 个 LLM Provider** — OpenAI / Anthropic / MiniMax / DeepSeek / 智谱 / Moonshot / 千问 / SiliconFlow / 豆包 / 百川 / 阶跃星辰 / 商汤 / 零一万物，一键切换
 - **MCP 工具链** — 4 个 MCP 服务：`fetch` / `memory` 本地实现开箱即用，`chrome-devtools` / `burp` 对接外部 MCP 服务实现浏览器自动化和 HTTP 抓包重放
+- **增强 fetch 请求工具** — 默认直接 GET 并返回完整响应 body，支持 HTTP/HTTPS、自定义 method/headers/params/cookies/body/data/form/json、timeout/redirect/TLS 控制；CTF/靶场 HTTPS 默认不校验证书
 - **原生流量证据存储** — 按运行内作用域过滤后以追加式 JSONL 索引 + 每请求原始报文落盘于 `evidence/traffic/`，内置 `traffic_list` / `traffic_view` / `traffic_repeat` / `traffic_sitemap` 工具直接读写
 - **AI Agent 核心** — OpenAI 兼容协议 + Tool Calling + 自主渗透循环
 - **结构化推理 + 自适应反思** — 已知事实/约束/攻击链结构化沉淀；失败自动归类并按 L0-L4 渐进升级 payload 绕过策略
 - **漏洞检测插件体系** — 低耦合插件运行时 + 内置只读 Web 插件，结果自动汇入报告链路（`vulnclaw plugins`）
-- **23 个渗透 Skill** — 7 核心 + 16 专项 Skill（含 CTF Web/Crypto/Misc、osint-recon、cve-triage、hackerone、secknowledge-skill），含 176 个参考文档
+- **50 个专项 Skill** — 覆盖 CTF、Web、内网、逆向、漏洞验证与授权红队知识库；Skill 只作为参考资料索引暴露给模型，正文需要模型主动调用 `load_skill_reference` 按需读取，不再作为强制剧本注入上下文
 - **编解码/加解密工具** — 29 种操作（Base64/Hex/URL/AES/JWT/Morse 等），LLM 可精确调用，不再靠猜测
+- **源码自动还原** — `fetch` / `http_probe_batch` 遇到 `highlight_file`、HTML 高亮源码或混杂 HTML/JS body 时会自动在 raw body 前追加 clean source；`http_probe_batch` 默认关闭 TLS 校验并记录完整响应头，避免丢失 `X-Powered-By` 等运行时证据；内置 `source_extract` 仍可用于按需重读历史 evidence，并固定危险 sink、表单与 endpoint 信号
+- **本地命令验证** — 内置 `shell_command`，用于 `php -r` 反序列化验证、`curl` 精确请求、`rg`/`Select-String` 文件检索等 Codex-style 本地调试场景；raw stdout/stderr 完整写入 evidence，大输出进入模型时使用高信号预览
+- **运行时差分探测** — 内置 `runtime_diff_probe`，用于正则/字符串过滤器与运行时解析器不一致的场景，帮助模型批量生成并验证“过滤器漏过、解析器接受”的候选；PHP 序列化模式会提示目标/本地运行时版本差异，并把 PHP5 signed length 候选标记为必须远程验证，避免被本地新版 PHP 误杀
 - **Python 代码执行** — 内置 `python_execute` 工具，适合 payload 构造和响应解析；当前仍属高风险实验能力，不应视为强隔离沙箱
+- **批量 HTTP 探测** — 内置 `http_probe_batch`，用于一次比较多组 URL/参数/header/body/raw URL 变体，默认返回每个响应的完整 body，并在模型可见输出中展示实际请求面（method、URL、params、headers、cookies、body/json），减少重复 LLM 轮次和手写请求代码
+- **近成功防误停** — solve 保留证据闸门，并新增通用 `NO_PATH` 闸门：当源码 sink、表单/参数、请求面、本地 proof 或响应差异等高信号尚未耗尽时，不接受模型因单次 payload 无回显/远端 same-body 就提前判死
 - **持续性渗透测试** — 周期循环（默认 100 轮/周期 × 10 周期 = 1000 轮），每周期自动生成报告
 - **推理过程显示控制** — `think on/off` 一键切换 LLM 思考过程的显示/隐藏
 - **沙盒模式提示词** — 解锁 AI 安全测试能力，CTF / 授权渗透场景专用
@@ -324,26 +331,36 @@ vulnclaw web --port 8080      # 自定义端口
 
 ### 求解引擎
 
-VulnClaw 默认使用**目标驱动求解引擎**（旧版固定轮数引擎可通过 `vulnclaw config set session.engine rounds` 回退）。
+VulnClaw 默认使用**模型主导 solve 引擎**（旧版固定轮数引擎可通过 `vulnclaw config set session.engine rounds` 回退）。
 
-**黑板图 + OODA 循环：** 把渗透建模为从 origin（目标）向 goal（拿到 flag / shell / 确认高危漏洞）的有向搜索。
+**模型主导循环：** 框架不再把任务拆成固定“研究方向”，也不再按阶段模板主动安排目录扫描、JS 收集或 SQLi 测试。solve 只给模型提供目标、历史上下文、证据记忆和可用工具清单，由模型自己决定下一步行动。
 
 | 原语 | 含义 |
 |------|------|
-| **Fact** | 已被真实工具输出证实的客观事实（探索的落脚点） |
-| **Intent** | 声明的探索方向（尚未执行的一步），从 Fact 出发，结论后产出新 Fact |
+| **模型上下文** | 目标、用户约束、近期消息、证据摘要和已执行工具调用 |
+| **工具清单** | `fetch` / 浏览器 / 目录枚举 / JS 收集 / 编解码 / Python / `shell_command` / `source_extract` / `runtime_diff_probe` / skill 读取等能力，仅作为可选手脚暴露给模型 |
+| **工具 transcript** | 工具调用后会把 assistant `tool_calls` 与 `role=tool` 观察结果追加进模型上下文；大输出使用高信号预览，避免 HTML/body/日志反复污染 active context |
+| **AgentState 证据** | 每个真实工具结果都会写入 `AgentState.evidence`；raw 原文完整保留并带 hash/size/证据号，模型可通过 `evidence_search` / `evidence_view` 按需回查 |
+| **高信号记忆** | 源码 SQL、HTML 表单/input、PHP/API 链接、JavaScript endpoint、`highlight_file` 源码、`unserialize`/魔术方法/危险 sink 会被固定为长期可见事实，避免后续探测把真实入口淹没 |
+| **轻量纠偏层** | 只观察工具生命周期，记录耗时、失败降级、重复调用、高信号目标事实和小步语义差异，作为提示信号注入下一轮上下文，不做阶段规划、不主动安排工具 |
+| **证据闸门** | `FINAL:` 结论必须引用或命中真实证据；未被工具输出支撑的 flag/结论会被拒绝并继续探索 |
+| **自动复盘报告** | 目标达成后自动生成 Markdown 报告，包含解题思路、关键证据、复现请求包、curl、响应片段和证据索引 |
 
 ```
-REASON（读全图）→ 目标达成? / 提出新探索方向 / 不提出
+MODEL DECIDES → 可选工具调用 → AgentState 记录完整 raw evidence + active context 高信号预览 + 轻量纠偏信号
         │
-EXPLORE（领一个 Intent）→ 用工具实际执行 → 把确认的结论写回为一个 Fact
+继续推理 / 继续调用工具 / ASK_USER / NO_PATH / FINAL
         │
-终止：目标达成 / 探索前沿耗尽 / 触达安全预算
+FINAL 经过证据闸门校验 → 通过才结束，否则把拒绝原因返回模型继续做
 ```
 
-**证据级反幻觉闸门：** 录制所有真实工具输出作为唯一可信证据。声称的 flag/结论必须在真实输出里逐字符出现才被采信，杜绝凭空编造。
+**上下文策略：** solve 默认保留正常对话历史，不主动压缩。只有模型上下文接近上限、用户执行 `/compact` 或显式启用自动压缩时才压缩。工具输出会完整写入 `AgentState.evidence`，但大输出进入 active context 时只注入 bounded high-signal preview，包含状态、响应头/请求面、表单/参数、endpoint、源码 sink/filter、flag-like token、关键行号、raw size 和 hash；完整 body/stdout/stderr 可通过 `evidence_search` 搜索或 `evidence_view` 分页回看。`fetch` / `http_probe_batch` 的 `max_body_chars`、`python_execute_max_output_chars` 和 `shell_command.max_output_chars` 只有显式设为正数时才会在工具层裁剪 raw 输出；未显式裁剪时 raw evidence 仍完整保留。相同 raw 输出再次出现时，active context 只保留 `same_as=eXXX` 引用，不重复塞正文。终端回显只是人类显示层：长工具结果默认折叠为预览，完整内容保存在 evidence。从原始输出里提取出的高信号事实会独立固定，包括表单、参数、JS endpoint、PHP/API 链接、`highlight_file` 源码、危险 sink、请求面、same-body/响应差异和本地 proof 片段。`evidence_list` / `evidence_search` / `evidence_view` 用于回看历史证据，重复查看同一 evidence 覆盖范围会被短路，连续多轮只翻证据且没有新 evidence 会触发 stall guard，要求下一步改用非 evidence 工具、`FINAL`、`ASK_USER` 或 `NO_PATH`。工具调用执行后不会再强制追加一轮 `Summarizing...` LLM 调用；正常路径采用 Chat Completions 原生工具 transcript（assistant `tool_calls` + `role=tool`），让下一次模型采样基于真实观察继续。
 
-**结构化推理 + 自适应反思：** 失败自动归类并按 L0-L4 渐进升级 payload 绕过策略，persistent 模式跨周期保留失败记忆。
+**证据级反幻觉闸门：** 录制所有真实工具输出作为唯一可信证据。声称的 flag/结论必须在真实输出里逐字符出现或显式引用证据编号才会被采信，杜绝凭空编造。`NO_PATH` 也受近成功闸门约束：当证据中仍有未耗尽的高信号锚点时，会先把拒绝原因反馈给模型继续验证，而不是直接停止。
+
+**自动复盘报告：** solve 达成目标后会基于 `AgentState` 确定性生成 Markdown 复盘报告并默认打印到终端。报告不会额外请求 LLM；复现请求包、curl 和响应片段来自真实 `fetch` / `http_probe_batch` evidence。
+
+**授权红队 Skill：** `codex-redteam-mode` 的授权红队 detail packs 已作为 skill/知识库导入，供模型按需读取；jailbreak、拒绝绕过、会话 patch 等破限内容未导入。
 
 ### 核心模块
 
@@ -351,10 +368,10 @@ EXPLORE（领一个 Intent）→ 用工具实际执行 → 把确认的结论写
 |------|------|------|
 | **CLI/TUI 入口** | `cli/main.py` + `cli/tui.py` | Typer 命令 + REPL + TUI |
 | **Agent 核心** | `agent/core.py` | AgentCore 协调入口 |
-| **求解引擎** | `agent/solver.py` + `agent/blackboard.py` | OODA 循环 + Fact/Intent 黑板图 |
+| **求解引擎** | `agent/solver.py` + `agent/agent_state.py` | 模型主导循环 + AgentState 证据/步骤/完成闸门 |
 | **推理/反思** | `agent/reasoning_state.py` + `reflexion.py` | 结构化事实/约束/攻击链 + L0-L4 升级 |
 | **插件体系** | `plugins/` | 低耦合漏洞检测插件运行时 |
-| **Skill 调度** | `skills/loader.py` + `dispatcher.py` | 意图动态调度 |
+| **Skill 参考索引** | `skills/loader.py` + `resolver.py` | 只解析相关参考资料，不注入强制流程 |
 | **MCP 编排** | `mcp/registry.py` + `lifecycle.py` + `router.py` | 服务注册 + 生命周期 + 工具路由 |
 | **配置管理** | `config/schema.py` + `settings.py` | Pydantic + YAML + 13 Provider 预设 |
 | **报告生成** | `report/generator.py` + `poc_builder.py` | Markdown 报告 + PoC 脚本 |
@@ -366,12 +383,12 @@ EXPLORE（领一个 Intent）→ 用工具实际执行 → 把确认的结论写
 
 | MCP 服务 | 工具数 | 模式 | 用途 | 状态 |
 |---|---|---|---|---|
-| fetch | 1 | 本地 (httpx) | HTTP 请求、API 测试 | 开箱即用 |
+| fetch | 1 | 本地 (httpx) | HTTP/HTTPS 请求、GET/POST/PUT 等方法、headers/params/cookies/body/json/form、API 测试 | 开箱即用 |
 | memory | 2 | 本地 (JSON) | 上下文记忆、状态持久化 | 开箱即用 |
 | chrome-devtools | 31+ | stdio MCP | 浏览器自动化、截图、JS 执行 | 需部署 |
 | burp | 多个 | stdio MCP | HTTP 抓包、重放、漏洞扫描 | 需部署 |
 
-> 另有 5 个内置 Agent 工具（`python_execute` + `nmap_scan` + `crypto_decode` + `brute_force_login` + `load_skill_reference`），无需 MCP 即可调用。
+> 另有内置 Agent 工具（`http_probe_batch`、`python_execute`、`shell_command`、`source_extract`、`runtime_diff_probe`、`nmap_scan`、`crypto_decode`、`brute_force_login`、`load_skill_reference`、`evidence_list`、`evidence_search`、`evidence_view` 等），无需 MCP 即可调用。
 
 <details>
 <summary><strong>Chrome DevTools MCP 部署</strong></summary>
@@ -475,9 +492,9 @@ mcp:
 | **osint-recon** | 7 | OSINT 开源情报收集 |
 | **cve-triage** | 1 | CVE 查询与三级评估 |
 | **hackerone** | 1 | HackerOne 赏金 scope-guard |
-| **secknowledge-skill** | 39 | Web+AI 安全测试知识库 |
+| **secknowledge-skill** | 40 | Web+AI 安全测试知识库 |
 
-Skill 会根据用户输入自动调度，无需手动选择。专项 Skill 含 `references/` 目录下的详细方法论文档，LLM 可通过 `load_skill_reference` 工具按需加载。
+Skill 会根据用户输入解析为“可选参考资料索引”，不会把 Skill 正文、阶段流程或方法论剧本自动塞进系统提示。专项 Skill 含 `references/` 目录下的详细方法论文档，LLM 只有在自己判断有价值时才通过 `load_skill_reference` 按需加载。
 
 ### 内置编解码/加解密工具 (crypto_decode)
 
@@ -539,10 +556,14 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程
 | `llm.model` | 按 provider | 模型名称 |
 | `llm.temperature` | 0.1 | 采样温度 |
 | `llm.max_tokens` | 4096 | 单次最大输出 token |
-| `session.engine` | solve | `solve`（目标驱动）/ `rounds`（旧固定轮数） |
-| `session.solve_max_steps` | 40 | solve 探索步数安全上限 |
-| `session.solve_max_intents` | 3 | 每次 Reason 最多提出的新探索方向数 |
-| `session.solve_max_tool_rounds` | 6 | 每个 Intent 探索的最大工具调用轮数 |
+| `session.engine` | solve | `solve`（模型主导）/ `team`（角色团队）/ `rounds`（旧固定轮数） |
+| `session.solve_max_steps` | 240 | solve 防失控安全预算；不是计划轮数，正常由模型自主完成/询问/判定无路 |
+| `session.solve_max_directions` | 3 | 兼容旧配置；默认模型主导 solve 不再使用研究方向数量 |
+| `session.solve_max_tool_rounds` | 6 | 兼容旧配置；单个模型 turn 内连续工具 follow-up 的 runaway 安全上限，不是计划式工作流轮数 |
+| `session.solve_auto_compact` | false | 是否允许 solve 自动压缩上下文；默认关闭，优先保留完整上下文 |
+| `session.solve_compact_trigger_ratio` | 0.9 | 自动压缩启用时的上下文触发比例 |
+| `session.solve_auto_report` | true | solve 目标达成后自动生成 Markdown 复盘报告 |
+| `session.solve_report_show` | true | 自动报告生成后在终端直接打印报告正文 |
 | `session.max_rounds` | 15 | 最大轮数 |
 | `session.output_dir` | ./vulnclaw-output | 报告输出目录 |
 | `session.report_format` | markdown | 报告格式（markdown / html） |

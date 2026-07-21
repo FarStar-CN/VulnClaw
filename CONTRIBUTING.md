@@ -35,8 +35,8 @@ VulnClaw/
 |   |   |-- think_filter.py      # think 标签显示与隐藏
 |   |   |-- agent_context.py     # AgentCore 与 helper 之间的 typed seam
 |   |   |-- agent_graph.py       # 可持久化、可恢复的多 Agent 生命周期图
-|   |   |-- blackboard.py        # 黑板图模型（Fact/Intent 双原语状态空间搜索）
-|   |   |-- solver.py            # 目标驱动的 OODA 求解循环
+|   |   |-- agent_state.py       # 模型主导 solve 的证据、步骤、工具调用与完成闸门状态
+|   |   |-- solver.py            # 模型主导求解引擎
 |   |   |-- parallel_agents.py   # 有界并行多 Agent 协调
 |   |   |-- team.py              # 角色化团队规划与自适应委派
 |   |   |-- roles.py             # 角色注册与硬工具白名单
