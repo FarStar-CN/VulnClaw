@@ -15,14 +15,17 @@ import threading
 from queue import Queue
 from typing import Any
 
+from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.events import Key
+from textual.events import Click, Key
+from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Input, ListItem, ListView, RichLog, Static
 
 import vulnclaw.cli.tui as _tui
+from vulnclaw.agent.constraint_policy import PHASE_TO_ACTION
 
 # [新增] 2026-06-10 Nyaecho - 自然语言驱动 / 响应式侧边栏: 新增颜色常量和动作辅助函数导入
 # [修改] 2026-07-08 Nyaecho - 修改原因：新增 @ skill 引用相关函数导入
@@ -63,6 +66,14 @@ from vulnclaw.target_state.store import get_target_state_preview, list_target_sn
 # ── Slash dispatch ──
 
 _SLASH_HANDLERS: dict[str, Any] = {}
+
+# /scope 动作约束弹窗中"动作"行的固定来源: 从 PHASE_TO_ACTION 派生, 去重后顺序保留,
+# 不含 report (报告由 run/persistent 完成后自动生成, 与动作范围解耦)。
+# 注: inline ``/scope allow=report`` 与旧 TUI 的允许动作/禁止动作文本字段仍允许写入,
+# 作为给熟悉动作命名空间的进阶用户的逃生口; 这些值会原样进入 --allow-actions / --block-actions。
+_ACTION_MATRIX_OPTIONS = [
+    a for a in dict.fromkeys(PHASE_TO_ACTION.values()) if a != "report"
+]
 
 
 def _register_handler(cmd: str):
@@ -175,12 +186,42 @@ class CommandPalette(ListView):
 
 # ── Secondary popup widget ──
 
+class _ActionMatrixCell(Static):
+    """Clickable cell that reports its matrix row and column."""
+
+    class Selected(Message):
+        def __init__(self, row_index: int, role: str) -> None:
+            self.row_index = row_index
+            self.role = role
+            super().__init__()
+
+    def __init__(
+        self,
+        content: str,
+        *,
+        row_index: int,
+        role: str,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(content, markup=True, **kwargs)
+        self._row_index = row_index
+        self._role = role
+
+    def on_click(self, event: Click) -> None:
+        event.stop()
+        self.post_message(self.Selected(self._row_index, self._role))
+
+
 class SecondaryPopup(Vertical):
     """Secondary popup for parameter input when a slash command needs arguments.
 
     Supports input / choice / confirm / message / chain / loading modes.
     """
     can_focus = True
+    # [修改] 2026-07-18 - action_matrix 行状态切换: 只在 允许↔禁止 间往复,
+    # 不约束行首次空格进入允许, 不会再被切回不约束
+    _MATRIX_CYCLE = {"none": "allow", "allow": "block", "block": "allow"}
+
     def __init__(self, **kwargs: Any):
         kwargs.setdefault("id", "sec-popup")
         super().__init__(**kwargs)
@@ -193,6 +234,8 @@ class SecondaryPopup(Vertical):
         self._on_done: Any = None
         self._loading_dots: int = 0
         self._loading_timer: Any = None
+        self._matrix_options: list = []
+        self._matrix_states: list = []
 
     def compose(self) -> ComposeResult:
         yield Static(id="popup-desc", markup=True)
@@ -211,6 +254,9 @@ class SecondaryPopup(Vertical):
         elif ptype == "choice":
             _, label, choices, cb = prompt
             self._show_choice(label, choices, cb)
+        elif ptype == "action_matrix":
+            _, label, options, allow_checked, block_checked, cb = prompt
+            self._show_action_matrix(label, options, allow_checked, block_checked, cb)
         elif ptype == "confirm":
             _, label, cb = prompt
             self._show_confirm(label, cb)
@@ -261,6 +307,134 @@ class SecondaryPopup(Vertical):
         self.mount(lv)
         self.add_class("open")
         lv.focus()
+
+    def _show_action_matrix(self, label, options, allow_checked, block_checked, cb):
+        # /scope 动作约束弹窗: 三列表格(动作 / 允许 / 禁止), 单行点击切换, 回车汇总提交。
+        # 同行允许/禁止互斥, 重叠按禁止优先预填; 空格在 allow ↔ block 间往复 (不约束仅作初始态)。
+        # [修改] 2026-07-21 - 顶部摘要 + 清晰符号 (✓/✗/· 配主题色), 让用户一眼看清当前约束
+        self._clear_dynamic()
+        self._ptype = "action_matrix"
+        self._cb = cb
+        self._matrix_options = list(options)
+        self._matrix_states = [
+            "block" if opt in block_checked else "allow" if opt in allow_checked else "none"
+            for opt in self._matrix_options
+        ]
+        self.query_one("#popup-desc", Static).update(
+            f"[bold {C_PRIMARY}]{label}[/]\n  [{C_MUTED}]{_('tui.action_matrix_hint')}[/]"
+        )
+        # 顶部摘要: 始终显示当前 allow/block 汇总, 不依赖用户翻看每行
+        self._matrix_summary = Static(id="matrix-summary", markup=True)
+        self._update_matrix_summary()
+        self.mount(self._matrix_summary)
+        header = Horizontal(
+            Static("", classes="matrix-action"),
+            Static(
+                f"[bold {C_SUCCESS}]{_('tui.allowed_actions_short')}[/]",
+                classes="matrix-column matrix-header-allow",
+                markup=True,
+            ),
+            Static(
+                f"[bold {C_ERROR}]{_('tui.blocked_actions_short')}[/]",
+                classes="matrix-column matrix-header-block",
+                markup=True,
+            ),
+            id="popup-hint",
+        )
+        self.mount(header)
+        items = [
+            ListItem(
+                _ActionMatrixCell(
+                    f"  {opt}",
+                    row_index=i,
+                    role="action",
+                    id=f"matrix-action-{i}",
+                    classes="matrix-action",
+                ),
+                _ActionMatrixCell(
+                    self._matrix_mark(i, "allow"),
+                    row_index=i,
+                    role="allow",
+                    id=f"matrix-allow-{i}",
+                    classes="matrix-column matrix-allow-cell",
+                ),
+                _ActionMatrixCell(
+                    self._matrix_mark(i, "block"),
+                    row_index=i,
+                    role="block",
+                    id=f"matrix-block-{i}",
+                    classes="matrix-column matrix-block-cell",
+                ),
+            )
+            for i, opt in enumerate(self._matrix_options)
+        ]
+        lv = ListView(*items, id="popup-list")
+        self.mount(lv)
+        self.add_class("open")
+        lv.focus()
+        lv.index = 0
+
+    def _matrix_mark(self, idx: int, state: str) -> str:
+        """Render a single allow/block cell with a colored unicode marker.
+
+        当前状态列: ✓/✗ 加粗配主题色; 其余列: 中点 · 灰色, 避免视觉抢占。
+        """
+        cur = self._matrix_states[idx]
+        if cur != state:
+            return f"[{C_MUTED}]·[/]"
+        if state == "allow":
+            return f"[bold {C_SUCCESS}]✓[/]"
+        return f"[bold {C_ERROR}]✗[/]"
+
+    def _matrix_refresh_row(self, idx: int) -> None:
+        self.query_one(f"#matrix-allow-{idx}", _ActionMatrixCell).update(
+            self._matrix_mark(idx, "allow")
+        )
+        self.query_one(f"#matrix-block-{idx}", _ActionMatrixCell).update(
+            self._matrix_mark(idx, "block")
+        )
+
+    def _update_matrix_summary(self) -> None:
+        """Refresh the top summary line: 当前: ✓ recon,scan / ✗ post_exploitation.
+
+        每次状态变更后调用, 让用户无需逐行核对也能看到生效约束。
+        """
+        allow = [
+            o for o, s in zip(self._matrix_options, self._matrix_states) if s == "allow"
+        ]
+        block = [
+            o for o, s in zip(self._matrix_options, self._matrix_states) if s == "block"
+        ]
+        pieces: list[str] = []
+        if allow:
+            pieces.append(f"[{C_SUCCESS}]✓[/] [bold]{', '.join(allow)}[/]")
+        if block:
+            pieces.append(f"[{C_ERROR}]✗[/] [bold]{', '.join(block)}[/]")
+        body = "   ".join(pieces) if pieces else (
+            f"[{C_MUTED}]" + _("tui.action_matrix_unconstrained") + "[/]"
+        )
+        self._matrix_summary.update(
+            f"[bold {C_TEXT}]" + _("tui.action_matrix_current") + f"[/] {body}"
+        )
+
+    def _matrix_set(self, idx: int, state: str) -> None:
+        if not 0 <= idx < len(self._matrix_states):
+            return
+        if state not in ("allow", "block"):
+            return
+        self._matrix_states[idx] = state
+        self._matrix_refresh_row(idx)
+        self._update_matrix_summary()
+
+    def _matrix_toggle(self, idx: int) -> None:
+        if not 0 <= idx < len(self._matrix_states):
+            return
+        self._matrix_set(idx, self._MATRIX_CYCLE[self._matrix_states[idx]])
+
+    def _submit_action_matrix(self) -> None:
+        allow = [o for o, s in zip(self._matrix_options, self._matrix_states) if s == "allow"]
+        block = [o for o, s in zip(self._matrix_options, self._matrix_states) if s == "block"]
+        self._resolve((allow, block))
 
     def _show_confirm(self, label: str, callback: Any) -> None:
         self._clear_dynamic()
@@ -403,11 +577,7 @@ class SecondaryPopup(Vertical):
         fld, fld_title, _default = fields[idx]
         if self._session:
             state = self._session["state"]
-            if fld == "__allow_actions":
-                state.allow_actions = _parse_action_csv(value) if value else []
-            elif fld == "__block_actions":
-                state.block_actions = _parse_action_csv(value) if value else []
-            elif fld == "only_port":
+            if fld == "only_port":
                 if value:
                     try:
                         _parse_optional_port(value)
@@ -478,10 +648,27 @@ class SecondaryPopup(Vertical):
         elif self._ptype == "chain":
             self._handle_chain_step(value)
 
+    @on(_ActionMatrixCell.Selected)
+    def _on_action_matrix_cell_selected(self, event: _ActionMatrixCell.Selected) -> None:
+        event.stop()
+        if self._ptype != "action_matrix" or not self.has_class("open"):
+            return
+        if not 0 <= event.row_index < len(self._matrix_states):
+            return
+
+        lv = self.query_one("#popup-list", ListView)
+        lv.index = event.row_index
+        if event.role in ("allow", "block"):
+            self._matrix_set(event.row_index, event.role)
+
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id != "popup-list":
             return
         event.stop()
+        # [新增] 2026-07-18 - action_matrix: 回车直接提交整个表格, 不走单项 choice 逻辑
+        if self._ptype == "action_matrix":
+            self._submit_action_matrix()
+            return
         index = event.list_view.index
         if index is not None and 0 <= index < len(self._choices):
             self._resolve(self._choices[index])
@@ -503,6 +690,12 @@ class SecondaryPopup(Vertical):
         elif self._ptype == "loading":
             # Loading cannot be cancelled by user — ignore all keys
             event.stop()
+        elif self._ptype == "action_matrix":
+            if event.key == "space":
+                event.stop()
+                lv = self.query_one("#popup-list", ListView)
+                if lv.index is not None:
+                    self._matrix_toggle(lv.index)
         elif event.key == "escape":
             event.stop()
             self._cancel()
@@ -572,18 +765,32 @@ def _h_scope(session: dict[str, Any], args: str) -> str | None:
                 elif k == "resume":
                     state.resume = v.lower() in ("true", "yes", "1", "on")
         return None
+    # [修改] 2026-07-18 - 动作约束改为 action_matrix 表格勾选, chain 只保留 5 个文本字段
     fields = [
         ("only_host", _("tui.prompt_only_host"), state.only_host or ""),
         ("only_port", _("tui.prompt_only_port"), state.only_port),
         ("only_path", _("tui.prompt_only_path"), state.only_path or ""),
         ("blocked_host", _("tui.prompt_blocked_host"), state.blocked_host or ""),
         ("blocked_path", _("tui.prompt_blocked_path"), state.blocked_path or ""),
-        ("__allow_actions", _("tui.prompt_allowed_actions"), ",".join(state.allow_actions)),
-        ("__block_actions", _("tui.prompt_blocked_actions"), ",".join(state.block_actions)),
     ]
     def on_resume(yes): state.resume = yes
     def ask(): _set_prompt(session, "confirm", _("tui.prompt_resume", state=_("tui.on") if state.resume else _("tui.off")), on_resume)
-    _set_prompt(session, "chain", fields, 0, ask)
+    def on_matrix(result):
+        allow, block = result
+        state.allow_actions = allow
+        state.block_actions = block
+        ask()
+    def ask_matrix():
+        _set_prompt(
+            session,
+            "action_matrix",
+            _("tui.prompt_action_matrix"),
+            list(_ACTION_MATRIX_OPTIONS),
+            list(_effective_allow_actions(state)),
+            list(_effective_block_actions(state)),
+            on_matrix,
+        )
+    _set_prompt(session, "chain", fields, 0, ask_matrix)
     return None
 
 
@@ -1223,6 +1430,13 @@ class DashboardScreen(Screen):
                 cb(False)
             else:
                 return
+        elif ptype == "action_matrix":
+            # [新增] 2026-07-18 - 旧路径兜底: 弹窗打开时主输入框提交,
+            # 文本按 CSV 解析为 allow, block 保持初始值, 防止 prompt 悬置卡死
+            _, label, options, allow_checked, block_checked, cb = p
+            self._s["_prompt"] = None
+            self._set_bar("")
+            cb((_parse_action_csv(text), list(block_checked)))
         elif ptype == "chain":
             _, fields, idx, cb = p
             if idx >= len(fields):
@@ -1233,11 +1447,7 @@ class DashboardScreen(Screen):
                 return
             fld, fld_title, fld_default = fields[idx]
             state = self._s["state"]
-            if fld == "__allow_actions":
-                state.allow_actions = _parse_action_csv(text) if text else []
-            elif fld == "__block_actions":
-                state.block_actions = _parse_action_csv(text) if text else []
-            elif fld == "only_port":
+            if fld == "only_port":
                 if text:
                     try:
                         _parse_optional_port(text)
@@ -1482,12 +1692,42 @@ CSS = """
     margin-bottom: 1;
 }
 #popup-hint {
-    padding-bottom: 1;
+    height: 1;
 }
 #popup-list {
     height: auto;
     max-height: 10;
     margin-bottom: 1;
+}
+#popup-list ListItem {
+    layout: horizontal;
+    height: 1;
+}
+.matrix-action {
+    /* 固定宽度, 不再用 1fr; 否则会撑满整行, 让右侧的允许/禁止选择被推到屏幕最右 */
+    width: 20;
+}
+.matrix-column {
+    width: 16;
+}
+.matrix-header-allow {
+    color: #7fd88f;
+}
+.matrix-header-block {
+    color: #e06c75;
+}
+.matrix-allow-cell {
+    color: #7fd88f;
+}
+.matrix-block-cell {
+    color: #e06c75;
+}
+#matrix-summary {
+    height: 1;
+    padding: 0 1;
+    margin-bottom: 1;
+    color: #eeeeee;
+    text-style: bold;
 }
 #popup-list ListItem.-highlight {
     color: white;

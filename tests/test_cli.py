@@ -1018,6 +1018,288 @@ class TestCLI:
         )
         return textual_mod, session, launched
 
+    async def test_textual_action_matrix_shows_prefilled_states(self, monkeypatch):
+        """action_matrix 弹窗按生效值预填, 同一动作 allow/block 重叠时按禁止优先。"""
+        textual_mod, session, _launched = self._make_textual_session(monkeypatch, "standard")
+        received = []
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            popup = app.screen.query_one(textual_mod.SecondaryPopup)
+            textual_mod._set_prompt(
+                session,
+                "action_matrix",
+                "设置动作约束",
+                ["recon", "scan", "exploit", "post_exploitation"],
+                ["recon", "scan", "exploit"],  # exploit 与 block 重叠
+                ["exploit"],
+                lambda result: received.append(result),
+            )
+            popup.show_for_prompt(session)
+            await pilot.pause()
+
+            assert popup.has_class("open")
+            assert popup._ptype == "action_matrix"
+            # 重叠的 exploit 按禁止优先消解
+            assert popup._matrix_states == ["allow", "allow", "block", "none"]
+
+    async def test_textual_action_matrix_space_cycles_three_states(self, monkeypatch):
+        """空格只在 允许↔禁止 间切换; 不约束行首次空格进入允许, 不会被切回不约束。"""
+        from textual.widgets import ListView
+
+        textual_mod, session, _launched = self._make_textual_session(monkeypatch, "standard")
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            popup = app.screen.query_one(textual_mod.SecondaryPopup)
+            textual_mod._set_prompt(
+                session, "action_matrix", "设置动作约束",
+                ["recon", "scan", "exploit", "post_exploitation"],
+                ["recon", "scan"], [], lambda result: None,
+            )
+            popup.show_for_prompt(session)
+            await pilot.pause()
+            lv = popup.query_one("#popup-list", ListView)
+            assert lv.index == 0
+            # 当前行 recon: allow ↔ block 往复, 不会切走
+            await pilot.press("space")
+            assert popup._matrix_states[0] == "block"
+            await pilot.press("space")
+            assert popup._matrix_states[0] == "allow"
+            await pilot.press("space")
+            assert popup._matrix_states[0] == "block"
+            # 下移两行到 exploit(不约束): 首次空格进入允许, 之后 allow ↔ block
+            await pilot.press("down", "down")
+            assert lv.index == 2
+            await pilot.press("space")
+            assert popup._matrix_states[2] == "allow"
+            await pilot.press("space")
+            assert popup._matrix_states[2] == "block"
+            await pilot.press("space")
+            assert popup._matrix_states[2] == "allow"
+
+    async def test_textual_action_matrix_mouse_sets_constraint_without_submitting(self, monkeypatch):
+        """左键按行列设置允许/禁止，重复点击幂等，且点击本身不提交。"""
+        from textual.widgets import ListView, Static
+
+        textual_mod, session, _launched = self._make_textual_session(monkeypatch, "standard")
+        received = []
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            popup = app.screen.query_one(textual_mod.SecondaryPopup)
+            textual_mod._set_prompt(
+                session,
+                "action_matrix",
+                "设置动作约束",
+                ["recon", "scan", "exploit", "post_exploitation"],
+                ["recon", "scan"],
+                [],
+                lambda result: received.append(result),
+            )
+            popup.show_for_prompt(session)
+            await pilot.pause()
+            lv = popup.query_one("#popup-list", ListView)
+
+            await pilot.click("#matrix-block-2")
+            await pilot.pause()
+            assert lv.index == 2
+            assert popup._matrix_states[2] == "block"
+            assert popup.query_one("#matrix-allow-2", Static).content == "[#808080]·[/]"
+            assert popup.query_one("#matrix-block-2", Static).content == "[bold #e06c75]✗[/]"
+            assert received == []
+            assert popup.has_class("open")
+
+            await pilot.click("#matrix-block-2")
+            await pilot.pause()
+            assert popup._matrix_states[2] == "block"
+
+            await pilot.click("#matrix-allow-2")
+            await pilot.pause()
+            assert popup._matrix_states[2] == "allow"
+            assert popup.query_one("#matrix-allow-2", Static).content == "[bold #7fd88f]✓[/]"
+            assert popup.query_one("#matrix-block-2", Static).content == "[#808080]·[/]"
+            assert received == []
+            assert popup.has_class("open")
+
+    async def test_textual_action_matrix_mouse_action_cell_only_moves_highlight(self, monkeypatch):
+        """点击动作名只选中对应行，不修改状态也不提交。"""
+        from textual.widgets import ListView
+
+        textual_mod, session, _launched = self._make_textual_session(monkeypatch, "standard")
+        received = []
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            popup = app.screen.query_one(textual_mod.SecondaryPopup)
+            textual_mod._set_prompt(
+                session,
+                "action_matrix",
+                "设置动作约束",
+                ["recon", "scan", "exploit", "post_exploitation"],
+                ["recon", "scan"],
+                [],
+                lambda result: received.append(result),
+            )
+            popup.show_for_prompt(session)
+            await pilot.pause()
+            lv = popup.query_one("#popup-list", ListView)
+            before = list(popup._matrix_states)
+
+            await pilot.click("#matrix-action-3")
+            await pilot.pause()
+
+            assert lv.index == 3
+            assert popup._matrix_states == before
+            assert received == []
+            assert popup.has_class("open")
+
+    async def test_textual_action_matrix_mouse_selection_then_enter_submits(self, monkeypatch):
+        """鼠标只改矩阵；Enter 汇总并提交鼠标选择结果。"""
+        textual_mod, session, _launched = self._make_textual_session(monkeypatch, "standard")
+        received = []
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            popup = app.screen.query_one(textual_mod.SecondaryPopup)
+            textual_mod._set_prompt(
+                session,
+                "action_matrix",
+                "设置动作约束",
+                ["recon", "scan", "exploit", "post_exploitation"],
+                ["recon", "scan"],
+                [],
+                lambda result: received.append(result),
+            )
+            popup.show_for_prompt(session)
+            await pilot.pause()
+
+            await pilot.click("#matrix-block-0")
+            await pilot.click("#matrix-allow-2")
+            await pilot.pause()
+            assert received == []
+            assert popup.has_class("open")
+
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+
+        assert received == [(["scan", "exploit"], ["recon"])]
+        assert not popup.has_class("open")
+
+    async def test_textual_action_matrix_enter_submits_selection(self, monkeypatch):
+        """回车直接提交整个表格: cb 收到 (allow_list, block_list), 弹窗关闭。"""
+        textual_mod, session, _launched = self._make_textual_session(monkeypatch, "standard")
+        received = []
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            popup = app.screen.query_one(textual_mod.SecondaryPopup)
+            textual_mod._set_prompt(
+                session, "action_matrix", "设置动作约束",
+                ["recon", "scan", "exploit", "post_exploitation"],
+                ["recon", "scan"], [], lambda result: received.append(result),
+            )
+            popup.show_for_prompt(session)
+            await pilot.pause()
+            await pilot.press("down", "down", "space")  # exploit → 允许
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+
+        assert received == [(["recon", "scan", "exploit"], [])]
+        assert not popup.has_class("open")
+
+    async def test_textual_action_matrix_escape_cancels_without_changes(self, monkeypatch):
+        """Esc 取消: cb 不被调用, state 不被修改。"""
+        textual_mod, session, _launched = self._make_textual_session(monkeypatch, "standard")
+        received = []
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            popup = app.screen.query_one(textual_mod.SecondaryPopup)
+            textual_mod._set_prompt(
+                session, "action_matrix", "设置动作约束",
+                ["recon", "scan", "exploit", "post_exploitation"],
+                ["recon", "scan"], [], lambda result: received.append(result),
+            )
+            popup.show_for_prompt(session)
+            await pilot.pause()
+            await pilot.press("space")  # recon → block（但未提交）
+            await pilot.press("escape")
+            await pilot.pause()
+
+        assert received == []
+        assert session["state"].allow_actions == []
+        assert session["state"].block_actions == []
+
+    async def test_textual_scope_flow_uses_action_matrix(self, monkeypatch):
+        """/scope: chain 5 字段 → action_matrix → 提交写回 state → resume confirm。"""
+        textual_mod, session, _launched = self._make_textual_session(monkeypatch, "standard")
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            await pilot.press(*"/scope", "escape", "enter")
+            await pilot.pause()
+            popup = app.screen.query_one(textual_mod.SecondaryPopup)
+            assert popup._ptype == "chain"
+            # 5 个文本字段全部回车跳过（空值合法, only_port 空不触发校验）
+            for _ in range(5):
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.pause()
+            assert popup._ptype == "action_matrix"
+            # standard 模式生效值预填: recon/scan 允许, post_exploitation 禁止(模式默认), 其余不约束
+            assert popup._matrix_states == ["allow", "allow", "none", "block"]
+            # exploit 切换为 禁止 并提交
+            await pilot.press("down", "down", "space", "space")
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+
+            state = session["state"]
+            assert state.allow_actions == ["recon", "scan"]
+            assert state.block_actions == ["exploit", "post_exploitation"]
+            assert popup._ptype == "confirm"  # resume 确认弹窗
+
+    async def test_textual_action_matrix_legacy_input_fallback_csv(self, monkeypatch):
+        """旧路径兜底: 弹窗打开时主输入框提交文本, 按 CSV 解析为 allow, block 保持初始值。"""
+        from textual.widgets import Input
+
+        textual_mod, session, _launched = self._make_textual_session(monkeypatch, "standard")
+        received = []
+        app = textual_mod.VulnClawApp(session)
+        async with app.run_test() as pilot:
+            popup = app.screen.query_one(textual_mod.SecondaryPopup)
+            textual_mod._set_prompt(
+                session, "action_matrix", "设置动作约束",
+                ["recon", "scan", "exploit", "post_exploitation"],
+                ["recon"], ["exploit"], lambda result: received.append(result),
+            )
+            popup.show_for_prompt(session)
+            await pilot.pause()
+            app.screen.query_one("#cmd-input", Input).focus()
+            await pilot.press(*"scan,exploit", "enter")
+            await pilot.pause()
+            await pilot.pause()
+
+        assert received == [(["scan", "exploit"], ["exploit"])]
+
+    def test_textual_scope_inline_args_still_apply(self):
+        """回归: /scope allow=recon block=exploit 直参形式不受影响。"""
+        import vulnclaw.cli.tui as tui_mod
+        import vulnclaw.cli.tui_textual as textual_mod
+
+        session = {"state": tui_mod.TuiState(), "_message": "", "_prompt": None}
+
+        result = textual_mod._dispatch(session, "/scope allow=recon block=exploit")
+
+        assert result is None
+        assert session["state"].allow_actions == ["recon"]
+        assert session["state"].block_actions == ["exploit"]
+        assert session["_prompt"] is None
+
+    def test_textual_scope_empty_allow_falls_back_to_mode_default(self):
+        """全部不约束提交后 allow 为空列表, 生效值回落模式默认。"""
+        import vulnclaw.cli.tui as tui_mod
+
+        state = tui_mod.TuiState(mode="standard")
+        state.allow_actions = []
+
+        assert tui_mod._effective_allow_actions(state) == ("recon", "scan")
+
     @pytest.mark.parametrize("mode", ["deep", "continuous"])
     async def test_textual_extra_confirm_mode_run_confirmed_launches(self, mode, monkeypatch):
         """/run in deep/continuous mode: pressing y in the confirm popup must
