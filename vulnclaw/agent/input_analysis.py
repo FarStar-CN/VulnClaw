@@ -146,13 +146,17 @@ def extract_task_constraints(user_input: str) -> TaskConstraints:
     if any(token in lowered for token in ["不要利用", "禁止利用", "do not exploit", "no exploit"]):
         constraints.blocked_actions.append("exploit")
 
-    allow_match = re.search(r"only allowed actions:\s*([a-z_,\s-]+)", lowered)
+    allow_match = re.search(
+        r"only allowed actions:\s*([a-z_-]+(?:\s*,\s*[a-z_-]+)*)", lowered
+    )
     if allow_match:
         constraints.allowed_actions = [
             item.strip() for item in allow_match.group(1).split(",") if item.strip()
         ]
 
-    block_match = re.search(r"blocked actions:\s*([a-z_,\s-]+)", lowered)
+    block_match = re.search(
+        r"blocked actions:\s*([a-z_-]+(?:\s*,\s*[a-z_-]+)*)", lowered
+    )
     if block_match:
         constraints.blocked_actions.extend(
             [

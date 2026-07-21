@@ -1058,6 +1058,29 @@ class TestAgentCore:
         )
         assert "example.com" in constraints.allowed_hosts
 
+    def test_extract_task_constraints_action_list_various_formats(self):
+        from vulnclaw.agent.input_analysis import extract_task_constraints
+
+        c1 = extract_task_constraints("Only allowed actions: recon,scan")
+        assert c1.allowed_actions == ["recon", "scan"]
+
+        c2 = extract_task_constraints("Only allowed actions: recon, scan")
+        assert c2.allowed_actions == ["recon", "scan"]
+
+        c3 = extract_task_constraints("Only allowed actions: recon,scan. Blocked actions: exploit")
+        assert c3.allowed_actions == ["recon", "scan"]
+        assert "exploit" in c3.blocked_actions
+
+        c4 = extract_task_constraints("Only allowed actions: recon, scan. Blocked actions: exploit, post_exploitation")
+        assert c4.allowed_actions == ["recon", "scan"]
+        assert "exploit" in c4.blocked_actions
+        assert "post_exploitation" in c4.blocked_actions
+
+        c5 = extract_task_constraints("Only allowed actions: scan. Blocked actions: exploit, post_exploitation")
+        assert c5.allowed_actions == ["scan"]
+        assert "exploit" in c5.blocked_actions
+        assert "post_exploitation" in c5.blocked_actions
+
     def test_round_context_includes_hard_constraints(self):
         from vulnclaw.agent.context import PentestPhase
 
