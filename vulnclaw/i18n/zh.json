@@ -82,6 +82,9 @@
   "phase.post_exploitation": "后渗透",
   "phase.reporting": "报告生成",
 
+  "step.phase_transition": "阶段切换 → {phase}",
+  "step.phase_transition.action": "阶段切换",
+  "step.phase_transition.result": "进入{phase}阶段",
   "prompt.phase_heading": "## 当前阶段：{phase}",
   "report.phase_heading_one": "### {phase}（共 {count} 步）",
   "report.phase_heading_many": "### {phase}（共 {count} 步）",

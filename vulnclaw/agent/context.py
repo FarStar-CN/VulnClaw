@@ -1061,16 +1061,18 @@ class SessionState(BaseModel):
 
     def advance_phase(self, phase: PentestPhase) -> None:
         """切换到新阶段。"""
+        from vulnclaw.i18n import _
+
         old_phase = self.phase
         self.phase = phase
         old_display = phase_display_name(old_phase)
         new_display = phase_display_name(phase)
         # 记录阶段切换
         self.add_step(
-            step=f"阶段切换 → {new_display}",
-            action="阶段切换",
+            step=_("step.phase_transition", phase=new_display),
+            action=_("step.phase_transition.action"),
             target=f"{old_display} → {new_display}",
-            result=f"进入{new_display}阶段",
+            result=_("step.phase_transition.result", phase=new_display),
             status=StepStatus.INFO,
         )
         self._notify_checkpoint("phase_transition")

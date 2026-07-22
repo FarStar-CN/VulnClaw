@@ -125,3 +125,36 @@ def test_standard_and_cycle_report_phase_headings_follow_explicit_language(
             assert unexpected_heading not in content
     finally:
         init_i18n(lang=previous_lang)
+
+
+def _has_chinese(text: str) -> bool:
+    return any("一" <= ch <= "鿿" for ch in text)
+
+
+@pytest.mark.parametrize(
+    ("language", "expected_action", "expected_step_fragment"),
+    [
+        ("en", "Phase transition", "Phase transition"),
+        ("zh", "阶段切换", "阶段切换"),
+    ],
+)
+def test_phase_transition_step_record_follows_explicit_language(
+    language, expected_action, expected_step_fragment, monkeypatch
+):
+    previous_lang = current_lang()
+    monkeypatch.setenv("LANG", "fr_FR.UTF-8")
+    init_i18n(lang=language)
+    try:
+        session = SessionState(target="https://example.test")
+        session.advance_phase(PentestPhase.RECON)
+        record = session.step_records[-1]
+        step_text = session.executed_steps[-1]
+
+        assert record.action == expected_action
+        assert expected_step_fragment in step_text
+        if language == "en":
+            assert not _has_chinese(step_text)
+            assert not _has_chinese(record.action)
+            assert not _has_chinese(record.result)
+    finally:
+        init_i18n(lang=previous_lang)
