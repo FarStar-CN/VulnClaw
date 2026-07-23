@@ -112,6 +112,11 @@
   "phase.exploit": "漏洞利用",
   "phase.report": "报告",
   "phase.none": "无阶段",
+  "phase.idle": "就绪",
+  "phase.vuln_discovery": "漏洞发现",
+  "phase.exploitation": "漏洞利用",
+  "phase.post_exploitation": "后渗透",
+  "phase.reporting": "报告生成",
 
   "command.recon": "快速侦查",
   "command.run": "标准扫描",

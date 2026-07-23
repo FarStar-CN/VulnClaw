@@ -26,14 +26,83 @@ from pydantic import BaseModel, Field
 
 
 class PentestPhase(str, Enum):
-    """Penetration test phases."""
+    """Language-neutral penetration-test phase identities."""
 
-    IDLE = "就绪"
-    RECON = "信息收集"
-    VULN_DISCOVERY = "漏洞发现"
-    EXPLOITATION = "漏洞利用"
-    POST_EXPLOITATION = "后渗透"
-    REPORTING = "报告生成"
+    IDLE = "idle"
+    RECON = "recon"
+    VULN_DISCOVERY = "vuln_discovery"
+    EXPLOITATION = "exploitation"
+    POST_EXPLOITATION = "post_exploitation"
+    REPORTING = "reporting"
+
+    @classmethod
+    def _missing_(cls, value: object) -> Optional[PentestPhase]:
+        """Migrate persisted display labels without making them identities.
+
+        Older session files serialized localized enum values. Resolve those
+        values through the translation catalog at the persistence boundary;
+        every newly serialized value remains a canonical id.
+        """
+        if not isinstance(value, str):
+            return None
+
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        for phase in cls:
+            if normalized in {phase.value, phase.name.lower()}:
+                return phase
+
+        from vulnclaw.i18n import I18nLoader
+
+        for lang in ("zh", "en"):
+            translator = I18nLoader(lang)
+            for phase in cls:
+                if value == translator.t(f"phase.{phase.value}"):
+                    return phase
+        return None
+
+
+def phase_canonical_id(phase: PentestPhase | str | None) -> Optional[str]:
+    """Return the canonical id for a phase-like value, if valid.
+
+    Only accepts canonical ids and enum members. Localized display labels are
+    migrated to identities exclusively at the persistence boundary (see
+    ``PentestPhase._missing_``); routing this runtime canonicalizer through
+    that migration would leak translations back into phase identity.
+    """
+    if phase is None:
+        return None
+    if isinstance(phase, PentestPhase):
+        return phase.value
+    if not isinstance(phase, str):
+        return None
+    resolved = phase_from_canonical_id(phase)
+    return resolved.value if resolved else None
+
+
+def phase_from_canonical_id(canonical_id: str) -> Optional[PentestPhase]:
+    """Resolve a canonical phase id, returning ``None`` for unknown ids."""
+    normalized = canonical_id.strip().lower().replace("-", "_").replace(" ", "_")
+    return next((phase for phase in PentestPhase if phase.value == normalized), None)
+
+
+def phase_display_name(
+    phase: PentestPhase | str,
+    lang: Optional[str] = None,
+) -> str:
+    """Resolve a localized display label from a canonical phase identity."""
+    canonical_id = phase_canonical_id(phase)
+    if canonical_id is None:
+        return str(phase)
+
+    key = f"phase.{canonical_id}"
+    if lang is None:
+        from vulnclaw.i18n import _
+
+        return _(key)
+
+    from vulnclaw.i18n import I18nLoader
+
+    return I18nLoader(lang).t(key)
 
 
 class StepStatus(str, Enum):
@@ -378,14 +447,10 @@ class StepRecord(BaseModel):
         # 推断阶段
         inferred_phase = phase
         if "阶段切换" in step_str:
-            if "信息收集" in step_str:
-                inferred_phase = PentestPhase.RECON
-            elif "漏洞发现" in step_str:
-                inferred_phase = PentestPhase.VULN_DISCOVERY
-            elif "漏洞利用" in step_str:
-                inferred_phase = PentestPhase.EXPLOITATION
-            elif "报告" in step_str:
-                inferred_phase = PentestPhase.REPORTING
+            for candidate in PentestPhase:
+                if phase_display_name(candidate, "zh") in step_str:
+                    inferred_phase = candidate
+                    break
 
         return cls(
             phase=inferred_phase,

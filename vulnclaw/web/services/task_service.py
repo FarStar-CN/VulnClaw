@@ -10,6 +10,7 @@ from vulnclaw.agent.context import TaskConstraints
 from vulnclaw.agent.core import AgentCore
 from vulnclaw.agent.input_analysis import extract_task_constraints
 from vulnclaw.config.settings import load_config
+from vulnclaw.i18n import init_i18n
 from vulnclaw.mcp.lifecycle import MCPLifecycleManager
 from vulnclaw.orchestrator import run_agent_task
 from vulnclaw.web.schemas import TaskCreateRequest
@@ -60,6 +61,11 @@ def start_task(manager: WebTaskManager, request: TaskCreateRequest) -> str:
 
 async def _run_task(manager: WebTaskManager, task_id: str, request: TaskCreateRequest) -> None:
     config = load_config()
+    # Web-triggered tasks (including persistent-cycle runs) build prompts and
+    # reports outside the CLI, so the configured language must be resolved
+    # here before any of that code runs — the CLI does this at its own
+    # entrypoints, but this background/orchestrated path has no CLI to do it.
+    init_i18n(config=config)
     task_constraints = _build_task_constraints(request)
     violation = validate_action_constraints(request.command, task_constraints)
     if violation is not None:

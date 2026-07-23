@@ -33,6 +33,9 @@ from vulnclaw.config.domain_models import (  # noqa: F401 — re-export
     TaskConstraints,
     VulnerabilityFinding,
     normalize_action_name,
+    phase_canonical_id,
+    phase_display_name,
+    phase_from_canonical_id,
     validate_action_constraints,
 )
 
@@ -296,17 +299,14 @@ class ReconState(BaseModel):
 
     def get_recon_status_text(self) -> str:
         """获取人类可读的侦察维度完成状态。"""
+        from vulnclaw.i18n import _
+
         parts = []
-        dim_names = {
-            "server": "维度一(服务器)",
-            "website": "维度二(网站)",
-            "domain": "维度三(域名)",
-            "personnel": "维度四(人员)",
-        }
         for dim, completed in self.recon_dimensions_completed.items():
             if dim == "personnel" and not self.recon_dimension4_active:
                 continue
-            name = dim_names.get(dim, dim)
+            # Use i18n catalog for dimension names so they localize properly
+            name = _(f"agent.recon.dimension.{dim}")
             parts.append(f"{'✅' if completed else '❌'} {name}")
         incomplete = [
             dim
@@ -315,7 +315,8 @@ class ReconState(BaseModel):
         ]
         status = " | ".join(parts)
         if incomplete:
-            status += f"\n→ 还有 {len(incomplete)} 个维度未检查，继续收集，不要标记 [DONE]"
+            # Localize the incomplete status instruction
+            status += "\n" + _("agent.recon.status_incomplete_instruction", count=len(incomplete))
         return status
 
 
@@ -536,14 +537,15 @@ class ExecutionHistory(BaseModel):
         """从结构化 step_records 构建摘要。"""
         phases: dict[str, list[StepRecord]] = {}
         for record in self.step_records:
-            phase_name = record.phase.value
-            if phase_name not in phases:
-                phases[phase_name] = []
-            phases[phase_name].append(record)
+            phase_id = record.phase.value
+            if phase_id not in phases:
+                phases[phase_id] = []
+            phases[phase_id].append(record)
 
         phase_summaries = {}
-        for phase_name, records in phases.items():
-            phase_summaries[phase_name] = {
+        for phase_id, records in phases.items():
+            phase_summaries[phase_id] = {
+                "display": phase_display_name(phase_id),
                 "count": len(records),
                 "actions": list(set(r.action for r in records)),
                 "success_count": len([r for r in records if r.status == StepStatus.SUCCESS]),
@@ -1059,14 +1061,18 @@ class SessionState(BaseModel):
 
     def advance_phase(self, phase: PentestPhase) -> None:
         """切换到新阶段。"""
+        from vulnclaw.i18n import _
+
         old_phase = self.phase
         self.phase = phase
+        old_display = phase_display_name(old_phase)
+        new_display = phase_display_name(phase)
         # 记录阶段切换
         self.add_step(
-            step=f"阶段切换 → {phase.value}",
-            action="阶段切换",
-            target=f"{old_phase.value} → {phase.value}",
-            result=f"进入{phase.value}阶段",
+            step=_("step.phase_transition", phase=new_display),
+            action=_("step.phase_transition.action"),
+            target=f"{old_display} → {new_display}",
+            result=_("step.phase_transition.result", phase=new_display),
             status=StepStatus.INFO,
         )
         self._notify_checkpoint("phase_transition")

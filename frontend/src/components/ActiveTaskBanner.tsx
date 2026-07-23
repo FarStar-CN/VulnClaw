@@ -29,7 +29,7 @@ function estimateProgress(task: TaskRecord, latestEvent: TaskEvent | null): numb
   const phase = String(latestEvent?.payload.phase ?? task.latest_phase ?? "").toLowerCase();
   if (phase.includes("report")) return 88;
   if (phase.includes("exploit") || phase.includes("verify")) return 70;
-  if (phase.includes("scan")) return 52;
+  if (phase.includes("scan") || phase.includes("vuln_discovery") || phase.includes("discovery")) return 52;
   if (phase.includes("recon")) return 34;
   if (task.status === "running") return 18;
   return 8;

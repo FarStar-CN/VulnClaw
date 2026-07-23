@@ -7,6 +7,7 @@ import re
 from vulnclaw.agent.context import ContextManager, VulnerabilityFinding
 from vulnclaw.agent.runtime_state import RuntimeState
 from vulnclaw.agent.think_filter import strip_think_tags
+from vulnclaw.i18n import _
 
 PROOF_PATTERNS: list[str] = [
     r"差异[：: ]*\d+",
@@ -49,8 +50,34 @@ ELEVATION_KEYWORDS: list[tuple[str, str, str]] = [
     (r"403.*接口|接口存在.*403", "Medium", "403认证拦截"),
 ]
 
+VULN_TYPE_DISPLAY_KEYS: dict[str, str] = {
+    "SQL注入": "agent.finding.type.sql_injection",
+    "远程代码执行": "agent.finding.type.remote_code_execution",
+    "认证绕过": "agent.finding.type.authentication_bypass",
+    "SSRF": "agent.finding.type.ssrf",
+    "XSS跨站脚本": "agent.finding.type.xss",
+    "XSS": "agent.finding.type.xss",
+    "CSRF": "agent.finding.type.csrf",
+    "文件包含/遍历": "agent.finding.type.file_inclusion_traversal",
+    "弱口令/暴力破解": "agent.finding.type.weak_credentials",
+    "配置错误": "agent.finding.type.misconfiguration",
+    "敏感目录/文件发现": "agent.finding.type.sensitive_path_disclosure",
+    "版本信息": "agent.finding.type.version_disclosure",
+    "已知CVE漏洞": "agent.finding.type.known_cve",
+    "数据泄露": "agent.finding.type.data_exposure",
+    "未授权访问": "agent.finding.type.unauthorized_access",
+    "注入漏洞": "agent.finding.type.injection",
+    "潜在授权绕过": "agent.finding.type.potential_authorization_bypass",
+    "403认证拦截": "agent.finding.type.authentication_block",
+}
+
 URL_PATTERN = re.compile(r'https?://[^\s<>"\')\]]+')
 PATH_PATTERN = re.compile(r"(?:/[\w%&=?\-]+)+")
+
+
+def _display_vuln_type(vuln_type: str) -> str:
+    key = VULN_TYPE_DISPLAY_KEYS.get(vuln_type)
+    return _(key) if key else vuln_type
 
 
 def _collect_location_summary(text: str, max_items: int = 4) -> str:
@@ -119,9 +146,14 @@ class FindingParser:
             evidence_pool = clean_response
 
         for pattern, severity, vuln_type in NATURAL_LANG_PATTERNS:
-            canonical_title = f"[自动] {vuln_type}"
-            if canonical_title in existing_titles:
+            # Use stable vuln_type for dedup, not the localized title
+            # (same vuln_type from different languages must dedupe correctly)
+            if vuln_type in {f.vuln_type for f in self.context.state.findings if f.vuln_type}:
                 continue
+
+            canonical_title = _(
+                "agent.finding.auto_title", vuln_type=_display_vuln_type(vuln_type)
+            )
 
             vuln_matches = re.findall(pattern, clean_response, re.IGNORECASE)
             if not vuln_matches:
@@ -160,9 +192,12 @@ class FindingParser:
                     title=canonical_title,
                     severity=severity,
                     vuln_type=vuln_type,
-                    description=f"自动检测：{vuln_matches[0].strip()[:100]}"
+                    description=_(
+                        "agent.finding.auto_description",
+                        match=vuln_matches[0].strip()[:100],
+                    )
                     if vuln_matches
-                    else "通过自然语言模式自动检测",
+                    else _("agent.finding.auto_description_fallback"),
                     evidence=evidence[:300],
                     evidence_level="L2",
                     lifecycle_status="needs_manual_review"
@@ -176,19 +211,19 @@ class FindingParser:
         for fact in confirmed_facts:
             for pattern, severity, vuln_type in ELEVATION_KEYWORDS:
                 if re.search(pattern, fact, re.IGNORECASE):
-                    title = f"[已确认] {fact.strip()[:120]}"
+                    title = _("agent.finding.confirmed_title", fact=fact.strip()[:120])
                     if title not in existing_titles:
                         location = _collect_location_summary(evidence_pool)
                         evidence = (
-                            f"{location} | 通过工具验证确认：{fact}"
+                            _("agent.finding.confirmed_evidence", fact=fact, location=location)
                             if location
-                            else f"通过工具验证确认：{fact}"
+                            else _("agent.finding.confirmed_description", fact=fact)
                         )
                         finding = VulnerabilityFinding(
                             title=title,
                             severity=severity,
                             vuln_type=vuln_type,
-                            description=f"通过工具验证确认：{fact}",
+                            description=_("agent.finding.confirmed_description", fact=fact),
                             evidence=evidence[:300],
                             evidence_level="L4",
                             lifecycle_status="verified",

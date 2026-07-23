@@ -1,8 +1,15 @@
+import pytest
+
 from vulnclaw.agent.reflexion import (
     FailureCategory,
     ReflexionEngine,
     classify_failure,
 )
+
+
+@pytest.fixture(autouse=True)
+def _use_chinese_by_default(i18n_language):
+    i18n_language("zh")
 
 
 def test_classify_failure_categories():
@@ -153,3 +160,38 @@ def test_extract_experience_returns_none_or_dict():
     assert experience["successful_paths"] == ["time_based"]
     assert experience["failed_paths"] == ["union"]
     assert experience["last_vuln_type"] == "sqli"
+
+
+def test_reflexion_prompts_and_hints_render_in_english(i18n_language):
+    engine = ReflexionEngine(max_same_vuln_fails=2)
+    engine.record_attempt(
+        path="sqli_union",
+        success=False,
+        category=FailureCategory.ENV_CONSTRAINT,
+        details="WAF blocked UNION",
+        vuln_type="sqli",
+    )
+    engine.record_attempt(
+        path="sqli_boolean",
+        success=False,
+        category=FailureCategory.ENV_CONSTRAINT,
+        details="WAF blocked boolean probe",
+        vuln_type="sqli",
+    )
+
+    i18n_language("en")
+    block = engine.to_prompt_block()
+    prompt = engine.to_reflection_prompt()
+    hints = engine.get_escalation_hints()
+
+    assert "🔁 Reflexion state:" in block
+    assert "Current escalation level: L1" in block
+    assert "Failed paths (do not repeat)" in block
+    assert "🔴 Reflexion takeover" in prompt
+    assert "Stop changing payloads on the current attack path" in prompt
+    assert "Failure pattern analysis" in prompt
+    assert hints == [
+        "URL-encode special characters.",
+        "Change keyword letter case (SeLeCt).",
+        "Try whitespace variants (/**/, newline, Tab).",
+    ]

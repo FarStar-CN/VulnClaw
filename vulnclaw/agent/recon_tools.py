@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 from urllib.parse import urljoin, urlparse
 
 from vulnclaw.agent.builtin_tools import enforce_host_path_constraints
+from vulnclaw.i18n import _
 
 # ── 内置目录字典（紧凑版；config.recon.dir_wordlist_path 可覆盖为大字典）────────
 _BUILTIN_DIR_WORDLIST: tuple[str, ...] = (
@@ -131,7 +132,7 @@ def _dedup_cap(items: list[str], cap: int) -> list[str]:
 
 async def _engine_fofa(client: Any, query: str, size: int, cfg: Any) -> tuple[list[dict], str]:
     if not (cfg.fofa_email and cfg.fofa_key):
-        return [], "fofa: 未配置 fofa_email/fofa_key"
+        return [], _("agent.recon.missing_config", engine="fofa", fields="fofa_email/fofa_key")
     fields = "host,ip,port,title,domain,server,protocol"
     params = {
         "email": cfg.fofa_email,
@@ -151,12 +152,12 @@ async def _engine_fofa(client: Any, query: str, size: int, cfg: Any) -> tuple[li
             "host": row[0], "ip": row[1], "port": row[2], "title": row[3],
             "domain": row[4], "server": row[5], "url": row[0],
         })
-    return recs, f"fofa: {data.get('size', len(recs))} 命中"
+    return recs, _("agent.recon.engine_hits", engine="fofa", count=data.get("size", len(recs)))
 
 
 async def _engine_hunter(client: Any, query: str, size: int, cfg: Any) -> tuple[list[dict], str]:
     if not cfg.hunter_key:
-        return [], "hunter: 未配置 hunter_key"
+        return [], _("agent.recon.missing_config", engine="hunter", fields="hunter_key")
     end = datetime.now()
     start = end - timedelta(days=365)
     params = {
@@ -182,12 +183,16 @@ async def _engine_hunter(client: Any, query: str, size: int, cfg: Any) -> tuple[
             "domain": it.get("domain", ""), "server": it.get("component", ""),
             "url": it.get("url", ""),
         })
-    return recs, f"hunter: {(data.get('data') or {}).get('total', len(recs))} 命中"
+    return recs, _(
+        "agent.recon.engine_hits",
+        engine="hunter",
+        count=(data.get("data") or {}).get("total", len(recs)),
+    )
 
 
 async def _engine_quake(client: Any, query: str, size: int, cfg: Any) -> tuple[list[dict], str]:
     if not cfg.quake_key:
-        return [], "quake: 未配置 quake_key"
+        return [], _("agent.recon.missing_config", engine="quake", fields="quake_key")
     body = {"query": query, "start": 0, "size": min(size, 100), "ignore_cache": True}
     r = await client.post(
         "https://quake.360.net/api/v3/search/quake_service",
@@ -207,12 +212,16 @@ async def _engine_quake(client: Any, query: str, size: int, cfg: Any) -> tuple[l
             "domain": it.get("domain", ""), "server": svc.get("name", ""),
             "url": http.get("host", ""),
         })
-    return recs, f"quake: {(data.get('meta') or {}).get('pagination', {}).get('total', len(recs))} 命中"
+    return recs, _(
+        "agent.recon.engine_hits",
+        engine="quake",
+        count=(data.get("meta") or {}).get("pagination", {}).get("total", len(recs)),
+    )
 
 
 async def _engine_shodan(client: Any, query: str, size: int, cfg: Any) -> tuple[list[dict], str]:
     if not cfg.shodan_key:
-        return [], "shodan: 未配置 shodan_key"
+        return [], _("agent.recon.missing_config", engine="shodan", fields="shodan_key")
     r = await client.get(
         "https://api.shodan.io/shodan/host/search",
         params={"key": cfg.shodan_key, "query": query},
@@ -230,12 +239,12 @@ async def _engine_shodan(client: Any, query: str, size: int, cfg: Any) -> tuple[
             "domain": ",".join(it.get("domains") or []),
             "server": it.get("product", ""), "url": (hostnames[0] if hostnames else ""),
         })
-    return recs, f"shodan: {data.get('total', len(recs))} 命中"
+    return recs, _("agent.recon.engine_hits", engine="shodan", count=data.get("total", len(recs)))
 
 
 async def _engine_zoomeye(client: Any, query: str, size: int, cfg: Any) -> tuple[list[dict], str]:
     if not cfg.zoomeye_key:
-        return [], "zoomeye: 未配置 zoomeye_key"
+        return [], _("agent.recon.missing_config", engine="zoomeye", fields="zoomeye_key")
     body = {"qbase64": _b64(query), "page": 1, "pagesize": min(size, 100)}
     r = await client.post(
         "https://api.zoomeye.org/v2/search",
@@ -253,12 +262,12 @@ async def _engine_zoomeye(client: Any, query: str, size: int, cfg: Any) -> tuple
             "title": it.get("title", ""), "domain": it.get("domain", ""),
             "server": it.get("product", ""), "url": it.get("url", ""),
         })
-    return recs, f"zoomeye: {data.get('total', len(recs))} 命中"
+    return recs, _("agent.recon.engine_hits", engine="zoomeye", count=data.get("total", len(recs)))
 
 
 async def _engine_zerozone(client: Any, query: str, size: int, cfg: Any) -> tuple[list[dict], str]:
     if not cfg.zerozone_key:
-        return [], "zerozone: 未配置 zerozone_key"
+        return [], _("agent.recon.missing_config", engine="zerozone", fields="zerozone_key")
     body = {
         "title": query, "query_type": "site", "page": 1,
         "pagesize": min(size, 100), "zone_key_id": cfg.zerozone_key,
@@ -280,7 +289,7 @@ async def _engine_zerozone(client: Any, query: str, size: int, cfg: Any) -> tupl
             "domain": it.get("domain", ""), "server": it.get("server", ""),
             "url": it.get("url", ""),
         })
-    return recs, f"zerozone: {data.get('total', len(recs))} 命中"
+    return recs, _("agent.recon.engine_hits", engine="zerozone", count=data.get("total", len(recs)))
 
 
 _ENGINES = {
@@ -310,14 +319,20 @@ async def execute_space_search(agent: AgentContext, args: dict[str, Any]) -> str
     size = int(args.get("size", cfg.space_size) or cfg.space_size)
 
     if not query and not domain:
-        return "[!] space_search 需要 query 或 domain 参数"
+        return _("agent.recon.space_missing_query")
 
     engines = list(_ENGINES) if engine == "all" else [engine]
     invalid = [e for e in engines if e not in _ENGINES]
     if invalid:
-        return f"[!] 不支持的 engine: {', '.join(invalid)}；可选: {', '.join(_ENGINES)}, all"
+        return _(
+            "agent.recon.unsupported_engine",
+            invalid=", ".join(invalid),
+            supported=", ".join(_ENGINES),
+        )
 
-    out: list[str] = [f"# 空间测绘 — {'/'.join(engines)}  query={query or domain}"]
+    out: list[str] = [
+        _("agent.recon.space_heading", engines="/".join(engines), query=query or domain)
+    ]
     try:
         async with _make_client(cfg) as client:
             async def run(eng: str) -> tuple[str, list[dict], str]:
@@ -326,11 +341,11 @@ async def execute_space_search(agent: AgentContext, args: dict[str, Any]) -> str
                     recs, note = await _ENGINES[eng](client, q, size, cfg)
                     return eng, recs, note
                 except Exception as e:  # 单引擎失败不影响其他引擎
-                    return eng, [], f"{eng}: 请求异常 {e}"
+                    return eng, [], _("agent.recon.request_error", engine=eng, error=e)
 
             results = await asyncio.gather(*(run(e) for e in engines))
     except Exception as e:
-        return f"[!] space_search 执行错误: {e}"
+        return _("agent.recon.space_error", error=e)
 
     for eng, recs, note in results:
         out.append(f"\n## {note}")
@@ -339,7 +354,7 @@ async def execute_space_search(agent: AgentContext, args: dict[str, Any]) -> str
             extra = " | ".join(x for x in (rec.get("title", ""), rec.get("server", "")) if x)
             out.append(line + (f"  [{extra}]" if extra else ""))
         if not recs:
-            out.append("  (无结果或未配置 key)")
+            out.append(_("agent.recon.no_results_or_key"))
     return "\n".join(out)
 
 
@@ -359,7 +374,7 @@ async def execute_subdomain_enum(agent: AgentContext, args: dict[str, Any]) -> s
     cfg = _get_recon_cfg(agent)
     domain = str(args.get("domain", "") or "").strip().lower()
     if not domain:
-        return "[!] subdomain_enum 需要 domain 参数"
+        return _("agent.recon.subdomain_missing_domain")
     if "://" in domain:
         domain = _host_of(domain)
 
@@ -382,12 +397,12 @@ async def execute_subdomain_enum(agent: AgentContext, args: dict[str, Any]) -> s
                                 if f and f.endswith(domain):
                                     found.add(f.lstrip("*.").lower())
                     except Exception as e:
-                        notes.append(f"{eng}: 异常 {e}")
+                        notes.append(_("agent.recon.engine_error", engine=eng, error=e))
                 await asyncio.gather(*(run(e) for e in engines))
         except Exception as e:
-            notes.append(f"被动聚合异常: {e}")
+            notes.append(_("agent.recon.passive_error", error=e))
     else:
-        notes.append("未配置任何空间测绘 key，跳过被动聚合")
+        notes.append(_("agent.recon.passive_skipped"))
 
     # 2) 主动：小字典 DNS 解析爆破
     if do_brute:
@@ -406,11 +421,18 @@ async def execute_subdomain_enum(agent: AgentContext, args: dict[str, Any]) -> s
                     pass
 
         await asyncio.gather(*(resolve(s) for s in _SUBDOMAIN_BRUTE))
-        notes.append(f"DNS 爆破字典 {len(_SUBDOMAIN_BRUTE)} 条")
+        notes.append(_("agent.recon.dns_wordlist", count=len(_SUBDOMAIN_BRUTE)))
 
     subs = sorted(found)
-    head = [f"# 子域名枚举 — {domain}  共 {len(subs)} 个", "  " + "; ".join(notes)]
-    return "\n".join(head + [f"  {s}" for s in subs]) if subs else "\n".join(head + ["  (未发现子域名)"])
+    head = [
+        _("agent.recon.subdomain_heading", domain=domain, count=len(subs)),
+        "  " + "; ".join(notes),
+    ]
+    return (
+        "\n".join(head + [f"  {s}" for s in subs])
+        if subs
+        else "\n".join(head + [_('agent.recon.no_subdomains')])
+    )
 
 
 def _key_field(engine: str) -> str:
@@ -502,7 +524,7 @@ async def execute_js_recon(agent: AgentContext, args: dict[str, Any]) -> str:
     cfg = _get_recon_cfg(agent)
     url = str(args.get("url", "") or "").strip()
     if not url:
-        return "[!] js_recon 需要 url 参数"
+        return _("agent.recon.js_missing_url")
     if "://" not in url:
         url = "http://" + url
     host = _host_of(url)
@@ -544,16 +566,16 @@ async def execute_js_recon(agent: AgentContext, args: dict[str, Any]) -> str:
 
             await asyncio.gather(*(grab(j) for j in js_urls))
     except Exception as e:
-        return f"[!] js_recon 执行错误: {e}"
+        return _("agent.recon.js_error", error=e)
 
     for k in agg:
         agg[k] = _dedup_cap(agg[k], 200 if k != "secrets" else 50)
 
-    out = [f"# JS 信息收集 — {url}  (抓取 {fetched} 个 JS)"]
+    out = [_('agent.recon.js_heading', url=url, count=fetched)]
 
     # 关键发现提前：敏感信息和未授权探测结果放最前面，减少被截断后 LLM 反复重调
     if agg["secrets"]:
-        out.append(f"\n## ⚠ 疑似敏感信息 ({len(agg['secrets'])})")
+        out.append(_("agent.recon.sensitive_heading", count=len(agg["secrets"])))
         out += [f"  {s}" for s in agg["secrets"]]
 
     auto_probe = args.get("auto_probe", True)
@@ -571,11 +593,11 @@ async def execute_js_recon(agent: AgentContext, args: dict[str, Any]) -> str:
         )
         out.append("\n" + probe_out)
 
-    out.append(f"\n## 接口/路径 ({len(agg['paths'])})")
+    out.append(_("agent.recon.paths_heading", count=len(agg["paths"])))
     out += [f"  {p}" for p in agg["paths"][:120]]
-    out.append(f"\n## 关联域名 ({len(agg['domains'])})")
+    out.append(_("agent.recon.domains_heading", count=len(agg["domains"])))
     out += [f"  {d}" for d in agg["domains"][:60]]
-    out.append(f"\n## 绝对 URL ({len(agg['urls'])})")
+    out.append(_("agent.recon.urls_heading", count=len(agg["urls"])))
     out += [f"  {u}" for u in agg["urls"][:60]]
     return "\n".join(out)
 
@@ -621,24 +643,24 @@ def _is_auth_wall(body: str) -> bool:
 def _classify_unauth(status: int, body: str, ctype: str) -> tuple[str, bool]:
     """返回 (判定文案, 是否疑似未授权线索)。"""
     if status in (401, 403):
-        return "✓ 已鉴权拦截", False
+        return _("agent.recon.verdict.auth_blocked"), False
     if status in (301, 302, 307, 308):
-        return "↪ 跳转(疑似登录)", False
+        return _("agent.recon.verdict.login_redirect"), False
     if status == 404:
-        return "— 不存在", False
+        return _("agent.recon.verdict.not_found"), False
     if status == 405:
-        return "· 方法不允许", False
+        return _("agent.recon.verdict.method_not_allowed"), False
     if status == 200:
         if not body.strip():
-            return "· 200 空响应", False
+            return _("agent.recon.verdict.empty_response"), False
         if _is_auth_wall(body):
-            return "· 200 登录/鉴权墙", False
+            return _("agent.recon.verdict.auth_wall"), False
         is_data = ("json" in ctype.lower()) or body.lstrip()[:1] in ("{", "[")
         if is_data:
-            return "⚠ 疑似未授权(返回数据)", True
+            return _("agent.recon.verdict.possible_unauth_data"), True
         if "html" in ctype.lower() or body.lstrip()[:1] == "<":
-            return "· 200 HTML 页面(非接口)", False  # 公开页面，非接口未授权
-        return "⚠ 200 需人工确认", True
+            return _("agent.recon.verdict.html_page"), False  # 公开页面，非接口未授权
+        return _("agent.recon.verdict.manual_review"), True
     return f"? HTTP {status}", False
 
 
@@ -655,7 +677,13 @@ async def _probe_endpoints(
         if _host_of(full) != base_host:  # 不打非授权范围的关联域名
             continue
         if _DESTRUCTIVE_RE.search(full):  # 读写分离红线：跳过破坏性接口
-            results.append({"url": full, "status": "-", "verdict": "🚫 跳过(破坏性接口)", "lead": False, "length": 0})
+            results.append({
+                "url": full,
+                "status": "-",
+                "verdict": _("agent.recon.verdict.destructive_skipped"),
+                "lead": False,
+                "length": 0,
+            })
             continue
         if full in seen:
             continue
@@ -685,7 +713,7 @@ async def _probe_endpoints(
                         r = await client.post(url, content="{}", headers={"Content-Type": "application/json"})
                 except Exception as e:
                     if best_row is None:
-                        best_row = {"url": url, "status": "ERR", "verdict": f"请求失败:{e}",
+                        best_row = {"url": url, "status": "ERR", "verdict": _("agent.recon.verdict.request_failed", error=e),
                                     "lead": False, "length": 0, "method": method}
                     continue
                 body = r.text
@@ -702,7 +730,7 @@ async def _probe_endpoints(
                         else:
                             ra = await client.get(url, headers=hdrs)
                         if ra.status_code == 200 and abs(len(ra.content) - len(r.content)) <= max(50, len(r.content) * 0.1):
-                            row["verdict"] = "🔴 未授权确认(无token=有token)"
+                            row["verdict"] = _("agent.recon.verdict.unauth_confirmed")
                     except Exception:
                         pass
                 # 保留发现线索更强的那个方法
@@ -729,7 +757,7 @@ async def execute_unauth_test(
     if not base and endpoints:
         base = endpoints[0]
     if not base:
-        return "[!] unauth_test 需要 base_url（或在 endpoints 中给出完整 URL）"
+        return _("agent.recon.unauth_missing_base")
     if "://" not in base:
         base = "http://" + base
     host = _host_of(base)
@@ -738,7 +766,7 @@ async def execute_unauth_test(
     if violation:
         return violation
     if not endpoints:
-        return "[!] unauth_test 需要 endpoints（接口路径/URL 列表，通常来自 js_recon）"
+        return _("agent.recon.unauth_missing_endpoints")
 
     auth = _parse_auth_header(args.get("auth_header"))
     cap = int(args.get("max_endpoints", 60) or 60)
@@ -751,19 +779,19 @@ async def execute_unauth_test(
                 sem = asyncio.Semaphore(cfg.max_concurrency)
                 rows = await _probe_endpoints(new_client, base, endpoints, auth, cap, sem)
     except Exception as e:
-        return f"[!] unauth_test 执行错误: {e}"
+        return _("agent.recon.unauth_error", error=e)
 
     leads = [r for r in rows if r.get("lead")]
-    out = [f"# 未授权访问探测 — {host}  探测 {len(rows)} 个接口，疑似线索 {len(leads)}"]
+    out = [_('agent.recon.unauth_heading', host=host, count=len(rows), leads=len(leads))]
     if auth:
-        out.append("  (已启用 有/无 token 差分对比)")
+        out.append(_("agent.recon.auth_diff_enabled"))
     for r in rows:
         st = r.get("status")
         method = r.get("method", "GET")
         tag = f"[{str(st):>3}]" if method == "GET" else f"[{str(st):>3} {method}]"
         out.append(f"  {tag:>12} {str(r.get('length','')):>7}B  {r['verdict']:<22} {r['url']}")
     if leads:
-        out.append("\n⚠ 重点人工复核（确认是否能读他人数据/是否敏感）：")
+        out.append(_("agent.recon.manual_review_heading"))
         out += [f"  {r['url']}" for r in leads]
     return "\n".join(out)
 
@@ -792,7 +820,7 @@ async def execute_dir_enum(agent: AgentContext, args: dict[str, Any]) -> str:
     cfg = _get_recon_cfg(agent)
     base = str(args.get("url", "") or "").strip()
     if not base:
-        return "[!] dir_enum 需要 url 参数"
+        return _("agent.recon.dir_missing_url")
     if "://" not in base:
         base = "http://" + base
     base = base.rstrip("/") + "/"
@@ -830,9 +858,10 @@ async def execute_dir_enum(agent: AgentContext, args: dict[str, Any]) -> str:
                     baseline_len = len(rnd.text)
                     # 随机路径竟返回 200 → 全局伪装响应，停止爆破（CLAUDE.md 铁律）
                     if rnd.status_code == 200:
-                        return (
-                            f"[!] dir_enum 终止：随机路径 {base}vulnclaw_nope_... 返回 200"
-                            f"（长度 {baseline_len}），目标疑似对任意路径返回 200，目录爆破无意义。"
+                        return _(
+                            "agent.recon.dir_global_200",
+                            path=f"{base}vulnclaw_nope_...",
+                            length=baseline_len,
                         )
             except Exception:
                 pass
@@ -856,12 +885,12 @@ async def execute_dir_enum(agent: AgentContext, args: dict[str, Any]) -> str:
 
             await asyncio.gather(*(probe(p) for p in candidates))
     except Exception as e:
-        return f"[!] dir_enum 执行错误: {e}"
+        return _("agent.recon.dir_error", error=e)
 
     hits.sort(key=lambda x: (x[0], -x[1]))
-    out = [f"# 目录枚举 — {base}  请求 {len(candidates)} 条，命中 {len(hits)}"]
+    out = [_('agent.recon.dir_heading', base=base, requests=len(candidates), hits=len(hits))]
     if baseline_len is not None:
-        out.append(f"  (404 基线长度 ≈ {baseline_len})")
+        out.append(_("agent.recon.dir_baseline", length=baseline_len))
     for code, length, path in hits:
         out.append(f"  [{code}] {length:>8}B  {base}{path}")
-    return "\n".join(out) if hits else "\n".join(out + ["  (无有效命中)"])
+    return "\n".join(out) if hits else "\n".join(out + [_('agent.recon.no_valid_hits')])

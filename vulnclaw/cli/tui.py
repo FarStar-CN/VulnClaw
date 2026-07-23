@@ -1531,7 +1531,7 @@ def build_target_overview(target: str) -> TuiTargetOverview:
         return TuiTargetOverview(
             target=normalized,
             has_history=False,
-            error=f"读取失败: {exc}",
+            error=_("tui.read_error", exc=exc),
         )
 
     if preview is None:
@@ -1598,7 +1598,7 @@ def build_runtime_diagnostic(config) -> TuiRuntimeDiagnostic:
             provider=provider,
             model=model,
             api_key_configured=api_key_configured,
-            mcp_error=f"MCP 诊断失败: {exc}",
+            mcp_error=_("tui.mcp_error", exc=exc),
         )
 
 

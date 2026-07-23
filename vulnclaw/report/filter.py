@@ -101,6 +101,9 @@ class ReportContentFilter:
         re.compile(r"阶段切换\s*[→\-]>\s*\w+", re.IGNORECASE),
         re.compile(r"进入\s*\w+\s*阶段", re.IGNORECASE),
         re.compile(r"当前阶段:\s*\w+", re.IGNORECASE),
+        re.compile(r"Phase transition\s*[→\-]>\s*[\w\s-]+", re.IGNORECASE),
+        re.compile(r"Entered the\s+[\w\s-]+?\s+phase", re.IGNORECASE),
+        re.compile(r"Current Phase:\s*[\w\s-]+", re.IGNORECASE),
     ]
 
     @classmethod

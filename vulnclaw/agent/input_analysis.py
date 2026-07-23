@@ -6,6 +6,7 @@ import re
 from typing import Optional
 
 from vulnclaw.agent.context import PentestPhase, TaskConstraints
+from vulnclaw.i18n import _
 
 # A ``/skill`` launch is dispatched as the prompt ``Use VulnClaw skill <name>. …``
 # (see ``dispatch_skill_slash_command``). Captured so we can tell a self-discovering
@@ -244,57 +245,57 @@ def extract_user_vuln_hint(user_input: str) -> str:
     vuln_str = "/".join(found_vulns[:3])
     if target:
         return (
-            f"【用户明确提示 — 第1轮】\n"
-            f"用户明确告诉你 【{target}】 存在 【{vuln_str}】 漏洞。\n"
+            f"{_('input_analysis.hint_header_round1')}\n"
+            f"{_('input_analysis.hint_target_vuln', target=target, vuln_str=vuln_str)}\n"
             f"\n"
-            f"→ 你必须立即构造并发送 PoC 测试请求！\n"
-            f"→ 用 fetch 工具直接发送请求，观察真实响应！\n"
-            f"→ 不要先探索路径、不要先做信息收集，直接测漏洞！\n"
+            f"{_('input_analysis.hint_directive_1')}\n"
+            f"{_('input_analysis.hint_directive_2')}\n"
+            f"{_('input_analysis.hint_directive_3')}\n"
             f"\n"
             f"{get_payload_examples(found_vulns, target)}"
         )
     return (
-        f"【用户明确提示】\n"
-        f"用户要求你测试 【{vuln_str}】 漏洞。\n"
-        f"→ 立即基于已发现的目标信息构造 PoC 测试，不要先做额外信息收集！"
+        f"{_('input_analysis.hint_header_plain')}\n"
+        f"{_('input_analysis.hint_vuln_only', vuln_str=vuln_str)}\n"
+        f"{_('input_analysis.hint_directive_no_target')}"
     )
 
 
 def get_payload_examples(found_vulns: list[str], target: str) -> str:
     """Return concrete PoC payload examples for the given vulnerability types."""
-    lines = ["【PoC payload 示例】"]
+    lines = [_("input_analysis.payload_examples_header")]
     for vuln in found_vulns[:2]:
         if "SQL" in vuln:
             lines += [
-                "SQL注入测试（布尔盲注）:",
-                f"  GET {target}?id=1' AND 1=1--  → 观察响应长度",
-                f"  GET {target}?id=1' AND 1=2--  → 长度是否不同？",
-                "SQL注入测试（报错注入）:",
-                f"  GET {target}?id=1' AND EXTRACTVALUE(1,CONCAT(0x7e,version()))--",
+                _("input_analysis.payload_sql_boolean_header"),
+                _("input_analysis.payload_sql_boolean_1", target=target),
+                _("input_analysis.payload_sql_boolean_2", target=target),
+                _("input_analysis.payload_sql_error_header"),
+                _("input_analysis.payload_sql_error_1", target=target),
             ]
         elif "XSS" in vuln:
             lines += [
-                "XSS测试:",
-                f"  GET {target}?q=<script>alert(1)</script>  → 页面是否回显该内容",
-                f"  GET {target}?q=<img src=x onerror=alert(1)>",
+                _("input_analysis.payload_xss_header"),
+                _("input_analysis.payload_xss_1", target=target),
+                _("input_analysis.payload_xss_2", target=target),
             ]
         elif "RCE" in vuln or "命令注入" in vuln:
             lines += [
-                "RCE/命令注入测试:",
-                f"  GET {target}?cmd=whoami  → 观察是否有命令输出",
-                f"  GET {target}?c=whoami  → 不同参数名都试",
+                _("input_analysis.payload_rce_header"),
+                _("input_analysis.payload_rce_1", target=target),
+                _("input_analysis.payload_rce_2", target=target),
             ]
         elif "文件包含" in vuln or "路径遍历" in vuln:
             lines += [
-                "文件包含/路径遍历测试:",
-                f"  GET {target}?f=/etc/passwd  → 读取系统文件",
-                f"  GET {target}?f=../../../../etc/passwd",
+                _("input_analysis.payload_lfi_header"),
+                _("input_analysis.payload_lfi_1", target=target),
+                _("input_analysis.payload_lfi_2", target=target),
             ]
         elif "SSRF" in vuln:
             lines += [
-                "SSRF测试:",
-                f"  GET {target}?url=http://127.0.0.1  → 是否有响应",
-                f"  GET {target}?url=http://169.254.169.254/latest/meta-data/",
+                _("input_analysis.payload_ssrf_header"),
+                _("input_analysis.payload_ssrf_1", target=target),
+                _("input_analysis.payload_ssrf_2", target=target),
             ]
     return "\n".join(lines[:12])
 

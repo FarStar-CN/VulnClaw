@@ -182,6 +182,32 @@ class TestMCPRouter:
         tools = router.suggest_tools_for_phase("未知阶段")
         assert tools == []
 
+    def test_suggest_tools_for_phase_reason_localizes_but_phase_key_stays_chinese(
+        self, i18n_language
+    ):
+        """The phase lookup key ("信息收集" etc.) is matching logic and must stay
+        Chinese (callers pass it verbatim); only the display "reason" text is
+        language-aware."""
+        import re
+
+        from vulnclaw.mcp.router import MCPRouter
+
+        router = MCPRouter()
+
+        i18n_language("zh")
+        zh_tools = router.suggest_tools_for_phase("信息收集")
+        assert len(zh_tools) > 0
+        assert zh_tools[0]["reason"] == "HTTP 请求探测目标"
+
+        i18n_language("en")
+        en_tools = router.suggest_tools_for_phase("信息收集")
+        assert len(en_tools) == len(zh_tools)
+        assert en_tools[0]["reason"] == "HTTP request to probe the target"
+        assert not any(re.search(r"[一-鿿]", t["reason"]) for t in en_tools)
+        # The phase lookup key is unaffected by language — still matches.
+        assert router.suggest_tools_for_phase("漏洞利用")
+        assert router.suggest_tools_for_phase("漏洞发现")
+
     def test_route_confidence(self):
         from vulnclaw.mcp.router import MCPRouter
 

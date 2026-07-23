@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from vulnclaw.i18n import _
+
 # ── Request → Tool mapping ──────────────────────────────────────────
 
 INTENT_TOOL_MAP: dict[str, list[dict[str, Any]]] = {
@@ -78,20 +80,24 @@ class MCPRouter:
 
     def suggest_tools_for_phase(self, phase: str) -> list[dict[str, Any]]:
         """Suggest tools based on pentest phase."""
+        # NOTE: the outer dict keys ("信息收集" / "漏洞发现" / "漏洞利用") are
+        # matching identifiers passed in by callers (see PHASE_TOOLS callers /
+        # tests) and must stay in Chinese. Only the "reason" values are
+        # display text, so those go through i18n.
         phase_tools = {
             "信息收集": [
-                {"tool": "fetch", "server": "fetch", "reason": "HTTP 请求探测目标"},
-                {"tool": "new_page", "server": "chrome-devtools", "reason": "浏览器访问目标"},
-                {"tool": "screenshot", "server": "chrome-devtools", "reason": "截图记录目标页面"},
+                {"tool": "fetch", "server": "fetch", "reason": _("mcp.router.reason.http_probe_target")},
+                {"tool": "new_page", "server": "chrome-devtools", "reason": _("mcp.router.reason.browser_visit_target")},
+                {"tool": "screenshot", "server": "chrome-devtools", "reason": _("mcp.router.reason.screenshot_target")},
             ],
             "漏洞发现": [
-                {"tool": "fetch", "server": "fetch", "reason": "发送漏洞探测请求"},
-                {"tool": "send_http1_request", "server": "burp", "reason": "通过代理构造检测请求"},
+                {"tool": "fetch", "server": "fetch", "reason": _("mcp.router.reason.send_vuln_probe")},
+                {"tool": "send_http1_request", "server": "burp", "reason": _("mcp.router.reason.proxy_detect_request")},
             ],
             "漏洞利用": [
-                {"tool": "send_http1_request", "server": "burp", "reason": "构造利用请求"},
-                {"tool": "fetch", "server": "fetch", "reason": "发送利用 payload"},
-                {"tool": "evaluate_js", "server": "chrome-devtools", "reason": "浏览器内利用"},
+                {"tool": "send_http1_request", "server": "burp", "reason": _("mcp.router.reason.build_exploit_request")},
+                {"tool": "fetch", "server": "fetch", "reason": _("mcp.router.reason.send_exploit_payload")},
+                {"tool": "evaluate_js", "server": "chrome-devtools", "reason": _("mcp.router.reason.browser_exploit")},
             ],
         }
 

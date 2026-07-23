@@ -734,9 +734,17 @@ class TestCLI:
         assert called == ["repl"]
 
     def test_tui_once_renders_workbench(self, runner):
+        import vulnclaw.cli.tui as tui_mod
         from vulnclaw.cli.main import app
+        from vulnclaw.i18n import init_i18n
 
-        result = runner.invoke(app, ["tui", "--once"])
+        init_i18n(lang="zh")
+        tui_mod.rebuild_translations()
+        try:
+            result = runner.invoke(app, ["tui", "--once"])
+        finally:
+            init_i18n(lang="zh")
+            tui_mod.rebuild_translations()
         assert result.exit_code == 0
         assert "VulnClaw TUI" in result.output
         assert "授权目标" in result.output
@@ -748,6 +756,7 @@ class TestCLI:
     def test_tui_once_renders_target_overview(self, runner, monkeypatch):
         import vulnclaw.cli.tui as tui_mod
         from vulnclaw.cli.main import app
+        from vulnclaw.i18n import init_i18n
 
         monkeypatch.setattr(
             tui_mod,
@@ -773,7 +782,13 @@ class TestCLI:
             lambda target: [{"snapshot_id": "snap_a"}, {"snapshot_id": "snap_b"}],
         )
 
-        result = runner.invoke(app, ["tui", "--once", "--target", "https://example.com"])
+        init_i18n(lang="zh")
+        tui_mod.rebuild_translations()
+        try:
+            result = runner.invoke(app, ["tui", "--once", "--target", "https://example.com"])
+        finally:
+            init_i18n(lang="zh")
+            tui_mod.rebuild_translations()
         assert result.exit_code == 0
         assert "2 个快照" in result.output
         assert "3 个风险" in result.output
@@ -783,50 +798,66 @@ class TestCLI:
         assert "1 次" in result.output
 
     def test_tui_once_accepts_prefilled_target(self, runner):
+        import vulnclaw.cli.tui as tui_mod
         from vulnclaw.cli.main import app
+        from vulnclaw.i18n import init_i18n
 
-        result = runner.invoke(
-            app,
-            [
-                "tui",
-                "--once",
-                "--target",
-                "https://example.com",
-                "--mode",
-                "quick",
-                "--only-port",
-                "443",
-            ],
-        )
+        init_i18n(lang="zh")
+        tui_mod.rebuild_translations()
+        try:
+            result = runner.invoke(
+                app,
+                [
+                    "tui",
+                    "--once",
+                    "--target",
+                    "https://example.com",
+                    "--mode",
+                    "quick",
+                    "--only-port",
+                    "443",
+                ],
+            )
+        finally:
+            init_i18n(lang="zh")
+            tui_mod.rebuild_translations()
         assert result.exit_code == 0
         assert "https://example.com" in result.output
         assert "快速摸底" in result.output
         assert "443" in result.output
 
     def test_tui_dry_run_renders_launch_summary(self, runner):
+        import vulnclaw.cli.tui as tui_mod
         from vulnclaw.cli.main import app
+        from vulnclaw.i18n import init_i18n
 
-        result = runner.invoke(
-            app,
-            [
-                "tui",
-                "--dry-run",
-                "--target",
-                "https://example.com",
-                "--mode",
-                "deep",
-                "--only-host",
-                "example.com",
-                "--only-port",
-                "443",
-                "--only-path",
-                "/admin",
-                "--blocked-host",
-                "staging.example.com",
-                "--block-actions",
-                "post_exploitation",
-            ],
-        )
+        init_i18n(lang="zh")
+        tui_mod.rebuild_translations()
+        try:
+            result = runner.invoke(
+                app,
+                [
+                    "tui",
+                    "--dry-run",
+                    "--target",
+                    "https://example.com",
+                    "--mode",
+                    "deep",
+                    "--only-host",
+                    "example.com",
+                    "--only-port",
+                    "443",
+                    "--only-path",
+                    "/admin",
+                    "--blocked-host",
+                    "staging.example.com",
+                    "--block-actions",
+                    "post_exploitation",
+                ],
+            )
+        finally:
+            init_i18n(lang="zh")
+            tui_mod.rebuild_translations()
         assert result.exit_code == 0
         assert "启动摘要" in result.output
         assert "vulnclaw scan https://example.com" in result.output
@@ -1516,6 +1547,7 @@ class TestCLI:
     def test_tui_runtime_diagnostic_panel_renders_environment_summary(self, monkeypatch):
         import vulnclaw.cli.tui as tui_mod
         from vulnclaw.config.schema import VulnClawConfig
+        from vulnclaw.i18n import init_i18n
 
         config = VulnClawConfig()
         config.llm.api_key = "test-key"
@@ -1545,8 +1577,12 @@ class TestCLI:
             force_terminal=False,
             color_system=None,
         )
-        rendered.print(tui_mod.build_runtime_diagnostic_panel(config))
-        output = rendered.export_text()
+        init_i18n(lang="zh")
+        try:
+            rendered.print(tui_mod.build_runtime_diagnostic_panel(config))
+            output = rendered.export_text()
+        finally:
+            init_i18n(lang="zh")
 
         assert "环境诊断" in output
         assert "v20.0.0" in output
