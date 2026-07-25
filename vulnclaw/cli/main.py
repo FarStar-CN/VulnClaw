@@ -103,12 +103,12 @@ def _emit_solve_report_if_completed(agent: Any, config: Any) -> str:
         report_path = generate_solve_report(state)
         report_text = report_path.read_text(encoding="utf-8")
     except Exception as exc:
-        console.print(Panel(f"自动 solve 报告生成失败: {exc}", title="Solve Report", border_style="red"))
+        console.print(Panel(f"{_('cli.auto_solve_report_generation_failed')}: {exc}", title="Solve Report", border_style="red"))
         return ""
 
     console.print(
         Panel(
-            f"自动复盘报告已保存:\n{report_path}",
+            f"{_('cli.auto_review_report_saved')}:\n{report_path}",
             title="Solve Report",
             border_style="cyan",
         )
@@ -130,7 +130,7 @@ def _prepare_repl_target(
 
     if current_target and current_target != target:
         console.print(
-            f"[dim][*] Target switch: {current_target} -> {target}, resetting session context[/]"
+            _("cli.target_switch").format(from_target = current_target,to_target = target) #数据库存在i18n字符串 未使用
         )
         agent.reset_context()
         current_phase = agent.session_state.phase.value
@@ -161,7 +161,7 @@ def _make_repl_prompt_session() -> Any:
     try:
         if not sys.stdin.isatty():
             if debug:
-                console.print("[dim](slash palette off: stdin is not a TTY)[/]")
+                console.print(f"[dim]({_('cli.slash_palette_off')})[/]")
             return None
         from prompt_toolkit import PromptSession
 
@@ -183,7 +183,7 @@ def _make_repl_prompt_session() -> Any:
         session.default_buffer.on_text_changed += _reopen_palette_on_edit
 
         if debug:
-            console.print("[dim](slash palette on)[/]")
+            console.print(f"[dim]({_('cli.slash_palette_on')})[/]")
         return session
     except Exception as exc:
         # Surface the reason instead of silently dropping to plain input.
@@ -239,7 +239,7 @@ def _run_repl_command(name: str, args: str, agent: Any, config: Any) -> Any:
         new_config = load_config()
         agent.apply_config(new_config)
         console.print(
-            f"[green]✓[/] Config reloaded: "
+            f"[green]✓[/] {_('cli.config_reloaded')}: "
             f"{new_config.llm.provider}/{new_config.llm.model}"
         )
         return new_config
@@ -269,7 +269,7 @@ def _repl_switch_language(args: str, agent: Any, config: Any) -> Any:
     init_i18n(lang=lang if lang != "auto" else None, config=config)
     rebuild_translations()
     agent.apply_config(config)
-    console.print(f"[green]✓[/] Language set to [bold]{lang}[/].")
+    console.print(f"[green]✓[/] f{_('cli.language_set_to')} [bold]{lang}[/].")
     return config
 
 
@@ -327,14 +327,14 @@ def _run_repl() -> None:
             if not user_input:
                 if last_auto_input:
                     user_input = last_auto_input
-                    console.print(f"[dim]↻ Resuming auto pentest: {last_auto_input[:60]}...[/]")
+                    console.print(f"[dim]↻ f{_('cli.resuming_auto_pentest')}: {last_auto_input[:60]}...[/]")
                 else:
                     continue
 
             if user_input.lower() in ("/compact", "compact"):
                 summary = agent.context.compact_messages(note="User requested /compact.")
                 console.print(
-                    f"[green]已压缩较早上下文[/green]，保留最近消息；摘要长度 {len(summary)} 字符。"
+                    _("cli.compressed_earlier_context").format(var_001 = len(summary))
                 )
                 continue
 
@@ -427,7 +427,7 @@ def _run_repl() -> None:
                 persistent_target = explicit_target or current_target
                 if not persistent_target:
                     console.print(
-                        "[!] Set a target first with [bold]target <host>[/] or run [bold]persistent <host>[/]."
+                        _("cli.host_no_set")
                     )
                     continue
 
@@ -459,8 +459,8 @@ def _run_repl() -> None:
                 )
 
                 persistent_prompt = (
-                    f"Perform an authorized persistent penetration test against {persistent_target}. "
-                    "This target is in scope and explicitly authorized."
+                    f"Perform an authorized persistent penetration test against {persistent_target}. ",
+                    _("cli.target_within_range_and_explicitly_authorized")
                 )
 
                 all_cycle_results: list[PersistentCycleResult] = []
