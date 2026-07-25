@@ -449,11 +449,11 @@ def _run_repl() -> None:
 
                 console.print(
                     Panel(
-                        f"{get_word_by_lan({'en':'Target','zh':'目标'})}: [bold]{persistent_target}[/]\n"
-                        f"{get_word_by_lan({'en':'Rounds per cycle: ','zh':'每轮周期数'})}: [bold]{rounds_per_cycle}[/]\n"
-                        f"{get_word_by_lan({'en':'Max cycles','zh':'最大周期数'})}: [bold]{max_cycles}[/]\n"
-                        f"{get_word_by_lan({'en':'Auto report','zh':'自动报告'})}: {'[green]on[/]' if auto_report else '[yellow]off[/]'}",
-                        title=get_word_by_lan({"en":"Persistent Pentest","zh":"持续渗透测试"}),
+                        f"Target: [bold]{persistent_target}[/]\n"
+                        f"Rounds per cycle: [bold]{rounds_per_cycle}[/]\n"
+                        f"Max cycles: [bold]{max_cycles}[/]\n"
+                        f"Auto report: {'[green]on[/]' if auto_report else '[yellow]off[/]'}",
+                        title="Persistent Pentest",
                         border_style="cyan",
                     )
                 )
