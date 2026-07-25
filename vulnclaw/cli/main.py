@@ -74,7 +74,7 @@ from vulnclaw.config.settings import (
     set_config_value,
 )
 from vulnclaw.config.token_provider import has_llm_credentials
-from vulnclaw.i18n import _, get_word_by_lan
+from vulnclaw.i18n import _
 from vulnclaw.i18n.phases import localized_phase_name
 from vulnclaw.repl_runner import run_repl_call
 from vulnclaw.target_state.store import (
