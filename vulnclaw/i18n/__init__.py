@@ -126,3 +126,19 @@ def current_lang() -> str:
     if _translator is None:
         init_i18n()
     return _translator.lang
+
+def get_word_by_lan(translate_data : dict[str,str]):
+    """
+    !!!!
+    NOTE: This function is only intended for translating extreme words/phrases.
+    Under normal circumstances, please use the JSON file and _()
+    !!!!
+    Returns the value for the corresponding language from the provided translation data dictionary.
+    If the corresponding language is not supported, returns the first language's value.
+    The translation dictionary format is {two-character language id: translation}, for example {"en":"hello","zh":"你好"}.
+    """
+    if not translate_data:
+        return ""
+    if translate_data.get(current_lang()) is None:
+        return next(iter(translate_data.items()))
+    return translate_data.get(current_lang())
