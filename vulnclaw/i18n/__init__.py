@@ -114,3 +114,15 @@ def _(key: str, **kwargs: Any) -> str:
     if _translator is None:
         init_i18n()
     return _translator.t(key, **kwargs)
+
+
+def current_lang() -> str:
+    """Return the active UI language code ('zh' or 'en').
+
+    Initializes the global translator via auto-detection if it has not been
+    set up yet, so callers outside the CLI (report generation, prompt
+    assembly) get a sensible language without an explicit init.
+    """
+    if _translator is None:
+        init_i18n()
+    return _translator.lang

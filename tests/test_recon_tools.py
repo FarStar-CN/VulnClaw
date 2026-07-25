@@ -3,8 +3,15 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from vulnclaw.agent import recon_tools
 from vulnclaw.config.schema import ReconConfig, VulnClawConfig
+
+
+@pytest.fixture(autouse=True)
+def _use_chinese_by_default(i18n_language):
+    i18n_language("zh")
 
 
 def _agent(recon: ReconConfig | None = None):
@@ -238,6 +245,29 @@ async def test_unauth_test_skips_destructive_and_flags_data(monkeypatch):
     assert "/api/user/list" in res
 
 
+async def test_unauth_test_renders_english_security_verdicts(
+    monkeypatch, i18n_language
+):
+    def router(method, url, params, content):
+        return _Resp(text='{"data":[{"uid":1}]}', status=200)
+
+    monkeypatch.setattr(recon_tools, "_make_client", lambda cfg: _FakeClient(router))
+    agent = _agent(ReconConfig())
+
+    i18n_language("en")
+    res = await recon_tools.execute_unauth_test(
+        agent,
+        {
+            "base_url": "http://example.com",
+            "endpoints": ["/api/users", "/api/users/delete?id=1"],
+        },
+    )
+
+    assert "# Unauthorized Access Probe — example.com" in res
+    assert "Possible unauthorized data access" in res
+    assert "Skipped (destructive endpoint)" in res
+
+
 async def test_js_recon_auto_probes_endpoints(monkeypatch):
     calls = {"n": 0}
 
@@ -274,3 +304,26 @@ async def test_subdomain_enum_passive_only(monkeypatch):
     res = await recon_tools.execute_subdomain_enum(agent, {"domain": "example.com", "brute": False})
     assert "api.example.com" in res
     assert "mail.example.com" in res
+
+
+async def test_js_recon_renders_english_section_labels(monkeypatch, i18n_language):
+    def router(method, url, params, content):
+        return _Resp(
+            text='var api = "/api/v1/users"; var key = {api_key: "AKIAABCDEFGHIJKLMNOP"};',
+            status=200,
+        )
+
+    monkeypatch.setattr(recon_tools, "_make_client", lambda cfg: _FakeClient(router))
+    agent = _agent(ReconConfig())
+
+    i18n_language("en")
+    res = await recon_tools.execute_js_recon(
+        agent, {"url": "http://example.com", "auto_probe": False}
+    )
+
+    assert "# JavaScript Reconnaissance — http://example.com" in res
+    assert "## ⚠ Potentially Sensitive Information" in res
+    assert "## Endpoints / Paths" in res
+    assert "## Related Domains" in res
+    assert "## Absolute URLs" in res
+    assert "JS 信息收集" not in res

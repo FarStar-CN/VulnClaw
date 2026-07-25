@@ -1,4 +1,32 @@
-"""Knowledge-base prompt context helpers for AgentCore."""
+"""Knowledge-base prompt context helpers for AgentCore.
+
+Scoping decision (ticket #65 — i18n: knowledge-base kb_context language
+handling)
+----------------------------------------------------------------------
+The KB corpus (``vulnclaw/kb/updater.py`` seed data plus anything a user
+adds under ``KB_DIR``) is a *content* corpus, not a set of code/UI strings,
+and today it is predominantly Chinese (technique/tool entries such as
+``sqli-bypass``, ``nmap`` are written in Chinese; only the CVE entries are
+English). There is no English-language KB corpus to fall back to.
+
+Three approaches were considered:
+
+- **gate** — skip KB injection entirely when the active language is not
+  Chinese, unless/until an English corpus exists.
+- **translate** — machine-translate KB entries on the fly before injection.
+- **dual-corpus** — maintain parallel zh/en KB corpora and select by
+  language.
+
+Chosen approach: **gate**. Translating security content on the fly risks
+subtly corrupting exploit payloads/commands (translation isn't safe for
+code-like fields such as ``bypass_methods`` or ``commands``), and
+maintaining a parallel English corpus is out of scope for this ticket
+(tracked separately if/when needed). Gating is the simplest defensible
+behavior: English runs (``current_lang() == "en"``) get no KB context
+injected at all (an empty string, same as the "disabled retriever" case
+callers already handle), while Chinese runs keep the full, unmodified KB
+behavior. This can be revisited once an English corpus exists.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +37,7 @@ if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
 
 
+from vulnclaw.i18n import current_lang
 from vulnclaw.kb.retriever import KnowledgeRetriever, RetrieverStatus
 
 logger = logging.getLogger(__name__)
@@ -37,7 +66,15 @@ def build_kb_context(agent: AgentContext, user_input: Optional[str] = None) -> s
     Results are cached per agent for identical queries within a session so the
     same lookup is not repeated. Any retrieval failure degrades silently to an
     empty context (logged, not raised).
+
+    KB content is predominantly Chinese and there is no English corpus yet,
+    so injection is gated by language: English runs (``current_lang() ==
+    "en"``) never receive KB context (see module docstring for the scoping
+    decision), while Chinese runs are unaffected.
     """
+    if current_lang() == "en":
+        return ""
+
     retriever = _retriever_for(agent)
     if retriever is None or retriever.get_status() is RetrieverStatus.DISABLED:
         return ""

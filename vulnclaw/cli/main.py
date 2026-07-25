@@ -75,6 +75,7 @@ from vulnclaw.config.settings import (
 )
 from vulnclaw.config.token_provider import has_llm_credentials
 from vulnclaw.i18n import _
+from vulnclaw.i18n.phases import localized_phase_name
 from vulnclaw.repl_runner import run_repl_call
 from vulnclaw.target_state.store import (
     apply_target_state_to_agent,
@@ -144,29 +145,10 @@ async def _run_repl_agent_call(agent, *, call, after_result) -> None:
     await run_repl_call(call=call, after_result=after_result)
 
 
-_PHASE_LABEL_KEYS = {
-    "就绪": "phase.idle",
-    "ready": "phase.idle",
-    "信息收集": "phase.recon",
-    "recon": "phase.recon",
-    "漏洞发现": "phase.vuln_discovery",
-    "vulnerability discovery": "phase.vuln_discovery",
-    "漏洞利用": "phase.exploitation",
-    "exploitation": "phase.exploitation",
-    "后渗透": "phase.post_exploitation",
-    "post-exploitation": "phase.post_exploitation",
-    "post exploitation": "phase.post_exploitation",
-    "报告生成": "phase.reporting",
-    "reporting": "phase.reporting",
-}
-
-
 def _localized_phase_label(phase: Any) -> str:
     """Return a display-only phase label for the active UI language."""
     raw = getattr(phase, "value", phase)
-    text = str(raw or "").strip()
-    key = _PHASE_LABEL_KEYS.get(text) or _PHASE_LABEL_KEYS.get(text.lower())
-    return _(key) if key else text
+    return localized_phase_name(str(raw or "").strip())
 
 
 def _make_repl_prompt_session() -> Any:
@@ -2032,6 +2014,14 @@ def report(
     ),
 ) -> None:
     """Generate a report from a session file or target state."""
+    # Report bodies call _() for localized text; initialize i18n from the
+    # configured language so non-interactive runs honor session.language
+    # instead of falling back to the process locale (VULNCLAW_LANG/LANG).
+    from vulnclaw.i18n import init_i18n
+
+    report_config = load_config()
+    init_i18n(config=report_config)
+
     if target_mode:
         from vulnclaw.report.generator import generate_report_from_target_state
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from vulnclaw.agent.context import EvidenceRef, SessionState, VulnerabilityFinding
+from vulnclaw.i18n import current_lang, init_i18n
 from vulnclaw.report.generator import generate_report
 from vulnclaw.traffic import (
     CapturedExchange,
@@ -17,6 +18,18 @@ from vulnclaw.traffic import (
 
 
 def test_verified_finding_inlines_http_capture(tmp_path):
+    # Assertions below check for the Chinese heading text explicitly, so pin the
+    # active UI language regardless of the ambient LANG/VULNCLAW_LANG env vars
+    # (mirrors the explicit-language convention in tests/test_phase_i18n.py).
+    previous_lang = current_lang()
+    init_i18n(lang="zh")
+    try:
+        _run_http_capture_inlining_assertions(tmp_path)
+    finally:
+        init_i18n(lang=previous_lang)
+
+
+def _run_http_capture_inlining_assertions(tmp_path):
     # Capture a request/response into the run's evidence/traffic store.
     run_dir = tmp_path / "run"
     store = TrafficStore(run_dir / "evidence" / "traffic")
@@ -58,6 +71,58 @@ def test_verified_finding_inlines_http_capture(tmp_path):
     assert "```http" in text
     assert "GET /user?id=1' HTTP/1.1" in text
     assert "SQL syntax error near" in text
+
+
+def test_verified_finding_inlines_http_capture_english(tmp_path):
+    """Same as above under the English UI language: the heading and body
+
+    translate, but the raw request/response bytes (not translated content)
+    still land verbatim in the report.
+    """
+    previous_lang = current_lang()
+    init_i18n(lang="en")
+    try:
+        run_dir = tmp_path / "run"
+        store = TrafficStore(run_dir / "evidence" / "traffic")
+        capture = TrafficCapture(
+            store, ScopeChecker([Target(host="app.test")], mode=ScopeMode.STRICT)
+        )
+        request_id = capture.capture(
+            CapturedExchange(
+                request=CapturedRequest(
+                    method="GET",
+                    url="http://app.test/user?id=1'",
+                    headers={"Host": "app.test"},
+                ),
+                response=CapturedResponse(status=500, body=b"SQL syntax error near ''1'"),
+            ),
+            source="proxy",
+        )
+        assert request_id
+
+        finding = VulnerabilityFinding(
+            title="SQL Injection in /user",
+            severity="High",
+            vuln_type="SQLi",
+            evidence="id parameter is injectable",
+            remediation="Use parameterized queries",
+            evidence_refs=[EvidenceRef(kind="http_capture", request_id=request_id)],
+        )
+        finding.mark_verified(note="confirmed via error-based injection")
+
+        session = SessionState(target="http://app.test")
+        session.add_finding(finding)
+
+        report_path = generate_report(session, output_path=str(run_dir / "report.md"))
+        text = report_path.read_text(encoding="utf-8")
+
+        assert "Captured-traffic reproduction evidence" in text
+        assert request_id in text
+        assert "```http" in text
+        assert "GET /user?id=1' HTTP/1.1" in text
+        assert "SQL syntax error near" in text
+    finally:
+        init_i18n(lang=previous_lang)
 
 
 def test_shared_resolver_finds_config_default_when_no_run_captures(tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from vulnclaw.agent.anti_loop import FAILED_ACCESS_PATTERNS
+from vulnclaw.i18n import _
 
 
 class FailureCategory(str, Enum):
@@ -96,28 +97,28 @@ class ReflexionEngine(BaseModel):
 
     def get_escalation_hints(self) -> list[str]:
         hints_by_level = {
-            0: ["先尝试原始 payload（不编码）。"],
+            0: [_("agent.reflexion.hint.raw_payload")],
             1: [
-                "URL 编码特殊字符。",
-                "切换关键字大小写（SeLeCt）。",
-                "尝试空白符变体（/**/、换行、Tab）。",
+                _("agent.reflexion.hint.url_encode"),
+                _("agent.reflexion.hint.keyword_case"),
+                _("agent.reflexion.hint.whitespace"),
             ],
             2: [
-                "尝试双重 URL 编码。",
-                "插入内联注释，如 /**/。",
-                "面向浏览器的注入点使用 HTML 实体编码。",
+                _("agent.reflexion.hint.double_url_encode"),
+                _("agent.reflexion.hint.inline_comment"),
+                _("agent.reflexion.hint.html_entity"),
             ],
             3: [
-                "尝试 Unicode 转义（\\u0027）。",
-                "尝试 hex 编码（0x...）。",
-                "用字符串拼接拆分关键字（con||cat）。",
-                "用等价的替代函数绕过被封函数。",
+                _("agent.reflexion.hint.unicode_escape"),
+                _("agent.reflexion.hint.hex_encode"),
+                _("agent.reflexion.hint.keyword_concat"),
+                _("agent.reflexion.hint.alternative_function"),
             ],
             4: [
-                "组合多层编码混淆。",
-                "改用替代语法达成同样目的（如 HANDLER 代替 SELECT）。",
-                "改用时间盲注或带外（OOB）通道确认。",
-                "切换到完全不同的漏洞类型/攻击面。",
+                _("agent.reflexion.hint.multilayer_encoding"),
+                _("agent.reflexion.hint.alternative_syntax"),
+                _("agent.reflexion.hint.blind_or_oob"),
+                _("agent.reflexion.hint.switch_attack_surface"),
             ],
         }
         return hints_by_level[self.get_escalation_level()]
@@ -170,15 +171,17 @@ class ReflexionEngine(BaseModel):
             return ""
 
         lines = [
-            "🔁 反思状态：",
-            f"- 连续无进展轮数: {self.state.consecutive_failures}",
-            f"- 同类漏洞失败次数: {self.state.vuln_type_fail_count}",
-            f"- 当前升级级别: L{self.get_escalation_level()}",
+            _("agent.reflexion.state_title"),
+            _("agent.reflexion.consecutive_failures", count=self.state.consecutive_failures),
+            _("agent.reflexion.vuln_type_failures", count=self.state.vuln_type_fail_count),
+            _("agent.reflexion.escalation_level", level=self.get_escalation_level()),
         ]
 
         failed_paths = self.get_failed_paths()
         if failed_paths:
-            lines.append(f"- 已失败路径（勿重复）: {', '.join(failed_paths[:8])}")
+            lines.append(
+                _("agent.reflexion.failed_paths", paths=", ".join(failed_paths[:8]))
+            )
 
         return "\n".join(lines)
 
@@ -188,19 +191,19 @@ class ReflexionEngine(BaseModel):
             return ""
 
         lines = [
-            "🔴 反思接管（同类攻击已连续失败，必须改变策略）：",
-            "- 停止在当前攻击路径上重复换 payload。",
-            "- 复盘失败记录，明确指出此前哪个假设很可能是错的。",
-            "- 在换下一个 payload 之前，先选择一条实质不同的攻击路径/漏洞类型。",
-            f"- 当前升级级别: L{self.get_escalation_level()}",
+            _("agent.reflexion.takeover_title"),
+            _("agent.reflexion.stop_payload_retries"),
+            _("agent.reflexion.review_assumptions"),
+            _("agent.reflexion.choose_different_path"),
+            _("agent.reflexion.escalation_level", level=self.get_escalation_level()),
         ]
 
         if self.should_escalate():
-            lines.append("- ⚠️ 强制升级：切换到完全不同的漏洞类型或攻击面，不要再恋战当前方向。")
+            lines.append(_("agent.reflexion.forced_escalation"))
 
         patterns = self.analyze_failure_patterns()
         if patterns:
-            lines.append("- 失败模式分析：")
+            lines.append(_("agent.reflexion.failure_analysis"))
             for pattern in patterns[:3]:
                 lines.append(
                     f"  - {pattern['category']} ×{pattern['occurrences']}: "
@@ -209,7 +212,9 @@ class ReflexionEngine(BaseModel):
 
         hints = self.get_escalation_hints()
         if hints:
-            lines.append(f"- 本级（L{self.get_escalation_level()}）绕过提示：")
+            lines.append(
+                _("agent.reflexion.bypass_hints", level=self.get_escalation_level())
+            )
             for hint in hints:
                 lines.append(f"  - {hint}")
 
@@ -234,20 +239,12 @@ class ReflexionEngine(BaseModel):
     @staticmethod
     def _suggest_for_category(category: str) -> str:
         suggestions = {
-            FailureCategory.ENV_CONSTRAINT.value: (
-                "用编码/混淆绕过过滤，切换协议或端点，并确认访问限制（WAF/权限/限流）。"
-            ),
-            FailureCategory.PATH_ERROR.value: (
-                "降低该路径优先级，切换到不同的攻击面/漏洞类型。"
-            ),
-            FailureCategory.PARAM_ERROR.value: (
-                "调整参数名、分隔符、payload 语法或注入位置。"
-            ),
-            FailureCategory.INFO_NEEDED.value: (
-                "先补充侦察信息再重试该路径。"
-            ),
+            FailureCategory.ENV_CONSTRAINT.value: _("agent.reflexion.suggest.env_constraint"),
+            FailureCategory.PATH_ERROR.value: _("agent.reflexion.suggest.path_error"),
+            FailureCategory.PARAM_ERROR.value: _("agent.reflexion.suggest.param_error"),
+            FailureCategory.INFO_NEEDED.value: _("agent.reflexion.suggest.info_needed"),
         }
-        return suggestions.get(category, "复盘失败记录，换一种思路。")
+        return suggestions.get(category, _("agent.reflexion.suggest.unknown"))
 
 
 def classify_failure(response_text: str) -> FailureCategory | None:
