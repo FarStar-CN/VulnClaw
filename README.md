@@ -11,6 +11,10 @@
 [![PyPI](https://img.shields.io/badge/PyPI-v0.3.6-blueviolet)](https://pypi.org/project/vulnclaw/)
 [![Security](https://img.shields.io/badge/Scope-Authorized_Only-red)](#-安全声明)
 [![AtomGitStars](https://atomgit.com/Unclecheng-li/VulnClaw/star/badge.svg)](https://atomgit.com/Unclecheng-li/VulnClaw)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://kimi-file.moonshot.cn/prod-chat-kimi/kfs/4/1/2026-06-05/1d8h69mt3v89kkekg24gg">
+  <img alt="Kimi Open Source Friends" src="https://kimi-file.moonshot.cn/prod-chat-kimi/kfs/4/1/2026-06-05/1d8h69fudcmosb3pipls0">
+</picture>
 <br>
 
 🌐 **English version**: [`README_EN.md`](README_EN.md)
