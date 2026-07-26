@@ -1253,15 +1253,16 @@ class DashboardScreen(Screen):
         import sys as _sys
         try:
             if _sys.platform == "win32":
-                subprocess.run("clip", input=text, text=True, shell=True)
+                subprocess.run(["clip"], input=text, text=True)
             elif _sys.platform == "darwin":
-                subprocess.run("pbcopy", input=text, text=True)
+                subprocess.run(["pbcopy"], input=text, text=True)
             else:
                 subprocess.run(
                     ["xclip", "-selection", "clipboard"],
                     input=text, text=True,
                 )
         except Exception:
+            # Clipboard is best-effort: a missing tool must not crash the TUI.
             pass
 
     def _start_execution(self, draft: Any = None, *, continuing: bool = False, nl_text: str | None = None) -> None:
