@@ -38,6 +38,7 @@ from vulnclaw.config.domain_models import (  # noqa: F401 — re-export
     phase_from_canonical_id,
     validate_action_constraints,
 )
+from vulnclaw.i18n import _
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,6 @@ class ReconState(BaseModel):
 
     def get_recon_status_text(self) -> str:
         """获取人类可读的侦察维度完成状态。"""
-        from vulnclaw.i18n import _
 
         parts = []
         for dim, completed in self.recon_dimensions_completed.items():
@@ -955,7 +955,6 @@ class SessionState(BaseModel):
 
     def advance_phase(self, phase: PentestPhase) -> None:
         """切换到新阶段。"""
-        from vulnclaw.i18n import _
 
         old_phase = self.phase
         self.phase = phase

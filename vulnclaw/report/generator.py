@@ -10,13 +10,19 @@ from typing import Any, Optional
 
 from jinja2 import Template
 
+from vulnclaw import __version__
+
 # 修改者: Nyaecho
 # 修改时间: 2026-07-08
 # 修改原因: 消除 V2 违规 — 叶子类型已移至 config/domain_models.py。
 from vulnclaw.agent.context import SessionState
 from vulnclaw.config.domain_models import VulnerabilityFinding
+from vulnclaw.config.settings import SESSIONS_DIR
 from vulnclaw.i18n import _, current_lang
 from vulnclaw.i18n.phases import localized_phase_name, localized_report_phase_heading
+from vulnclaw.report.filter import ReportContentFilter, deduplicate_report_findings
+from vulnclaw.report.findings_output import write_findings_artifacts
+from vulnclaw.report.poc_builder import generate_pocs
 
 
 def _rl(zh: str, en: str) -> str:
@@ -407,8 +413,6 @@ def generate_report(
     Only verified findings are rendered into the main detailed findings section.
     Pending, candidate, and rejected findings remain in summary/governance views.
     """
-    from vulnclaw import __version__
-    from vulnclaw.report.filter import deduplicate_report_findings
 
     all_findings = session.findings
     verified_findings = deduplicate_report_findings(session.get_verified_findings())
@@ -443,7 +447,6 @@ def generate_report(
         recommendations.append(_("report.rec.review_surface"))
 
     if output_path is None:
-        from vulnclaw.config.settings import SESSIONS_DIR
 
         safe_target = (session.target or "unknown").replace("/", "_").replace(":", "_")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -452,12 +455,10 @@ def generate_report(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    from vulnclaw.report.poc_builder import generate_pocs
 
     pocs_dir = output.parent / "pocs"
     generate_pocs(session, pocs_dir)
 
-    from vulnclaw.report.filter import ReportContentFilter
 
     if not llm_attack_summary:
         llm_attack_summary = _generate_attack_summary_from_session(session)
@@ -521,7 +522,6 @@ def generate_report(
     # ★ Emit machine-consumable findings artifacts next to the report: findings.json
     # (all findings + lifecycle) and findings.sarif (verified findings only). These
     # draw from the same verified feed as the report — no divergent finding lists.
-    from vulnclaw.report.findings_output import write_findings_artifacts
 
     write_findings_artifacts(session, output.parent / "findings")
 
@@ -956,8 +956,6 @@ def generate_persistent_cycle_report(
     Returns:
         Path to the generated report file.
     """
-    from vulnclaw import __version__
-    from vulnclaw.report.filter import deduplicate_report_findings
 
     # ★ 包含所有 findings（包括 pending 和 confirmed，不只是 verified）
     all_findings = session.findings
@@ -994,7 +992,6 @@ def generate_persistent_cycle_report(
         recommendations.append(_("report.rec.none_high"))
 
     if output_path is None:
-        from vulnclaw.config.settings import SESSIONS_DIR
 
         safe_target = (session.target or "unknown").replace("/", "_").replace(":", "_")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1005,7 +1002,6 @@ def generate_persistent_cycle_report(
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    from vulnclaw.report.poc_builder import generate_pocs
 
     pocs_dir = output.parent / "pocs"
     generate_pocs(session, pocs_dir)
@@ -1015,7 +1011,6 @@ def generate_persistent_cycle_report(
 
     # ★ 攻击路径摘要（过滤 LLM 原始输出中的 think 标签 / 调试标记）
     step_summary = session.get_step_summary()
-    from vulnclaw.report.filter import ReportContentFilter
 
     if not llm_attack_summary:
         llm_attack_summary = _generate_attack_summary_from_session(session)
@@ -1060,7 +1055,6 @@ def generate_persistent_cycle_report(
     # ★ Emit the same machine-consumable findings artifacts as generate_report, so a
     # persistent run's per-cycle reports also produce findings/findings.json and
     # findings/findings.sarif.
-    from vulnclaw.report.findings_output import write_findings_artifacts
 
     write_findings_artifacts(session, output.parent / "findings")
 
