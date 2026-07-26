@@ -1017,14 +1017,14 @@ class TestWebApp:
         assert result.exit_code == 0
 
     def test_frontend_scaffold_exists(self):
-        root = Path(__file__).resolve().parents[1] / "frontend"
+        root = Path(__file__).resolve().parents[2] / "frontend"
         assert (root / "package.json").exists()
         assert (root / "vite.config.ts").exists()
         assert (root / "src" / "main.tsx").exists()
         assert (root / "src" / "App.tsx").exists()
 
     def test_frontend_toc_navigation_hides_advanced_console(self):
-        root = Path(__file__).resolve().parents[1] / "frontend"
+        root = Path(__file__).resolve().parents[2] / "frontend"
         app_source = (root / "src" / "App.tsx").read_text(encoding="utf-8")
         main_source = (root / "src" / "main.tsx").read_text(encoding="utf-8")
         styles_source = (root / "src" / "styles.css").read_text(encoding="utf-8")
@@ -1228,7 +1228,7 @@ class TestWebApp:
         assert "countConstraintViolations" in boundary_source
 
     def test_frontend_uses_single_vite_config_source(self):
-        root = Path(__file__).resolve().parents[1] / "frontend"
+        root = Path(__file__).resolve().parents[2] / "frontend"
 
         assert (root / "vite.config.ts").exists()
         assert not (root / "vite.config.js").exists()
@@ -1239,7 +1239,7 @@ class TestWebApp:
         assert '"noEmit": true' in tsconfig_node
 
     def test_frontend_pages_are_toc_surfaces(self):
-        pages = Path(__file__).resolve().parents[1] / "frontend" / "src" / "pages"
+        pages = Path(__file__).resolve().parents[2] / "frontend" / "src" / "pages"
         page_names = {path.name for path in pages.glob("*.tsx")}
 
         assert {
@@ -1258,7 +1258,7 @@ class TestWebApp:
 
     def test_frontend_mobile_layout_prevents_shell_overflow(self):
         styles = (
-            Path(__file__).resolve().parents[1] / "frontend" / "src" / "styles.css"
+            Path(__file__).resolve().parents[2] / "frontend" / "src" / "styles.css"
         ).read_text(encoding="utf-8")
 
         assert "@media (max-width: 1180px)" in styles
@@ -1275,7 +1275,7 @@ class TestWebApp:
         assert "max-width: 100%;" in styles
 
     def test_static_fallback_is_toc_shell(self):
-        root = Path(__file__).resolve().parents[1]
+        root = Path(__file__).resolve().parents[2]
         source = (root / "vulnclaw" / "web" / "static" / "index.html").read_text(
             encoding="utf-8"
         )
