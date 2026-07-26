@@ -438,6 +438,25 @@ class VulnClawConfig(BaseModel):
     )
 
 
+# ── Autonomous engine selection ────────────────────────────────────
+# The three autonomous engines a run can dispatch to. Kept here (next to the
+# ``SessionConfig.engine`` field) so the CLI, ``AgentCore.auto_pentest`` and the
+# persistent loop all validate/resolve against one list instead of re-hardcoding
+# the string set in three places.
+ENGINE_CHOICES: tuple[str, ...] = ("solve", "team", "rounds")
+
+
+def resolve_engine(config: "VulnClawConfig", override: str | None = None) -> str:
+    """Resolve the effective autonomous engine for a run.
+
+    Precedence: explicit ``override`` (e.g. a CLI ``--engine``) > the configured
+    ``session.engine`` > the ``"solve"`` default. An unrecognized value falls
+    back to ``"solve"`` so a stale config can never dispatch to a missing engine.
+    """
+    engine = (override or getattr(config.session, "engine", "") or "solve").strip().lower()
+    return engine if engine in ENGINE_CHOICES else "solve"
+
+
 # ── Built-in MCP server definitions (MVP) ──────────────────────────
 
 BUILTIN_MCP_SERVERS: dict[str, dict[str, Any]] = {

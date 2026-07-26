@@ -65,6 +65,7 @@ from vulnclaw.cli._helpers import (
     err_console,
 )
 from vulnclaw.cli.manual import available_topics, render_manual
+from vulnclaw.config.schema import ENGINE_CHOICES, resolve_engine
 from vulnclaw.config.settings import (
     RUNS_DIR,
     apply_provider_preset,
@@ -1071,8 +1072,8 @@ def run(
     if not has_llm_credentials(config.llm):
         err_console.print("[!] Configure LLM credentials first (api_key or auth_mode).")
         raise typer.Exit(headless.EXIT_ERROR)
-    if engine is not None and engine not in {"solve", "team", "rounds"}:
-        err_console.print("[!] --engine must be one of: solve, team, rounds")
+    if engine is not None and engine not in ENGINE_CHOICES:
+        err_console.print(f"[!] --engine must be one of: {', '.join(ENGINE_CHOICES)}")
         raise typer.Exit(headless.EXIT_ERROR)
 
     profile = headless.resolve_scan_profile(
@@ -1120,7 +1121,7 @@ def run(
                 else TerminalStreamSink(console, shared_config.session.show_thinking)
             )
             on_event = None if non_interactive else _make_solve_event_printer(console)
-            selected_engine = engine or getattr(shared_config.session, "engine", "solve")
+            selected_engine = resolve_engine(shared_config, engine)
             # 默认走目标驱动 solve 引擎；engine=team 启用角色团队；engine=rounds 回退旧循环
             if selected_engine == "solve":
                 result = await agent.solve(

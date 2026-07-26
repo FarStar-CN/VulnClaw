@@ -43,7 +43,7 @@ from vulnclaw.agent.runtime_state import AgentResult, PersistentCycleResult, Run
 from vulnclaw.agent.skill_context import apply_skill_selection
 from vulnclaw.agent.system_prompt import build_dynamic_system_prompt
 from vulnclaw.agent.tool_call_manager import safe_parse_tool_args
-from vulnclaw.config.schema import VulnClawConfig
+from vulnclaw.config.schema import VulnClawConfig, resolve_engine
 from vulnclaw.config.settings import make_openai_client
 from vulnclaw.target_state.store import save_target_state
 
@@ -489,8 +489,16 @@ class AgentCore:
         stream_sink: Optional["StreamSink"] = None,
         engine: Optional[str] = None,
     ) -> list[AgentResult]:
-        """Autonomous penetration test loop."""
-        selected_engine = engine or getattr(self.config.session, "engine", "solve")
+        """Autonomous penetration test loop.
+
+        Return-value contract (important for callers): only the legacy ``rounds``
+        engine returns a populated ``list[AgentResult]`` — one per round. The
+        ``solve`` and ``team`` engines persist their outcome on
+        ``self.session_state`` (findings, steps, agent_state) and return an
+        **empty list**. Callers that need results must read ``session_state``
+        rather than the return value; those (like the orchestrator) already do.
+        """
+        selected_engine = resolve_engine(self.config, engine)
         if selected_engine == "solve":
             await self.solve(
                 user_input,
