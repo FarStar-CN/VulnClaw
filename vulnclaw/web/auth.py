@@ -8,6 +8,7 @@ All ``/api/`` routes (except ``/api/health``) require a valid
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import secrets
 from pathlib import Path
 
@@ -66,6 +67,29 @@ def verify_token(token: str) -> bool:
     return hmac.compare_digest(stored, token)
 
 
+def _client_is_loopback(client_host: str | None) -> bool:
+    """Whether a request originates from a loopback (local) client.
+
+    The ``web`` command binds to 127.0.0.1 by default and refuses non-loopback
+    binds without ``--allow-remote``, so a loopback client is the trusted local
+    operator. Bearer-token auth is therefore enforced only for **non-loopback**
+    clients (the explicit ``--allow-remote`` case). This is what lets the
+    same-origin browser UI work locally: native ``fetch`` here sends no bearer
+    header and an SSE ``EventSource`` cannot attach one at all, so requiring a
+    token on loopback would 401 the entire shipped frontend.
+
+    Note: this trusts the peer address, so a reverse proxy on localhost would
+    appear loopback. Defending a localhost bind against DNS-rebinding wants a
+    ``Host`` header allowlist, which is a separate hardening step.
+    """
+    if not client_host:
+        return False  # unknown origin — require auth
+    try:
+        return ipaddress.ip_address(client_host).is_loopback
+    except ValueError:
+        return client_host == "localhost"
+
+
 if _HAS_STARLETTE:
 
     class AuthMiddleware(BaseHTTPMiddleware):  # type: ignore[no-redef]
@@ -79,8 +103,11 @@ if _HAS_STARLETTE:
 
         async def dispatch(self, request: Request, call_next):  # type: ignore[override]
             path = request.url.path
-            if path.startswith("/api/") and not any(
-                path.startswith(p) for p in self._EXEMPT_PREFIXES
+            client_host = request.client.host if request.client else None
+            if (
+                path.startswith("/api/")
+                and not any(path.startswith(p) for p in self._EXEMPT_PREFIXES)
+                and not _client_is_loopback(client_host)
             ):
                 auth_header = request.headers.get("Authorization", "")
                 if not auth_header.startswith("Bearer "):

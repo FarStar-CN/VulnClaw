@@ -1358,3 +1358,56 @@ class TestWebApp:
         )
         assert diff.status_code == 200
         assert diff.json()["from_snapshot_id"] == "snap_a"
+
+
+class TestWebAuthLoopback:
+    """The bearer gate must exempt loopback clients (the default localhost UI)
+    while still enforcing tokens for non-loopback (--allow-remote) clients."""
+
+    def test_client_is_loopback_helper(self):
+        from vulnclaw.web.auth import _client_is_loopback
+
+        assert _client_is_loopback("127.0.0.1")
+        assert _client_is_loopback("::1")
+        assert _client_is_loopback("localhost")
+        assert not _client_is_loopback("10.0.0.5")
+        assert not _client_is_loopback("203.0.113.7")
+        assert not _client_is_loopback("")
+        assert not _client_is_loopback(None)
+
+    async def test_middleware_exempts_loopback_and_enforces_remote(self):
+        import vulnclaw.web.app as web_app
+
+        if not web_app.FASTAPI_AVAILABLE:
+            pytest.skip("FastAPI is not installed in this environment")
+
+        from vulnclaw.web.auth import AuthMiddleware
+
+        class _URL:
+            def __init__(self, path):
+                self.path = path
+
+        class _Client:
+            def __init__(self, host):
+                self.host = host
+
+        class _Req:
+            def __init__(self, path, host, headers=None):
+                self.url = _URL(path)
+                self.client = _Client(host) if host else None
+                self.headers = headers or {}
+
+        mw = AuthMiddleware(None)
+
+        async def call_next(_req):
+            return "PASSED"
+
+        # Loopback client: no token, still allowed through (the shipped frontend).
+        assert await mw.dispatch(_Req("/api/tasks", "127.0.0.1"), call_next) == "PASSED"
+
+        # Non-loopback client without a token: rejected with 401.
+        blocked = await mw.dispatch(_Req("/api/tasks", "203.0.113.7"), call_next)
+        assert getattr(blocked, "status_code", None) == 401
+
+        # Health check is exempt regardless of origin.
+        assert await mw.dispatch(_Req("/api/health", "203.0.113.7"), call_next) == "PASSED"
