@@ -71,16 +71,15 @@ class SessionConfig(BaseModel):
 
 
 class VulnerabilityStore(BaseModel):
-    """漏洞存储管理 — 负责漏洞的增删改查和去重。
+    """漏洞查询视图 — 按验证/生命周期状态过滤 findings。
 
     职责域:
-    - 漏洞列表 (findings)
+    - 漏洞列表 (findings)：由 SessionState 写入并同步
     - ID 缓存用于精确去重 (_finding_ids_cache)
-    - 语义去重阈值 (semantic_dedup_threshold)
 
-    去重策略:
-    1. finding_id 精确 hash 匹配（快）
-    2. 语义相似度匹配（捕获同一漏洞的不同表述），命中后保留证据更强者
+    说明:
+    新增与去重的唯一实现位于 ``SessionState.add_finding``。本类只提供只读的
+    分类查询（get_verified/pending/... ），由 ``SessionState`` 委托调用。
     """
 
     target: Optional[str] = None
@@ -90,118 +89,6 @@ class VulnerabilityStore(BaseModel):
     )
     # PrivateAttr 不受 Pydantic 字段命名限制，用于内部去重追踪
     _finding_ids_cache: set[str] = PrivateAttr(default_factory=set)
-
-    def set_checkpoint_callback(
-        self, callback: Callable[["SessionState", str], None] | None
-    ) -> None:
-        """Install a persistence callback fired at durable state boundaries."""
-        self._checkpoint_callback = callback
-
-    def _notify_checkpoint(self, reason: str) -> None:
-        if self._checkpoint_callback is None:
-            return
-        self._checkpoint_callback(self, reason)
-
-    def add_finding(self, finding: VulnerabilityFinding) -> bool:
-        """添加漏洞发现，自动去重。
-
-        Returns:
-            True if finding was added, False if duplicate (skipped).
-        """
-        # 生成 finding_id（如果还没有）
-        if hasattr(finding, "_sync_status_fields"):
-            finding._sync_status_fields()
-        if not finding.finding_id:
-            finding.finding_id = finding._generate_finding_id()
-
-        # Tie the finding to the owning target when the caller didn't set one.
-        if not finding.target and self.target:
-            finding.target = self.target
-
-        # 第一层：finding_id 精确去重
-        if finding.finding_id in self._finding_ids_cache:
-            logger.debug("跳过重复漏洞: %s (ID: %s)", finding.title, finding.finding_id)
-            return False
-
-        # 第二层：语义相似度去重
-        from vulnclaw.agent.finding_similarity import (
-            _evidence_strength,
-            finding_similarity,
-        )
-
-        for idx, existing in enumerate(self.findings):
-            if finding_similarity(finding, existing) >= self.semantic_dedup_threshold:
-                # 命中语义重复：保留证据更强者
-                if _evidence_strength(finding) > _evidence_strength(existing):
-                    logger.debug(
-                        "语义重复，替换为证据更强的漏洞: %s 取代 %s",
-                        finding.title, existing.title,
-                    )
-                    self._finding_ids_cache.discard(existing.finding_id)
-                    self._finding_ids_cache.add(finding.finding_id)
-                    self.findings[idx] = finding
-                    self._notify_checkpoint("finding_updated")
-                else:
-                    logger.debug("跳过语义重复漏洞: %s", finding.title)
-                return False
-
-        # 附加 skill 溯源（若未显式提供且当前有活跃选择）。深拷贝以免其中的
-        # references_loaded 列表与 active_skill_selection 共享 —— 否则之后
-        # record_loaded_reference() 会追溯性地修改已记录漏洞的溯源。
-        if finding.skill_provenance is None and self.active_skill_selection is not None:
-            finding.skill_provenance = copy.deepcopy(self.active_skill_selection)
-
-        # 添加到追踪集合和列表
-        self._finding_ids_cache.add(finding.finding_id)
-        self.findings.append(finding)
-        self._notify_checkpoint("finding_added")
-        return True
-
-    def set_active_skill_selection(self, provenance: Optional[dict[str, Any]]) -> bool:
-        """Record the active skill selection; emit a run event when it changes.
-
-        Args:
-            provenance: A ``SkillSelection.to_provenance()`` dict (or None).
-
-        Returns:
-            True if the selection changed from the previous turn.
-        """
-        prev = self.active_skill_selection
-        changed = (prev or {}).get("primary") != (provenance or {}).get("primary") or (
-            (prev or {}).get("supporting") != (provenance or {}).get("supporting")
-        )
-        # Same bundle as last turn: carry over references already loaded under it
-        # so provenance keeps a complete record across turns.
-        if not changed and prev is not None and provenance is not None:
-            loaded = prev.get("references_loaded")
-            if loaded and not provenance.get("references_loaded"):
-                provenance = {**provenance, "references_loaded": list(loaded)}
-        self.active_skill_selection = provenance
-        if changed:
-            event = {
-                "kind": "skill_selection_changed" if provenance is not None else "skill_selection_cleared",
-                "timestamp": datetime.now().isoformat(),
-                "primary": (provenance or {}).get("primary"),
-                "supporting": (provenance or {}).get("supporting", []),
-                "reason": (provenance or {}).get("reason", ""),
-                "confidence": (provenance or {}).get("confidence", 0.0),
-            }
-            self.skill_selection_events.append(event)
-            self.skill_selection_events = self.skill_selection_events[-50:]
-        return changed
-
-    def record_loaded_reference(self, skill_name: str, ref_name: str) -> None:
-        """Record a reference loaded via ``load_skill_reference`` onto provenance.
-
-        Findings created after this call inherit the reference in their
-        ``skill_provenance['references_loaded']``.
-        """
-        if self.active_skill_selection is None:
-            return
-        entry = f"{skill_name}/{ref_name}" if skill_name else ref_name
-        loaded = self.active_skill_selection.setdefault("references_loaded", [])
-        if entry and entry not in loaded:
-            loaded.append(entry)
 
     def get_verified_findings(self) -> list[VulnerabilityFinding]:
         """获取已验证的漏洞列表。"""
@@ -759,10 +646,15 @@ class SessionState(BaseModel):
     # ==========================================================================
 
     def add_finding(self, finding: VulnerabilityFinding) -> bool:
-        """添加漏洞发现。
+        """添加漏洞发现，自动去重（新增/去重的唯一实现所在处）。
 
-        [P17 重构] 同时更新 self.findings 和 self._finding_ids_cache，
-        保持向后兼容性。去重逻辑委托给 VulnerabilityStore。
+        去重策略:
+        1. finding_id 精确 hash 匹配（快）
+        2. 语义相似度匹配（捕获同一漏洞的不同表述），命中后保留证据更强者
+
+        写入 self.findings / self._finding_ids_cache，并把同一引用同步给
+        VulnerabilityStore（只读查询视图）。成功新增或替换时触发 checkpoint，
+        使「发现漏洞」成为一个可持久化的进度边界。
         """
         # 生成 finding_id（如果还没有）
         if hasattr(finding, "_sync_status_fields"):
@@ -797,6 +689,7 @@ class SessionState(BaseModel):
                     self._finding_ids_cache.discard(existing.finding_id)
                     self._finding_ids_cache.add(finding.finding_id)
                     self.findings[idx] = finding
+                    self._notify_checkpoint("finding_updated")
                 else:
                     logger.debug("跳过语义重复漏洞: %s", finding.title)
                 return False
@@ -815,6 +708,7 @@ class SessionState(BaseModel):
         self._vulnerabilities.findings = self.findings
         self._vulnerabilities._finding_ids_cache = self._finding_ids_cache
 
+        self._notify_checkpoint("finding_added")
         return True
 
     def get_verified_findings(self) -> list[VulnerabilityFinding]:
