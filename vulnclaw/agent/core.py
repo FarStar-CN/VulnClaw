@@ -153,6 +153,12 @@ class AgentCore:
     ) -> None:
         """Reset per-run runtime state to avoid cross-run contamination."""
         user_lower = user_input.lower() if user_input else ""
+        # A persistent-mode cycle re-enters this reset every cycle for the SAME
+        # engagement (its prompt carries the "[Persistent Cycle N]" marker). Such
+        # a cycle is a continuation, not a fresh task, so accumulated per-target
+        # progress (recon dimensions, dimension-4 activation) must survive the
+        # reset — mirroring how reflexion memory is restored below.
+        is_persistent_cycle = bool(user_input and "[Persistent Cycle " in user_input)
         existing_constraints = self.context.state.task_constraints
         parsed_constraints = (
             extract_task_constraints(user_input)
@@ -160,8 +166,7 @@ class AgentCore:
             else self.context.state.task_constraints
         )
         if (
-            user_input
-            and "[Persistent Cycle " in user_input
+            is_persistent_cycle
             and parsed_constraints.allowed_ports == []
             and parsed_constraints.blocked_ports == []
             and parsed_constraints.allowed_actions == []
@@ -186,27 +191,30 @@ class AgentCore:
         if self.mcp_manager and hasattr(self.mcp_manager, "set_task_constraints"):
             self.mcp_manager.set_task_constraints(self.context.state.task_constraints)
 
-        self.context.state.recon_dimensions_completed = {
-            "server": False,
-            "website": False,
-            "domain": False,
-            "personnel": False,
-        }
-        social_engineering_keywords = [
-            "社会工程",
-            "社工",
-            "人员信息",
-            "作者追踪",
-            "人物追踪",
-            "人物画像",
-            "osint",
-            "情报",
-            "作者",
-            "调查",
-        ]
-        self.context.state.recon_dimension4_active = self.runtime.is_recon_phase and any(
-            kw in user_lower for kw in social_engineering_keywords
-        )
+        # Preserve accumulated recon progress across persistent cycles; only a
+        # genuinely fresh task (or first cycle) starts the four dimensions over.
+        if not is_persistent_cycle:
+            self.context.state.recon_dimensions_completed = {
+                "server": False,
+                "website": False,
+                "domain": False,
+                "personnel": False,
+            }
+            social_engineering_keywords = [
+                "社会工程",
+                "社工",
+                "人员信息",
+                "作者追踪",
+                "人物追踪",
+                "人物画像",
+                "osint",
+                "情报",
+                "作者",
+                "调查",
+            ]
+            self.context.state.recon_dimension4_active = self.runtime.is_recon_phase and any(
+                kw in user_lower for kw in social_engineering_keywords
+            )
         # Re-bind finding parser to the new runtime object
         self._finding_parser = FindingParser(self.context, self.runtime)
 
