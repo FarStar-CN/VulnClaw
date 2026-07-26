@@ -1411,3 +1411,7 @@ class TestWebAuthLoopback:
 
         # Health check is exempt regardless of origin.
         assert await mw.dispatch(_Req("/api/health", "203.0.113.7"), call_next) == "PASSED"
+
+        # Exemption is exact: a look-alike path is NOT exempt for a remote client.
+        look_alike = await mw.dispatch(_Req("/api/healthcheck", "203.0.113.7"), call_next)
+        assert getattr(look_alike, "status_code", None) == 401

@@ -99,14 +99,16 @@ if _HAS_STARLETTE:
         credentials.
         """
 
-        _EXEMPT_PREFIXES: tuple[str, ...] = ("/api/health",)
+        # Exact paths — not prefixes — so an added route like /api/healthcheck
+        # or /api/health-secret is never accidentally left unauthenticated.
+        _EXEMPT_PATHS: frozenset[str] = frozenset({"/api/health"})
 
         async def dispatch(self, request: Request, call_next):  # type: ignore[override]
             path = request.url.path
             client_host = request.client.host if request.client else None
             if (
                 path.startswith("/api/")
-                and not any(path.startswith(p) for p in self._EXEMPT_PREFIXES)
+                and path not in self._EXEMPT_PATHS
                 and not _client_is_loopback(client_host)
             ):
                 auth_header = request.headers.get("Authorization", "")
