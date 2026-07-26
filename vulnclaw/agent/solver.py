@@ -531,18 +531,9 @@ async def solve(
     max_tool_rounds: int = 6,
     stream_sink: Any = None,
     on_event: Optional[Callable[[str, dict], None]] = None,
-    max_directions: int | None = None,
-    max_intents: int | None = None,
-    max_parallel: int | None = None,
 ) -> SolveResult:
-    """Run the model-led solve loop.
+    """Run the model-led solve loop."""
 
-    ``max_directions``, ``max_intents`` and ``max_parallel`` are accepted only
-    for compatibility with older call sites.  They no longer route model
-    thinking or schedule tools.
-    """
-
-    del max_directions, max_intents, max_parallel
     state = _prepare_state(agent, origin=origin, goal=goal)
     if hints:
         state.compact_summary = (

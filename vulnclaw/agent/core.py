@@ -547,13 +547,11 @@ class AgentCore:
         *,
         goal: Optional[str] = None,
         max_steps: int = 80,
-        max_directions: int | None = None,
-        max_intents: int | None = None,
         max_tool_rounds: int = 6,
         stream_sink: Optional["StreamSink"] = None,
         on_event: Optional[Callable[[str, dict], None]] = None,
     ) -> Any:
-        """运行模型主导 solve；旧方向/intent 参数仅作调用兼容。"""
+        """运行模型主导 solve。"""
         from vulnclaw.agent.solver import solve as run_solve
 
         detected_target = target or self._detect_target(user_input)
@@ -569,8 +567,6 @@ class AgentCore:
             origin=origin,
             goal=resolved_goal,
             max_steps=max_steps,
-            max_directions=max_directions,
-            max_intents=max_intents,
             max_tool_rounds=max_tool_rounds,
             stream_sink=stream_sink,
             on_event=on_event,
