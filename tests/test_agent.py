@@ -635,6 +635,95 @@ class TestMemoryStore:
         result = store.retrieve("complex")
         assert result["findings"] == ["SQLi", "XSS"]
 
+    def test_archived_messages_are_persisted_and_searchable(self, tmp_path):
+        from vulnclaw.agent.memory import MemoryStore
+
+        store = MemoryStore(store_dir=tmp_path)
+        store.archive_messages(
+            [
+                {"role": "user", "content": "check legacy-admin endpoint"},
+                {"role": "assistant", "content": "confirmed historical finding"},
+            ]
+        )
+
+        reloaded = MemoryStore(store_dir=tmp_path)
+        results = reloaded.search_messages("legacy-admin")
+        assert len(results) == 1
+        assert results[0]["messages"][0]["role"] == "user"
+
+
+def test_context_manager_moves_complete_old_turns_to_cold_memory(tmp_path):
+    from vulnclaw.agent.context import ContextManager
+    from vulnclaw.agent.memory import MemoryStore
+
+    store = MemoryStore(store_dir=tmp_path)
+    context = ContextManager(max_history=4, memory_store=store)
+    context.add_user_message("old question")
+    context.add_message(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-old",
+                    "type": "function",
+                    "function": {"name": "probe", "arguments": "{}"},
+                }
+            ],
+        }
+    )
+    context.add_message({"role": "tool", "tool_call_id": "call-old", "content": "secret-marker"})
+    context.add_assistant_message("old answer")
+    context.add_user_message("current task")
+    context.add_assistant_message("current answer")
+
+    hot = context.get_messages()
+    assert [message["content"] for message in hot] == ["current task", "current answer"]
+    archived = store.search_messages("secret-marker")
+    assert len(archived) == 1
+    assert [message["role"] for message in archived[0]["messages"]] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+
+
+def test_context_manager_bounds_one_long_subtask_without_splitting_tools(tmp_path):
+    from vulnclaw.agent.context import ContextManager
+    from vulnclaw.agent.memory import MemoryStore
+
+    store = MemoryStore(store_dir=tmp_path)
+    context = ContextManager(max_history=5, memory_store=store)
+    context.add_user_message("keep this current objective")
+    for index in range(4):
+        call_id = f"call-{index}"
+        context.add_message(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "probe", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        context.add_message(
+            {"role": "tool", "tool_call_id": call_id, "content": f"result-{index}"}
+        )
+
+    hot = context.get_messages()
+    assert len(hot) <= 5
+    assert hot[0]["content"] == "keep this current objective"
+    for index, message in enumerate(hot):
+        if message["role"] == "tool":
+            assert hot[index - 1]["role"] == "assistant"
+            assert hot[index - 1]["tool_calls"][0]["id"] == message["tool_call_id"]
+    assert store.search_messages("result-0")
+
 
 # ── prompts.py ───────────────────────────────────────────────────────
 

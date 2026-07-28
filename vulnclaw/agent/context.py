@@ -1135,10 +1135,11 @@ class SessionState(BaseModel):
 class ContextManager:
     """Manages conversation context and session state."""
 
-    def __init__(self, max_history: int = 200) -> None:
+    def __init__(self, max_history: int = 200, memory_store: Any = None) -> None:
         self.max_history = max_history
         self.messages: list[dict[str, Any]] = []
         self.state = SessionState()
+        self.memory_store = memory_store
 
     def add_user_message(self, content: str) -> None:
         """Add a user message to context."""
@@ -1189,7 +1190,33 @@ class ContextManager:
         if len(self.messages) <= self.max_history:
             return
 
-        self.messages = self.messages[-self.max_history :]
+        from vulnclaw.agent.token_counter import group_conversation_turns, group_tool_exchanges
+
+        turns = group_conversation_turns(self.messages)
+        while len(self.messages) > self.max_history and len(turns) > 1:
+            archived = turns.pop(0)
+            self.messages = self.messages[len(archived) :]
+            if self.memory_store is not None:
+                self.memory_store.archive_messages(archived)
+
+        # A single automated subtask can itself contain hundreds of tool
+        # exchanges. Keep its user instruction as a hot anchor, then spill the
+        # oldest complete exchanges until the window is bounded.
+        exchanges = group_tool_exchanges(self.messages)
+        archived_exchanges: list[dict[str, Any]] = []
+        while len(self.messages) > self.max_history and len(exchanges) > 2:
+            remove_at = 1 if exchanges[0][0].get("role") == "user" else 0
+            archived = exchanges.pop(remove_at)
+            archived_exchanges.extend(archived)
+            self.messages = [message for exchange in exchanges for message in exchange]
+        if archived_exchanges and self.memory_store is not None:
+            self.memory_store.archive_messages(archived_exchanges)
+
+    def search_cold_memory(self, query: str, *, limit: int = 5) -> list[dict[str, Any]]:
+        """Retrieve relevant archived turns only when explicitly requested."""
+        if self.memory_store is None:
+            return []
+        return self.memory_store.search_messages(query, limit=limit)
 
     def compact_messages(self, *, max_recent: int = 24, note: str = "") -> str:
         """Explicitly compact older conversation messages for `/compact`."""

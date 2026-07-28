@@ -77,3 +77,42 @@ class MemoryStore:
                 score = value_str.count(query_lower)
                 results.append((key, entry.get("value"), float(score)))
         return sorted(results, key=lambda x: x[2], reverse=True)
+
+    def archive_messages(self, messages: list[dict[str, Any]]) -> None:
+        """Append a complete conversation turn to durable cold storage."""
+        if not messages:
+            return
+        entry = self._cache.setdefault(
+            "conversation_archive",
+            {"value": [], "updated_at": datetime.now().isoformat()},
+        )
+        archive = entry.get("value")
+        if not isinstance(archive, list):
+            archive = []
+            entry["value"] = archive
+        archive.append(
+            {
+                "archived_at": datetime.now().isoformat(),
+                "messages": messages,
+            }
+        )
+        entry["updated_at"] = datetime.now().isoformat()
+        self._save()
+
+    def search_messages(self, query: str, *, limit: int = 5) -> list[dict[str, Any]]:
+        """Search archived conversation turns without loading them into prompts."""
+        query = str(query or "").strip().lower()
+        if not query:
+            return []
+        entry = self._cache.get("conversation_archive", {})
+        archive = entry.get("value", []) if isinstance(entry, dict) else []
+        if not isinstance(archive, list):
+            return []
+        matches: list[dict[str, Any]] = []
+        for record in reversed(archive):
+            rendered = json.dumps(record.get("messages", []), ensure_ascii=False).lower()
+            if query in rendered:
+                matches.append(record)
+                if len(matches) >= max(1, min(int(limit), 20)):
+                    break
+        return matches
