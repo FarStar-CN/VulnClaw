@@ -64,7 +64,7 @@ class AgentCore:
         self.mcp_manager = mcp_manager
         memory_dir = config.session.output_dir / "memory"
         self.context = ContextManager(
-            max_history=24,
+            max_history=48,
             memory_store=MemoryStore(store_dir=memory_dir),
         )
         self.active_role: str | None = None
