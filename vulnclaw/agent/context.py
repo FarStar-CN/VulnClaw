@@ -1135,8 +1135,17 @@ class SessionState(BaseModel):
 class ContextManager:
     """Manages conversation context and session state."""
 
-    def __init__(self, max_history: int = 200, memory_store: Any = None) -> None:
-        self.max_history = max_history
+    def __init__(
+        self,
+        max_history: int = 200,
+        memory_store: Any = None,
+        *,
+        max_tokens: int = 32000,
+        search_max_chars: int = 6000,
+    ) -> None:
+        self.max_history = max(1, int(max_history))
+        self.max_tokens = max(256, int(max_tokens))
+        self.search_max_chars = max(256, int(search_max_chars))
         self.messages: list[dict[str, Any]] = []
         self.state = SessionState()
         self.memory_store = memory_store
@@ -1164,7 +1173,10 @@ class ContextManager:
         role = str(message.get("role", "") or "").strip()
         if not role:
             return
-        self.messages.append(copy.deepcopy(message))
+        stored_message = copy.deepcopy(message)
+        if role == "tool":
+            stored_message = self._offload_large_tool_message(stored_message)
+        self.messages.append(stored_message)
         self._trim()
 
     def add_system_message(self, content: str) -> None:
@@ -1180,6 +1192,53 @@ class ContextManager:
         """Reset context and session state."""
         self.messages = []
         self.state = SessionState()
+        if self.memory_store is not None:
+            new_scope = getattr(self.memory_store, "new_scope", None)
+            if callable(new_scope):
+                new_scope()
+
+    def _memory_scope(self) -> str:
+        return str(getattr(self.memory_store, "session_id", "") or "")
+
+    def _archive_messages(self, messages: list[dict[str, Any]], *, kind: str) -> str:
+        if not messages or self.memory_store is None:
+            return ""
+        try:
+            return str(
+                self.memory_store.archive_messages(
+                    copy.deepcopy(messages),
+                    scope=self._memory_scope(),
+                    target=str(self.state.target or ""),
+                    kind=kind,
+                )
+                or ""
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Cold-memory archive failed; retaining hot history: %s", exc)
+            return ""
+
+    def _offload_large_tool_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        from vulnclaw.agent.token_counter import estimate_message_tokens
+
+        if self.memory_store is None or estimate_message_tokens(message) <= self.max_tokens // 2:
+            return message
+        record_id = self._archive_messages([message], kind="large_tool_result")
+        if not record_id:
+            return message
+        content = str(message.get("content", "") or "")
+        preview = content[:2000]
+        if len(content) > len(preview):
+            preview += "..."
+        message["content"] = (
+            f"[cold-memory:{record_id}] Large tool result archived. "
+            f"Use memory_search with query '{record_id}' for a bounded excerpt.\n{preview}"
+        )
+        return message
+
+    def _over_hot_limit(self, messages: list[dict[str, Any]]) -> bool:
+        from vulnclaw.agent.token_counter import estimate_tokens
+
+        return len(messages) > self.max_history or estimate_tokens(messages) > self.max_tokens
 
     def _trim(self) -> None:
         """Trim old messages to stay within limit.
@@ -1187,36 +1246,48 @@ class ContextManager:
         Instead of blindly dropping old messages, we compress them
         into a summary to preserve key discoveries for multi-round loops.
         """
-        if len(self.messages) <= self.max_history:
+        if not self._over_hot_limit(self.messages):
             return
 
         from vulnclaw.agent.token_counter import group_conversation_turns, group_tool_exchanges
 
-        turns = group_conversation_turns(self.messages)
-        while len(self.messages) > self.max_history and len(turns) > 1:
+        candidate = list(self.messages)
+        turns = group_conversation_turns(candidate)
+        archived_messages: list[dict[str, Any]] = []
+        while self._over_hot_limit(candidate) and len(turns) > 1:
             archived = turns.pop(0)
-            self.messages = self.messages[len(archived) :]
-            if self.memory_store is not None:
-                self.memory_store.archive_messages(archived)
+            archived_messages.extend(archived)
+            candidate = candidate[len(archived) :]
 
         # A single automated subtask can itself contain hundreds of tool
         # exchanges. Keep its user instruction as a hot anchor, then spill the
         # oldest complete exchanges until the window is bounded.
-        exchanges = group_tool_exchanges(self.messages)
-        archived_exchanges: list[dict[str, Any]] = []
-        while len(self.messages) > self.max_history and len(exchanges) > 2:
+        exchanges = group_tool_exchanges(candidate)
+        while self._over_hot_limit(candidate) and len(exchanges) > 2:
             remove_at = 1 if exchanges[0][0].get("role") == "user" else 0
             archived = exchanges.pop(remove_at)
-            archived_exchanges.extend(archived)
-            self.messages = [message for exchange in exchanges for message in exchange]
-        if archived_exchanges and self.memory_store is not None:
-            self.memory_store.archive_messages(archived_exchanges)
+            archived_messages.extend(archived)
+            candidate = [message for exchange in exchanges for message in exchange]
+
+        if not archived_messages:
+            return
+        if self.memory_store is not None and not self._archive_messages(
+            archived_messages, kind="history"
+        ):
+            return
+        self.messages = candidate
 
     def search_cold_memory(self, query: str, *, limit: int = 5) -> list[dict[str, Any]]:
         """Retrieve relevant archived turns only when explicitly requested."""
         if self.memory_store is None:
             return []
-        return self.memory_store.search_messages(query, limit=limit)
+        return self.memory_store.search_messages(
+            query,
+            limit=limit,
+            max_chars=self.search_max_chars,
+            scope=self._memory_scope(),
+            target=str(self.state.target or ""),
+        )
 
     def compact_messages(self, *, max_recent: int = 24, note: str = "") -> str:
         """Explicitly compact older conversation messages for `/compact`."""
@@ -1224,8 +1295,17 @@ class ContextManager:
         if len(self.messages) <= max_recent:
             return "No compaction needed."
 
-        recent = self.messages[-max_recent:]
-        old = self.messages[:-max_recent]
+        from vulnclaw.agent.token_counter import group_tool_exchanges
+
+        groups = group_tool_exchanges(self.messages)
+        recent_groups: list[list[dict[str, Any]]] = []
+        recent_count = 0
+        while groups and recent_count < max_recent:
+            group = groups.pop()
+            recent_groups.insert(0, group)
+            recent_count += len(group)
+        recent = [message for group in recent_groups for message in group]
+        old = [message for group in groups for message in group]
         summary = self._compress_messages(old) or "(older conversation omitted)"
         if note:
             summary = f"{note}\n{summary}"
@@ -1322,5 +1402,9 @@ class ContextManager:
 
         Used when context overflow causes repeated LLM errors.
         """
-        if len(self.messages) > max_messages:
-            self.messages = self.messages[-max_messages:]
+        original_limit = self.max_history
+        try:
+            self.max_history = max(1, max_messages)
+            self._trim()
+        finally:
+            self.max_history = original_limit

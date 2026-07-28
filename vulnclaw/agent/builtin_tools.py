@@ -883,7 +883,12 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
         matches = search(query, limit=args.get("limit", 5))
         if not matches:
             return "[-] No matching archived conversation"
-        return json.dumps(matches, ensure_ascii=False, indent=2)
+        rendered = json.dumps(matches, ensure_ascii=False, indent=2)
+        max_chars = max(256, int(getattr(context, "search_max_chars", 6000)))
+        if len(rendered) > max_chars:
+            suffix = "\n...[cold-memory search output truncated]"
+            rendered = rendered[: max_chars - len(suffix)] + suffix
+        return rendered
 
     if tool_name == "source_extract":
         return await execute_source_extract(agent, args)

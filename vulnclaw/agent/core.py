@@ -64,8 +64,14 @@ class AgentCore:
         self.mcp_manager = mcp_manager
         memory_dir = config.session.output_dir / "memory"
         self.context = ContextManager(
-            max_history=48,
-            memory_store=MemoryStore(store_dir=memory_dir),
+            max_history=config.session.context_hot_max_messages,
+            max_tokens=config.session.context_hot_max_tokens,
+            search_max_chars=config.session.memory_search_max_chars,
+            memory_store=MemoryStore(
+                store_dir=memory_dir,
+                archive_max_bytes=config.session.memory_archive_max_bytes,
+                archive_max_files=config.session.memory_archive_max_files,
+            ),
         )
         self.active_role: str | None = None
         self._client = None
@@ -150,6 +156,16 @@ class AgentCore:
         self._client = None
         self._key_pool = config.llm.key_pool()
         self._key_index = 0
+        context = getattr(self, "context", None)
+        if context is not None:
+            context.max_history = config.session.context_hot_max_messages
+            context.max_tokens = config.session.context_hot_max_tokens
+            context.search_max_chars = config.session.memory_search_max_chars
+            memory_store = getattr(context, "memory_store", None)
+            if memory_store is not None:
+                memory_store.archive_max_bytes = config.session.memory_archive_max_bytes
+                memory_store.archive_max_files = config.session.memory_archive_max_files
+            context._trim()
 
     def _reset_runtime_state(
         self,

@@ -65,6 +65,26 @@ class TestColdMemoryTool:
         names = {tool["function"]["name"] for tool in build_openai_tools(None)}
         assert "memory_search" in names
 
+    async def test_memory_search_final_output_is_bounded(self, tmp_path):
+        from vulnclaw.agent.builtin_tools import execute_mcp_tool
+        from vulnclaw.agent.context import ContextManager
+        from vulnclaw.agent.memory import MemoryStore
+
+        agent = DummyAgent()
+        store = MemoryStore(store_dir=tmp_path)
+        store.archive_messages(
+            [{"role": "tool", "content": "needle " + "x" * 10000}],
+            scope=store.session_id,
+        )
+        agent.context = ContextManager(
+            memory_store=store,
+            search_max_chars=512,
+        )
+
+        result = await execute_mcp_tool(agent, "memory_search", {"query": "needle"})
+
+        assert len(result) <= 512
+
 
 class TestBuiltinPythonExecute:
     async def test_safe_mode_blocks_network_access(self, monkeypatch, tmp_path):
