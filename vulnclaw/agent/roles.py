@@ -9,12 +9,16 @@ from typing import Any
 
 @dataclass(frozen=True)
 class AgentRole:
-    """A specialist role definition used by the team supervisor."""
+    """One code-enforced role definition for team and sub-agent runs."""
 
     name: str
     persona: str
     allowed_tool_globs: tuple[str, ...]
     goal_template: str
+    session_kind: str = "team"
+    persistent: bool = False
+    allowed_child_types: tuple[str, ...] = ()
+    task_kinds: tuple[str, ...] = ()
 
 
 ROLE_REGISTRY: dict[str, AgentRole] = {
@@ -48,6 +52,8 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
             "Done when: {done_when}\n"
             "Return verified facts, sources, and follow-up surfaces only."
         ),
+        session_kind="leaf",
+        task_kinds=("research",),
     ),
     "developer": AgentRole(
         name="developer",
@@ -115,6 +121,8 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
             "Done when: {done_when}\n"
             "Use real tool output as evidence and record what was verified."
         ),
+        session_kind="leaf",
+        task_kinds=("execute",),
     ),
     "adviser": AgentRole(
         name="adviser",
@@ -131,6 +139,72 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
     ),
 }
 
+SUBAGENT_ROLE_REGISTRY: dict[str, AgentRole] = {
+    "researcher": ROLE_REGISTRY["researcher"],
+    "executor": ROLE_REGISTRY["executor"],
+    "group-leader": AgentRole(
+        name="group-leader",
+        persona=(
+            "You are a Group Leader. Plan bounded waves, delegate execution to "
+            "fresh leaf agents, compare their returned evidence, and synthesize. "
+            "Do not execute target-facing tools yourself."
+        ),
+        allowed_tool_globs=("agent_run", "evidence_*"),
+        goal_template=(
+            "Coordination objective: {objective}\n"
+            "Done when: {done_when}\n"
+            "Return a bounded evidence-backed synthesis."
+        ),
+        session_kind="group_leader",
+        persistent=True,
+        allowed_child_types=("researcher", "executor", "verifier"),
+        task_kinds=("coordinate",),
+    ),
+    "verifier": AgentRole(
+        name="verifier",
+        persona=(
+            "You are an independent Verifier. Recheck the assigned claim using "
+            "a different method, input, control, or evidence class. Do not trust "
+            "the original executor's conclusion."
+        ),
+        allowed_tool_globs=(
+            "load_skill_reference",
+            "evidence_*",
+            "source_extract",
+            "runtime_diff_probe",
+            "shell_command",
+            "python_execute",
+            "fetch",
+            "http*",
+            "request*",
+            "browser*",
+            "*scan*",
+            "*recon*",
+        ),
+        goal_template=(
+            "Verification objective: {objective}\n"
+            "Done when: {done_when}\n"
+            "Return independent evidence and a verdict."
+        ),
+        session_kind="leaf",
+        task_kinds=("verify",),
+    ),
+    "general": AgentRole(
+        name="general",
+        persona=(
+            "You are a general isolated worker. Follow the assignment without "
+            "delegating and use no specialist-only assumptions."
+        ),
+        allowed_tool_globs=(),
+        goal_template=(
+            "Objective: {objective}\n"
+            "Done when: {done_when}\n"
+            "Return a concise result."
+        ),
+        session_kind="leaf",
+        task_kinds=("general",),
+    ),
+}
 
 def normalize_role_name(role: str | None) -> str | None:
     """Return a canonical role name, or ``None`` when no role is active."""
@@ -143,7 +217,24 @@ def get_role(role: str | None) -> AgentRole | None:
     normalized = normalize_role_name(role)
     if normalized is None:
         return None
-    return ROLE_REGISTRY.get(normalized)
+    return ROLE_REGISTRY.get(normalized) or SUBAGENT_ROLE_REGISTRY.get(
+        normalized
+    )
+
+
+def subagent_roles() -> tuple[AgentRole, ...]:
+    """Return only roles registered for the compact task runtime."""
+
+    return tuple(SUBAGENT_ROLE_REGISTRY.values())
+
+
+def roles_for_task_kind(task_kind: str) -> tuple[str, ...]:
+    normalized = str(task_kind or "").strip().lower()
+    return tuple(
+        role.name
+        for role in subagent_roles()
+        if normalized in role.task_kinds
+    )
 
 
 def require_role(role: str) -> AgentRole:
