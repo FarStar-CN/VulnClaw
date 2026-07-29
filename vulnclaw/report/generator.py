@@ -1329,6 +1329,7 @@ def _build_report_finding(finding: VulnerabilityFinding) -> dict[str, Any]:
         "verification_note": finding.verification_note,
         "lifecycle_status": finding.lifecycle_status,
         "evidence_level": finding.evidence_level,
+        "subagent_provenance": finding.subagent_provenance,
         "location_summary": _extract_location_summary(finding),
         "repro_summary": _build_repro_summary(finding),
     }

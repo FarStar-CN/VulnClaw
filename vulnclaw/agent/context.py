@@ -580,13 +580,36 @@ class SessionState(BaseModel):
     skill_selection_events: list[dict[str, Any]] = Field(
         default_factory=list, description="Audit log of skill-selection changes"
     )
+    subagent_events: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Bounded durable projection of sub-agent runtime events",
+    )
+    subagent_evidence_provenance: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Parent evidence id to originating sub-agent task identity",
+    )
     semantic_dedup_threshold: float = Field(
         default=0.75, description="语义去重的相似度阈值（0-1）"
+    )
+    session_kind: str = Field(
+        default="parent", description="Session owner kind: parent, group_leader, or leaf"
+    )
+    run_id: str = Field(default="", description="Owning solve/runtime identifier")
+    parent_session_id: str = Field(
+        default="", description="Parent session identifier for sub-agent checkpoints"
+    )
+    task_id: str = Field(default="", description="Sub-agent task identifier")
+    lifecycle_status: str = Field(
+        default="", description="Last persisted sub-agent lifecycle status"
     )
 
     # ★ 漏洞去重追踪（PrivateAttr）
     _finding_ids_cache: set[str] = PrivateAttr(default_factory=set)
     _content_hash: str = PrivateAttr(default="")
+    _save_path: Optional[Path] = PrivateAttr(default=None)
+    _checkpoint_transform: Callable[
+        ["SessionState", dict[str, Any]], dict[str, Any]
+    ] | None = PrivateAttr(default=None)
     _checkpoint_callback: Callable[["SessionState", str], None] | None = PrivateAttr(
         default=None
     )
@@ -977,16 +1000,23 @@ class SessionState(BaseModel):
         保持向后兼容性。
         [Perf] 对比 MD5 内容哈希，跳过未变更的写入。
         """
+        if path is None and self._save_path is not None:
+            path = self._save_path
         if path is None:
             from vulnclaw.config.settings import SESSIONS_DIR
 
             safe_target = (self.target or "unknown").replace("/", "_").replace(":", "_")
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = SESSIONS_DIR / f"{timestamp}_{safe_target}.json"
+        else:
+            path = Path(path)
+        self._save_path = path
 
         path.parent.mkdir(parents=True, exist_ok=True)
         # [P18 兼容] 获取序列化数据并添加 executed_steps
         data = self.model_dump(mode="json")
+        if self._checkpoint_transform is not None:
+            data = self._checkpoint_transform(self, data)
         data["executed_steps"] = self.executed_steps
         content = json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -998,6 +1028,11 @@ class SessionState(BaseModel):
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return path
+
+    def set_save_path(self, path: Path) -> None:
+        """Pin future no-argument saves to one collision-free checkpoint."""
+
+        self._save_path = Path(path)
 
     @classmethod
     def load(cls, path: Path) -> "SessionState":
@@ -1018,7 +1053,9 @@ class SessionState(BaseModel):
         # [P18 兼容] 移除 executed_steps 字段，避免 Pydantic 验证错误
         data.pop("executed_steps", None)
 
-        return cls(**data)
+        state = cls(**data)
+        state.set_save_path(path)
+        return state
 
 # ==============================================================================
 # [P17 重构结束] SessionState 组合模式重构

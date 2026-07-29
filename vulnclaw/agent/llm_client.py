@@ -9,6 +9,28 @@ import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
+from vulnclaw.agent.subagent.budget import (
+    fail_request as _fail_subagent_llm_admission,
+)
+from vulnclaw.agent.subagent.budget import (
+    fit_messages as _hard_fit_subagent_messages,
+)
+from vulnclaw.agent.subagent.budget import (
+    is_subagent as _is_subagent,
+)
+from vulnclaw.agent.subagent.budget import (
+    prepare_request as _prepare_subagent_llm_request,
+)
+from vulnclaw.agent.subagent.budget import (
+    record_usage as _record_subagent_llm_usage,
+)
+from vulnclaw.agent.subagent.budget import (
+    reserve_request as _reserve_subagent_llm_request,
+)
+from vulnclaw.agent.subagent.budget import (
+    settle_request as _settle_subagent_llm_admission,
+)
+
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
 
@@ -22,6 +44,26 @@ from vulnclaw.agent.tool_call_manager import (  # noqa: E402
 
 _CONTEXT_USABLE_RATIO = 0.9
 _DEFAULT_AUTO_TOOL_ROUNDS = 6
+_SYNC_STREAM_END = object()
+
+
+def _next_sync_stream_item(iterator: Any) -> Any:
+    try:
+        return next(iterator)
+    except StopIteration:
+        return _SYNC_STREAM_END
+
+
+async def _create_streaming_response(
+    agent: AgentContext, kwargs: dict[str, Any]
+) -> Any:
+    """Open a synchronous provider stream without blocking sibling agents."""
+
+    create = agent._get_client().chat.completions.create
+    response = await asyncio.to_thread(create, **kwargs, stream=True)
+    if inspect.isawaitable(response):
+        response = await response
+    return response
 
 
 def _fit_context_window(agent: AgentContext, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -40,6 +82,8 @@ def _fit_context_window(agent: AgentContext, messages: list[dict[str, Any]]) -> 
         return messages
 
     trimmed = truncate_messages(messages, budget, preserve_system=True)
+    if _is_subagent(agent) and estimate_tokens(trimmed) > budget:
+        trimmed = _hard_fit_subagent_messages(trimmed, budget)
     try:
         from rich.console import Console
 
@@ -135,7 +179,7 @@ async def _stream_chat_completion_message(
 
     kwargs = build_chat_completion_kwargs(agent, messages, tools)
     stream_sink.on_status("Thinking...")
-    response = agent._get_client().chat.completions.create(**kwargs, stream=True)
+    response = await _create_streaming_response(agent, kwargs)
 
     full_text = ""
     reasoning_buffer = ""
@@ -257,6 +301,8 @@ def build_chat_completion_kwargs(
     Backward-compatible wrapper that accepts AgentContext and delegates to
     config/llm_utils.build_chat_completion_kwargs with agent.config.llm.
     """
+    max_tokens = _prepare_subagent_llm_request(agent, messages, max_tokens)
+
     return _build_chat_completion_kwargs_llm(
         agent.config.llm,
         messages,
@@ -266,7 +312,7 @@ def build_chat_completion_kwargs(
     )
 
 
-async def _call_with_persistent_retries(
+async def _call_with_persistent_retries_unbudgeted(
     agent: AgentContext, request_fn, stage_label: str, max_retries: int = 20
 ) -> tuple[Any, int]:
     """Keep retrying retriable LLM calls until success, max retries, or manual interruption.
@@ -350,6 +396,23 @@ async def _call_with_persistent_retries(
     raise RuntimeError(
         f"{stage_label} LLM 调用失败：已达到最大重试次数 {max_retries}"
     )
+
+
+async def _call_with_persistent_retries(
+    agent: AgentContext, request_fn, stage_label: str, max_retries: int = 20
+) -> tuple[Any, int]:
+    admission = _reserve_subagent_llm_request(agent)
+    try:
+        response, retries = await _call_with_persistent_retries_unbudgeted(
+            agent, request_fn, stage_label, max_retries
+        )
+        actual_tokens = _record_subagent_llm_usage(agent, response)
+        _settle_subagent_llm_admission(agent, admission, actual_tokens)
+        admission = None
+        return response, retries
+    finally:
+        if admission is not None:
+            _fail_subagent_llm_admission(agent, admission)
 
 
 def _prepend_retry_notice(text: str, retry_attempts: int) -> str:
@@ -541,10 +604,10 @@ class _AsyncIterWrapper:
         return self
 
     async def __anext__(self):
-        try:
-            return next(self._iter)
-        except StopIteration:
+        item = await asyncio.to_thread(_next_sync_stream_item, self._iter)
+        if item is _SYNC_STREAM_END:
             raise StopAsyncIteration
+        return item
 
 
 def _ensure_async_iter(response):
@@ -702,11 +765,10 @@ async def call_llm_stream(
     tools = agent._build_openai_tools()
 
     kwargs = build_chat_completion_kwargs(agent, messages, tools)
-    client = agent._get_client()
 
     try:
         stream_sink.on_status("Thinking...")
-        response = client.chat.completions.create(**kwargs, stream=True)
+        response = await _create_streaming_response(agent, kwargs)
 
         full_text = ""
         reasoning_buffer = ""
