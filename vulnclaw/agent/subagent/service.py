@@ -336,49 +336,111 @@ class TaskService:
                 )
                 if not done:
                     record.token.cancel("task wall timeout")
-                    execution.cancel()
-                    await asyncio.gather(execution, return_exceptions=True)
-                    raise TimeoutError("task wall timeout")
+                    result = await self._cancel_execution(execution)
+                    await self._finish_record(
+                        record,
+                        TaskStatus.FAILED,
+                        result=result,
+                        error="task wall timeout",
+                    )
+                    return
                 result = await execution
             if record.token.cancelled:
-                self._terminalize(
+                await self._finish_record(
                     record,
                     TaskStatus.KILLED,
+                    result=result,
                     error=record.token.reason,
                 )
             elif result.status in {"failed", "error"}:
-                self._terminalize(
+                await self._finish_record(
                     record,
                     TaskStatus.FAILED,
                     result=result,
                     error=result.error or result.summary,
                 )
             elif result.status in {"killed", "cancelled"}:
-                self._terminalize(
+                await self._finish_record(
                     record,
                     TaskStatus.KILLED,
                     result=result,
                     error=result.error or result.summary,
                 )
             else:
-                self._terminalize(record, TaskStatus.COMPLETED, result=result)
-        except TimeoutError as exc:
-            self._terminalize(record, TaskStatus.FAILED, error=str(exc))
+                await self._finish_record(
+                    record,
+                    TaskStatus.COMPLETED,
+                    result=result,
+                )
         except asyncio.CancelledError:
             record.token.cancel(record.token.reason or "cancelled")
-            if execution is not None and not execution.done():
-                execution.cancel()
-                await asyncio.gather(execution, return_exceptions=True)
-            self._terminalize(
+            result = await self._cancel_execution(execution)
+            await self._finish_record(
                 record,
                 TaskStatus.KILLED,
+                result=result,
                 error=record.token.reason or "cancelled",
             )
         except BaseException as exc:
-            self._terminalize(record, TaskStatus.FAILED, error=str(exc))
+            await self._finish_record(
+                record,
+                TaskStatus.FAILED,
+                error=str(exc),
+            )
         finally:
             if record.background and record.status.terminal:
                 self._notify(record)
+
+    @staticmethod
+    async def _cancel_execution(
+        execution: Optional[asyncio.Task[AgentResult]],
+    ) -> Optional[AgentResult]:
+        if execution is None:
+            return None
+        if not execution.done():
+            execution.cancel()
+        values = await asyncio.gather(execution, return_exceptions=True)
+        value = values[0]
+        return value if isinstance(value, AgentResult) else None
+
+    async def _finish_record(
+        self,
+        record: TaskRecord,
+        status: TaskStatus,
+        *,
+        result: Optional[AgentResult] = None,
+        error: str = "",
+    ) -> None:
+        if record.definition.session_kind == "group_leader":
+            settle_reason = (
+                error
+                or (result.summary if result is not None else "")
+                or status.value
+            )
+            await self.settle_children(
+                record.task_id,
+                reason=settle_reason,
+            )
+        self._terminalize(record, status, result=result, error=error)
+
+    async def settle_children(self, task_id: str, *, reason: str) -> None:
+        """Cancel and await every direct child before a Group becomes terminal."""
+
+        record = self._record(task_id)
+        for child_id in tuple(record.child_ids):
+            child = self.records.get(child_id)
+            if child is None:
+                continue
+            if not child.status.terminal:
+                await self._cancel_tree(child, reason)
+                continue
+            task = child.asyncio_task
+            if (
+                task is not None
+                and task is not asyncio.current_task()
+                and not task.done()
+            ):
+                await asyncio.gather(task, return_exceptions=True)
 
     @asynccontextmanager
     async def _execution_slot(
@@ -576,7 +638,7 @@ class TaskService:
         if task is not None and task is not current and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        self._terminalize(record, TaskStatus.KILLED, error=reason)
+        await self._finish_record(record, TaskStatus.KILLED, error=reason)
         if record.background:
             self._notify(record)
 
@@ -608,13 +670,23 @@ class TaskService:
             if pending:
                 for task in pending:
                     task.cancel()
-                for record in self.records.values():
+                unfinished = [
+                    record
+                    for record in self.records.values()
+                    if not record.status.terminal
+                ]
+                for record in unfinished:
                     if record.status.terminal:
                         continue
                     record.token.cancel("task service shutdown timeout")
                     task = record.asyncio_task
                     if task is not None and not task.done():
                         task.cancel()
+                for record in sorted(
+                    unfinished,
+                    key=lambda item: item.definition.session_kind
+                    == "group_leader",
+                ):
                     self._terminalize(
                         record,
                         TaskStatus.KILLED,

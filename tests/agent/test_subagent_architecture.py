@@ -257,6 +257,8 @@ async def test_task_kind_is_checked_against_hard_coded_role_registry() -> None:
     leader_prompt = group_leader_prompt(target="target", assignment="scan")
     assert "task_kind=execute" in leader_prompt
     assert "nmap_scan" in leader_prompt
+    assert "exactly one foreground researcher" in leader_prompt
+    assert "non-overlapping scopes" in leader_prompt
     await service.shutdown()
 
 
@@ -399,13 +401,21 @@ async def test_terminal_notification_is_injected_into_main_input_queue() -> None
     content = agent.context.messages[-1]["content"]
     assert "<task-notification>" in content
     assert "verified auth boundary" in content
-    assert "e101" in content
+    payload = json.loads(
+        content.removeprefix("<task-notification>\n").removesuffix(
+            "\n</task-notification>"
+        )
+    )
+    assert payload["parent_evidence_ids"] == ["e101"]
+    assert payload["evidence_namespace"] == "main"
+    assert "evidence" not in payload
     assert service.drain_notifications() == []
     await service.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_group_cancel_cascades_to_running_leaf() -> None:
+    events: list[tuple[str, dict[str, object]]] = []
     leaf_started = asyncio.Event()
     leaf_cancelling = asyncio.Event()
     release_cancellation = asyncio.Event()
@@ -424,10 +434,21 @@ async def test_group_cancel_cascades_to_running_leaf() -> None:
             except asyncio.CancelledError:
                 leaf_cancelling.set()
                 await release_cancellation.wait()
-                raise
+                return AgentResult(
+                    status="cancelled",
+                    summary="leaf cancelled",
+                    usage={
+                        "requests": 2,
+                        "input_tokens": 120,
+                        "output_tokens": 30,
+                    },
+                )
         return AgentResult(summary="unexpected")
 
-    service = TaskService(runner=AgentRunner(execute))
+    service = TaskService(
+        runner=AgentRunner(execute),
+        event_sink=lambda kind, payload: events.append((kind, payload)),
+    )
     handle = await service.spawn_background(
         AgentSpec("group", "coordinate", "group-leader"),
         service.main_context(),
@@ -452,7 +473,92 @@ async def test_group_cancel_cascades_to_running_leaf() -> None:
         service.records[task_id].status is TaskStatus.KILLED
         for task_id in group_snapshot.child_ids
     )
+    leaf = service.records[group_snapshot.child_ids[0]]
+    assert leaf.result is not None
+    assert leaf.result.usage["input_tokens"] == 120
+    terminal_member = next(
+        payload
+        for kind, payload in events
+        if kind == "group_progress"
+        and payload.get("member_event") == "terminal"
+    )
+    assert terminal_member["member_usage"] == {
+        "requests": 2,
+        "input_tokens": 120,
+        "output_tokens": 30,
+    }
+    leaf_terminal_index = next(
+        index
+        for index, (kind, payload) in enumerate(events)
+        if kind == "group_progress"
+        and payload.get("member_event") == "terminal"
+    )
+    group_terminal_index = next(
+        index
+        for index, (kind, _payload) in enumerate(events)
+        if kind == "group_cancelled"
+    )
+    notified_index = next(
+        index
+        for index, (kind, _payload) in enumerate(events)
+        if kind == "group_notified"
+    )
+    assert leaf_terminal_index < group_terminal_index < notified_index
     await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_job_never_exposes_uncommitted_leaf_evidence_ids() -> None:
+    from vulnclaw.agent.subagent.integration import (
+        execute_agent_job,
+        get_task_runtime,
+    )
+
+    root = SimpleNamespace(
+        config=VulnClawConfig(),
+        context=ContextManager(),
+        _subagent_ctx=SubagentContext(),
+    )
+    runtime = get_task_runtime(root)
+    service = runtime.service
+    group = service._register(
+        AgentSpec("group", "coordinate", "group-leader"),
+        service.main_context(),
+        background=True,
+    )
+    assert group.context is not None
+    leaf = service._register(
+        AgentSpec("leaf", "distinct probe", "executor"),
+        group.context,
+        background=False,
+    )
+    leaf.status = TaskStatus.COMPLETED
+    leaf.result = AgentResult(
+        summary="verified by e006; dropped local evidence e007",
+        content="FINAL: cite e006, not e007",
+        evidence=["e006"],
+    )
+
+    pending = await execute_agent_job(root, {"action": "list"})
+    assert "e006" not in pending
+    assert "e007" not in pending
+    pending_payload = json.loads(pending)["tasks"][1]
+    assert pending_payload["result_pending_parent_commit"] is True
+    assert pending_payload["result"]["parent_evidence_ids"] == []
+
+    runtime.evidence_maps[(group.task_id, "main")] = {"e006": "e011"}
+    committed = await execute_agent_job(root, {"action": "list"})
+    assert "e006" not in committed
+    assert "e007" not in committed
+    committed_result = json.loads(committed)["tasks"][1]["result"]
+    assert "evidence" not in committed_result
+    assert committed_result["parent_evidence_ids"] == ["e011"]
+    assert committed_result["summary"] == (
+        "verified by e011; dropped local evidence [uncommitted evidence]"
+    )
+    assert committed_result["content"] == (
+        "FINAL: cite e011, not [uncommitted evidence]"
+    )
 
 
 def test_child_state_seed_copies_knowledge_without_execution_history() -> None:
@@ -777,6 +883,7 @@ def test_terminal_commit_uses_latest_parent_state_and_keeps_provenance() -> None
 async def test_real_agent_adapter_runs_leader_with_parallel_leaf_wave(monkeypatch) -> None:
     from vulnclaw.agent.solver import SolveResult
     from vulnclaw.agent.subagent.integration import (
+        execute_agent_job,
         execute_agent_run,
         get_task_runtime,
     )
@@ -828,16 +935,29 @@ async def test_real_agent_adapter_runs_leader_with_parallel_leaf_wave(monkeypatc
                     },
                 ),
             )
-            assert all(json.loads(item)["ok"] for item in results)
+            payloads = [json.loads(item) for item in results]
+            assert all(item["ok"] for item in payloads)
+            parent_ids = [
+                evidence_id
+                for item in payloads
+                for evidence_id in item["parent_evidence_ids"]
+            ]
+            child.context.state.agent_state.final_answer = (
+                f"FINAL: cite {' and '.join(parent_ids)}"
+            )
         else:
+            child.context.state.agent_state.remember_tool_result(
+                tool=child.active_role,
+                arguments={"task": child.context.state.task_id},
+                output=f"distinct evidence from {child.active_role}",
+            )
             leaf_active += 1
             leaf_peak = max(leaf_peak, leaf_active)
             if leaf_active == 2:
                 leaf_wave_started.set()
             await release_leaf_wave.wait()
             leaf_active -= 1
-
-        child.context.state.agent_state.final_answer = f"FINAL: {kind} done"
+            child.context.state.agent_state.final_answer = "FINAL: cite e006"
         return SolveResult(
             completed=True,
             reason="done",
@@ -848,6 +968,12 @@ async def test_real_agent_adapter_runs_leader_with_parallel_leaf_wave(monkeypatc
 
     monkeypatch.setattr("vulnclaw.agent.solver.solve", fake_solve)
     root = FakeAgent()
+    for index in range(5):
+        root.context.state.agent_state.remember_tool_result(
+            tool="main",
+            arguments={"baseline": index},
+            output=f"baseline {index}",
+        )
     raw = await execute_agent_run(
         root,
         {
@@ -863,13 +989,35 @@ async def test_real_agent_adapter_runs_leader_with_parallel_leaf_wave(monkeypatc
 
     await asyncio.wait_for(leaf_wave_started.wait(), timeout=1)
     assert leaf_peak == 2
+    for index in range(14):
+        root.context.state.agent_state.remember_tool_result(
+            tool="main",
+            arguments={"concurrent": index},
+            output=f"concurrent main evidence {index}",
+        )
     release_leaf_wave.set()
 
     runtime = get_task_runtime(root)
     await _wait_for_background(runtime.service, handle["task_id"])
+    collected = json.loads(
+        await execute_agent_job(
+            root,
+            {"action": "collect", "job_id": handle["task_id"]},
+        )
+    )
+    assert collected["result"]["parent_evidence_ids"] == ["e020", "e021"]
+    assert collected["result"]["summary"] in {
+        "FINAL: cite e020 and e021",
+        "FINAL: cite e021 and e020",
+    }
+    assert "e006" not in json.dumps(collected)
+    assert "e007" not in json.dumps(collected)
     [notification] = runtime.service.drain_notifications()
     assert notification.task_id == handle["task_id"]
     assert notification.status is TaskStatus.COMPLETED
+    assert notification.result is not None
+    assert notification.result.evidence == ["e020", "e021"]
+    assert notification.result.summary == collected["result"]["summary"]
     assert len(runtime.service.records) == 3
     assert {
         record.definition.name for record in runtime.service.records.values()
@@ -891,6 +1039,124 @@ async def test_real_agent_adapter_runs_leader_with_parallel_leaf_wave(monkeypatc
         runtime._record_event("group_progress", {"index": index})
     assert len(root.context.state.subagent_events) == 256
     assert root.context.state.subagent_events[0]["index"] == 44
+    await runtime.service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_group_commits_leaf_before_terminal_notification(
+    monkeypatch,
+) -> None:
+    from vulnclaw.agent.solver import SolveResult
+    from vulnclaw.agent.subagent.integration import (
+        execute_agent_run,
+        get_task_runtime,
+    )
+    from vulnclaw.agent.subagent.models import get_subagent_context
+
+    class FakeAgent:
+        def __init__(self, config=None):
+            self.config = config or VulnClawConfig()
+            self.context = ContextManager()
+            self.context.state.target = "http://target.local"
+            self.active_role = None
+            self._subagent_ctx = SubagentContext()
+            self._key_pool = ["k"]
+            self._client = None
+
+        def _child_factory(self):
+            return FakeAgent(self.config)
+
+    leaf_started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def fake_solve(child, **_kwargs):
+        if child.context.state.session_kind == "group_leader":
+            await execute_agent_run(
+                child,
+                {
+                    "description": "leaf",
+                    "prompt": "distinct active probe",
+                    "agent_type": "executor",
+                    "task_kind": "execute",
+                },
+            )
+        else:
+            child.context.state.agent_state.remember_tool_result(
+                tool="nmap_scan",
+                arguments={"target": "target.local"},
+                output="leaf evidence committed during cancellation",
+            )
+            context = get_subagent_context(child)
+            assert context is not None
+            context.input_tokens_used = 321
+            admission = context.usage_budget.try_begin(
+                f"{child.context.state.task_id}.test",
+                context.task_context.group_id,
+                100,
+            )
+            leaf_started.set()
+            try:
+                await never.wait()
+            finally:
+                context.usage_budget.settle(admission.call_id, 42)
+        return SolveResult(
+            completed=True,
+            reason="done",
+            steps=1,
+            evidence=len(child.context.state.agent_state.evidence),
+            agent_state=child.context.state.agent_state,
+        )
+
+    monkeypatch.setattr("vulnclaw.agent.solver.solve", fake_solve)
+    root = FakeAgent()
+    handle = json.loads(
+        await execute_agent_run(
+            root,
+            {
+                "description": "group",
+                "prompt": "coordinate one probe",
+                "agent_type": "group-leader",
+                "background": True,
+            },
+        )
+    )
+    runtime = get_task_runtime(root)
+    await asyncio.wait_for(leaf_started.wait(), timeout=1)
+    snapshot = await runtime.service.cancel(
+        handle["task_id"],
+        reason="stop",
+    )
+
+    assert snapshot.status is TaskStatus.KILLED
+    leaf = runtime.service.records[snapshot.child_ids[0]]
+    assert leaf.result is not None
+    assert leaf.result.usage["input_tokens"] == 321
+    assert root.context.state.agent_state.evidence_ids() == ["e001"]
+    provenance = root.context.state.subagent_evidence_provenance["e001"]
+    assert provenance["contributors"][0]["task_id"] == leaf.task_id
+    [notification] = runtime.service.drain_notifications()
+    assert notification.result is not None
+    assert notification.result.evidence == ["e001"]
+    events = root.context.state.subagent_events
+    leaf_terminal = next(
+        index
+        for index, event in enumerate(events)
+        if event["event"] == "group_progress"
+        and event.get("member_event") == "terminal"
+    )
+    group_terminal = next(
+        index
+        for index, event in enumerate(events)
+        if event["event"] == "group_cancelled"
+    )
+    assert events[group_terminal]["budget"]["inflight_calls"] == 0
+    assert events[group_terminal]["budget"]["used_total"] == 42
+    notified = next(
+        index
+        for index, event in enumerate(events)
+        if event["event"] == "group_notified"
+    )
+    assert leaf_terminal < group_terminal < notified
     await runtime.service.shutdown()
 
 
@@ -923,6 +1189,17 @@ async def test_runtime_writes_one_checkpoint_per_group_member(
 
     async def fake_solve(child, **_kwargs):
         if child.context.state.session_kind == "group_leader":
+            baseline = await execute_agent_run(
+                child,
+                {
+                    "description": "shared baseline",
+                    "prompt": "one safe shared reconnaissance pass",
+                    "agent_type": "researcher",
+                    "task_kind": "research",
+                    "_wave_id": "baseline",
+                },
+            )
+            assert json.loads(baseline)["ok"]
             results = await asyncio.gather(
                 *[
                     execute_agent_run(
@@ -979,10 +1256,11 @@ async def test_runtime_writes_one_checkpoint_per_group_member(
     await _wait_for_background(runtime.service, handle["task_id"])
     [notification] = runtime.service.drain_notifications()
     assert notification.task_id == handle["task_id"]
-    assert inherited_counts == [0, 0, 0, 0, 0]
+    assert inherited_counts[0] == 0
+    assert inherited_counts[1:] == [1, 1, 1, 1, 1]
 
     checkpoints = sorted(tmp_path.glob(f"subagent_{runtime.run_id}_*.json"))
-    assert len(checkpoints) == 6
+    assert len(checkpoints) == 7
     persisted_ids = {
         json.loads(path.read_text(encoding="utf-8"))["task_id"]
         for path in checkpoints

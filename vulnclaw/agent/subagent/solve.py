@@ -41,10 +41,15 @@ def prompt_guidance(agent: AgentContext) -> str:
     )
     if session_kind == "group_leader":
         return guidance + (
-            "You are a Group Leader. Write a short plan, then issue multiple foreground "
-            "researcher/executor/verifier agent_run calls in the same assistant turn for a "
-            "parallel wave. Compare results, resolve gaps or conflicts with a follow-up wave, "
-            "and independently verify completion-critical claims. Never create another Leader.\n"
+            "You are a Group Leader. Before freezing the first parallel wave, launch exactly "
+            "one foreground researcher for a bounded shared-baseline reconnaissance pass "
+            "(at most one safe fetch plus minimal common checks), then summarize its returned "
+            "parent evidence ids. "
+            "Issue multiple foreground researcher/executor/verifier agent_run calls in the same "
+            "assistant turn. Give every leaf a distinct, non-overlapping scope and explicitly "
+            "state what sibling work it must not repeat. Compare the complete wave before "
+            "starting another, resolve gaps or conflicts, and independently verify "
+            "completion-critical claims. Never create another Leader.\n"
         )
     return guidance + (
         "Background Group Leaders report terminal notifications automatically. Use "
@@ -61,8 +66,9 @@ def delegation_contract(enabled: bool) -> str:
         "parallel leaf investigation and independent review.\n"
         "- Work directly for one exact probe or a prerequisite that determines later work.\n"
         "- Make each prompt self-contained; never assume an agent can see this conversation.\n"
-        "- Group Leaders issue one parallel leaf wave per assistant turn, compare results, "
-        "then use a fresh verifier for critical claims.\n"
+        "- Group Leaders establish one bounded shared baseline before the first wave, assign "
+        "non-overlapping leaf scopes, compare the whole wave, then use a fresh verifier for "
+        "critical claims.\n"
         "- Do not busy-poll background work or treat uncollected results as evidence.\n"
     )
 
@@ -96,7 +102,11 @@ def inject_messages(agent: AgentContext) -> None:
             "name": notification.name,
             "status": notification.status.value,
             "summary": str(result.summary if result else ""),
-            "evidence": list(result.evidence if result else []),
+            "parent_evidence_ids": list(result.evidence if result else []),
+            "evidence_namespace": "main",
+            "citation_instruction": (
+                "Cite only parent_evidence_ids. Never cite a leaf-local evidence id."
+            ),
             "error": notification.error,
         }
         agent.context.add_user_message(

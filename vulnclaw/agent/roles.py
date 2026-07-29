@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from typing import Any
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -26,8 +27,9 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
         name="researcher",
         persona=(
             "You are the Researcher specialist. Focus on reconnaissance, OSINT, "
-            "asset discovery, safe fetching, and evidence summaries. Do not attempt "
-            "exploitation or payload execution."
+            "asset discovery, safe bodyless GET/HEAD/OPTIONS fetching, and evidence "
+            "summaries. Do not send query payloads, credentials, custom active "
+            "headers, request bodies, exploitation, or payload execution."
         ),
         allowed_tool_globs=(
             "load_skill_reference",
@@ -276,9 +278,69 @@ def filter_tools_for_role(
     return filtered
 
 
-def role_tool_violation(role: str | None, tool_name: str) -> str | None:
+_SAFE_RESEARCH_HTTP_METHODS = {"GET", "HEAD", "OPTIONS"}
+_SAFE_RESEARCH_HTTP_HEADERS = {
+    "accept",
+    "accept-language",
+    "if-modified-since",
+    "if-none-match",
+    "range",
+    "user-agent",
+}
+
+
+def _research_http_is_active(tool_name: str, args: dict[str, Any]) -> bool:
+    if tool_name == "fetch":
+        requests = [args]
+    elif tool_name == "http_probe_batch":
+        requests = args.get("requests")
+        if not isinstance(requests, list):
+            return True
+    else:
+        return False
+
+    for request in requests:
+        if not isinstance(request, dict):
+            return True
+        method = str(request.get("method") or "GET").strip().upper()
+        if method not in _SAFE_RESEARCH_HTTP_METHODS:
+            return True
+        if any(request.get(key) not in (None, "", {}, []) for key in ("data", "json", "cookies", "params")):
+            return True
+        headers = request.get("headers") or {}
+        if not isinstance(headers, dict) or any(
+            str(name).strip().lower() not in _SAFE_RESEARCH_HTTP_HEADERS
+            for name in headers
+        ):
+            return True
+        url = str(
+            request.get("raw_url")
+            or request.get("url")
+            or args.get("base_url")
+            or ""
+        )
+        if not url or urlsplit(url).query:
+            return True
+    return False
+
+
+def role_tool_violation(
+    role: str | None,
+    tool_name: str,
+    args: dict[str, Any] | None = None,
+) -> str | None:
     """Return a structured rejection message for out-of-role calls."""
     normalized = normalize_role_name(role)
+    if (
+        normalized == "researcher"
+        and tool_name in {"fetch", "http_probe_batch"}
+        and _research_http_is_active(tool_name, args or {})
+    ):
+        return (
+            "[role_tool_violation] role 'researcher' may use HTTP only for safe "
+            "reconnaissance; active requests require role 'executor' with "
+            "task_kind 'execute'"
+        )
     if normalized is None or tool_allowed_for_role(tool_name, normalized):
         return None
     if get_role(normalized) is None:

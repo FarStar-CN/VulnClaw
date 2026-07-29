@@ -832,7 +832,11 @@ async def execute_runtime_diff_probe(agent: AgentContext, args: dict[str, Any]) 
 
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
     """Execute a tool call via MCP manager or built-in tools."""
-    violation = role_tool_violation(getattr(agent, "active_role", None), tool_name)
+    violation = role_tool_violation(
+        getattr(agent, "active_role", None),
+        tool_name,
+        args,
+    )
     if violation is not None:
         return violation
 

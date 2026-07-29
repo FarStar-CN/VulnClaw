@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import logging
@@ -156,20 +157,25 @@ def group_leader_prompt(*, target: str, assignment: str) -> str:
         "You coordinate; you do not execute target-facing probes yourself.\n"
         "The code-enforced leaf role registry is:\n"
         f"{_leaf_role_registry()}\n"
-        "1. Start with a short plan that splits the assignment into independent or "
-        "complementary investigation questions.\n"
-        "2. Launch parallel leaf agents by issuing multiple agent_run calls in the SAME "
+        "1. Before freezing the first parallel wave, launch exactly one foreground "
+        "researcher for a bounded shared-baseline reconnaissance pass (at most one safe "
+        "fetch plus minimal common checks). Summarize its returned parent evidence ids, "
+        "then give that same baseline to every wave leaf.\n"
+        "2. Split the assignment into distinct, non-overlapping scopes. Each leaf prompt "
+        "must say which sibling work it must not repeat.\n"
+        "3. Launch parallel leaf agents by issuing multiple agent_run calls in the SAME "
         "assistant turn. Use only researcher, executor, or verifier leaves, set "
         "task_kind to research, execute, or verify to match the selected role, and set "
         "background=false. A tool-facing scan such as Nmap is execute, not research.\n"
-        "3. Every leaf prompt must be a self-contained fresh-colleague briefing with scope, "
+        "4. Every leaf prompt must be a self-contained fresh-colleague briefing with scope, "
         "known evidence, expected return, and a stopping condition.\n"
-        "4. Read the returned results, compare conflicts and gaps, then revise the plan.\n"
-        "5. Completion-critical claims require a fresh verifier using a different method or "
+        "5. Read the complete wave, compare conflicts and gaps, then revise the plan. Do not "
+        "use completion order as implicit communication between leaves.\n"
+        "6. Completion-critical claims require a fresh verifier using a different method or "
         "control; never ask an original executor to verify itself.\n"
-        "6. Do not create another Group Leader and do not use agent_job to build a member "
+        "7. Do not create another Group Leader and do not use agent_job to build a member "
         "mailbox. Collaboration proceeds in bounded result waves.\n"
-        "7. Finish with FINAL: containing a bounded synthesis, evidence ids, conflicts, "
+        "8. Finish with FINAL: containing a bounded synthesis, evidence ids, conflicts, "
         "blockers, and remaining unknowns. Use NO_PATH: only for an evidence-backed dead end."
     )
 
@@ -235,6 +241,7 @@ class VulnClawTaskRuntime:
         self.committer = EvidenceCommitter(
             max_records=int(cfg.merge_max_evidence_per_group)
         )
+        self.evidence_maps: dict[tuple[str, str], dict[str, str]] = {}
         self.usage_budget = UsageBudget(
             solve_limit=int(cfg.max_model_tokens_per_solve),
             group_limit=int(cfg.max_model_tokens_per_group),
@@ -328,6 +335,9 @@ class VulnClawTaskRuntime:
             for item in state_seed.evidence
             if item.fingerprint
         }
+        baseline_evidence_ids = {
+            item.id for item in state_seed.evidence
+        }
         child = parent._child_factory()
         self._configure_child(
             child,
@@ -397,6 +407,11 @@ class VulnClawTaskRuntime:
                 _strip_unvalidated_partial_state(child_state)
 
             try:
+                if definition.session_kind == "group_leader":
+                    await self.service.settle_children(
+                        context.task_id,
+                        reason=reason or status,
+                    )
                 merge_report = self.committer.commit(
                     parent,
                     child_state,
@@ -405,7 +420,20 @@ class VulnClawTaskRuntime:
                     baseline_fingerprints=baseline_fingerprints,
                     include_session_state=include_session_state,
                 )
+                self.evidence_maps[
+                    (context.task_id, context.parent_id)
+                ] = dict(merge_report.id_map)
                 evidence_ids = list(merge_report.evidence_ids)
+                final_text = _rewrite_evidence_ids(
+                    final_text,
+                    merge_report.id_map,
+                    allowed_unmapped=baseline_evidence_ids,
+                )
+                reason = _rewrite_evidence_ids(
+                    reason,
+                    merge_report.id_map,
+                    allowed_unmapped=baseline_evidence_ids,
+                )
             except Exception as exc:
                 status = "failed"
                 reason = one_line(str(exc), 240)
@@ -431,6 +459,52 @@ class VulnClawTaskRuntime:
             evidence=evidence_ids,
             error=reason if status == "failed" else "",
         )
+
+    def project_result(
+        self,
+        task_id: str,
+        result: AgentResult,
+        *,
+        viewer_task_id: str,
+    ) -> tuple[AgentResult | None, bool]:
+        """Translate a result into the caller's evidence namespace."""
+
+        record = self.service.records.get(task_id)
+        if record is None:
+            return None, True
+        projected = copy.deepcopy(result)
+        namespace = record.parent_id
+        while namespace != viewer_task_id:
+            owner = self.service.records.get(namespace)
+            if owner is None:
+                return None, True
+            parent_namespace = owner.parent_id
+            key = (namespace, parent_namespace)
+            if key not in self.evidence_maps:
+                return None, True
+            id_map = self.evidence_maps[key]
+            projected.evidence = [
+                id_map[str(evidence_id)]
+                for evidence_id in projected.evidence
+                if str(evidence_id) in id_map
+            ]
+            projected.summary = _rewrite_evidence_ids(
+                projected.summary,
+                id_map,
+                allowed_unmapped=set(),
+            )
+            projected.content = _rewrite_evidence_ids(
+                projected.content,
+                id_map,
+                allowed_unmapped=set(),
+            )
+            projected.error = _rewrite_evidence_ids(
+                projected.error,
+                id_map,
+                allowed_unmapped=set(),
+            )
+            namespace = parent_namespace
+        return projected, False
 
     def _configure_child(
         self,
@@ -553,6 +627,26 @@ def _child_usage(child: Any) -> dict[str, int]:
     }
 
 
+def _rewrite_evidence_ids(
+    text: str,
+    id_map: dict[str, str],
+    *,
+    allowed_unmapped: set[str] | None = None,
+) -> str:
+    if not text:
+        return text
+
+    def replace(match: re.Match[str]) -> str:
+        evidence_id = match.group(0)
+        if evidence_id in id_map:
+            return id_map[evidence_id]
+        if allowed_unmapped is None or evidence_id in allowed_unmapped:
+            return evidence_id
+        return "[uncommitted evidence]"
+
+    return re.sub(r"(?<![A-Za-z0-9_])e\d+(?![A-Za-z0-9_])", replace, text)
+
+
 def get_task_runtime(agent: Any) -> VulnClawTaskRuntime:
     context = get_subagent_context(agent, create=True)
     assert context is not None
@@ -659,7 +753,12 @@ async def execute_agent_run(agent: Any, args: dict[str, Any]) -> str:
                 "summary": result.summary,
                 "content": result.content,
                 "usage": result.usage,
-                "evidence": result.evidence,
+                "parent_evidence_ids": result.evidence,
+                "evidence_namespace": parent.task_id,
+                "citation_instruction": (
+                    "Cite only parent_evidence_ids. Never cite a leaf-local "
+                    "evidence id."
+                ),
             },
             ensure_ascii=False,
         )
@@ -679,11 +778,19 @@ async def execute_agent_job(agent: Any, args: dict[str, Any]) -> str:
     service = runtime.service
     action = str(args.get("action") or "list").strip().lower()
     task_id = str(args.get("job_id") or "").strip()
+    viewer_task_id = _parent_context(agent, service).task_id
 
     if action == "list":
         return json.dumps(
             {
-                "tasks": [_snapshot_payload(item) for item in service.list()],
+                "tasks": [
+                    _snapshot_payload(
+                        item,
+                        runtime=runtime,
+                        viewer_task_id=viewer_task_id,
+                    )
+                    for item in service.list()
+                ],
                 "budget": (
                     service.usage_budget.snapshot()
                     if service.usage_budget is not None
@@ -696,7 +803,11 @@ async def execute_agent_job(agent: Any, args: dict[str, Any]) -> str:
         return json.dumps({"ok": False, "error": "job_id is required"}, ensure_ascii=False)
     if action == "collect":
         return json.dumps(
-            _snapshot_payload(await service.collect(task_id)),
+            _snapshot_payload(
+                await service.collect(task_id),
+                runtime=runtime,
+                viewer_task_id=viewer_task_id,
+            ),
             ensure_ascii=False,
         )
     if action == "message":
@@ -707,14 +818,57 @@ async def execute_agent_job(agent: Any, args: dict[str, Any]) -> str:
             task_id,
             reason=str(args.get("reason") or "cancelled by parent"),
         )
-        return json.dumps(_snapshot_payload(snapshot), ensure_ascii=False)
+        return json.dumps(
+            _snapshot_payload(
+                snapshot,
+                runtime=runtime,
+                viewer_task_id=viewer_task_id,
+            ),
+            ensure_ascii=False,
+        )
     return json.dumps({"ok": False, "error": f"unknown action: {action}"}, ensure_ascii=False)
 
 
-def _snapshot_payload(snapshot: Any) -> dict[str, Any]:
+def _snapshot_payload(
+    snapshot: Any,
+    *,
+    runtime: VulnClawTaskRuntime,
+    viewer_task_id: str,
+) -> dict[str, Any]:
     payload = asdict(snapshot)
     payload["status"] = snapshot.status.value
     result = snapshot.result
     if result is not None:
-        payload["result"] = asdict(result)
+        projected, pending = runtime.project_result(
+            snapshot.task_id,
+            result,
+            viewer_task_id=viewer_task_id,
+        )
+        if pending:
+            payload["result"] = {
+                "status": result.status,
+                "summary": (
+                    "Result is terminal but its evidence has not been committed "
+                    "into the caller namespace. Wait for the Group terminal "
+                    "notification."
+                ),
+                "content": "",
+                "usage": dict(result.usage),
+                "parent_evidence_ids": [],
+                "error": "",
+            }
+            payload["result_pending_parent_commit"] = True
+            payload["error"] = ""
+        else:
+            assert projected is not None
+            result_payload = asdict(projected)
+            result_payload.pop("evidence", None)
+            result_payload["parent_evidence_ids"] = list(
+                projected.evidence
+            )
+            payload["result"] = result_payload
+        payload["evidence_namespace"] = viewer_task_id
+        payload["citation_instruction"] = (
+            "Cite only parent_evidence_ids. Never cite a leaf-local evidence id."
+        )
     return payload
