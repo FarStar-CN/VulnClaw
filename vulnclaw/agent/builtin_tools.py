@@ -873,6 +873,24 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
     if tool_name in {"evidence_list", "evidence_view", "evidence_search"}:
         return execute_evidence_tool(agent, tool_name, args)
 
+    if tool_name == "memory_search":
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return "[!] memory_search requires a non-empty query"
+        context = getattr(agent, "context", None)
+        search = getattr(context, "search_cold_memory", None)
+        if not callable(search):
+            return "[-] No cold memory is configured"
+        matches = search(query, limit=args.get("limit", 5))
+        if not matches:
+            return "[-] No matching archived conversation"
+        rendered = json.dumps(matches, ensure_ascii=False, indent=2)
+        max_chars = max(256, int(getattr(context, "search_max_chars", 6000)))
+        if len(rendered) > max_chars:
+            suffix = "\n...[cold-memory search output truncated]"
+            rendered = rendered[: max_chars - len(suffix)] + suffix
+        return rendered
+
     if tool_name == "source_extract":
         return await execute_source_extract(agent, args)
 

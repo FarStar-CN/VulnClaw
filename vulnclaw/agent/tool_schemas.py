@@ -711,3 +711,31 @@ def append_builtin_tool_schemas(
         }
     )
 
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "memory_search",
+                "description": (
+                    "Search conversation turns moved out of the short-term context into local "
+                    "cold storage. Call this only when an older decision, tool result, or clue is "
+                    "needed for the current subtask; archived history is not included automatically."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Keyword or phrase expected in older conversation history.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum archived turns to return (default 5, maximum 20).",
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+    )
+

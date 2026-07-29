@@ -36,6 +36,7 @@ from vulnclaw.agent.kb_context import build_kb_context
 from vulnclaw.agent.llm_client import StreamSink, call_llm
 from vulnclaw.agent.loop_controller import auto_pentest as run_auto_pentest
 from vulnclaw.agent.loop_controller import persistent_pentest as run_persistent_pentest
+from vulnclaw.agent.memory import MemoryStore
 from vulnclaw.agent.prompt_context import build_round_context, generate_attack_summary
 from vulnclaw.agent.recon_tracker import update_recon_dimension_completion
 from vulnclaw.agent.roles import role_prompt_block
@@ -61,7 +62,17 @@ class AgentCore:
     def __init__(self, config: VulnClawConfig, mcp_manager: Any = None) -> None:
         self.config = config
         self.mcp_manager = mcp_manager
-        self.context = ContextManager()
+        memory_dir = config.session.output_dir / "memory"
+        self.context = ContextManager(
+            max_history=config.session.context_hot_max_messages,
+            max_tokens=config.session.context_hot_max_tokens,
+            search_max_chars=config.session.memory_search_max_chars,
+            memory_store=MemoryStore(
+                store_dir=memory_dir,
+                archive_max_bytes=config.session.memory_archive_max_bytes,
+                archive_max_files=config.session.memory_archive_max_files,
+            ),
+        )
         self.active_role: str | None = None
         self._client = None
         # Failover key pool: prefer llm.api_keys, else the single llm.api_key.
@@ -145,6 +156,16 @@ class AgentCore:
         self._client = None
         self._key_pool = config.llm.key_pool()
         self._key_index = 0
+        context = getattr(self, "context", None)
+        if context is not None:
+            context.max_history = config.session.context_hot_max_messages
+            context.max_tokens = config.session.context_hot_max_tokens
+            context.search_max_chars = config.session.memory_search_max_chars
+            memory_store = getattr(context, "memory_store", None)
+            if memory_store is not None:
+                memory_store.archive_max_bytes = config.session.memory_archive_max_bytes
+                memory_store.archive_max_files = config.session.memory_archive_max_files
+            context._trim()
 
     def _reset_runtime_state(
         self,

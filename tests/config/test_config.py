@@ -90,6 +90,11 @@ class TestSessionConfig:
         assert config.plugin_default_timeout == 10
         assert config.plugin_max_requests_per_target == 30
         assert config.evidence_min_report_level == "L4"
+        assert config.context_hot_max_messages == 48
+        assert config.context_hot_max_tokens == 32000
+        assert config.memory_search_max_chars == 6000
+        assert config.memory_archive_max_bytes == 64 * 1024 * 1024
+        assert config.memory_archive_max_files == 8
 
 
 class TestVulnClawConfig:
