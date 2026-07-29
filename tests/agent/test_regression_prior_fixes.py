@@ -121,6 +121,7 @@ class TestBuiltinToolSchemaSet:
     # traffic tools are appended elsewhere, so this pins only the built-in core.
     EXPECTED = {
         "load_skill_reference",
+        "memory_search",
         "evidence_list",
         "evidence_view",
         "evidence_search",

@@ -123,8 +123,9 @@ class TestToolGating:
             is not None
         )
 
-    def test_adviser_has_no_tools(self):
-        assert ROLE_REGISTRY["adviser"].allowed_tool_globs == ()
+    def test_adviser_has_only_read_only_memory_search(self):
+        assert ROLE_REGISTRY["adviser"].allowed_tool_globs == ("memory_search",)
+        assert tool_allowed_for_role("memory_search", "adviser") is True
         assert tool_allowed_for_role("evidence_list", "adviser") is False
 
     def test_filter_tools_for_role(self):
