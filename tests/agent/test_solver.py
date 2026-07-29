@@ -4,6 +4,8 @@ import pytest
 
 from vulnclaw.agent.context import ContextManager
 from vulnclaw.agent.solver import extract_json, solve
+from vulnclaw.agent.subagent.solve import sync_verified_findings
+from vulnclaw.config.domain_models import VulnerabilityFinding
 
 
 class _Parser:
@@ -53,6 +55,91 @@ async def test_solve_rejects_unverified_flag_then_completes(monkeypatch):
     assert result.completed is True
     assert "flag{real}" in result.reason
     assert agent.context.state.agent_state.completion_rejections
+
+
+@pytest.mark.asyncio
+async def test_evidence_gated_final_promotes_only_matching_finding(monkeypatch):
+    agent = _Agent()
+    sql = VulnerabilityFinding(
+        title="SQL injection in id",
+        vuln_type="SQLi",
+        endpoint="/item",
+        evidence="candidate",
+        remediation="parameterize queries",
+    )
+    xss = VulnerabilityFinding(
+        title="XSS candidate",
+        vuln_type="XSS",
+        endpoint="/search",
+        evidence="candidate",
+        remediation="encode output",
+    )
+    agent.context.state.add_finding(sql)
+    agent.context.state.add_finding(xss)
+
+    async def fake_call_llm_auto(agent_arg, *args, **kwargs):
+        state = agent_arg.context.state.agent_state
+        record = state.remember_tool_result(
+            tool="http_probe_batch",
+            arguments={"requests": [{"url": "/item?id=1'"}]},
+            output="SQL injection confirmed by a reproducible response delta",
+            status=200,
+        )
+        state.record_tool_call(
+            tool="http_probe_batch",
+            arguments={"requests": [{"url": "/item?id=1'"}]},
+            evidence_id=record.id,
+            summary=record.summary,
+        )
+        return f"FINAL: SQL injection confirmed at /item evidence {record.id}"
+
+    monkeypatch.setattr("vulnclaw.agent.solver.call_llm_auto", fake_call_llm_auto)
+
+    result = await solve(
+        agent, origin="http://target.local", goal="verify vulnerabilities", max_steps=1
+    )
+
+    assert result.completed is True
+    assert sql.verified is True
+    assert sql.evidence_level == "L4"
+    assert "e001" in sql.verification_note
+    assert xss.verified is False
+
+
+def test_finding_sync_never_reopens_rejected_or_cross_endpoint_findings():
+    agent = _Agent()
+    rejected = VulnerabilityFinding(
+        title="XSS candidate",
+        vuln_type="XSS",
+        endpoint="/item",
+        evidence="candidate",
+        remediation="encode output",
+    )
+    rejected.mark_rejected("control request disproved the candidate")
+    wrong_endpoint = VulnerabilityFinding(
+        title="SQL injection candidate",
+        vuln_type="SQLi",
+        endpoint="/other",
+        evidence="candidate",
+        remediation="parameterize queries",
+    )
+    agent.context.state.add_finding(rejected)
+    agent.context.state.add_finding(wrong_endpoint)
+    record = agent.context.state.agent_state.remember_tool_result(
+        tool="fetch",
+        arguments={"url": "http://target.local/item?id=1"},
+        output="SQL injection confirmed at /item",
+    )
+
+    promoted = sync_verified_findings(
+        agent,
+        f"FINAL: SQL injection confirmed at /item evidence {record.id}",
+        [record.id],
+    )
+
+    assert promoted == []
+    assert rejected.verification_status == "rejected"
+    assert wrong_endpoint.verified is False
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,7 @@ def _web_finding() -> VulnerabilityFinding:
         cvss=9.8,
         endpoint="https://shop.example.com/login",
         method="POST",
+        subagent_provenance={"task_id": "b1.t1", "agent_id": "w1"},
         evidence_refs=[
             EvidenceRef(kind="http_capture", path="http/req-9.json", request_id="req-9"),
             EvidenceRef(kind="sandbox_output", path="sandbox/sqli/out.txt"),
@@ -208,6 +209,10 @@ class TestSarifShape:
         # request_id surfaces on the artifactLocation description
         http_att = next(a for a in attachments if a["artifactLocation"]["uri"] == "http/req-9.json")
         assert "req-9" in http_att["artifactLocation"]["description"]["text"]
+
+    def test_subagent_provenance_reaches_sarif_properties(self):
+        result = to_sarif([_web_finding()])["runs"][0]["results"][0]
+        assert result["properties"]["subagent_provenance"]["task_id"] == "b1.t1"
 
     def test_cwe_populates_taxonomies_and_properties(self):
         sarif = self._sarif()

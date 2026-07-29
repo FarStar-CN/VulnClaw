@@ -1,5 +1,7 @@
 """VulnClaw Config Module Tests — schema.py + settings.py"""
 
+import pytest
+from pydantic import ValidationError
 
 # ── schema.py ────────────────────────────────────────────────────────
 
@@ -95,6 +97,135 @@ class TestSessionConfig:
         assert config.memory_search_max_chars == 6000
         assert config.memory_archive_max_bytes == 64 * 1024 * 1024
         assert config.memory_archive_max_files == 8
+
+
+class TestSubagentConfig:
+    def test_compact_runtime_defaults(self):
+        from vulnclaw.config.schema import SubagentConfig
+
+        config = SubagentConfig()
+
+        assert set(SubagentConfig.model_fields) == {
+            "enabled",
+            "max_background_groups",
+            "max_concurrent_leaf_total",
+            "max_concurrent_leaf_per_group",
+            "max_leaf_per_group",
+            "max_waves_per_group",
+            "max_steps_per_leaf",
+            "leaf_max_tool_rounds",
+            "leaf_timeout_seconds",
+            "group_timeout_seconds",
+            "finalization_timeout_seconds",
+            "max_model_tokens_per_solve",
+            "max_model_tokens_per_group",
+            "merge_max_evidence_per_group",
+            "result_max_chars",
+        }
+        assert config.max_background_groups == 3
+        assert config.max_concurrent_leaf_total == 4
+        assert config.max_steps_per_leaf == 12
+        assert config.leaf_max_tool_rounds == 4
+        assert config.max_model_tokens_per_solve == 8_000_000
+        assert config.max_model_tokens_per_group == 1_000_000
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "max_background_groups",
+            "max_concurrent_leaf_total",
+            "max_concurrent_leaf_per_group",
+            "max_leaf_per_group",
+            "max_waves_per_group",
+            "max_steps_per_leaf",
+            "leaf_max_tool_rounds",
+            "max_model_tokens_per_solve",
+            "max_model_tokens_per_group",
+            "merge_max_evidence_per_group",
+            "result_max_chars",
+        ],
+    )
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_budget_and_capacity_fields_must_be_positive(self, field, value):
+        from vulnclaw.config.schema import SubagentConfig
+
+        with pytest.raises(ValidationError):
+            SubagentConfig(**{field: value})
+
+    @pytest.mark.parametrize(
+        "field,over_value",
+        [
+            ("max_background_groups", 9),
+            ("max_concurrent_leaf_total", 100000),
+            ("max_concurrent_leaf_per_group", 17),
+            ("max_leaf_per_group", 33),
+            ("max_waves_per_group", 13),
+            ("max_steps_per_leaf", 101),
+            ("leaf_max_tool_rounds", 21),
+            ("merge_max_evidence_per_group", 129),
+            ("result_max_chars", 200001),
+        ],
+    )
+    def test_budget_and_capacity_fields_reject_dos_values(self, field, over_value):
+        # Upper bounds are DoS guardrails: e.g. max_concurrent=100000 must be
+        # rejected, otherwise it would build an effectively unbounded Semaphore
+        # / fan-out and blow up token cost, memory and file descriptors.
+        from vulnclaw.config.schema import SubagentConfig
+
+        with pytest.raises(ValidationError):
+            SubagentConfig(**{field: over_value})
+
+    def test_all_numeric_fields_have_lower_and_upper_bounds(self):
+        # Regression guard: every numeric sub-agent knob must be bounded on BOTH
+        # ends so a config/env override cannot drive it to a runaway value.
+        import annotated_types as at
+
+        from vulnclaw.config.schema import SubagentConfig
+
+        for name, info in SubagentConfig.model_fields.items():
+            if info.annotation is not int:
+                continue
+            meta = info.metadata
+            has_lower = any(isinstance(m, (at.Gt, at.Ge)) for m in meta)
+            has_upper = any(isinstance(m, (at.Le, at.Lt)) for m in meta)
+            assert has_lower, f"{name} is missing a lower bound"
+            assert has_upper, f"{name} is missing an upper bound"
+
+    def test_out_of_range_env_override_is_rejected_not_applied(self, monkeypatch):
+        from vulnclaw.config.settings import load_config
+
+        monkeypatch.setenv(
+            "VULNCLAW_SUBAGENT_MAX_CONCURRENT_LEAF_TOTAL",
+            "100000",
+        )
+        config = load_config()
+        assert config.subagent.max_concurrent_leaf_total == 4
+
+    def test_compact_runtime_env_overrides(self, monkeypatch):
+        from vulnclaw.config.settings import load_config
+
+        monkeypatch.setenv(
+            "VULNCLAW_SUBAGENT_LEAF_TIMEOUT_SECONDS",
+            "240",
+        )
+        monkeypatch.setenv(
+            "VULNCLAW_SUBAGENT_GROUP_TIMEOUT_SECONDS",
+            "360",
+        )
+        monkeypatch.setenv(
+            "VULNCLAW_SUBAGENT_MAX_STEPS_PER_LEAF",
+            "20",
+        )
+        monkeypatch.setenv(
+            "VULNCLAW_SUBAGENT_MAX_MODEL_TOKENS_PER_GROUP",
+            "900000",
+        )
+        config = load_config()
+
+        assert config.subagent.leaf_timeout_seconds == 240.0
+        assert config.subagent.group_timeout_seconds == 360.0
+        assert config.subagent.max_steps_per_leaf == 20
+        assert config.subagent.max_model_tokens_per_group == 900000
 
 
 class TestVulnClawConfig:

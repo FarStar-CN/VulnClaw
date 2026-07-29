@@ -3,9 +3,63 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+
+from vulnclaw.agent.subagent.models import SubagentContext
+
+
+def test_subagent_usage_estimates_provider_omitted_fields():
+    from vulnclaw.agent.subagent.budget import record_usage
+
+    agent = SimpleNamespace(
+        _subagent_ctx=SubagentContext(
+            depth=1,
+            next_input_token_estimate=123,
+        ),
+    )
+    response = SimpleNamespace(
+        usage=SimpleNamespace(completion_tokens=7),
+        choices=[
+            SimpleNamespace(message=SimpleNamespace(content="short answer"))
+        ],
+    )
+
+    recorded = record_usage(agent, response)
+
+    assert recorded == 130
+    assert agent._subagent_ctx.input_tokens_used == 123
+    assert agent._subagent_ctx.output_tokens_used == 7
+
+
+def test_model_context_cap_compacts_one_oversized_recent_message():
+    from vulnclaw.agent.llm_client import _fit_context_window
+    from vulnclaw.agent.token_counter import estimate_tokens
+
+    agent = SimpleNamespace(
+        _subagent_ctx=SubagentContext(depth=1),
+        config=SimpleNamespace(
+            llm=SimpleNamespace(max_context_tokens=40_000),
+        ),
+    )
+    messages = [
+        {"role": "system", "content": "system contract"},
+        {
+            "role": "user",
+            "content": "e001 beginning " + ("x" * 200_000) + " e999 ending",
+        },
+    ]
+
+    fitted = _fit_context_window(agent, messages)
+
+    assert estimate_tokens(fitted) <= 36_000
+    assert "e001 beginning" in fitted[-1]["content"]
+    assert "e999 ending" in fitted[-1]["content"]
+    assert "active context compacted" in fitted[-1]["content"]
 
 
 class TestNullSink:
@@ -154,6 +208,67 @@ class TestCallLlmStream:
         result = await call_llm_stream(agent, "system prompt")
 
         assert "answer" in result
+
+    @pytest.mark.asyncio
+    async def test_sync_stream_creation_does_not_block_event_loop(self):
+        """A slow synchronous provider handshake must not starve background tasks."""
+        from vulnclaw.agent.llm_client import call_llm_stream
+
+        agent = MagicMock()
+        mock_client = MagicMock()
+        agent._get_client.return_value = mock_client
+        agent.config.llm.provider = "openai"
+        agent.config.llm.model = "gpt-4"
+        agent.config.llm.max_tokens = None
+        agent.config.llm.temperature = None
+        agent.context.get_messages.return_value = []
+        agent._build_openai_tools.return_value = []
+
+        def slow_create(**kwargs):
+            assert kwargs["stream"] is True
+            time.sleep(0.2)
+            return iter(())
+
+        mock_client.chat.completions.create.side_effect = slow_create
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        task = asyncio.create_task(call_llm_stream(agent, "system prompt"))
+
+        await asyncio.sleep(0.02)
+
+        assert loop.time() - started < 0.12
+        assert not task.done()
+        assert await task == ""
+
+    @pytest.mark.asyncio
+    async def test_sync_stream_next_does_not_block_event_loop(self):
+        """Waiting for the next sync stream chunk must yield to group runtimes."""
+        from vulnclaw.agent.llm_client import _ensure_async_iter
+
+        release = threading.Event()
+
+        class BlockingStream:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                release.wait(timeout=0.2)
+                raise StopIteration
+
+        stream = _ensure_async_iter(BlockingStream())
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        timer = threading.Timer(0.2, release.set)
+        timer.start()
+        task = asyncio.create_task(anext(stream, None))
+        try:
+            await asyncio.sleep(0.02)
+            assert loop.time() - started < 0.12
+            assert not task.done()
+            assert await task is None
+        finally:
+            release.set()
+            timer.cancel()
 
 
 class TestTerminalStreamSink:
