@@ -282,6 +282,31 @@ class SessionConfig(BaseModel):
     )
     poc_language: str = Field(default="python", description="Default PoC language: python, bash")
     max_rounds: int = Field(default=15, description="Max autonomous pentest rounds (1-100)")
+    context_hot_max_messages: int = Field(
+        default=48,
+        ge=4,
+        description="Maximum messages retained in hot conversation memory",
+    )
+    context_hot_max_tokens: int = Field(
+        default=32000,
+        ge=1024,
+        description="Approximate token cap for hot conversation memory",
+    )
+    memory_search_max_chars: int = Field(
+        default=6000,
+        ge=512,
+        description="Maximum cold-memory characters returned by one search",
+    )
+    memory_archive_max_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=1024 * 1024,
+        description="Rotate a cold-memory JSONL shard after this many bytes",
+    )
+    memory_archive_max_files: int = Field(
+        default=8,
+        ge=2,
+        description="Maximum cold-memory JSONL shards retained per output directory",
+    )
     # Autonomous engine: "solve" = model-led agent loop with evidence memory (default),
     # "team" = role-specialized supervisor, "rounds" = legacy fixed-round loop.
     engine: str = Field(

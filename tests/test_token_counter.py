@@ -143,3 +143,68 @@ class TestTruncateMessages:
         result = truncate_messages(msgs, max_tokens=10, min_recent=4)
         # Body has only 1 message <= min_recent, so nothing dropped
         assert result == msgs
+
+
+def test_truncation_never_orphans_tool_result_at_recent_boundary():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "A" * 1200},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "probe", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+        {"role": "assistant", "content": "observed"},
+        {"role": "user", "content": "next"},
+        {"role": "assistant", "content": "working"},
+    ]
+
+    result = truncate_messages(messages, max_tokens=80, min_recent=4)
+
+    tool_index = next(
+        index for index, message in enumerate(result) if message.get("role") == "tool"
+    )
+    assistant = result[tool_index - 1]
+    assert assistant.get("role") == "assistant"
+    assert {call["id"] for call in assistant["tool_calls"]} == {"call-1"}
+
+
+def test_truncation_keeps_assistant_and_all_tool_results_together():
+    tool_exchange = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "probe", "arguments": "{}"},
+                },
+                {
+                    "id": "call-2",
+                    "type": "function",
+                    "function": {"name": "probe", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "one"},
+        {"role": "tool", "tool_call_id": "call-2", "content": "two"},
+    ]
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "A" * 1200},
+        *tool_exchange,
+        {"role": "assistant", "content": "observed"},
+    ]
+
+    result = truncate_messages(messages, max_tokens=120, min_recent=2)
+
+    present = [message for message in result if message.get("role") in {"assistant", "tool"}]
+    assert present[:3] == tool_exchange
