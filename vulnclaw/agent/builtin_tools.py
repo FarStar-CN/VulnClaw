@@ -832,7 +832,11 @@ async def execute_runtime_diff_probe(agent: AgentContext, args: dict[str, Any]) 
 
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
     """Execute a tool call via MCP manager or built-in tools."""
-    violation = role_tool_violation(getattr(agent, "active_role", None), tool_name)
+    violation = role_tool_violation(
+        getattr(agent, "active_role", None),
+        tool_name,
+        args,
+    )
     if violation is not None:
         return violation
 
@@ -854,6 +858,16 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
                     detail=json.dumps(args, ensure_ascii=False)[:500],
                 )
             return f"[constraint_violation] {tool_violation}"
+
+    if tool_name in {"agent_run", "agent_job"}:
+        from vulnclaw.agent.subagent.integration import (
+            execute_agent_job,
+            execute_agent_run,
+        )
+
+        if tool_name == "agent_run":
+            return await execute_agent_run(agent, args)
+        return await execute_agent_job(agent, args)
 
     if tool_name in INTEL_TOOL_NAMES:
         return await dispatch_intel_tool(agent, tool_name, args)
@@ -1083,7 +1097,12 @@ def infer_ports_from_nmap_args(args: dict[str, Any]) -> list[int]:
     return []
 
 
-def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> list[dict[str, Any]]:
+def build_openai_tools(
+    mcp_manager: Any,
+    *,
+    active_role: str | None = None,
+    include_subagent_tool: bool = True,
+) -> list[dict[str, Any]]:
     """Build OpenAI function calling schema from MCP tools + built-in tools."""
     tools: list[dict[str, Any]] = []
 
@@ -1093,6 +1112,12 @@ def build_openai_tools(mcp_manager: Any, *, active_role: str | None = None) -> l
             tools.append(tool)
 
     append_builtin_tool_schemas(append_tool)
+
+    if include_subagent_tool:
+        from vulnclaw.agent.subagent.integration import tool_schemas
+
+        for schema in tool_schemas():
+            append_tool(schema)
 
     for tool in intel_tool_schemas():
         append_tool(tool)

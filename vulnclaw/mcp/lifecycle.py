@@ -119,6 +119,10 @@ class MCPLifecycleManager(ProbeMixin):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_exception_handler_loop: asyncio.AbstractEventLoop | None = None
         self._task_constraints: Any = None
+        # asyncio primitives are loop-bound once contended, so keep one gate
+        # per (event loop, server). This protects shared stateful stdio sessions
+        # across parent tools and every sub-agent.
+        self._server_call_gates: dict[tuple[int, str], asyncio.Semaphore] = {}
 
     async def __aenter__(self) -> MCPLifecycleManager:
         self.start_enabled_servers()
@@ -1230,20 +1234,39 @@ class MCPLifecycleManager(ProbeMixin):
         if not server_name:
             raise ValueError(f"Unknown tool: {tool_name}")
 
-        # Liveness gate: if a tracked subprocess died, attempt a bounded restart
-        # before dispatching the call.
-        if server_name in self._processes and not self._is_process_alive(server_name):
-            await self._restart_server(server_name)
+        async with self._server_call_gate(server_name):
+            # Liveness gate: if a tracked subprocess died, attempt a bounded restart
+            # before dispatching the call.
+            if server_name in self._processes and not self._is_process_alive(server_name):
+                await self._restart_server(server_name)
 
-        server_state = self.registry.get_all_servers().get(server_name)
-        mode = server_state.execution_mode if server_state else "unknown"
+            server_state = self.registry.get_all_servers().get(server_name)
+            mode = server_state.execution_mode if server_state else "unknown"
 
-        call_started = time.monotonic()
-        try:
-            return await self._dispatch_call_tool(server_name, tool_name, arguments, mode)
-        finally:
-            latency_ms = (time.monotonic() - call_started) * 1000.0
-            self.registry.set_last_call_latency(server_name, latency_ms)
+            call_started = time.monotonic()
+            try:
+                return await self._dispatch_call_tool(server_name, tool_name, arguments, mode)
+            finally:
+                latency_ms = (time.monotonic() - call_started) * 1000.0
+                self.registry.set_last_call_latency(server_name, latency_ms)
+
+    def _server_call_gate(self, server_name: str) -> asyncio.Semaphore:
+        """Return the shared per-server gate for the current event loop."""
+
+        key = (id(asyncio.get_running_loop()), server_name)
+        gate = self._server_call_gates.get(key)
+        if gate is not None:
+            return gate
+
+        server_cfg = self.config.mcp.servers.get(server_name)
+        transport = getattr(server_cfg, "transport", None)
+        if getattr(transport, "type", "") == "stdio":
+            limit = 1
+        else:
+            limit = self.config.safety.tool_max_concurrent
+        gate = asyncio.Semaphore(max(1, int(limit or 1)))
+        self._server_call_gates[key] = gate
+        return gate
 
     async def _dispatch_call_tool(
         self,

@@ -11,10 +11,14 @@
 
 from __future__ import annotations
 
+import os
+import secrets
 import threading
+from dataclasses import dataclass, field
 from queue import Queue
 from typing import Any
 
+from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -26,6 +30,12 @@ from textual.widgets import Input, ListItem, ListView, RichLog, Static
 
 import vulnclaw.cli.tui as _tui
 from vulnclaw.agent.constraint_policy import PHASE_TO_ACTION
+from vulnclaw.cli._helpers import (
+    TUI_EVENT_STREAM_ENV,
+    TUI_EVENT_TOKEN_ENV,
+    SubagentTuiEvent,
+    _parse_tui_solve_event,
+)
 
 # [新增] 2026-06-10 Nyaecho - 自然语言驱动 / 响应式侧边栏: 新增颜色常量和动作辅助函数导入
 # [修改] 2026-07-08 Nyaecho - 修改原因：新增 @ skill 引用相关函数导入
@@ -62,6 +72,172 @@ from vulnclaw.config.settings import (
 from vulnclaw.i18n import _, init_i18n
 from vulnclaw.skills.flag_skills import complete_flag_skills, render_flag_skill
 from vulnclaw.target_state.store import get_target_state_preview, list_target_snapshots
+
+_SUBAGENT_DETAIL_MAX_CHARS = 48
+_SUBAGENT_TERMINAL_STATUSES = {
+    "completed",
+    "cancelled",
+    "failed",
+    "interrupted",
+    "stopped",
+}
+_SUBAGENT_PHASE_LABELS = {
+    "created": "created",
+    "executing": "executing",
+    "completed": "completed",
+    "cancelled": "cancelled",
+    "failed": "failed",
+    "notified": "notified",
+}
+
+
+def _compact_subagent_detail(value: Any) -> str:
+    detail = " ".join(str(value or "").split())
+    if len(detail) <= _SUBAGENT_DETAIL_MAX_CHARS:
+        return detail
+    return detail[: _SUBAGENT_DETAIL_MAX_CHARS - 1].rstrip() + "…"
+
+
+@dataclass
+class SubagentGroupView:
+    group_id: str
+    phase: str = "created"
+    status: str = "pending"
+    goal: str = ""
+    member_total: int = 0
+    member_done: int = 0
+    member_failed: int = 0
+    wave_count: int = 0
+    conclusion: str = ""
+    activity: str = ""
+    evidence_count: int = 0
+
+
+@dataclass
+class SubagentMonitorState:
+    groups: dict[str, SubagentGroupView] = field(default_factory=dict)
+
+    def reset(self) -> None:
+        self.groups.clear()
+
+    def apply(self, kind: str, payload: dict[str, Any]) -> bool:
+        if not kind.startswith("group_"):
+            return False
+        group_id = str(payload.get("group_id") or "unknown")
+        group = self.groups.setdefault(
+            group_id, SubagentGroupView(group_id=group_id)
+        )
+        phase = str(payload.get("phase") or kind.removeprefix("group_"))
+        group.phase = _SUBAGENT_PHASE_LABELS.get(
+            phase, phase.replace("_", " ")
+        )
+        reported_status = str(payload.get("status") or "")
+        if reported_status:
+            group.status = reported_status
+        elif kind in {"group_cancelled", "group_failed"}:
+            group.status = kind.removeprefix("group_")
+        elif kind == "group_finished":
+            group.status = "completed"
+        group.goal = str(payload.get("goal") or group.goal)
+        for field_name in (
+            "member_total",
+            "member_done",
+            "member_failed",
+            "wave_count",
+            "evidence_count",
+        ):
+            if field_name not in payload:
+                continue
+            try:
+                setattr(group, field_name, max(0, int(payload[field_name])))
+            except (TypeError, ValueError):
+                pass
+        group.conclusion = str(payload.get("conclusion") or group.conclusion)
+        member_task_id = str(payload.get("member_task_id") or "")
+        if member_task_id:
+            group.activity = (
+                f"member {member_task_id}: "
+                f"{payload.get('member_status') or 'unknown'}"
+            )
+        return True
+
+    def finish_execution(self, *, interrupted: bool) -> None:
+        terminal_status = "interrupted" if interrupted else "stopped"
+        for group in self.groups.values():
+            if group.status not in _SUBAGENT_TERMINAL_STATUSES:
+                group.status = terminal_status
+
+    def render(self) -> Text:
+        rendered = Text()
+        rendered.append(
+            f"⚡ {_('tui.subagents_title')}", style=f"bold {C_ACCENT}"
+        )
+        for group in self.groups.values():
+            style = (
+                C_MUTED
+                if group.status in _SUBAGENT_TERMINAL_STATUSES
+                else C_ACCENT
+            )
+            if group.status == "completed":
+                style = C_SUCCESS
+            elif group.status in {
+                "failed",
+                "cancelled",
+                "interrupted",
+            }:
+                style = C_WARNING
+            rendered.append("\n")
+            rendered.append(
+                f"◈ [{group.group_id}] {group.status} · {group.phase}",
+                style=style,
+            )
+            progress: list[str] = []
+            if group.member_total:
+                progress.append(
+                    f"members {group.member_done}/{group.member_total}"
+                )
+            if group.member_failed:
+                progress.append(f"failed {group.member_failed}")
+            if group.wave_count:
+                progress.append(f"waves {group.wave_count}")
+            if group.evidence_count:
+                progress.append(f"evidence {group.evidence_count}")
+            if progress:
+                rendered.append(
+                    f"\n   {' · '.join(progress)}", style=C_MUTED
+                )
+            detail = _compact_subagent_detail(
+                group.conclusion or group.activity or group.goal
+            )
+            if detail:
+                rendered.append(f"\n   {detail}", style=C_MUTED)
+        return rendered
+
+
+class SubagentMonitor(Static):
+    """Incrementally rendered view of live collaborative groups."""
+
+    def __init__(self, **kwargs: Any):
+        kwargs.setdefault("id", "subagent-monitor")
+        super().__init__("", markup=False, **kwargs)
+        self.state = SubagentMonitorState()
+
+    def reset(self) -> None:
+        self.state.reset()
+        self.update("")
+        self.remove_class("-active")
+
+    def apply_event(self, event: SubagentTuiEvent) -> None:
+        if self.state.apply(event.kind, event.payload):
+            self.update(self.state.render())
+            self.add_class("-active")
+
+    def finish_execution(self, *, interrupted: bool) -> None:
+        if not self.state.groups:
+            return
+        self.state.finish_execution(interrupted=interrupted)
+        self.update(self.state.render())
+
 
 # ── Slash dispatch ──
 
@@ -1023,11 +1199,13 @@ class DashboardScreen(Screen):
         self._bar_msg_id: int = 0
 
     def compose(self) -> ComposeResult:
-        # [修改] 2026-06-10 Nyaecho - 响应式分栏布局: #output-log 移入 Horizontal #exec-row 与 #exec-sidebar 并排
+        # 执行摘要和子代理监控共享侧边栏，主区域只保留运行日志。
         with Vertical(id="body"):
             yield Static(id="dashboard")
             with Horizontal(id="exec-row"):
-                yield Static(id="exec-sidebar")
+                with Vertical(id="exec-sidebar"):
+                    yield Static(id="exec-sidebar-summary")
+                    yield SubagentMonitor()
                 yield RichLog(id="output-log", markup=True, wrap=True, auto_scroll=True)
         yield SecondaryPopup()
         yield CommandPalette(id="cmd-palette")
@@ -1277,6 +1455,7 @@ class DashboardScreen(Screen):
         self.query_one("#cmd-input", Input).disabled = True
         self.query_one("#exec-hint", Static).remove_class("-active")
         self._output_queue = Queue()
+        self.query_one(SubagentMonitor).reset()
         self._output_lines.clear()
         self._worker_running = True
         self._interrupted = False
@@ -1304,6 +1483,10 @@ class DashboardScreen(Screen):
         cmd_args = build_command_preview_args(draft, nl_text=nl_text)
         args = [sys.executable, "-m", "vulnclaw.cli.main"] + cmd_args[1:]
         creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        child_env = os.environ.copy()
+        child_env[TUI_EVENT_STREAM_ENV] = "1"
+        event_token = secrets.token_urlsafe(18)
+        child_env[TUI_EVENT_TOKEN_ENV] = event_token
         try:
             proc = subprocess.Popen(
                 args,
@@ -1314,10 +1497,14 @@ class DashboardScreen(Screen):
                 encoding="utf-8",
                 errors="replace",
                 creationflags=creationflags,
+                env=child_env,
             )
             self._proc = proc
             for line in proc.stdout:
-                self._output_queue.put(line)
+                event = _parse_tui_solve_event(
+                    line, expected_token=event_token
+                )
+                self._output_queue.put(event if event is not None else line)
             proc.wait()
         except Exception as exc:
             self._output_queue.put(f"\n[{C_ERROR}]Execution error: {exc}[/]\n")
@@ -1356,7 +1543,9 @@ class DashboardScreen(Screen):
         sidebar = self.query_one("#exec-sidebar")
         if show_sidebar:
             if not sidebar.has_class("-active"):
-                sidebar.update(self._build_exec_sidebar())
+                self.query_one("#exec-sidebar-summary", Static).update(
+                    self._build_exec_sidebar()
+                )
                 sidebar.add_class("-active")
         else:
             sidebar.remove_class("-active")
@@ -1374,6 +1563,9 @@ class DashboardScreen(Screen):
                 self._worker_running = False
                 self._on_execution_done()
                 return
+            if isinstance(chunk, SubagentTuiEvent):
+                self.query_one(SubagentMonitor).apply_event(chunk)
+                continue
             if chunk:
                 self.query_one("#output-log", RichLog).write(chunk)
                 self._output_lines.append(chunk)
@@ -1387,6 +1579,9 @@ class DashboardScreen(Screen):
 
     def _on_execution_done(self) -> None:
         self.query_one("#exec-spinner").remove_class("-active")
+        self.query_one(SubagentMonitor).finish_execution(
+            interrupted=self._interrupted
+        )
         inp = self.query_one("#cmd-input", Input)
         inp.disabled = False
         inp.focus()
@@ -1569,7 +1764,7 @@ class DashboardScreen(Screen):
 
 # ── CSS ──
 
-# [修改] 2026-06-10 Nyaecho - 新增 #exec-row 分栏容器 + #exec-sidebar 30列侧边栏, 支持终端宽度>=100列时分栏显示
+# 执行区采用日志 + 侧边栏分栏；侧边栏同时承载执行摘要和子代理状态。
 CSS = """
 #body {
     height: 1fr;
@@ -1624,6 +1819,20 @@ CSS = """
     display: none;
 }
 
+#subagent-monitor {
+    display: none;
+    height: auto;
+    max-height: 1fr;
+    overflow-y: auto;
+    border-top: solid #fab283;
+    padding: 1 0 0 0;
+    margin-top: 1;
+    background: $surface;
+}
+#subagent-monitor.-active {
+    display: block;
+}
+
 #exec-row {
     display: none;
     height: 1fr;
@@ -1643,6 +1852,10 @@ CSS = """
 }
 #exec-sidebar.-active {
     display: block;
+}
+
+#exec-sidebar-summary {
+    height: auto;
 }
 
 #output-log {

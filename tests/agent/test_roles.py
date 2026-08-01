@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
+from vulnclaw.agent.builtin_tools import execute_mcp_tool
 from vulnclaw.agent.roles import (
     ROLE_REGISTRY,
     filter_tools_for_role,
@@ -53,8 +58,74 @@ class TestToolGating:
         assert tool_allowed_for_role("shell_command", "researcher") is False
         assert tool_allowed_for_role("nmap_scan", "researcher") is False
 
-    def test_adviser_has_no_tools(self):
-        assert ROLE_REGISTRY["adviser"].allowed_tool_globs == ()
+    def test_researcher_http_is_limited_to_safe_reconnaissance(self):
+        assert (
+            role_tool_violation(
+                "researcher",
+                "fetch",
+                {"url": "https://target.local/status", "method": "GET"},
+            )
+            is None
+        )
+        for args in (
+            {
+                "url": "https://target.local/login",
+                "method": "POST",
+                "data": {"username": "admin"},
+            },
+            {"url": "https://target.local/?payload=test"},
+            {
+                "url": "https://target.local/status",
+                "headers": {"Authorization": "Bearer token"},
+            },
+        ):
+            blocked = role_tool_violation("researcher", "fetch", args)
+            assert blocked is not None
+            assert "active requests require role 'executor'" in blocked
+
+        assert (
+            role_tool_violation(
+                "executor",
+                "fetch",
+                {
+                    "url": "https://target.local/login",
+                    "method": "POST",
+                    "data": {"username": "admin"},
+                },
+            )
+            is None
+        )
+
+    def test_researcher_batch_http_rejects_active_member(self):
+        safe = {
+            "requests": [
+                {"url": "https://target.local/health", "method": "HEAD"},
+                {
+                    "url": "https://target.local/version",
+                    "headers": {"Accept": "application/json"},
+                },
+            ]
+        }
+        assert role_tool_violation("researcher", "http_probe_batch", safe) is None
+
+        active = {
+            "requests": [
+                {"url": "https://target.local/health"},
+                {
+                    "url": "https://target.local/action",
+                    "method": "POST",
+                    "json": {"run": True},
+                },
+            ]
+        }
+        assert (
+            role_tool_violation("researcher", "http_probe_batch", active)
+            is not None
+        )
+
+    def test_adviser_has_only_read_only_memory_search(self):
+        assert ROLE_REGISTRY["adviser"].allowed_tool_globs == ("memory_search",)
+        assert tool_allowed_for_role("memory_search", "adviser") is True
         assert tool_allowed_for_role("evidence_list", "adviser") is False
 
     def test_filter_tools_for_role(self):
@@ -66,6 +137,20 @@ class TestToolGating:
 
 
 class TestViolationAndPrompt:
+    @pytest.mark.asyncio
+    async def test_execution_boundary_rejects_active_researcher_http(self):
+        result = await execute_mcp_tool(
+            SimpleNamespace(active_role="researcher"),
+            "fetch",
+            {
+                "url": "https://target.local/login",
+                "method": "POST",
+                "data": {"username": "admin"},
+            },
+        )
+        assert result.startswith("[role_tool_violation]")
+        assert "active requests require role 'executor'" in result
+
     def test_role_tool_violation_messages(self):
         assert role_tool_violation(None, "shell_command") is None
         assert role_tool_violation("researcher", "evidence_list") is None

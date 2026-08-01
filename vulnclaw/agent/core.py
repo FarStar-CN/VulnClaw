@@ -42,6 +42,7 @@ from vulnclaw.agent.recon_tracker import update_recon_dimension_completion
 from vulnclaw.agent.roles import role_prompt_block
 from vulnclaw.agent.runtime_state import AgentResult, PersistentCycleResult, RuntimeState
 from vulnclaw.agent.skill_context import apply_skill_selection
+from vulnclaw.agent.subagent.models import SubagentContext
 from vulnclaw.agent.system_prompt import build_dynamic_system_prompt
 from vulnclaw.agent.tool_call_manager import safe_parse_tool_args
 from vulnclaw.config.schema import VulnClawConfig, resolve_engine
@@ -74,6 +75,7 @@ class AgentCore:
             ),
         )
         self.active_role: str | None = None
+        self._subagent_ctx = SubagentContext()
         self._client = None
         # Failover key pool: prefer llm.api_keys, else the single llm.api_key.
         self._key_pool = config.llm.key_pool()
@@ -85,6 +87,11 @@ class AgentCore:
         self._kb_context_cache: dict[Any, str] = {}
         self._finding_parser = FindingParser(self.context, self.runtime)
         self._report_kb_status()
+
+    def _child_factory(self) -> "AgentCore":
+        """Build an isolated child; subclasses may override this explicit seam."""
+
+        return AgentCore(self.config, self.mcp_manager)
 
     def _report_kb_status(self) -> None:
         """Print the knowledge-base backend status once at startup."""
@@ -682,7 +689,24 @@ class AgentCore:
 
     def _build_openai_tools(self) -> list[dict]:
         """Build OpenAI function calling schema from MCP tools + built-in tools."""
-        return build_openai_tools(self.mcp_manager, active_role=self.active_role)
+        cfg = getattr(self.config, "subagent", None)
+        session_kind = str(
+            getattr(getattr(self.context, "state", None), "session_kind", "")
+            or ""
+        )
+        include_subagent_tool = bool(
+            cfg
+            and cfg.enabled
+            and (
+                self._subagent_ctx.depth == 0
+                or session_kind == "group_leader"
+            )
+        )
+        return build_openai_tools(
+            self.mcp_manager,
+            active_role=self.active_role,
+            include_subagent_tool=include_subagent_tool,
+        )
 
     # ── Python code executor ─────────────────────────────────────────
 

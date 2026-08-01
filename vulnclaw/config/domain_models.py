@@ -168,6 +168,10 @@ class VulnerabilityFinding(BaseModel):
     # ★ Optional skill-loading provenance (reserved by the skill-loading PRD);
     # mapped into finding metadata / SARIF ``properties`` when present.
     skill_provenance: Optional[dict[str, Any]] = Field(default=None)
+    subagent_provenance: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Owning sub-agent task identity when this finding was merged",
+    )
     poc_script: Optional[str] = Field(default=None, description="Generated PoC script path")
     evidence_level: str = Field(default="L1", description="L1-L4 evidence strength")
     lifecycle_status: str = Field(

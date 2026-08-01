@@ -198,6 +198,41 @@ class MCPServersConfig(BaseModel):
     servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class SubagentConfig(BaseModel):
+    """Limits for asynchronous Group Leaders and leaf agents."""
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    enabled: bool = Field(
+        default=True,
+        description="Expose agent_run and agent_job to the model-led solve engine",
+    )
+    max_background_groups: int = Field(default=3, gt=0, le=8)
+    max_concurrent_leaf_total: int = Field(default=4, gt=0, le=32)
+    max_concurrent_leaf_per_group: int = Field(default=3, gt=0, le=16)
+    max_leaf_per_group: int = Field(default=6, gt=0, le=32)
+    max_waves_per_group: int = Field(default=3, gt=0, le=12)
+    max_steps_per_leaf: int = Field(default=12, gt=0, le=100)
+    leaf_max_tool_rounds: int = Field(default=4, gt=0, le=20)
+    leaf_timeout_seconds: float = Field(default=900.0, gt=0, le=86_400)
+    group_timeout_seconds: float = Field(default=1200.0, gt=0, le=86_400)
+    finalization_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    max_model_tokens_per_solve: int = Field(
+        default=8_000_000,
+        gt=0,
+        le=200_000_000,
+        description="Solve-wide model-token ceiling for all descendant agents",
+    )
+    max_model_tokens_per_group: int = Field(
+        default=1_000_000,
+        gt=0,
+        le=20_000_000,
+        description="Shared token ceiling for one Leader and all of its leaves",
+    )
+    merge_max_evidence_per_group: int = Field(default=48, gt=0, le=128)
+    result_max_chars: int = Field(default=16_000, gt=0, le=200_000)
+
+
 class ReconConfig(BaseModel):
     """Information-gathering configuration: space-mapping API keys + recon knobs.
 
@@ -455,6 +490,7 @@ class VulnClawConfig(BaseModel):
     mcp: MCPServersConfig = Field(default_factory=MCPServersConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    subagent: SubagentConfig = Field(default_factory=SubagentConfig)
     recon: ReconConfig = Field(default_factory=ReconConfig)
 
     model_config = ConfigDict(

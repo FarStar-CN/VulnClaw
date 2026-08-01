@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 
 import pytest
 
-from vulnclaw.agent.tool_call_manager import handle_tool_calls_with_results
+from vulnclaw.agent.subagent.models import SubagentContext
+from vulnclaw.agent.tool_call_manager import (
+    handle_tool_calls_with_results,
+)
 
 
 class _Func:
@@ -48,6 +52,7 @@ class _Agent:
         self.mcp_manager = None
         self.config = _Config(safety or _Safety())
         self._executor = executor
+        self._subagent_ctx = SubagentContext()
 
     async def _execute_mcp_tool(self, func_name, func_args):
         return await self._executor(func_name, func_args)
@@ -82,6 +87,78 @@ async def test_parallel_executes_all_calls_and_preserves_order():
         assert f"ran:{i}" in r["content"]
     # 5 calls of 0.05s each run concurrently → well under serial 0.25s.
     assert elapsed < 0.2
+
+
+@pytest.mark.asyncio
+async def test_subagent_meta_call_establishes_state_before_parallel_tools():
+    order = []
+
+    async def executor(func_name, func_args):
+        order.append(f"{func_name}:start")
+        if func_name == "agent_job":
+            await asyncio.sleep(0.01)
+        order.append(f"{func_name}:end")
+        return "ok"
+
+    agent = _Agent(executor, _Safety(tool_parallel=True, tool_max_concurrent=5))
+    message = _make_message(
+        [
+            ("c0", "fetch", '{"url":"http://target.local/"}'),
+            ("c1", "agent_job", '{"action":"cancel","task_id":"a-0001"}'),
+        ]
+    )
+
+    results, _ = await handle_tool_calls_with_results(agent, message)
+
+    assert [result["tool_call_id"] for result in results] == ["c0", "c1"]
+    assert order.index("agent_job:end") < order.index("fetch:start")
+
+
+@pytest.mark.asyncio
+async def test_group_leader_agent_run_calls_form_one_parallel_wave():
+    state = {"active": 0, "peak": 0, "wave_ids": set()}
+    release = asyncio.Event()
+    both_started = asyncio.Event()
+
+    async def executor(func_name, func_args):
+        assert func_name == "agent_run"
+        state["wave_ids"].add(func_args["_wave_id"])
+        state["active"] += 1
+        state["peak"] = max(state["peak"], state["active"])
+        if state["active"] == 2:
+            both_started.set()
+        await release.wait()
+        state["active"] -= 1
+        return "leaf done"
+
+    agent = _Agent(executor, _Safety(tool_parallel=True, tool_max_concurrent=2))
+    agent._subagent_ctx.task_context = SimpleNamespace(
+        session_kind="group_leader",
+        task_id="group-1",
+    )
+    message = _make_message(
+        [
+            (
+                "c1",
+                "agent_run",
+                '{"description":"one","prompt":"probe one","agent_type":"executor"}',
+            ),
+            (
+                "c2",
+                "agent_run",
+                '{"description":"two","prompt":"probe two","agent_type":"verifier"}',
+            ),
+        ]
+    )
+
+    execution = asyncio.create_task(handle_tool_calls_with_results(agent, message))
+    await asyncio.wait_for(both_started.wait(), timeout=1)
+    release.set()
+    results, _ = await execution
+
+    assert len(results) == 2
+    assert state["peak"] == 2
+    assert len(state["wave_ids"]) == 1
 
 
 @pytest.mark.asyncio
@@ -151,6 +228,34 @@ async def test_concurrency_capped_at_max_concurrent():
     assert len(results) == 8
     # Never more than max_concurrent (2) running at once.
     assert state["peak"] <= 2
+
+
+@pytest.mark.asyncio
+async def test_subagent_tool_budget_is_atomic_across_parallel_calls():
+    from types import SimpleNamespace
+
+    executed = []
+
+    async def executor(func_name, func_args):
+        executed.append(func_args["n"])
+        await asyncio.sleep(0)
+        return "ok"
+
+    agent = _Agent(executor, _Safety(tool_parallel=True, tool_max_concurrent=5))
+    agent.config.subagent = SimpleNamespace(
+        max_steps_per_leaf=1,
+        leaf_max_tool_rounds=2,
+    )
+    agent._subagent_ctx.depth = 1
+    message = _make_message(
+        [(f"c{i}", "probe", f'{{"n":{i}}}') for i in range(3)]
+    )
+
+    results, _ = await handle_tool_calls_with_results(agent, message)
+
+    assert sorted(executed) == [0, 1]
+    assert len(results) == 3
+    assert "budget exhausted" in results[2]["content"]
 
 
 @pytest.mark.asyncio

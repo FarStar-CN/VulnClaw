@@ -23,6 +23,47 @@ from .schema import (
 
 logger = logging.getLogger(__name__)
 
+_SUBAGENT_ENV_FIELDS: tuple[tuple[str, str, type], ...] = (
+    ("leaf_timeout_seconds", "VULNCLAW_SUBAGENT_LEAF_TIMEOUT_SECONDS", float),
+    ("group_timeout_seconds", "VULNCLAW_SUBAGENT_GROUP_TIMEOUT_SECONDS", float),
+    (
+        "finalization_timeout_seconds",
+        "VULNCLAW_SUBAGENT_FINALIZATION_TIMEOUT_SECONDS",
+        float,
+    ),
+    ("max_background_groups", "VULNCLAW_SUBAGENT_MAX_BACKGROUND_GROUPS", int),
+    (
+        "max_concurrent_leaf_total",
+        "VULNCLAW_SUBAGENT_MAX_CONCURRENT_LEAF_TOTAL",
+        int,
+    ),
+    (
+        "max_concurrent_leaf_per_group",
+        "VULNCLAW_SUBAGENT_MAX_CONCURRENT_LEAF_PER_GROUP",
+        int,
+    ),
+    ("max_leaf_per_group", "VULNCLAW_SUBAGENT_MAX_LEAF_PER_GROUP", int),
+    ("max_waves_per_group", "VULNCLAW_SUBAGENT_MAX_WAVES_PER_GROUP", int),
+    ("max_steps_per_leaf", "VULNCLAW_SUBAGENT_MAX_STEPS_PER_LEAF", int),
+    ("leaf_max_tool_rounds", "VULNCLAW_SUBAGENT_LEAF_MAX_TOOL_ROUNDS", int),
+    ("result_max_chars", "VULNCLAW_SUBAGENT_RESULT_MAX_CHARS", int),
+    (
+        "max_model_tokens_per_solve",
+        "VULNCLAW_SUBAGENT_MAX_MODEL_TOKENS_PER_SOLVE",
+        int,
+    ),
+    (
+        "max_model_tokens_per_group",
+        "VULNCLAW_SUBAGENT_MAX_MODEL_TOKENS_PER_GROUP",
+        int,
+    ),
+    (
+        "merge_max_evidence_per_group",
+        "VULNCLAW_SUBAGENT_MERGE_MAX_EVIDENCE_PER_GROUP",
+        int,
+    ),
+)
+
 # ── Paths ──────────────────────────────────────────────────────────
 
 CONFIG_DIR = Path(os.environ.get("VULNCLAW_CONFIG_DIR", str(Path.home() / ".vulnclaw")))
@@ -205,6 +246,9 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
         Safety:     PYTHON_EXECUTE_ENABLED, PYTHON_EXECUTE_RESTRICTED, PYTHON_EXECUTE_MODE,
                     PYTHON_EXECUTE_MAX_LINES, PYTHON_EXECUTE_SHOW_WARNING,
                     PYTHON_EXECUTE_MAX_OUTPUT_CHARS, PYTHON_EXECUTE_AUDIT_ENABLED
+        Subagent:   ENABLED, MAX_TASKS_PER_CALL, MAX_CONCURRENT, MAX_STEPS_PER_CHILD,
+                    CHILD_MAX_TOOL_ROUNDS, MAX_TOTAL_PER_SOLVE, MAX_DEPTH,
+                    MERGE_MAX_EVIDENCE_PER_CHILD, RESULT_MAX_CHARS
     """
     # ── LLM ──────────────────────────────────────────────────────────
     if v := os.environ.get("VULNCLAW_LLM_API_KEY"):
@@ -313,6 +357,24 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
     if v := os.environ.get("VULNCLAW_SAFETY_PYTHON_EXECUTE_AUDIT_ENABLED"):
         config.safety.python_execute_audit_enabled = v.lower() in ("1", "true", "yes", "on")
 
+    # ── Model-driven sub-agents ──────────────────────────────────────
+    if v := os.environ.get("VULNCLAW_SUBAGENT_ENABLED"):
+        config.subagent.enabled = v.lower() in ("1", "true", "yes", "on")
+    for field, env_name, caster in _SUBAGENT_ENV_FIELDS:
+        value = os.environ.get(env_name)
+        if not value:
+            continue
+        try:
+            setattr(config.subagent, field, caster(value))
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Ignoring invalid %s=%r (%s); keeping %s=%s",
+                env_name,
+                value,
+                exc,
+                field,
+                getattr(config.subagent, field),
+            )
     # ── Recon: space-mapping API keys ────────────────────────────────
     # Accept both the short form (FOFA_KEY) and the prefixed form
     # (VULNCLAW_RECON_FOFA_KEY); short form wins if both are set.
