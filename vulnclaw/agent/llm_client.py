@@ -48,6 +48,7 @@ from vulnclaw.agent.tool_call_manager import (  # noqa: E402
 
 _CONTEXT_USABLE_RATIO = 0.9
 _DEFAULT_AUTO_TOOL_ROUNDS = 6
+_TOOL_LOOP_TARGET_RATIO = 26_000 / 32_000
 _SYNC_STREAM_END = object()
 
 
@@ -101,7 +102,7 @@ def _fit_context_window(agent: AgentContext, messages: list[dict[str, Any]]) -> 
 
 
 def _tool_loop_hot_budget(agent: AgentContext) -> int:
-    """Return the bounded working-set budget for one internal tool loop."""
+    """Return the high-water mark for one internal tool-loop working set."""
     context = getattr(agent, "context", None)
     budget = getattr(context, "max_tokens", 32_000)
     if not isinstance(budget, (int, float)) or isinstance(budget, bool):
@@ -109,28 +110,59 @@ def _tool_loop_hot_budget(agent: AgentContext) -> int:
     return max(1_024, int(budget))
 
 
+def _tool_loop_target_budget(agent: AgentContext) -> int:
+    """Return the post-compaction target, 26K for the default 32K high-water mark."""
+    high_water = _tool_loop_hot_budget(agent)
+    return min(high_water, max(1_024, int(high_water * _TOOL_LOOP_TARGET_RATIO)))
+
+
+def _build_tool_loop_messages(
+    agent: AgentContext,
+    system_prompt: str,
+    round_context: str,
+    *,
+    include_history: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build a stable prefix followed by the mutable internal tool-loop tail.
+
+    The prefix is created once per ``call_llm_auto`` invocation and never
+    reordered while its tool loop runs: system prompt, bounded hot history,
+    then the current task instruction.  Assistant/tool exchanges are appended
+    after it as the mutable tail.  This lets providers reuse the unchanged
+    prefix between tool rounds until a high-water compaction is necessary.
+    """
+    messages = [{"role": "system", "content": system_prompt}]
+    if include_history:
+        messages.extend(agent.context.get_messages())
+    round_message = {"role": "user", "content": round_context}
+    messages.append(round_message)
+    return messages, round_message
+
+
 def _fit_tool_loop_context(
     agent: AgentContext,
     messages: list[dict[str, Any]],
     round_message: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Keep one tool-loop request inside the hot budget without breaking tools.
+    """Compact an oversized tool-loop tail without breaking tool exchanges.
 
     ``ContextManager`` bounds persisted history, but a single ``call_llm_auto``
     can append several assistant/tool exchanges before it returns.  Compact that
-    local working set after every tool batch, while preserving the system
-    prompt, current task instruction, and complete recent tool exchanges.
+    local working set only after it crosses the high-water mark.  It then falls
+    back to a lower target (26K for the default 32K high-water mark), preserving
+    the stable system/task prefix and complete recent tool exchanges.
     """
-    budget = _tool_loop_hot_budget(agent)
-    if estimate_tokens(messages) <= budget:
+    high_water = _tool_loop_hot_budget(agent)
+    if estimate_tokens(messages) <= high_water:
         return messages
+    target = _tool_loop_target_budget(agent)
 
     try:
         round_index = next(
             index for index, message in enumerate(messages) if message is round_message
         )
     except StopIteration:
-        return truncate_messages(messages, budget, preserve_system=True)
+        return truncate_messages(messages, target, preserve_system=True)
 
     system_messages = (
         [messages[0]] if messages and messages[0].get("role") == "system" else []
@@ -139,8 +171,8 @@ def _fit_tool_loop_context(
     history = messages[history_start:round_index]
     tool_loop = messages[round_index + 1 :]
     required = [*system_messages, round_message]
-    if estimate_tokens(required) >= budget:
-        return truncate_messages(required, budget, preserve_system=True, min_recent=1)
+    if estimate_tokens(required) >= target:
+        return truncate_messages(required, target, preserve_system=True, min_recent=1)
 
     running = estimate_tokens(required)
 
@@ -151,7 +183,7 @@ def _fit_tool_loop_context(
         kept: list[list[dict[str, Any]]] = []
         for group in reversed(groups):
             cost = estimate_tokens(group)
-            if running + cost > budget:
+            if running + cost > target:
                 break
             running += cost
             kept.insert(0, group)
@@ -585,11 +617,12 @@ async def call_llm_auto(
             max_tool_rounds=max_tool_rounds,
         )
 
-    messages = [{"role": "system", "content": system_prompt}]
-    if include_history:
-        messages.extend(agent.context.get_messages())
-    round_message = {"role": "user", "content": round_context}
-    messages.append(round_message)
+    messages, round_message = _build_tool_loop_messages(
+        agent,
+        system_prompt,
+        round_context,
+        include_history=include_history,
+    )
     messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
 
@@ -951,11 +984,12 @@ async def call_llm_auto_stream(
     if stream_sink is None:
         stream_sink = _NullSink()
 
-    messages = [{"role": "system", "content": system_prompt}]
-    if include_history:
-        messages.extend(agent.context.get_messages())
-    round_message = {"role": "user", "content": round_context}
-    messages.append(round_message)
+    messages, round_message = _build_tool_loop_messages(
+        agent,
+        system_prompt,
+        round_context,
+        include_history=include_history,
+    )
     messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
 

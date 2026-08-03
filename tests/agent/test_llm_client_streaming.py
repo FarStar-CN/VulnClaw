@@ -63,7 +63,10 @@ def test_model_context_cap_compacts_one_oversized_recent_message():
 
 
 def test_tool_loop_context_stays_within_hot_budget_and_keeps_tool_exchanges():
-    from vulnclaw.agent.llm_client import _fit_tool_loop_context
+    from vulnclaw.agent.llm_client import (
+        _fit_tool_loop_context,
+        _tool_loop_target_budget,
+    )
     from vulnclaw.agent.token_counter import estimate_tokens
 
     agent = SimpleNamespace(context=SimpleNamespace(max_tokens=1_200))
@@ -94,7 +97,92 @@ def test_tool_loop_context_stays_within_hot_budget_and_keeps_tool_exchanges():
 
     fitted = _fit_tool_loop_context(agent, messages, round_message)
 
-    assert estimate_tokens(fitted) <= 1_200
+    assert _tool_loop_target_budget(agent) == 1_024
+    assert estimate_tokens(fitted) <= _tool_loop_target_budget(agent)
+    assert round_message in fitted
+    for index, message in enumerate(fitted):
+        if message.get("role") == "tool":
+            predecessor = fitted[index - 1]
+            assert predecessor.get("role") == "assistant"
+            assert message["tool_call_id"] in {
+                item["id"] for item in predecessor["tool_calls"]
+            }
+
+
+def test_tool_loop_uses_stable_prefix_until_high_water_then_falls_to_target():
+    from vulnclaw.agent.llm_client import (
+        _build_tool_loop_messages,
+        _fit_tool_loop_context,
+        _tool_loop_hot_budget,
+        _tool_loop_target_budget,
+    )
+    from vulnclaw.agent.token_counter import estimate_tokens
+
+    history = [
+        {"role": "user", "content": "previous evidence " + "h" * 2_000},
+        {"role": "assistant", "content": "previous assessment " + "a" * 2_000},
+    ]
+    agent = SimpleNamespace(
+        context=SimpleNamespace(max_tokens=3_200, get_messages=lambda: list(history))
+    )
+    messages, round_message = _build_tool_loop_messages(
+        agent,
+        "system contract",
+        "current task must remain visible",
+        include_history=True,
+    )
+    stable_prefix = list(messages)
+    assert _tool_loop_hot_budget(agent) == 3_200
+    assert _tool_loop_target_budget(agent) == 2_600
+
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "under-high-water",
+                        "type": "function",
+                        "function": {"name": "probe", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "under-high-water",
+                "content": "r" * 2_000,
+            },
+        ]
+    )
+    assert estimate_tokens(messages) < _tool_loop_hot_budget(agent)
+    assert _fit_tool_loop_context(agent, messages, round_message) is messages
+    assert messages[:len(stable_prefix)] == stable_prefix
+
+    for number in range(2):
+        call_id = f"overflow-{number}"
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": "probe", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": call_id, "content": "r" * 4_000},
+            ]
+        )
+
+    assert estimate_tokens(messages) > _tool_loop_hot_budget(agent)
+    fitted = _fit_tool_loop_context(agent, messages, round_message)
+
+    assert estimate_tokens(fitted) <= _tool_loop_target_budget(agent)
+    assert fitted[0] == stable_prefix[0]
     assert round_message in fitted
     for index, message in enumerate(fitted):
         if message.get("role") == "tool":
