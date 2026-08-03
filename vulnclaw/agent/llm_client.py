@@ -36,7 +36,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from vulnclaw.agent.token_counter import estimate_tokens, truncate_messages  # noqa: E402
+from vulnclaw.agent.token_counter import (  # noqa: E402
+    estimate_tokens,
+    group_tool_exchanges,
+    truncate_messages,
+)
 from vulnclaw.agent.tool_call_manager import (  # noqa: E402
     handle_tool_calls,
     handle_tool_calls_with_results,
@@ -94,6 +98,75 @@ def _fit_context_window(agent: AgentContext, messages: list[dict[str, Any]]) -> 
     except Exception:
         logger.warning("上下文截断: %d → %d tokens (预算 %d)", current, estimate_tokens(trimmed), budget)
     return trimmed
+
+
+def _tool_loop_hot_budget(agent: AgentContext) -> int:
+    """Return the bounded working-set budget for one internal tool loop."""
+    context = getattr(agent, "context", None)
+    budget = getattr(context, "max_tokens", 32_000)
+    if not isinstance(budget, (int, float)) or isinstance(budget, bool):
+        return 32_000
+    return max(1_024, int(budget))
+
+
+def _fit_tool_loop_context(
+    agent: AgentContext,
+    messages: list[dict[str, Any]],
+    round_message: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Keep one tool-loop request inside the hot budget without breaking tools.
+
+    ``ContextManager`` bounds persisted history, but a single ``call_llm_auto``
+    can append several assistant/tool exchanges before it returns.  Compact that
+    local working set after every tool batch, while preserving the system
+    prompt, current task instruction, and complete recent tool exchanges.
+    """
+    budget = _tool_loop_hot_budget(agent)
+    if estimate_tokens(messages) <= budget:
+        return messages
+
+    try:
+        round_index = next(
+            index for index, message in enumerate(messages) if message is round_message
+        )
+    except StopIteration:
+        return truncate_messages(messages, budget, preserve_system=True)
+
+    system_messages = (
+        [messages[0]] if messages and messages[0].get("role") == "system" else []
+    )
+    history_start = len(system_messages)
+    history = messages[history_start:round_index]
+    tool_loop = messages[round_index + 1 :]
+    required = [*system_messages, round_message]
+    if estimate_tokens(required) >= budget:
+        return truncate_messages(required, budget, preserve_system=True, min_recent=1)
+
+    running = estimate_tokens(required)
+
+    def keep_recent(
+        groups: list[list[dict[str, Any]]],
+    ) -> list[list[dict[str, Any]]]:
+        nonlocal running
+        kept: list[list[dict[str, Any]]] = []
+        for group in reversed(groups):
+            cost = estimate_tokens(group)
+            if running + cost > budget:
+                break
+            running += cost
+            kept.insert(0, group)
+        return kept
+
+    # Prefer the evidence acquired in this still-active tool loop, then fill
+    # remaining space with older persistent history.
+    kept_tool_loop = keep_recent(group_tool_exchanges(tool_loop))
+    kept_history = keep_recent(group_tool_exchanges(history))
+    return [
+        *system_messages,
+        *(message for group in kept_history for message in group),
+        round_message,
+        *(message for group in kept_tool_loop for message in group),
+    ]
 
 
 def _resolve_auto_tool_rounds(agent: AgentContext, max_tool_rounds: int | None = None) -> int:
@@ -515,7 +588,8 @@ async def call_llm_auto(
     messages = [{"role": "system", "content": system_prompt}]
     if include_history:
         messages.extend(agent.context.get_messages())
-    messages.append({"role": "user", "content": round_context})
+    round_message = {"role": "user", "content": round_context}
+    messages.append(round_message)
     messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
 
@@ -577,6 +651,7 @@ async def call_llm_auto(
         tool_messages = _tool_result_messages(tool_results)
         messages.append(assistant_message)
         messages.extend(tool_messages)
+        messages = _fit_tool_loop_context(agent, messages, round_message)
         if include_history:
             _append_context_message(agent, assistant_message)
             for tool_message in tool_messages:
@@ -879,7 +954,8 @@ async def call_llm_auto_stream(
     messages = [{"role": "system", "content": system_prompt}]
     if include_history:
         messages.extend(agent.context.get_messages())
-    messages.append({"role": "user", "content": round_context})
+    round_message = {"role": "user", "content": round_context}
+    messages.append(round_message)
     messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
 
@@ -921,6 +997,7 @@ async def call_llm_auto_stream(
             tool_messages = _tool_result_messages(tool_results)
             messages.append(assistant_message)
             messages.extend(tool_messages)
+            messages = _fit_tool_loop_context(agent, messages, round_message)
             if include_history:
                 _append_context_message(agent, assistant_message)
                 for tool_message in tool_messages:

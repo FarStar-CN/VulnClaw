@@ -62,6 +62,49 @@ def test_model_context_cap_compacts_one_oversized_recent_message():
     assert "active context compacted" in fitted[-1]["content"]
 
 
+def test_tool_loop_context_stays_within_hot_budget_and_keeps_tool_exchanges():
+    from vulnclaw.agent.llm_client import _fit_tool_loop_context
+    from vulnclaw.agent.token_counter import estimate_tokens
+
+    agent = SimpleNamespace(context=SimpleNamespace(max_tokens=1_200))
+    round_message = {"role": "user", "content": "current task must remain visible"}
+    messages = [
+        {"role": "system", "content": "system contract"},
+        {"role": "user", "content": "old context " + "x" * 4_000},
+        round_message,
+    ]
+    for number in range(3):
+        call_id = f"call-{number}"
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "probe", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {"role": "tool", "tool_call_id": call_id, "content": "r" * 2_000}
+        )
+
+    fitted = _fit_tool_loop_context(agent, messages, round_message)
+
+    assert estimate_tokens(fitted) <= 1_200
+    assert round_message in fitted
+    for index, message in enumerate(fitted):
+        if message.get("role") == "tool":
+            predecessor = fitted[index - 1]
+            assert predecessor.get("role") == "assistant"
+            assert message["tool_call_id"] in {
+                item["id"] for item in predecessor["tool_calls"]
+            }
+
+
 class TestNullSink:
     """Test _NullSink has no side effects."""
 
