@@ -9,6 +9,8 @@ from vulnclaw.agent.llm_client import (
     _call_with_persistent_retries,
     _is_key_exhausted_error,
 )
+from vulnclaw.agent.subagent.budget import UsageBudget
+from vulnclaw.agent.subagent.models import SubagentContext
 
 
 class FakeAgent:
@@ -74,6 +76,73 @@ class TestRotateApiKey:
 
 
 class TestFailover:
+    async def test_retry_reuses_one_model_token_admission(self, monkeypatch):
+        from vulnclaw.agent import llm_client
+
+        agent = FakeAgent(["only"])
+        agent._subagent_ctx = SubagentContext(
+            depth=1,
+            next_model_token_reservation=80,
+            usage_budget=UsageBudget(solve_limit=100, group_limit=100),
+            task_context=SimpleNamespace(task_id="leaf", group_id="group"),
+        )
+        agent.config = SimpleNamespace(subagent=SimpleNamespace())
+        attempts = 0
+
+        def request_fn():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ConnectionError("transient disconnect")
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=2),
+            )
+
+        async def no_sleep(_seconds):
+            return None
+
+        monkeypatch.setattr(llm_client.asyncio, "sleep", no_sleep)
+        response, retries = await _call_with_persistent_retries(
+            agent, request_fn, "test", max_retries=3
+        )
+
+        assert response.choices
+        assert retries == 1
+        assert attempts == 2
+        assert agent._subagent_ctx.llm_requests_used == 1
+        snapshot = agent._subagent_ctx.usage_budget.snapshot()
+        assert snapshot["inflight_tokens"] == 0
+        assert snapshot["used_total"] == 12
+
+    async def test_failed_logical_request_charges_conservative_estimate(self, monkeypatch):
+        from vulnclaw.agent import llm_client
+
+        agent = FakeAgent(["only"])
+        agent._subagent_ctx = SubagentContext(
+            depth=1,
+            next_model_token_reservation=80,
+            usage_budget=UsageBudget(solve_limit=100, group_limit=100),
+            task_context=SimpleNamespace(task_id="leaf", group_id="group"),
+        )
+        agent.config = SimpleNamespace(subagent=SimpleNamespace())
+
+        async def no_sleep(_seconds):
+            return None
+
+        monkeypatch.setattr(llm_client.asyncio, "sleep", no_sleep)
+        with pytest.raises(RuntimeError, match="最大重试"):
+            await _call_with_persistent_retries(
+                agent,
+                lambda: (_ for _ in ()).throw(ConnectionError("offline")),
+                "test",
+                max_retries=2,
+            )
+
+        snapshot = agent._subagent_ctx.usage_budget.snapshot()
+        assert snapshot["inflight_tokens"] == 0
+        assert snapshot["used_total"] == 80
+
     async def test_rotates_past_rate_limited_key(self):
         agent = FakeAgent(["bad", "good"])
 

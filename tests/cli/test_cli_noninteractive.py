@@ -286,7 +286,7 @@ class TestExitCodes:
 
 
 class TestWorkflowDocs:
-    DOCS_DIR = Path(__file__).resolve().parent.parent / "docs" / "ci"
+    DOCS_DIR = Path(__file__).resolve().parents[2] / "docs" / "ci"
 
     def _run_flags(self, yaml_path: Path) -> list[str]:
         data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))

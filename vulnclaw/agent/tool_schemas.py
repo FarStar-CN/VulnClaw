@@ -1,23 +1,27 @@
-"""OpenAI tool schema definitions for built-in tools.
+"""OpenAI 工具 schema 定义 —— 内置工具的静态 schema 单一来源。
 
-修改者: Nyaecho
-修改时间: 2026-07-08
-修改原因: S5 修复 — 将工具 schema 构建代码从 builtin_tools.py（1357 行）提取到独立模块，
-         执行逻辑与 schema 定义分离，提升可维护性。
+历史: S5 重构曾把 schema 从 builtin_tools.py 抽到本模块，但当时 builtin_tools.py
+仍保留了同一份 schema 的完整副本（并在其上长出了 active_role 过滤），两份逐渐漂移，
+本模块的 build_openai_tools 也无人引用而成为死代码。
+
+现在本模块回归其设计意图：以 append 回调的形式持有内置工具 schema 的唯一副本，由
+``builtin_tools.build_openai_tools`` 负责套用角色过滤、拼接 intel/traffic/MCP 工具。
+schema 与执行逻辑分离，且不再重复。
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-from vulnclaw.intel.tools import intel_tool_schemas
+from typing import Any, Callable
 
 
-def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
-    """Build OpenAI function calling schema from MCP tools + built-in tools."""
-    tools: list[dict[str, Any]] = []
+def append_builtin_tool_schemas(
+    append_tool: Callable[[dict[str, Any]], None],
+) -> None:
+    """通过 ``append_tool`` 注册全部内置工具的 OpenAI function schema。
 
-    tools.append(
+    ``append_tool`` 由调用方提供，负责角色过滤与去重收集。本函数只声明静态 schema。
+    """
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -45,26 +49,29 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
                 "name": "evidence_list",
                 "description": (
-                    "List raw evidence records saved from prior tool calls. Use this to find an "
-                    "evidence id for previous output when you need to revisit prior results."
+                    "List raw evidence records saved from prior tool calls. Use this when you need "
+                    "to orient yourself or find an evidence id for a previous large output."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "limit": {"type": "integer", "description": "Recent records to list."}
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum recent evidence records to list (default 20).",
+                        }
                     },
                 },
             },
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -79,14 +86,15 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                     "properties": {
                         "evidence_id": {
                             "type": "string",
-                            "description": "Evidence id, e.g. e001.",
+                            "description": "Evidence id from evidence_list or a prior tool result, e.g. e001.",
                         },
-                        "offset": {"type": "integer", "description": "Character offset."},
+                        "offset": {
+                            "type": "integer",
+                            "description": "Character offset for paging through raw output (default 0).",
+                        },
                         "limit": {
                             "type": "integer",
-                            "description": (
-                                "Maximum characters; omitted or 0 returns all remaining content."
-                            ),
+                            "description": "Maximum characters to return, capped internally (default 12000).",
                         },
                     },
                     "required": ["evidence_id"],
@@ -95,7 +103,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -135,7 +143,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -151,7 +159,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                     "properties": {
                         "evidence_id": {
                             "type": "string",
-                            "description": "Evidence id to normalize, e.g. e004.",
+                            "description": "Evidence id to normalize, e.g. e004. Prefer this for saved fetch/http outputs.",
                         },
                         "text": {
                             "type": "string",
@@ -163,7 +171,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -241,7 +249,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -284,22 +292,26 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
                 "name": "http_probe_batch",
                 "description": (
-                    "Batch HTTP probe tool for comparing URL/parameter/header/body variants "
-                    "in one call. Returns status/length/hash/title/response headers/body signals, "
-                    "audited request surfaces and raw response bodies saved as evidence. Large "
-                    "active-context observations are high-signal previews. Supports "
-                    "GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS."
+                    "Batch HTTP probe tool for comparing many URL/parameter/header/body variants "
+                    "in one call. Use it when repeated fetch/python_execute calls would only differ "
+                    "by payload, query params, raw URL encoding, headers, or POST body. It returns "
+                    "status/length/hash/title/body signals, the audited request surface, same-body "
+                    "groups, and raw response bodies saved as evidence. Large active-context "
+                    "observations are bounded high-signal previews."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "base_url": {"type": "string"},
+                        "base_url": {
+                            "type": "string",
+                            "description": "Optional base URL used to resolve relative request urls.",
+                        },
                         "requests": {
                             "type": "array",
                             "items": {
@@ -309,9 +321,18 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                                         "type": "string",
                                         "description": "GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS; default GET.",
                                     },
-                                    "url": {"type": "string"},
-                                    "raw_url": {"type": "string"},
-                                    "params": {"type": "object"},
+                                    "url": {
+                                        "type": "string",
+                                        "description": "Full or relative URL. Params are encoded via params.",
+                                    },
+                                    "raw_url": {
+                                        "type": "string",
+                                        "description": "Full or relative URL sent exactly as supplied; params is ignored.",
+                                    },
+                                    "params": {
+                                        "type": "object",
+                                        "description": "Query parameters for url mode.",
+                                    },
                                     "headers": {
                                         "type": "object",
                                         "description": (
@@ -327,19 +348,28 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
                                             "when cookie serialization/encoding must be exact."
                                         ),
                                     },
-                                    "data": {},
-                                    "json": {},
-                                    "label": {"type": "string"},
+                                    "data": {
+                                        "description": "Form body or raw body for POST/OPTIONS probes."
+                                    },
+                                    "json": {"description": "JSON body for POST/OPTIONS probes."},
+                                    "label": {"type": "string", "description": "Short label for the variant."},
                                 },
                             },
+                            "description": "Probe variants, max 30 per call.",
                         },
-                        "timeout": {"type": "number"},
-                        "follow_redirects": {"type": "boolean"},
+                        "timeout": {"type": "number", "description": "Per-request timeout seconds, 1-30."},
+                        "follow_redirects": {
+                            "type": "boolean",
+                            "description": "Whether to follow redirects; default true.",
+                        },
                         "verify_tls": {
                             "type": "boolean",
                             "description": "Verify TLS certificates; default false for CTF/lab compatibility.",
                         },
-                        "max_body_chars": {"type": "integer"},
+                        "max_body_chars": {
+                            "type": "integer",
+                            "description": "Optional max body chars per response; omitted or 0 returns full bodies.",
+                        },
                     },
                     "required": ["requests"],
                 },
@@ -347,7 +377,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -378,7 +408,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -418,7 +448,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -463,7 +493,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -524,7 +554,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -557,7 +587,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -581,7 +611,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -615,7 +645,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -650,7 +680,7 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.append(
+    append_tool(
         {
             "type": "function",
             "function": {
@@ -681,21 +711,31 @@ def build_openai_tools(mcp_manager: Any) -> list[dict[str, Any]]:
         }
     )
 
-    tools.extend(intel_tool_schemas())
-
-    if mcp_manager:
-        for schema in mcp_manager.get_tool_schemas():
-            tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": schema.get("name", ""),
-                        "description": schema.get("description", ""),
-                        "parameters": schema.get(
-                            "inputSchema", {"type": "object", "properties": {}}
-                        ),
+    append_tool(
+        {
+            "type": "function",
+            "function": {
+                "name": "memory_search",
+                "description": (
+                    "Search conversation turns moved out of the short-term context into local "
+                    "cold storage. Call this only when an older decision, tool result, or clue is "
+                    "needed for the current subtask; archived history is not included automatically."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Keyword or phrase expected in older conversation history.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum archived turns to return (default 5, maximum 20).",
+                        },
                     },
-                }
-            )
+                    "required": ["query"],
+                },
+            },
+        }
+    )
 
-    return tools

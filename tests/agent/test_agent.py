@@ -635,6 +635,219 @@ class TestMemoryStore:
         result = store.retrieve("complex")
         assert result["findings"] == ["SQLi", "XSS"]
 
+    def test_archived_messages_are_persisted_and_searchable(self, tmp_path):
+        from vulnclaw.agent.memory import MemoryStore
+
+        store = MemoryStore(store_dir=tmp_path)
+        store.archive_messages(
+            [
+                {"role": "user", "content": "check legacy-admin endpoint"},
+                {"role": "assistant", "content": "confirmed historical finding"},
+            ]
+        )
+
+        reloaded = MemoryStore(store_dir=tmp_path)
+        results = reloaded.search_messages("legacy-admin")
+        assert len(results) == 1
+        assert "legacy-admin" in results[0]["snippet"]
+
+
+def test_context_manager_moves_complete_old_turns_to_cold_memory(tmp_path):
+    from vulnclaw.agent.context import ContextManager
+    from vulnclaw.agent.memory import MemoryStore
+
+    store = MemoryStore(store_dir=tmp_path)
+    context = ContextManager(max_history=4, memory_store=store)
+    context.add_user_message("old question")
+    context.add_message(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-old",
+                    "type": "function",
+                    "function": {"name": "probe", "arguments": "{}"},
+                }
+            ],
+        }
+    )
+    context.add_message({"role": "tool", "tool_call_id": "call-old", "content": "secret-marker"})
+    context.add_assistant_message("old answer")
+    context.add_user_message("current task")
+    context.add_assistant_message("current answer")
+
+    hot = context.get_messages()
+    assert [message["content"] for message in hot] == ["current task", "current answer"]
+    archived = store.search_messages("secret-marker")
+    assert len(archived) == 1
+    assert "secret-marker" in archived[0]["snippet"]
+
+
+def test_context_manager_bounds_one_long_subtask_without_splitting_tools(tmp_path):
+    from vulnclaw.agent.context import ContextManager
+    from vulnclaw.agent.memory import MemoryStore
+
+    store = MemoryStore(store_dir=tmp_path)
+    context = ContextManager(max_history=5, memory_store=store)
+    context.add_user_message("keep this current objective")
+    for index in range(4):
+        call_id = f"call-{index}"
+        context.add_message(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "probe", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        context.add_message(
+            {"role": "tool", "tool_call_id": call_id, "content": f"result-{index}"}
+        )
+
+    hot = context.get_messages()
+    assert len(hot) <= 5
+    assert hot[0]["content"] == "keep this current objective"
+    for index, message in enumerate(hot):
+        if message["role"] == "tool":
+            assert hot[index - 1]["role"] == "assistant"
+            assert hot[index - 1]["tool_calls"][0]["id"] == message["tool_call_id"]
+    assert store.search_messages("result-0")
+
+
+def test_context_manager_enforces_token_limit_below_message_limit(tmp_path):
+    from vulnclaw.agent.context import ContextManager
+    from vulnclaw.agent.memory import MemoryStore
+    from vulnclaw.agent.token_counter import estimate_tokens
+
+    store = MemoryStore(store_dir=tmp_path)
+    context = ContextManager(max_history=100, max_tokens=256, memory_store=store)
+    for index in range(4):
+        context.add_user_message(f"task-{index} " + "x" * 300)
+        context.add_assistant_message(f"answer-{index}")
+
+    assert estimate_tokens(context.get_messages()) <= 256
+    assert store.search_messages("task-0")
+
+
+def test_context_manager_keeps_hot_history_when_archive_fails():
+    from vulnclaw.agent.context import ContextManager
+
+    class FailingStore:
+        session_id = "failing"
+
+        def archive_messages(self, *args, **kwargs):
+            raise OSError("disk full")
+
+    context = ContextManager(max_history=2, memory_store=FailingStore())
+    context.add_user_message("one")
+    context.add_user_message("two")
+    context.add_user_message("three")
+
+    assert [message["content"] for message in context.get_messages()] == [
+        "one",
+        "two",
+        "three",
+    ]
+
+
+def test_large_tool_result_is_archived_and_replaced_with_reference(tmp_path):
+    from vulnclaw.agent.context import ContextManager
+    from vulnclaw.agent.memory import MemoryStore
+
+    store = MemoryStore(store_dir=tmp_path)
+    context = ContextManager(max_tokens=1000, memory_store=store)
+    context.add_message(
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "large-call",
+                    "type": "function",
+                    "function": {"name": "probe", "arguments": "{}"},
+                }
+            ],
+        }
+    )
+    context.add_message(
+        {"role": "tool", "tool_call_id": "large-call", "content": "unique-marker " * 1000}
+    )
+
+    hot_tool = context.get_messages()[-1]
+    assert hot_tool["content"].startswith("[cold-memory:mem-")
+    assert len(hot_tool["content"]) < 2300
+    assert store.search_messages("unique-marker", scope=store.session_id)
+
+
+def test_memory_search_is_bounded_and_task_scoped(tmp_path):
+    from vulnclaw.agent.memory import MemoryStore
+
+    store = MemoryStore(store_dir=tmp_path)
+    store.archive_messages(
+        [{"role": "tool", "content": "needle " + "z" * 10000}], scope="task-a"
+    )
+
+    results = store.search_messages("needle", scope="task-a", max_chars=512)
+    assert results
+    assert sum(len(item["snippet"]) for item in results) <= 512
+    assert store.search_messages("needle", scope="task-b", max_chars=512) == []
+
+
+def test_memory_search_skips_corrupt_jsonl_record(tmp_path):
+    from vulnclaw.agent.memory import MemoryStore
+
+    store = MemoryStore(store_dir=tmp_path)
+    store.archive_messages([{"role": "user", "content": "recoverable-marker"}])
+    with open(tmp_path / "conversation_archive.jsonl", "a", encoding="utf-8") as handle:
+        handle.write("{broken\n")
+
+    assert store.search_messages("recoverable-marker")
+
+
+def test_memory_archive_serializes_concurrent_writers(tmp_path):
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+
+    from vulnclaw.agent.memory import MemoryStore
+
+    stores = [MemoryStore(store_dir=tmp_path) for _ in range(12)]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(
+            pool.map(
+                lambda item: item[1].archive_messages(
+                    [{"role": "tool", "content": f"parallel-{item[0]}"}],
+                    scope="shared-task",
+                ),
+                enumerate(stores),
+            )
+        )
+
+    lines = (tmp_path / "conversation_archive.jsonl").read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
+    assert len(records) == 12
+    assert len({record["record_id"] for record in records}) == 12
+
+
+def test_memory_archive_rotates_and_bounds_shard_count(tmp_path):
+    from vulnclaw.agent.memory import MemoryStore
+
+    store = MemoryStore(store_dir=tmp_path, archive_max_bytes=1024, archive_max_files=3)
+    for index in range(20):
+        store.archive_messages(
+            [{"role": "tool", "content": f"rotation-{index}-" + "x" * 300}],
+            scope="rotation-task",
+        )
+
+    shards = list(tmp_path.glob("conversation_archive*.jsonl"))
+    assert 1 < len(shards) <= 3
+    assert store.search_messages("rotation-19", scope="rotation-task")
+
 
 # ── prompts.py ───────────────────────────────────────────────────────
 
@@ -950,6 +1163,8 @@ class TestAgentCore:
 
         messages = cm.get_messages()
         assert len(messages) <= 5
+        # dev behavior: overflow is archived to cold memory instead of being
+        # rewritten into a synthetic system digest message.
         assert messages[0]["role"] in {"user", "assistant"}
         assert all(message["role"] != "system" for message in messages)
 

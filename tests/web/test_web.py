@@ -62,6 +62,14 @@ class TestWebServices:
                 model="deepseek-chat",
                 output_dir=str(tmp_path),
                 max_rounds=22,
+                max_context_tokens=64000,
+                context_auto_compact=False,
+                context_compact_trigger_ratio=0.62,
+                context_compact_target_ratio=0.48,
+                context_recent_message_groups=7,
+                context_summary_max_tokens=2200,
+                context_output_reserve_tokens=800,
+                context_compaction_audit_enabled=False,
                 show_thinking=True,
             )
         )
@@ -69,6 +77,14 @@ class TestWebServices:
         assert view.model == "deepseek-chat"
         assert view.output_dir == str(tmp_path)
         assert view.max_rounds == 22
+        assert view.max_context_tokens == 64000
+        assert view.context_auto_compact is False
+        assert view.context_compact_trigger_ratio == 0.62
+        assert view.context_compact_target_ratio == 0.48
+        assert view.context_recent_message_groups == 7
+        assert view.context_summary_max_tokens == 2200
+        assert view.context_output_reserve_tokens == 800
+        assert view.context_compaction_audit_enabled is False
         assert view.show_thinking is True
         assert view.python_execute_mode == "trusted-local"
 
@@ -1017,14 +1033,14 @@ class TestWebApp:
         assert result.exit_code == 0
 
     def test_frontend_scaffold_exists(self):
-        root = Path(__file__).resolve().parents[1] / "frontend"
+        root = Path(__file__).resolve().parents[2] / "frontend"
         assert (root / "package.json").exists()
         assert (root / "vite.config.ts").exists()
         assert (root / "src" / "main.tsx").exists()
         assert (root / "src" / "App.tsx").exists()
 
     def test_frontend_toc_navigation_hides_advanced_console(self):
-        root = Path(__file__).resolve().parents[1] / "frontend"
+        root = Path(__file__).resolve().parents[2] / "frontend"
         app_source = (root / "src" / "App.tsx").read_text(encoding="utf-8")
         main_source = (root / "src" / "main.tsx").read_text(encoding="utf-8")
         styles_source = (root / "src" / "styles.css").read_text(encoding="utf-8")
@@ -1228,7 +1244,7 @@ class TestWebApp:
         assert "countConstraintViolations" in boundary_source
 
     def test_frontend_uses_single_vite_config_source(self):
-        root = Path(__file__).resolve().parents[1] / "frontend"
+        root = Path(__file__).resolve().parents[2] / "frontend"
 
         assert (root / "vite.config.ts").exists()
         assert not (root / "vite.config.js").exists()
@@ -1239,7 +1255,7 @@ class TestWebApp:
         assert '"noEmit": true' in tsconfig_node
 
     def test_frontend_pages_are_toc_surfaces(self):
-        pages = Path(__file__).resolve().parents[1] / "frontend" / "src" / "pages"
+        pages = Path(__file__).resolve().parents[2] / "frontend" / "src" / "pages"
         page_names = {path.name for path in pages.glob("*.tsx")}
 
         assert {
@@ -1258,7 +1274,7 @@ class TestWebApp:
 
     def test_frontend_mobile_layout_prevents_shell_overflow(self):
         styles = (
-            Path(__file__).resolve().parents[1] / "frontend" / "src" / "styles.css"
+            Path(__file__).resolve().parents[2] / "frontend" / "src" / "styles.css"
         ).read_text(encoding="utf-8")
 
         assert "@media (max-width: 1180px)" in styles
@@ -1275,7 +1291,7 @@ class TestWebApp:
         assert "max-width: 100%;" in styles
 
     def test_static_fallback_is_toc_shell(self):
-        root = Path(__file__).resolve().parents[1]
+        root = Path(__file__).resolve().parents[2]
         source = (root / "vulnclaw" / "web" / "static" / "index.html").read_text(
             encoding="utf-8"
         )
@@ -1358,3 +1374,60 @@ class TestWebApp:
         )
         assert diff.status_code == 200
         assert diff.json()["from_snapshot_id"] == "snap_a"
+
+
+class TestWebAuthLoopback:
+    """The bearer gate must exempt loopback clients (the default localhost UI)
+    while still enforcing tokens for non-loopback (--allow-remote) clients."""
+
+    def test_client_is_loopback_helper(self):
+        from vulnclaw.web.auth import _client_is_loopback
+
+        assert _client_is_loopback("127.0.0.1")
+        assert _client_is_loopback("::1")
+        assert _client_is_loopback("localhost")
+        assert not _client_is_loopback("10.0.0.5")
+        assert not _client_is_loopback("203.0.113.7")
+        assert not _client_is_loopback("")
+        assert not _client_is_loopback(None)
+
+    async def test_middleware_exempts_loopback_and_enforces_remote(self):
+        import vulnclaw.web.app as web_app
+
+        if not web_app.FASTAPI_AVAILABLE:
+            pytest.skip("FastAPI is not installed in this environment")
+
+        from vulnclaw.web.auth import AuthMiddleware
+
+        class _URL:
+            def __init__(self, path):
+                self.path = path
+
+        class _Client:
+            def __init__(self, host):
+                self.host = host
+
+        class _Req:
+            def __init__(self, path, host, headers=None):
+                self.url = _URL(path)
+                self.client = _Client(host) if host else None
+                self.headers = headers or {}
+
+        mw = AuthMiddleware(None)
+
+        async def call_next(_req):
+            return "PASSED"
+
+        # Loopback client: no token, still allowed through (the shipped frontend).
+        assert await mw.dispatch(_Req("/api/tasks", "127.0.0.1"), call_next) == "PASSED"
+
+        # Non-loopback client without a token: rejected with 401.
+        blocked = await mw.dispatch(_Req("/api/tasks", "203.0.113.7"), call_next)
+        assert getattr(blocked, "status_code", None) == 401
+
+        # Health check is exempt regardless of origin.
+        assert await mw.dispatch(_Req("/api/health", "203.0.113.7"), call_next) == "PASSED"
+
+        # Exemption is exact: a look-alike path is NOT exempt for a remote client.
+        look_alike = await mw.dispatch(_Req("/api/healthcheck", "203.0.113.7"), call_next)
+        assert getattr(look_alike, "status_code", None) == 401

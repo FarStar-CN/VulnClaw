@@ -8,7 +8,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI_Compatible-green)](https://platform.openai.com/)
 [![MCP](https://img.shields.io/badge/Toolchain-MCP-orange)](https://modelcontextprotocol.io/)
-[![PyPI](https://img.shields.io/badge/PyPI-v0.3.6-blueviolet)](https://pypi.org/project/vulnclaw/)
+[![PyPI](https://img.shields.io/badge/PyPI-v0.3.7-blueviolet)](https://pypi.org/project/vulnclaw/)
 [![Security](https://img.shields.io/badge/Scope-Authorized_Only-red)](#-安全声明)
 [![AtomGitStars](https://atomgit.com/Unclecheng-li/VulnClaw/star/badge.svg)](https://atomgit.com/Unclecheng-li/VulnClaw)
 <picture>
@@ -564,8 +564,13 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程
 | `session.solve_max_steps` | 240 | solve 防失控安全预算；不是计划轮数，正常由模型自主完成/询问/判定无路 |
 | `session.solve_max_directions` | 3 | 兼容旧配置；默认模型主导 solve 不再使用研究方向数量 |
 | `session.solve_max_tool_rounds` | 6 | 兼容旧配置；单个模型 turn 内连续工具 follow-up 的 runaway 安全上限，不是计划式工作流轮数 |
-| `session.solve_auto_compact` | false | 是否允许 solve 自动压缩上下文；默认关闭，优先保留完整上下文 |
-| `session.solve_compact_trigger_ratio` | 0.9 | 自动压缩启用时的上下文触发比例 |
+| `session.context_auto_compact` | true | 是否允许所有 LLM 调用路径自动压缩上下文 |
+| `session.context_compact_trigger_ratio` | 0.70 | 自动压缩的上下文触发比例 |
+| `session.context_compact_target_ratio` | 0.55 | 压缩完成后的目标上下文占用比例 |
+| `session.context_recent_message_groups` | 12 | 每次压缩保留的最近完整消息组数量 |
+| `session.context_summary_max_tokens` | 3500 | 长期结构化上下文摘要的最大 token 预算 |
+| `session.context_output_reserve_tokens` | 0 | 为模型输出预留的 token；0 时取 `min(llm.max_tokens, 8192)` |
+| `session.context_compaction_audit_enabled` | true | 是否在持久化 AgentState 中记录压缩审计事件 |
 | `session.solve_auto_report` | true | solve 目标达成后自动生成 Markdown 复盘报告 |
 | `session.solve_report_show` | true | 自动报告生成后在终端直接打印报告正文 |
 | `session.max_rounds` | 15 | 最大轮数 |
@@ -606,6 +611,14 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程
 ## 更新日志
 
 完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
+
+---
+
+## 贡献指南
+
+欢迎参与开源贡献！提交 PR 前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)（中文）或 [CONTRIBUTING_EN.md](CONTRIBUTING_EN.md)（英文）。
+
+项目使用 `dev` 分支进行集成测试，所有 PR 请提交到 `dev` 分支。
 
 ---
 

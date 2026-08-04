@@ -126,3 +126,4 @@ def current_lang() -> str:
     if _translator is None:
         init_i18n()
     return _translator.lang
+

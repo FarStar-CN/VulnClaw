@@ -15,6 +15,18 @@ from vulnclaw.agent.correction_layer import (
     after_tool_call,
     before_tool_call,
 )
+from vulnclaw.agent.subagent.tooling import (
+    partition_calls as _partition_subagent_calls,
+)
+from vulnclaw.agent.subagent.tooling import (
+    raise_if_cancelled as _raise_if_subagent_cancelled,
+)
+from vulnclaw.agent.subagent.tooling import (
+    record_evidence_bytes as _reserve_subagent_evidence_bytes,
+)
+from vulnclaw.agent.subagent.tooling import (
+    reserve_tool_call as _reserve_subagent_tool_call,
+)
 from vulnclaw.agent.tool_result_overrides import pop_raw_tool_output_override
 
 if TYPE_CHECKING:
@@ -107,6 +119,7 @@ async def handle_tool_calls_with_results(
         key = f"{func_name}::{args_key}"
         if key not in seen:
             seen[key] = {
+                "index": len(seen),
                 "tool_call": tool_call,
                 "func_name": func_name,
                 "func_args": func_args,
@@ -129,12 +142,27 @@ async def handle_tool_calls_with_results(
                 f"[跳过] {sc['func_name']}({str(sc['func_args'])[:100]}) — 本轮已达上限，下轮继续"
             )
 
-    parallel, max_concurrent = _resolve_parallel_settings(agent)
+    # Meta calls mutate task ownership. Execute them first so a spawn and a
+    # conflicting direct probe from the same model response cannot race.
+    meta_calls, normal_calls = _partition_subagent_calls(
+        agent, message, to_execute
+    )
+    executed_meta = [await _execute_single(agent, item) for item in meta_calls]
 
-    if parallel and max_concurrent > 1 and len(to_execute) > 1:
-        executed = await _execute_parallel(agent, to_execute, max_concurrent)
+    parallel, max_concurrent = _resolve_parallel_settings(agent)
+    if parallel and max_concurrent > 1 and len(normal_calls) > 1:
+        executed_normal = await _execute_parallel(
+            agent, normal_calls, max_concurrent
+        )
     else:
-        executed = [await _execute_single(agent, item) for item in to_execute]
+        executed_normal = [
+            await _execute_single(agent, item) for item in normal_calls
+        ]
+    combined = list(zip(meta_calls, executed_meta)) + list(
+        zip(normal_calls, executed_normal)
+    )
+    combined.sort(key=lambda pair: int(pair[0].get("index", 0)))
+    executed = [result for _, result in combined]
 
     # Drop failed calls (preserves legacy behavior) while keeping original order.
     results = [r for r in executed if r is not None]
@@ -213,6 +241,9 @@ async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str
     tool_call = item["tool_call"]
     func_name = item["func_name"]
     func_args = item["func_args"]
+    # Fence cancellation before all fast paths. A cancellation-suppressing child
+    # must not receive additional observations after its token is revoked.
+    _raise_if_subagent_cancelled(agent)
     pre_hint = before_tool_call(agent, func_name, func_args)
     started = time.perf_counter()
     redundant_local_view = _redundant_evidence_view_reason(agent, func_name, func_args)
@@ -246,7 +277,9 @@ async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str
             "correction_signal": signal,
         }
     try:
+        _reserve_subagent_tool_call(agent)
         tool_result = await agent._execute_mcp_tool(func_name, func_args)
+        _reserve_subagent_evidence_bytes(agent, tool_result)
         duration_ms = _elapsed_ms(started)
         # NOTE: do not re-invoke agent.mcp_manager.call_tool here. _execute_mcp_tool
         # already dispatches MCP tools through call_tool (running the side effect
@@ -332,8 +365,6 @@ async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str
             "correction": signal.model_hint(),
             "correction_signal": signal,
         }
-
-
 def _looks_like_tool_local_cancellation(exc: asyncio.CancelledError) -> bool:
     """Differentiate MCP/AnyIO local cancel scopes from user task cancellation."""
 
