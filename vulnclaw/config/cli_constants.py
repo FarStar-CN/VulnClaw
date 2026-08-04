@@ -355,8 +355,10 @@ COMMANDS: tuple[ManualTopic, ...] = (
             "llm.max_context_tokens, llm.temperature, llm.reasoning_effort. Use `vulnclaw login` "
             "instead of llm.api_key for OAuth-based ChatGPT-subscription auth.",
             "Useful session keys: session.output_dir, session.report_format, session.max_rounds, "
-            "session.engine (solve|rounds), session.solve_max_steps, session.solve_auto_compact, "
-            "session.solve_compact_trigger_ratio, session.solve_max_tool_rounds (compat), "
+            "session.engine (solve|rounds), session.solve_max_steps, session.context_auto_compact, "
+            "session.context_compact_trigger_ratio, session.context_compact_target_ratio, "
+            "session.context_recent_message_groups, session.context_summary_max_tokens, "
+            "session.solve_max_tool_rounds (compat), "
             "session.solve_max_parallel (team/legacy), session.show_thinking, "
             "session.persistent_rounds_per_cycle, session.persistent_max_cycles, "
             "session.persistent_auto_report, session.language, session.reasoning_state_enabled, "

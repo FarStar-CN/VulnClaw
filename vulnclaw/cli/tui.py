@@ -2275,6 +2275,39 @@ def _edit_session_config(screen: Console, config):
     config.session.show_thinking = _prompt_bool_value(
         screen, "Show thinking", config.session.show_thinking
     )
+    config.session.context_auto_compact = _prompt_bool_value(
+        screen, "Automatically compact context", config.session.context_auto_compact
+    )
+    config.session.context_compact_trigger_ratio = _prompt_float_value(
+        screen,
+        "Context compaction trigger ratio",
+        config.session.context_compact_trigger_ratio,
+    )
+    config.session.context_compact_target_ratio = _prompt_float_value(
+        screen,
+        "Context compaction target ratio",
+        config.session.context_compact_target_ratio,
+    )
+    config.session.context_recent_message_groups = _prompt_int_value(
+        screen,
+        "Recent message groups to retain",
+        config.session.context_recent_message_groups,
+    )
+    config.session.context_summary_max_tokens = _prompt_int_value(
+        screen,
+        "Context digest token budget",
+        config.session.context_summary_max_tokens,
+    )
+    config.session.context_output_reserve_tokens = _prompt_int_value(
+        screen,
+        "Context output token reserve (0 = automatic)",
+        config.session.context_output_reserve_tokens,
+    )
+    config.session.context_compaction_audit_enabled = _prompt_bool_value(
+        screen,
+        "Record context compaction audit events",
+        config.session.context_compaction_audit_enabled,
+    )
     config.session.persistent_rounds_per_cycle = _prompt_int_value(
         screen, "Persistent rounds per cycle", config.session.persistent_rounds_per_cycle
     )

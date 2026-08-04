@@ -177,6 +177,22 @@ def _merge_config(base: VulnClawConfig, raw: dict[str, Any]) -> VulnClawConfig:
     """Merge raw dict into existing config, preserving unset defaults."""
     data = base.model_dump(mode="json")
 
+    # Context compaction was initially exposed under solve-specific names but
+    # never wired into runtime behavior. Preserve explicit legacy settings when
+    # users upgrade, while allowing the new all-call-path settings to win.
+    raw = dict(raw)
+    raw_session = raw.get("session")
+    if isinstance(raw_session, dict):
+        session = dict(raw_session)
+        if "context_auto_compact" not in session and "solve_auto_compact" in session:
+            session["context_auto_compact"] = session["solve_auto_compact"]
+        if (
+            "context_compact_trigger_ratio" not in session
+            and "solve_compact_trigger_ratio" in session
+        ):
+            session["context_compact_trigger_ratio"] = session["solve_compact_trigger_ratio"]
+        raw["session"] = session
+
     # Deep merge
     _deep_merge(data, raw)
 
@@ -251,6 +267,27 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
             config.session.max_rounds = int(v)
     if v := os.environ.get("VULNCLAW_SESSION_SHOW_THINKING"):
         config.session.show_thinking = v.lower() in ("1", "true", "yes", "on")
+    if v := os.environ.get("VULNCLAW_SESSION_CONTEXT_AUTO_COMPACT"):
+        config.session.context_auto_compact = v.lower() in ("1", "true", "yes", "on")
+    if v := os.environ.get("VULNCLAW_SESSION_CONTEXT_COMPACT_TRIGGER_RATIO"):
+        with suppress(ValueError):
+            config.session.context_compact_trigger_ratio = float(v)
+    if v := os.environ.get("VULNCLAW_SESSION_CONTEXT_COMPACT_TARGET_RATIO"):
+        with suppress(ValueError):
+            config.session.context_compact_target_ratio = float(v)
+    if v := os.environ.get("VULNCLAW_SESSION_CONTEXT_RECENT_MESSAGE_GROUPS"):
+        with suppress(ValueError):
+            config.session.context_recent_message_groups = int(v)
+    if v := os.environ.get("VULNCLAW_SESSION_CONTEXT_SUMMARY_MAX_TOKENS"):
+        with suppress(ValueError):
+            config.session.context_summary_max_tokens = int(v)
+    if v := os.environ.get("VULNCLAW_SESSION_CONTEXT_OUTPUT_RESERVE_TOKENS"):
+        with suppress(ValueError):
+            config.session.context_output_reserve_tokens = int(v)
+    if v := os.environ.get("VULNCLAW_SESSION_CONTEXT_COMPACTION_MODE"):
+        config.session.context_compaction_mode = v
+    if v := os.environ.get("VULNCLAW_SESSION_CONTEXT_COMPACTION_AUDIT_ENABLED"):
+        config.session.context_compaction_audit_enabled = v.lower() in ("1", "true", "yes", "on")
     if v := os.environ.get("VULNCLAW_SESSION_REPL_PARALLEL_ENABLED"):
         config.session.repl_parallel_enabled = v.lower() in ("1", "true", "yes", "on")
     if v := os.environ.get("VULNCLAW_SESSION_REPL_PARALLEL_AGENTS"):

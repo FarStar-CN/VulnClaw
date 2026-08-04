@@ -1181,38 +1181,60 @@ class ContextManager:
         self.state = SessionState()
 
     def _trim(self) -> None:
-        """Trim old messages to stay within limit.
+        """Compact old messages at the hard history cap.
 
-        Instead of blindly dropping old messages, we compress them
-        into a summary to preserve key discoveries for multi-round loops.
+        Normal request-time compaction is driven by the token budget manager.
+        This remains a safety net for callers that keep adding messages without
+        issuing an LLM request.
         """
         if len(self.messages) <= self.max_history:
             return
 
-        self.messages = self.messages[-self.max_history :]
+        self.compact_messages(
+            max_recent=max(1, min(24, self.max_history // 2)),
+            note="History item limit reached.",
+        )
+
+    @staticmethod
+    def _is_context_digest_message(message: dict[str, Any]) -> bool:
+        content = str(message.get("content", "") or "")
+        return message.get("role") == "system" and content.startswith("[context digest")
+
+    def replace_history_with_digest(
+        self,
+        digest_message: dict[str, Any],
+        recent_messages: list[dict[str, Any]],
+    ) -> None:
+        """Atomically replace older history with a prompt-safe context digest."""
+        cleaned_recent = [
+            copy.deepcopy(message)
+            for message in recent_messages
+            if isinstance(message, dict) and not self._is_context_digest_message(message)
+        ]
+        self.messages = [copy.deepcopy(digest_message), *cleaned_recent]
 
     def compact_messages(self, *, max_recent: int = 24, note: str = "") -> str:
-        """Explicitly compact older conversation messages for `/compact`."""
+        """Compact older conversation message groups for `/compact` or safety fallback."""
+        from vulnclaw.agent.token_counter import flatten_message_groups, group_messages
 
-        if len(self.messages) <= max_recent:
+        groups = group_messages(self.messages)
+        if len(groups) <= max_recent:
             return "No compaction needed."
 
-        recent = self.messages[-max_recent:]
-        old = self.messages[:-max_recent]
+        recent = flatten_message_groups(groups[-max_recent:])
+        old = flatten_message_groups(groups[:-max_recent])
         summary = self._compress_messages(old) or "(older conversation omitted)"
         if note:
             summary = f"{note}\n{summary}"
-        self.messages = [
-            {"role": "system", "content": f"[manual compact summary]\n{summary}"},
-            *recent,
-        ]
+        digest = {"role": "system", "content": f"[context digest v1]\n{summary}"}
+        self.replace_history_with_digest(digest, recent)
         agent_state = getattr(self.state, "agent_state", None)
         if agent_state is not None:
-            agent_state.compact_summary = (
-                f"{agent_state.compact_summary}\n{summary}"
-                if agent_state.compact_summary
-                else summary
-            ).strip()
+            evidence_ids = [item.id for item in getattr(agent_state, "evidence", [])[-12:]]
+            if hasattr(agent_state, "update_context_digest"):
+                agent_state.update_context_digest(summary, evidence_ids)
+            else:
+                agent_state.compact_summary = summary
         return summary
 
     @staticmethod
@@ -1296,4 +1318,7 @@ class ContextManager:
         Used when context overflow causes repeated LLM errors.
         """
         if len(self.messages) > max_messages:
-            self.messages = self.messages[-max_messages:]
+            self.compact_messages(
+                max_recent=max(1, max_messages),
+                note="LLM recovery requested history compaction.",
+            )

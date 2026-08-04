@@ -6,6 +6,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from jinja2 import Template
@@ -893,10 +894,25 @@ def _generate_attack_summary_from_session(session: SessionState) -> str:
             "5. Do not invent steps that were never executed.\n"
         )
 
+        # Reports do not have an AgentCore instance, but their LLM request
+        # still goes through the same budget/compaction policy as agent turns.
+        from vulnclaw.agent.context_budget import prepare_context
+
+        budget_agent = SimpleNamespace(
+            config=config,
+            context=SimpleNamespace(state=session),
+        )
+        messages = prepare_context(
+            budget_agent,
+            [{"role": "user", "content": prompt}],
+            [],
+            purpose="report_summary",
+        ).messages
+
         response = client.chat.completions.create(
             **_build_report_summary_llm_kwargs(
                 config,
-                [{"role": "user", "content": prompt}],
+                messages,
             )
         )
         if response and response.choices:
