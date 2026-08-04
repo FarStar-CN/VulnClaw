@@ -198,6 +198,41 @@ class MCPServersConfig(BaseModel):
     servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class SubagentConfig(BaseModel):
+    """Limits for asynchronous Group Leaders and leaf agents."""
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    enabled: bool = Field(
+        default=True,
+        description="Expose agent_run and agent_job to the model-led solve engine",
+    )
+    max_background_groups: int = Field(default=3, gt=0, le=8)
+    max_concurrent_leaf_total: int = Field(default=4, gt=0, le=32)
+    max_concurrent_leaf_per_group: int = Field(default=3, gt=0, le=16)
+    max_leaf_per_group: int = Field(default=6, gt=0, le=32)
+    max_waves_per_group: int = Field(default=3, gt=0, le=12)
+    max_steps_per_leaf: int = Field(default=12, gt=0, le=100)
+    leaf_max_tool_rounds: int = Field(default=4, gt=0, le=20)
+    leaf_timeout_seconds: float = Field(default=900.0, gt=0, le=86_400)
+    group_timeout_seconds: float = Field(default=1200.0, gt=0, le=86_400)
+    finalization_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    max_model_tokens_per_solve: int = Field(
+        default=8_000_000,
+        gt=0,
+        le=200_000_000,
+        description="Solve-wide model-token ceiling for all descendant agents",
+    )
+    max_model_tokens_per_group: int = Field(
+        default=1_000_000,
+        gt=0,
+        le=20_000_000,
+        description="Shared token ceiling for one Leader and all of its leaves",
+    )
+    merge_max_evidence_per_group: int = Field(default=48, gt=0, le=128)
+    result_max_chars: int = Field(default=16_000, gt=0, le=200_000)
+
+
 class ReconConfig(BaseModel):
     """Information-gathering configuration: space-mapping API keys + recon knobs.
 
@@ -282,6 +317,31 @@ class SessionConfig(BaseModel):
     )
     poc_language: str = Field(default="python", description="Default PoC language: python, bash")
     max_rounds: int = Field(default=15, description="Max autonomous pentest rounds (1-100)")
+    context_hot_max_messages: int = Field(
+        default=48,
+        ge=4,
+        description="Maximum messages retained in hot conversation memory",
+    )
+    context_hot_max_tokens: int = Field(
+        default=32000,
+        ge=1024,
+        description="Approximate token cap for hot conversation memory",
+    )
+    memory_search_max_chars: int = Field(
+        default=6000,
+        ge=512,
+        description="Maximum cold-memory characters returned by one search",
+    )
+    memory_archive_max_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=1024 * 1024,
+        description="Rotate a cold-memory JSONL shard after this many bytes",
+    )
+    memory_archive_max_files: int = Field(
+        default=8,
+        ge=2,
+        description="Maximum cold-memory JSONL shards retained per output directory",
+    )
     # Autonomous engine: "solve" = model-led agent loop with evidence memory (default),
     # "team" = role-specialized supervisor, "rounds" = legacy fixed-round loop.
     engine: str = Field(
@@ -471,12 +531,32 @@ class VulnClawConfig(BaseModel):
     mcp: MCPServersConfig = Field(default_factory=MCPServersConfig)
     session: SessionConfig = Field(default_factory=SessionConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    subagent: SubagentConfig = Field(default_factory=SubagentConfig)
     recon: ReconConfig = Field(default_factory=ReconConfig)
 
     model_config = ConfigDict(
         env_prefix="VULNCLAW_",
         env_nested_delimiter="__",
     )
+
+
+# ── Autonomous engine selection ────────────────────────────────────
+# The three autonomous engines a run can dispatch to. Kept here (next to the
+# ``SessionConfig.engine`` field) so the CLI, ``AgentCore.auto_pentest`` and the
+# persistent loop all validate/resolve against one list instead of re-hardcoding
+# the string set in three places.
+ENGINE_CHOICES: tuple[str, ...] = ("solve", "team", "rounds")
+
+
+def resolve_engine(config: "VulnClawConfig", override: str | None = None) -> str:
+    """Resolve the effective autonomous engine for a run.
+
+    Precedence: explicit ``override`` (e.g. a CLI ``--engine``) > the configured
+    ``session.engine`` > the ``"solve"`` default. An unrecognized value falls
+    back to ``"solve"`` so a stale config can never dispatch to a missing engine.
+    """
+    engine = (override or getattr(config.session, "engine", "") or "solve").strip().lower()
+    return engine if engine in ENGINE_CHOICES else "solve"
 
 
 # ── Built-in MCP server definitions (MVP) ──────────────────────────

@@ -12,7 +12,7 @@ def test_import_vulnclaw():
     import vulnclaw
 
     # Read version from pyproject.toml to avoid hardcoding
-    pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
     pyproject = toml.load(pyproject_path)
     expected_version = pyproject["project"]["version"]
 

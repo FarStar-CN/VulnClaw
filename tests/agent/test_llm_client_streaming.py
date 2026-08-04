@@ -3,9 +3,196 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+
+from vulnclaw.agent.subagent.models import SubagentContext
+
+
+def test_subagent_usage_estimates_provider_omitted_fields():
+    from vulnclaw.agent.subagent.budget import record_usage
+
+    agent = SimpleNamespace(
+        _subagent_ctx=SubagentContext(
+            depth=1,
+            next_input_token_estimate=123,
+        ),
+    )
+    response = SimpleNamespace(
+        usage=SimpleNamespace(completion_tokens=7),
+        choices=[
+            SimpleNamespace(message=SimpleNamespace(content="short answer"))
+        ],
+    )
+
+    recorded = record_usage(agent, response)
+
+    assert recorded == 130
+    assert agent._subagent_ctx.input_tokens_used == 123
+    assert agent._subagent_ctx.output_tokens_used == 7
+
+
+def test_model_context_cap_compacts_one_oversized_recent_message():
+    from vulnclaw.agent.llm_client import _fit_context_window
+    from vulnclaw.agent.token_counter import estimate_tokens
+
+    agent = SimpleNamespace(
+        _subagent_ctx=SubagentContext(depth=1),
+        config=SimpleNamespace(
+            llm=SimpleNamespace(max_context_tokens=40_000),
+        ),
+    )
+    messages = [
+        {"role": "system", "content": "system contract"},
+        {
+            "role": "user",
+            "content": "e001 beginning " + ("x" * 200_000) + " e999 ending",
+        },
+    ]
+
+    fitted = _fit_context_window(agent, messages)
+
+    assert estimate_tokens(fitted) <= 36_000
+    assert "e001 beginning" in fitted[-1]["content"]
+    assert "e999 ending" in fitted[-1]["content"]
+    # Unified budget layer clamps the oversized single message (head/tail
+    # preserved) instead of dropping it: content must be meaningfully smaller.
+    assert len(fitted[-1]["content"]) < len(messages[-1]["content"])
+
+
+def test_tool_loop_context_stays_within_hot_budget_and_keeps_tool_exchanges():
+    from vulnclaw.agent.llm_client import (
+        _fit_tool_loop_context,
+        _tool_loop_target_budget,
+    )
+    from vulnclaw.agent.token_counter import estimate_tokens
+
+    agent = SimpleNamespace(context=SimpleNamespace(max_tokens=1_200))
+    round_message = {"role": "user", "content": "current task must remain visible"}
+    messages = [
+        {"role": "system", "content": "system contract"},
+        {"role": "user", "content": "old context " + "x" * 4_000},
+        round_message,
+    ]
+    for number in range(3):
+        call_id = f"call-{number}"
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "probe", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {"role": "tool", "tool_call_id": call_id, "content": "r" * 2_000}
+        )
+
+    fitted = _fit_tool_loop_context(agent, messages, round_message)
+
+    assert _tool_loop_target_budget(agent) == 1_024
+    assert estimate_tokens(fitted) <= _tool_loop_target_budget(agent)
+    assert round_message in fitted
+    for index, message in enumerate(fitted):
+        if message.get("role") == "tool":
+            predecessor = fitted[index - 1]
+            assert predecessor.get("role") == "assistant"
+            assert message["tool_call_id"] in {
+                item["id"] for item in predecessor["tool_calls"]
+            }
+
+
+def test_tool_loop_uses_stable_prefix_until_high_water_then_falls_to_target():
+    from vulnclaw.agent.llm_client import (
+        _build_tool_loop_messages,
+        _fit_tool_loop_context,
+        _tool_loop_hot_budget,
+        _tool_loop_target_budget,
+    )
+    from vulnclaw.agent.token_counter import estimate_tokens
+
+    history = [
+        {"role": "user", "content": "previous evidence " + "h" * 2_000},
+        {"role": "assistant", "content": "previous assessment " + "a" * 2_000},
+    ]
+    agent = SimpleNamespace(
+        context=SimpleNamespace(max_tokens=3_200, get_messages=lambda: list(history))
+    )
+    messages, round_message = _build_tool_loop_messages(
+        agent,
+        "system contract",
+        "current task must remain visible",
+        include_history=True,
+    )
+    stable_prefix = list(messages)
+    assert _tool_loop_hot_budget(agent) == 3_200
+    assert _tool_loop_target_budget(agent) == 2_600
+
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "under-high-water",
+                        "type": "function",
+                        "function": {"name": "probe", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "under-high-water",
+                "content": "r" * 2_000,
+            },
+        ]
+    )
+    assert estimate_tokens(messages) < _tool_loop_hot_budget(agent)
+    assert _fit_tool_loop_context(agent, messages, round_message) is messages
+    assert messages[:len(stable_prefix)] == stable_prefix
+
+    for number in range(2):
+        call_id = f"overflow-{number}"
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": "probe", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": call_id, "content": "r" * 4_000},
+            ]
+        )
+
+    assert estimate_tokens(messages) > _tool_loop_hot_budget(agent)
+    fitted = _fit_tool_loop_context(agent, messages, round_message)
+
+    assert estimate_tokens(fitted) <= _tool_loop_target_budget(agent)
+    assert fitted[0] == stable_prefix[0]
+    assert round_message in fitted
+    for index, message in enumerate(fitted):
+        if message.get("role") == "tool":
+            predecessor = fitted[index - 1]
+            assert predecessor.get("role") == "assistant"
+            assert message["tool_call_id"] in {
+                item["id"] for item in predecessor["tool_calls"]
+            }
 
 
 class TestNullSink:
@@ -154,6 +341,67 @@ class TestCallLlmStream:
         result = await call_llm_stream(agent, "system prompt")
 
         assert "answer" in result
+
+    @pytest.mark.asyncio
+    async def test_sync_stream_creation_does_not_block_event_loop(self):
+        """A slow synchronous provider handshake must not starve background tasks."""
+        from vulnclaw.agent.llm_client import call_llm_stream
+
+        agent = MagicMock()
+        mock_client = MagicMock()
+        agent._get_client.return_value = mock_client
+        agent.config.llm.provider = "openai"
+        agent.config.llm.model = "gpt-4"
+        agent.config.llm.max_tokens = None
+        agent.config.llm.temperature = None
+        agent.context.get_messages.return_value = []
+        agent._build_openai_tools.return_value = []
+
+        def slow_create(**kwargs):
+            assert kwargs["stream"] is True
+            time.sleep(0.2)
+            return iter(())
+
+        mock_client.chat.completions.create.side_effect = slow_create
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        task = asyncio.create_task(call_llm_stream(agent, "system prompt"))
+
+        await asyncio.sleep(0.02)
+
+        assert loop.time() - started < 0.12
+        assert not task.done()
+        assert await task == ""
+
+    @pytest.mark.asyncio
+    async def test_sync_stream_next_does_not_block_event_loop(self):
+        """Waiting for the next sync stream chunk must yield to group runtimes."""
+        from vulnclaw.agent.llm_client import _ensure_async_iter
+
+        release = threading.Event()
+
+        class BlockingStream:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                release.wait(timeout=0.2)
+                raise StopIteration
+
+        stream = _ensure_async_iter(BlockingStream())
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        timer = threading.Timer(0.2, release.set)
+        timer.start()
+        task = asyncio.create_task(anext(stream, None))
+        try:
+            await asyncio.sleep(0.02)
+            assert loop.time() - started < 0.12
+            assert not task.done()
+            assert await task is None
+        finally:
+            release.set()
+            timer.cancel()
 
 
 class TestTerminalStreamSink:

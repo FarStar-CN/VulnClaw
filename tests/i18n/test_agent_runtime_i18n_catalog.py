@@ -6,7 +6,7 @@ from string import Formatter
 
 
 def _catalog(language: str) -> dict[str, str]:
-    path = Path(__file__).parents[1] / "vulnclaw" / "i18n" / f"{language}.json"
+    path = Path(__file__).resolve().parents[2] / "vulnclaw" / "i18n" / f"{language}.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 

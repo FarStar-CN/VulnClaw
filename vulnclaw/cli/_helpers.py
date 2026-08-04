@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from rich.console import Console
@@ -15,6 +19,112 @@ console = Console()
 err_console = Console(stderr=True)
 
 TERMINAL_TOOL_RESULT_PREVIEW_CHARS = 1200
+TUI_EVENT_STREAM_ENV = "VULNCLAW_TUI_EVENT_STREAM"
+TUI_EVENT_TOKEN_ENV = "VULNCLAW_TUI_EVENT_TOKEN"
+TUI_EVENT_PREFIX = "__VULNCLAW_TUI_EVENT__:"
+
+
+@dataclass(frozen=True)
+class SubagentTuiEvent:
+    kind: str
+    payload: dict[str, Any]
+
+
+def _emit_tui_event(
+    target_console: Any,
+    kind: str,
+    payload: dict[str, Any],
+    environ: Mapping[str, str],
+) -> None:
+    token = environ.get(TUI_EVENT_TOKEN_ENV, "")
+    if (
+        environ.get(TUI_EVENT_STREAM_ENV) != "1"
+        or not token
+        or not kind.startswith("group_")
+    ):
+        return
+    envelope = json.dumps(
+        {"kind": kind, "payload": payload},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    target_console.file.write(f"{TUI_EVENT_PREFIX}{token}:{envelope}\n")
+    target_console.file.flush()
+
+
+def _parse_tui_solve_event(
+    line: str, *, expected_token: str
+) -> SubagentTuiEvent | None:
+    raw = str(line or "").rstrip("\r\n")
+    event_prefix = f"{TUI_EVENT_PREFIX}{expected_token}:"
+    if not expected_token or not raw.startswith(event_prefix):
+        return None
+    try:
+        envelope = json.loads(raw[len(event_prefix) :])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    kind = str(envelope.get("kind") or "")
+    payload = envelope.get("payload")
+    if not kind.startswith("group_") or not isinstance(payload, dict):
+        return None
+    return SubagentTuiEvent(kind=kind, payload=payload)
+
+
+def _group_console_projection(
+    kind: str,
+    payload: dict[str, Any],
+) -> tuple[str, str, str] | None:
+    if not kind.startswith("group_"):
+        return None
+    group_id = str(payload.get("group_id") or "?")
+    phase = str(
+        payload.get("phase") or kind.removeprefix("group_")
+    ).replace("_", " ")
+    status = str(payload.get("status") or "")
+    details: list[str] = []
+    member_total = int(payload.get("member_total") or 0)
+    member_done = int(payload.get("member_done") or 0)
+    if member_total:
+        details.append(f"members {member_done}/{member_total}")
+    wave_count = int(payload.get("wave_count") or 0)
+    if wave_count:
+        details.append(f"waves {wave_count}")
+    evidence_count = int(payload.get("evidence_count") or 0)
+    if evidence_count:
+        details.append(f"evidence {evidence_count}")
+    member_task_id = str(payload.get("member_task_id") or "")
+    if member_task_id:
+        details.insert(
+            0,
+            f"member {member_task_id}={payload.get('member_status') or 'unknown'}",
+        )
+    member_error = str(payload.get("member_error") or "")
+    if member_error:
+        details.insert(0, member_error)
+    conclusion = str(payload.get("conclusion") or "").strip()
+    goal = str(payload.get("goal") or "").strip()
+    detail = " · ".join(item for item in [conclusion, *details] if item)
+    if not detail and kind == "group_created":
+        detail = goal
+    label = (
+        status
+        if status
+        and kind in {"group_finished", "group_cancelled", "group_failed"}
+        else phase
+    )
+    style = (
+        "green"
+        if status in {"verified", "completed"}
+        else "red"
+        if status == "failed"
+        else "yellow"
+        if status in {"cancelled", "budget_exhausted", "no_path"}
+        else "magenta"
+    )
+    return f"◈ [{group_id}] {label}: ", detail, style
 
 
 def _collapse_terminal_text(text: str, limit: int = TERMINAL_TOOL_RESULT_PREVIEW_CHARS) -> tuple[str, bool]:
@@ -40,6 +150,12 @@ def _print_styled_plain(console_obj: Console, prefix: str, body: str, *, style: 
     rendered = Text(prefix, style=style)
     rendered.append(str(body or ""))
     console_obj.print(rendered, soft_wrap=True)
+
+
+def _emit_tui_solve_event(
+    target_console: Console, kind: str, payload: dict[str, Any]
+) -> None:
+    _emit_tui_event(target_console, kind, payload, os.environ)
 
 
 class TerminalStreamSink:
@@ -128,7 +244,16 @@ def _make_solve_event_printer(target_console: Console) -> Any:
     """Return an on_event callback that prints model-led solve progress."""
 
     def on_event(kind: str, payload: dict) -> None:
-        if kind == "agent_step":
+        _emit_tui_solve_event(target_console, kind, payload)
+        if projection := _group_console_projection(kind, payload):
+            prefix, detail, style = projection
+            _print_styled_plain(
+                target_console,
+                prefix,
+                detail,
+                style=style,
+            )
+        elif kind == "agent_step":
             target_console.print(f"[cyan]◆ Turn {payload.get('step', '?')}[/cyan]")
         elif kind == "agent_observation":
             reason = payload.get("reason") or "模型继续自主判断"

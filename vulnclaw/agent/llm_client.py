@@ -9,18 +9,67 @@ import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
+from vulnclaw.agent.subagent.budget import (
+    fail_request as _fail_subagent_llm_admission,
+)
+from vulnclaw.agent.subagent.budget import (
+    fit_messages as _hard_fit_subagent_messages,
+)
+from vulnclaw.agent.subagent.budget import (
+    is_subagent as _is_subagent,
+)
+from vulnclaw.agent.subagent.budget import (
+    prepare_request as _prepare_subagent_llm_request,
+)
+from vulnclaw.agent.subagent.budget import (
+    record_usage as _record_subagent_llm_usage,
+)
+from vulnclaw.agent.subagent.budget import (
+    reserve_request as _reserve_subagent_llm_request,
+)
+from vulnclaw.agent.subagent.budget import (
+    settle_request as _settle_subagent_llm_admission,
+)
+
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
 
 logger = logging.getLogger(__name__)
 
 from vulnclaw.agent.context_budget import prepare_context  # noqa: E402
+from vulnclaw.agent.token_counter import (  # noqa: E402
+    estimate_tokens,
+    group_tool_exchanges,
+    truncate_messages,
+)
 from vulnclaw.agent.tool_call_manager import (  # noqa: E402
     handle_tool_calls,
     handle_tool_calls_with_results,
 )
 
+_CONTEXT_USABLE_RATIO = 0.9
 _DEFAULT_AUTO_TOOL_ROUNDS = 6
+_TOOL_LOOP_TARGET_RATIO = 26_000 / 32_000
+_SYNC_STREAM_END = object()
+
+
+def _next_sync_stream_item(iterator: Any) -> Any:
+    try:
+        return next(iterator)
+    except StopIteration:
+        return _SYNC_STREAM_END
+
+
+async def _create_streaming_response(
+    agent: AgentContext, kwargs: dict[str, Any]
+) -> Any:
+    """Open a synchronous provider stream without blocking sibling agents."""
+
+    create = agent._get_client().chat.completions.create
+    response = await asyncio.to_thread(create, **kwargs, stream=True)
+    if inspect.isawaitable(response):
+        response = await response
+    return response
 
 
 def _fit_context_window(
@@ -30,6 +79,7 @@ def _fit_context_window(
     *,
     purpose: str = "agent",
 ) -> list[dict[str, Any]]:
+    """Fit messages to the configured context window via the unified budget."""
     result = prepare_context(agent, messages, tools, purpose=purpose)
     if result.compacted or result.reason:
         logger.info(
@@ -38,7 +88,121 @@ def _fit_context_window(
             result.after_tokens,
             result.reason or "prepared",
         )
+    # Subagent hard-fit: subagent budgets are tighter than the LLM window;
+    # clamp again when the prepare step left a subagent working set oversized.
+    if _is_subagent(agent):
+        llm = getattr(agent, "config", None)
+        llm = getattr(llm, "llm", None) if llm is not None else None
+        max_context = getattr(llm, "max_context_tokens", None)
+        if (
+            isinstance(max_context, (int, float))
+            and not isinstance(max_context, bool)
+            and max_context > 0
+        ):
+            budget = int(max_context * _CONTEXT_USABLE_RATIO)
+            if estimate_tokens(result.messages) > budget:
+                return _hard_fit_subagent_messages(result.messages, budget)
     return result.messages
+
+
+def _tool_loop_hot_budget(agent: AgentContext) -> int:
+    """Return the high-water mark for one internal tool-loop working set."""
+    context = getattr(agent, "context", None)
+    budget = getattr(context, "max_tokens", 32_000)
+    if not isinstance(budget, (int, float)) or isinstance(budget, bool):
+        return 32_000
+    return max(1_024, int(budget))
+
+
+def _tool_loop_target_budget(agent: AgentContext) -> int:
+    """Return the post-compaction target, 26K for the default 32K high-water mark."""
+    high_water = _tool_loop_hot_budget(agent)
+    return min(high_water, max(1_024, int(high_water * _TOOL_LOOP_TARGET_RATIO)))
+
+
+def _build_tool_loop_messages(
+    agent: AgentContext,
+    system_prompt: str,
+    round_context: str,
+    *,
+    include_history: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build a stable prefix followed by the mutable internal tool-loop tail.
+
+    The prefix is created once per ``call_llm_auto`` invocation and never
+    reordered while its tool loop runs: system prompt, bounded hot history,
+    then the current task instruction.  Assistant/tool exchanges are appended
+    after it as the mutable tail.  This lets providers reuse the unchanged
+    prefix between tool rounds until a high-water compaction is necessary.
+    """
+    messages = [{"role": "system", "content": system_prompt}]
+    if include_history:
+        messages.extend(agent.context.get_messages())
+    round_message = {"role": "user", "content": round_context}
+    messages.append(round_message)
+    return messages, round_message
+
+
+def _fit_tool_loop_context(
+    agent: AgentContext,
+    messages: list[dict[str, Any]],
+    round_message: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Compact an oversized tool-loop tail without breaking tool exchanges.
+
+    ``ContextManager`` bounds persisted history, but a single ``call_llm_auto``
+    can append several assistant/tool exchanges before it returns.  Compact that
+    local working set only after it crosses the high-water mark.  It then falls
+    back to a lower target (26K for the default 32K high-water mark), preserving
+    the stable system/task prefix and complete recent tool exchanges.
+    """
+    high_water = _tool_loop_hot_budget(agent)
+    if estimate_tokens(messages) <= high_water:
+        return messages
+    target = _tool_loop_target_budget(agent)
+
+    try:
+        round_index = next(
+            index for index, message in enumerate(messages) if message is round_message
+        )
+    except StopIteration:
+        return truncate_messages(messages, target, preserve_system=True)
+
+    system_messages = (
+        [messages[0]] if messages and messages[0].get("role") == "system" else []
+    )
+    history_start = len(system_messages)
+    history = messages[history_start:round_index]
+    tool_loop = messages[round_index + 1 :]
+    required = [*system_messages, round_message]
+    if estimate_tokens(required) >= target:
+        return truncate_messages(required, target, preserve_system=True, min_recent=1)
+
+    running = estimate_tokens(required)
+
+    def keep_recent(
+        groups: list[list[dict[str, Any]]],
+    ) -> list[list[dict[str, Any]]]:
+        nonlocal running
+        kept: list[list[dict[str, Any]]] = []
+        for group in reversed(groups):
+            cost = estimate_tokens(group)
+            if running + cost > target:
+                break
+            running += cost
+            kept.insert(0, group)
+        return kept
+
+    # Prefer the evidence acquired in this still-active tool loop, then fill
+    # remaining space with older persistent history.
+    kept_tool_loop = keep_recent(group_tool_exchanges(tool_loop))
+    kept_history = keep_recent(group_tool_exchanges(history))
+    return [
+        *system_messages,
+        *(message for group in kept_history for message in group),
+        round_message,
+        *(message for group in kept_tool_loop for message in group),
+    ]
 
 
 def _resolve_auto_tool_rounds(agent: AgentContext, max_tool_rounds: int | None = None) -> int:
@@ -124,7 +288,7 @@ async def _stream_chat_completion_message(
 
     kwargs = build_chat_completion_kwargs(agent, messages, tools)
     stream_sink.on_status("Thinking...")
-    response = agent._get_client().chat.completions.create(**kwargs, stream=True)
+    response = await _create_streaming_response(agent, kwargs)
 
     full_text = ""
     reasoning_buffer = ""
@@ -246,6 +410,8 @@ def build_chat_completion_kwargs(
     Backward-compatible wrapper that accepts AgentContext and delegates to
     config/llm_utils.build_chat_completion_kwargs with agent.config.llm.
     """
+    max_tokens = _prepare_subagent_llm_request(agent, messages, max_tokens)
+
     return _build_chat_completion_kwargs_llm(
         agent.config.llm,
         messages,
@@ -255,7 +421,7 @@ def build_chat_completion_kwargs(
     )
 
 
-async def _call_with_persistent_retries(
+async def _call_with_persistent_retries_unbudgeted(
     agent: AgentContext, request_fn, stage_label: str, max_retries: int = 20
 ) -> tuple[Any, int]:
     """Keep retrying retriable LLM calls until success, max retries, or manual interruption.
@@ -339,6 +505,23 @@ async def _call_with_persistent_retries(
     raise RuntimeError(
         f"{stage_label} LLM 调用失败：已达到最大重试次数 {max_retries}"
     )
+
+
+async def _call_with_persistent_retries(
+    agent: AgentContext, request_fn, stage_label: str, max_retries: int = 20
+) -> tuple[Any, int]:
+    admission = _reserve_subagent_llm_request(agent)
+    try:
+        response, retries = await _call_with_persistent_retries_unbudgeted(
+            agent, request_fn, stage_label, max_retries
+        )
+        actual_tokens = _record_subagent_llm_usage(agent, response)
+        _settle_subagent_llm_admission(agent, admission, actual_tokens)
+        admission = None
+        return response, retries
+    finally:
+        if admission is not None:
+            _fail_subagent_llm_admission(agent, admission)
 
 
 def _prepend_retry_notice(text: str, retry_attempts: int) -> str:
@@ -438,10 +621,12 @@ async def call_llm_auto(
             max_tool_rounds=max_tool_rounds,
         )
 
-    messages = [{"role": "system", "content": system_prompt}]
-    if include_history:
-        messages.extend(agent.context.get_messages())
-    messages.append({"role": "user", "content": round_context})
+    messages, round_message = _build_tool_loop_messages(
+        agent,
+        system_prompt,
+        round_context,
+        include_history=include_history,
+    )
     tools = agent._build_openai_tools()
     messages = _fit_context_window(agent, messages, tools, purpose="autonomous_turn")
 
@@ -508,6 +693,7 @@ async def call_llm_auto(
         tool_messages = _tool_result_messages(tool_results)
         messages.append(assistant_message)
         messages.extend(tool_messages)
+        messages = _fit_tool_loop_context(agent, messages, round_message)
         if include_history:
             _append_context_message(agent, assistant_message)
             for tool_message in tool_messages:
@@ -535,10 +721,10 @@ class _AsyncIterWrapper:
         return self
 
     async def __anext__(self):
-        try:
-            return next(self._iter)
-        except StopIteration:
+        item = await asyncio.to_thread(_next_sync_stream_item, self._iter)
+        if item is _SYNC_STREAM_END:
             raise StopAsyncIteration
+        return item
 
 
 def _ensure_async_iter(response):
@@ -696,11 +882,10 @@ async def call_llm_stream(
     messages = _fit_context_window(agent, messages, tools, purpose="single_turn_stream")
 
     kwargs = build_chat_completion_kwargs(agent, messages, tools)
-    client = agent._get_client()
 
     try:
         stream_sink.on_status("Thinking...")
-        response = client.chat.completions.create(**kwargs, stream=True)
+        response = await _create_streaming_response(agent, kwargs)
 
         full_text = ""
         reasoning_buffer = ""
@@ -808,10 +993,12 @@ async def call_llm_auto_stream(
     if stream_sink is None:
         stream_sink = _NullSink()
 
-    messages = [{"role": "system", "content": system_prompt}]
-    if include_history:
-        messages.extend(agent.context.get_messages())
-    messages.append({"role": "user", "content": round_context})
+    messages, round_message = _build_tool_loop_messages(
+        agent,
+        system_prompt,
+        round_context,
+        include_history=include_history,
+    )
     tools = agent._build_openai_tools()
     messages = _fit_context_window(agent, messages, tools, purpose="autonomous_stream")
 
@@ -858,6 +1045,7 @@ async def call_llm_auto_stream(
             tool_messages = _tool_result_messages(tool_results)
             messages.append(assistant_message)
             messages.extend(tool_messages)
+            messages = _fit_tool_loop_context(agent, messages, round_message)
             if include_history:
                 _append_context_message(agent, assistant_message)
                 for tool_message in tool_messages:

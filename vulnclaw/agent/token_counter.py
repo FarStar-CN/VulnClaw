@@ -113,48 +113,57 @@ def estimate_tool_tokens(tools: list[dict] | None) -> int:
     return _text_tokens(rendered)
 
 
-def group_messages(messages: list[dict]) -> list[list[dict]]:
-    """Return protocol-safe message groups.
+def group_tool_exchanges(messages: list[dict]) -> list[list[dict]]:
+    """Group assistant tool calls with their consecutive tool responses.
 
-    An assistant tool-call message and every immediately-following matching
-    ``role=tool`` result belong to one group. Compaction must retain or remove
-    that group as a whole, otherwise providers reject orphaned ``tool_call_id``
-    messages.
+    OpenAI-compatible providers reject a ``tool`` message when the assistant
+    message that declared its ``tool_call_id`` is absent.  Context trimming
+    therefore has to treat that exchange as one indivisible unit.
     """
     groups: list[list[dict]] = []
     index = 0
     while index < len(messages):
         message = messages[index]
-        if not isinstance(message, dict):
-            groups.append([message])
-            index += 1
-            continue
-
-        tool_calls = message.get("tool_calls")
-        if message.get("role") != "assistant" or not isinstance(tool_calls, list) or not tool_calls:
-            groups.append([message])
-            index += 1
-            continue
-
-        ids = {
-            str(call.get("id") or "")
-            for call in tool_calls
-            if isinstance(call, dict) and str(call.get("id") or "")
-        }
         group = [message]
-        index += 1
-        while index < len(messages):
-            candidate = messages[index]
-            if not isinstance(candidate, dict) or candidate.get("role") != "tool":
-                break
-            tool_call_id = str(candidate.get("tool_call_id") or "")
-            if tool_call_id not in ids:
-                break
-            group.append(candidate)
-            ids.discard(tool_call_id)
+        tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if message.get("role") == "assistant" and isinstance(tool_calls, list) and tool_calls:
+            expected_ids = {
+                str(call.get("id") or "")
+                for call in tool_calls
+                if isinstance(call, dict) and call.get("id")
+            }
+            cursor = index + 1
+            while cursor < len(messages):
+                candidate = messages[cursor]
+                if candidate.get("role") != "tool":
+                    break
+                if str(candidate.get("tool_call_id") or "") not in expected_ids:
+                    break
+                group.append(candidate)
+                cursor += 1
+            index = cursor
+        else:
             index += 1
         groups.append(group)
     return groups
+
+
+# Alias kept for callers of the original name (context_budget.py and its tests).
+group_messages = group_tool_exchanges
+
+
+def group_conversation_turns(messages: list[dict]) -> list[list[dict]]:
+    """Group hot/cold history into user-led turns without splitting tools."""
+    turns: list[list[dict]] = []
+    current: list[dict] = []
+    for exchange in group_tool_exchanges(messages):
+        if exchange[0].get("role") == "user" and current:
+            turns.append(current)
+            current = []
+        current.extend(exchange)
+    if current:
+        turns.append(current)
+    return turns
 
 
 def flatten_message_groups(groups: list[list[dict]]) -> list[dict]:
@@ -241,27 +250,34 @@ def truncate_messages(
         body = body[1:]
 
     min_recent = max(min_recent, 1)
+    groups = group_tool_exchanges(body)
     if len(body) <= min_recent:
         return system_msgs + body
 
-    recent = body[-min_recent:]
-    middle = body[:-min_recent]
+    recent_groups: list[list[dict]] = []
+    recent_count = 0
+    while groups and recent_count < min_recent:
+        group = groups.pop()
+        recent_groups.insert(0, group)
+        recent_count += len(group)
+    recent = [message for group in recent_groups for message in group]
 
     notice = {"role": "system", "content": _TRUNCATION_NOTICE}
     base_tokens = estimate_tokens(system_msgs) + estimate_tokens(recent)
     base_tokens += estimate_message_tokens(notice)
 
-    kept_middle: list[dict] = []
+    kept_groups: list[list[dict]] = []
     running = base_tokens
-    # Add middle messages from newest to oldest until the budget is exhausted.
-    for msg in reversed(middle):
-        cost = estimate_message_tokens(msg)
+    # Add older atomic exchanges from newest to oldest until the budget is exhausted.
+    for group in reversed(groups):
+        cost = estimate_tokens(group)
         if running + cost > max_tokens:
             break
         running += cost
-        kept_middle.insert(0, msg)
+        kept_groups.insert(0, group)
 
-    truncated_any = len(kept_middle) < len(middle)
+    truncated_any = len(kept_groups) < len(groups)
+    kept_middle = [message for group in kept_groups for message in group]
     result = list(system_msgs)
     if truncated_any:
         result.append(notice)

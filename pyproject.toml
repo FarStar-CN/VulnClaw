@@ -47,6 +47,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
     "ruff>=0.4.0",
     "build>=1.2.0",
 ]
@@ -126,3 +127,22 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# Coverage is opt-in to keep normal runs fast:
+#   pytest --cov=vulnclaw --cov-report=term-missing
+[tool.coverage.run]
+source = ["vulnclaw"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# A floor below current coverage (~74%) so a large regression fails CI without
+# being brittle; raise it as coverage climbs.
+fail_under = 70
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "^\\s*\\.\\.\\.\\s*$",
+]
