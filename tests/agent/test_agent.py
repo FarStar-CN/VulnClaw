@@ -1151,7 +1151,7 @@ class TestAgentCore:
         agent._update_recon_dimension_completion("端口扫描已完成")
         assert agent.context.state.recon_dimensions_completed["server"] is True
 
-    def test_history_limit_compacts_into_system_digest(self):
+    def test_trim_summary_uses_system_role(self):
         from vulnclaw.agent.context import ContextManager
 
         cm = ContextManager(max_history=5)
@@ -1163,8 +1163,10 @@ class TestAgentCore:
 
         messages = cm.get_messages()
         assert len(messages) <= 5
-        assert messages[0]["role"] == "system"
-        assert messages[0]["content"].startswith("[context digest v1]")
+        # dev behavior: overflow is archived to cold memory instead of being
+        # rewritten into a synthetic system digest message.
+        assert messages[0]["role"] in {"user", "assistant"}
+        assert all(message["role"] != "system" for message in messages)
 
     def test_completion_signal_detection(self):
         agent = self._make_agent()
