@@ -146,7 +146,7 @@ class LLMConfig(BaseModel):
     model: str = Field(default="gpt-4o", description="Model name to use (auto-filled by provider)")
     max_tokens: int = Field(default=4096, description="Max tokens per response")
     max_context_tokens: int = Field(
-        default=128000, description="Max context window tokens before sliding-window truncation"
+        default=128000, description="Total model context window including input and completion tokens"
     )
     temperature: float = Field(default=0.1, description="Sampling temperature")
     reasoning_effort: str = Field(
@@ -372,13 +372,54 @@ class SessionConfig(BaseModel):
         default=1,
         description="Deprecated for model-led solve; retained for team/legacy integrations",
     )
+    context_auto_compact: bool = Field(
+        default=True,
+        description="Automatically compact model context across all LLM call paths before overflow",
+    )
+    context_compact_trigger_ratio: float = Field(
+        default=0.70,
+        ge=0.10,
+        le=0.95,
+        description="Usable-input ratio that triggers automatic context compaction",
+    )
+    context_compact_target_ratio: float = Field(
+        default=0.55,
+        ge=0.05,
+        le=0.90,
+        description="Usable-input ratio targeted after context compaction",
+    )
+    context_recent_message_groups: int = Field(
+        default=12,
+        ge=1,
+        le=100,
+        description="Recent complete message groups retained verbatim after compaction",
+    )
+    context_summary_max_tokens: int = Field(
+        default=3500,
+        ge=200,
+        le=16000,
+        description="Maximum token budget for the deterministic context digest",
+    )
+    context_output_reserve_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Reserved completion-token budget; 0 derives it from llm.max_tokens",
+    )
+    context_compaction_mode: str = Field(
+        default="structured",
+        description="Context compaction mode; structured is deterministic and evidence-aware",
+    )
+    context_compaction_audit_enabled: bool = Field(
+        default=True,
+        description="Record context compaction metadata in the persistent agent state",
+    )
     solve_auto_compact: bool = Field(
         default=False,
-        description="Auto-compact solve memory before context overflow; otherwise compact only on /compact",
+        description="Deprecated alias for context_auto_compact in legacy configuration files",
     )
     solve_compact_trigger_ratio: float = Field(
         default=0.9,
-        description="Context-window ratio that may trigger auto compact when solve_auto_compact is enabled",
+        description="Deprecated alias for context_compact_trigger_ratio in legacy configuration files",
     )
     solve_auto_report: bool = Field(
         default=True,

@@ -1163,6 +1163,8 @@ class TestAgentCore:
 
         messages = cm.get_messages()
         assert len(messages) <= 5
+        # dev behavior: overflow is archived to cold memory instead of being
+        # rewritten into a synthetic system digest message.
         assert messages[0]["role"] in {"user", "assistant"}
         assert all(message["role"] != "system" for message in messages)
 

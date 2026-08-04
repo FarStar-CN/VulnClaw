@@ -1171,10 +1171,11 @@ class ContextManager:
         return len(messages) > self.max_history or estimate_tokens(messages) > self.max_tokens
 
     def _trim(self) -> None:
-        """Trim old messages to stay within limit.
+        """Spill old messages to cold memory at the hot-history cap.
 
-        Instead of blindly dropping old messages, we compress them
-        into a summary to preserve key discoveries for multi-round loops.
+        Normal request-time compaction is driven by the token budget manager.
+        This remains a safety net for callers that keep adding messages without
+        issuing an LLM request.
         """
         if not self._over_hot_limit(self.messages):
             return
@@ -1219,15 +1220,32 @@ class ContextManager:
             target=str(self.state.target or ""),
         )
 
-    def compact_messages(self, *, max_recent: int = 24, note: str = "") -> str:
-        """Explicitly compact older conversation messages for `/compact`."""
+    @staticmethod
+    def _is_context_digest_message(message: dict[str, Any]) -> bool:
+        content = str(message.get("content", "") or "")
+        return message.get("role") == "system" and content.startswith("[context digest")
 
-        if len(self.messages) <= max_recent:
+    def replace_history_with_digest(
+        self,
+        digest_message: dict[str, Any],
+        recent_messages: list[dict[str, Any]],
+    ) -> None:
+        """Atomically replace older history with a prompt-safe context digest."""
+        cleaned_recent = [
+            copy.deepcopy(message)
+            for message in recent_messages
+            if isinstance(message, dict) and not self._is_context_digest_message(message)
+        ]
+        self.messages = [copy.deepcopy(digest_message), *cleaned_recent]
+
+    def compact_messages(self, *, max_recent: int = 24, note: str = "") -> str:
+        """Compact older conversation message groups for `/compact` or safety fallback."""
+        from vulnclaw.agent.token_counter import group_messages
+
+        groups = group_messages(self.messages)
+        if len(groups) <= max_recent:
             return "No compaction needed."
 
-        from vulnclaw.agent.token_counter import group_tool_exchanges
-
-        groups = group_tool_exchanges(self.messages)
         recent_groups: list[list[dict[str, Any]]] = []
         recent_count = 0
         while groups and recent_count < max_recent:
@@ -1239,17 +1257,15 @@ class ContextManager:
         summary = self._compress_messages(old) or "(older conversation omitted)"
         if note:
             summary = f"{note}\n{summary}"
-        self.messages = [
-            {"role": "system", "content": f"[manual compact summary]\n{summary}"},
-            *recent,
-        ]
+        digest = {"role": "system", "content": f"[context digest v1]\n{summary}"}
+        self.replace_history_with_digest(digest, recent)
         agent_state = getattr(self.state, "agent_state", None)
         if agent_state is not None:
-            agent_state.compact_summary = (
-                f"{agent_state.compact_summary}\n{summary}"
-                if agent_state.compact_summary
-                else summary
-            ).strip()
+            evidence_ids = [item.id for item in getattr(agent_state, "evidence", [])[-12:]]
+            if hasattr(agent_state, "update_context_digest"):
+                agent_state.update_context_digest(summary, evidence_ids)
+            else:
+                agent_state.compact_summary = summary
         return summary
 
     @staticmethod

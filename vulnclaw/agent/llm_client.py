@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from vulnclaw.agent.context_budget import prepare_context  # noqa: E402
 from vulnclaw.agent.token_counter import (  # noqa: E402
     estimate_tokens,
     group_tool_exchanges,
@@ -71,34 +72,37 @@ async def _create_streaming_response(
     return response
 
 
-def _fit_context_window(agent: AgentContext, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Truncate messages to fit the configured context window (90% usable budget)."""
-    llm = getattr(agent, "config", None)
-    llm = getattr(llm, "llm", None) if llm is not None else None
-    max_context = getattr(llm, "max_context_tokens", None)
-    if not isinstance(max_context, (int, float)) or isinstance(max_context, bool):
-        return messages
-    if max_context <= 0:
-        return messages
-
-    budget = int(max_context * _CONTEXT_USABLE_RATIO)
-    current = estimate_tokens(messages)
-    if current <= budget:
-        return messages
-
-    trimmed = truncate_messages(messages, budget, preserve_system=True)
-    if _is_subagent(agent) and estimate_tokens(trimmed) > budget:
-        trimmed = _hard_fit_subagent_messages(trimmed, budget)
-    try:
-        from rich.console import Console
-
-        Console().print(
-            f"[yellow][!] 上下文约 {current} tokens 超过窗口预算 {budget}，"
-            f"已截断至约 {estimate_tokens(trimmed)} tokens[/yellow]"
+def _fit_context_window(
+    agent: AgentContext,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    *,
+    purpose: str = "agent",
+) -> list[dict[str, Any]]:
+    """Fit messages to the configured context window via the unified budget."""
+    result = prepare_context(agent, messages, tools, purpose=purpose)
+    if result.compacted or result.reason:
+        logger.info(
+            "Context budget %d -> %d tokens (%s)",
+            result.before_tokens,
+            result.after_tokens,
+            result.reason or "prepared",
         )
-    except Exception:
-        logger.warning("上下文截断: %d → %d tokens (预算 %d)", current, estimate_tokens(trimmed), budget)
-    return trimmed
+    # Subagent hard-fit: subagent budgets are tighter than the LLM window;
+    # clamp again when the prepare step left a subagent working set oversized.
+    if _is_subagent(agent):
+        llm = getattr(agent, "config", None)
+        llm = getattr(llm, "llm", None) if llm is not None else None
+        max_context = getattr(llm, "max_context_tokens", None)
+        if (
+            isinstance(max_context, (int, float))
+            and not isinstance(max_context, bool)
+            and max_context > 0
+        ):
+            budget = int(max_context * _CONTEXT_USABLE_RATIO)
+            if estimate_tokens(result.messages) > budget:
+                return _hard_fit_subagent_messages(result.messages, budget)
+    return result.messages
 
 
 def _tool_loop_hot_budget(agent: AgentContext) -> int:
@@ -575,8 +579,8 @@ async def call_llm(
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(agent.context.get_messages())
-    messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
+    messages = _fit_context_window(agent, messages, tools, purpose="single_turn")
 
     kwargs = build_chat_completion_kwargs(agent, messages, tools)
     response, retry_attempts = await _call_with_persistent_retries(
@@ -623,15 +627,20 @@ async def call_llm_auto(
         round_context,
         include_history=include_history,
     )
-    messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
+    messages = _fit_context_window(agent, messages, tools, purpose="autonomous_turn")
 
     retry_attempts_total = 0
     last_tool_results: list[dict[str, Any]] | None = None
     last_skipped_info: list[str] = []
     last_assistant_text = ""
     for _tool_round in range(_resolve_auto_tool_rounds(agent, max_tool_rounds) + 1):
-        messages = _fit_context_window(agent, messages)
+        messages = _fit_context_window(
+            agent,
+            messages,
+            tools,
+            purpose="autonomous_tool_follow_up",
+        )
         kwargs = build_chat_completion_kwargs(agent, messages, tools)
         try:
             response, retry_attempts = await _call_with_persistent_retries(
@@ -869,8 +878,8 @@ async def call_llm_stream(
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(agent.context.get_messages())
-    messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
+    messages = _fit_context_window(agent, messages, tools, purpose="single_turn_stream")
 
     kwargs = build_chat_completion_kwargs(agent, messages, tools)
 
@@ -990,15 +999,20 @@ async def call_llm_auto_stream(
         round_context,
         include_history=include_history,
     )
-    messages = _fit_context_window(agent, messages)
     tools = agent._build_openai_tools()
+    messages = _fit_context_window(agent, messages, tools, purpose="autonomous_stream")
 
     last_tool_results: list[dict[str, Any]] | None = None
     last_skipped_info: list[str] = []
     last_assistant_text = ""
     try:
         for _tool_round in range(_resolve_auto_tool_rounds(agent, max_tool_rounds) + 1):
-            messages = _fit_context_window(agent, messages)
+            messages = _fit_context_window(
+                agent,
+                messages,
+                tools,
+                purpose="autonomous_stream_tool_follow_up",
+            )
             message = await _stream_chat_completion_message(agent, messages, tools, stream_sink)
             tool_calls = list(getattr(message, "tool_calls", None) or [])
             if not tool_calls:

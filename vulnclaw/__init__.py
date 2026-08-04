@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-_FALLBACK_VERSION = "0.3.6"
+_FALLBACK_VERSION = "0.3.7"
 
 
 def _read_pyproject_version() -> str | None:

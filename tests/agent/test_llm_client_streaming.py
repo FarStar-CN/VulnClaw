@@ -59,7 +59,9 @@ def test_model_context_cap_compacts_one_oversized_recent_message():
     assert estimate_tokens(fitted) <= 36_000
     assert "e001 beginning" in fitted[-1]["content"]
     assert "e999 ending" in fitted[-1]["content"]
-    assert "active context compacted" in fitted[-1]["content"]
+    # Unified budget layer clamps the oversized single message (head/tail
+    # preserved) instead of dropping it: content must be meaningfully smaller.
+    assert len(fitted[-1]["content"]) < len(messages[-1]["content"])
 
 
 def test_tool_loop_context_stays_within_hot_budget_and_keeps_tool_exchanges():

@@ -62,6 +62,14 @@ class TestWebServices:
                 model="deepseek-chat",
                 output_dir=str(tmp_path),
                 max_rounds=22,
+                max_context_tokens=64000,
+                context_auto_compact=False,
+                context_compact_trigger_ratio=0.62,
+                context_compact_target_ratio=0.48,
+                context_recent_message_groups=7,
+                context_summary_max_tokens=2200,
+                context_output_reserve_tokens=800,
+                context_compaction_audit_enabled=False,
                 show_thinking=True,
             )
         )
@@ -69,6 +77,14 @@ class TestWebServices:
         assert view.model == "deepseek-chat"
         assert view.output_dir == str(tmp_path)
         assert view.max_rounds == 22
+        assert view.max_context_tokens == 64000
+        assert view.context_auto_compact is False
+        assert view.context_compact_trigger_ratio == 0.62
+        assert view.context_compact_target_ratio == 0.48
+        assert view.context_recent_message_groups == 7
+        assert view.context_summary_max_tokens == 2200
+        assert view.context_output_reserve_tokens == 800
+        assert view.context_compaction_audit_enabled is False
         assert view.show_thinking is True
         assert view.python_execute_mode == "trusted-local"
 

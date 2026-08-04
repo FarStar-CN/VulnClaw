@@ -96,6 +96,23 @@ def estimate_tokens(messages: list[dict]) -> int:
     return sum(estimate_message_tokens(m) for m in messages)
 
 
+def estimate_tool_tokens(tools: list[dict] | None) -> int:
+    """Estimate the request budget used by function/tool schemas.
+
+    Tool definitions are part of a Chat Completions request but were previously
+    omitted from the context calculation. Serializing them is intentionally an
+    approximation, consistent with the lightweight estimator used for message
+    content above.
+    """
+    if not tools:
+        return 0
+    try:
+        rendered = json.dumps(tools, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        rendered = str(tools)
+    return _text_tokens(rendered)
+
+
 def group_tool_exchanges(messages: list[dict]) -> list[list[dict]]:
     """Group assistant tool calls with their consecutive tool responses.
 
@@ -131,6 +148,10 @@ def group_tool_exchanges(messages: list[dict]) -> list[list[dict]]:
     return groups
 
 
+# Alias kept for callers of the original name (context_budget.py and its tests).
+group_messages = group_tool_exchanges
+
+
 def group_conversation_turns(messages: list[dict]) -> list[list[dict]]:
     """Group hot/cold history into user-led turns without splitting tools."""
     turns: list[list[dict]] = []
@@ -143,6 +164,66 @@ def group_conversation_turns(messages: list[dict]) -> list[list[dict]]:
     if current:
         turns.append(current)
     return turns
+
+
+def flatten_message_groups(groups: list[list[dict]]) -> list[dict]:
+    """Flatten groups produced by :func:`group_messages`."""
+    return [message for group in groups for message in group]
+
+
+def estimate_message_group_tokens(group: list[dict]) -> int:
+    """Estimate one protocol-safe message group's token count."""
+    return estimate_tokens(group)
+
+
+def truncate_message_groups(
+    messages: list[dict],
+    max_tokens: int,
+    *,
+    preserve_system: bool = True,
+    min_recent_groups: int = 1,
+    notice: str | None = None,
+) -> list[dict]:
+    """Sliding-window truncation that never splits assistant/tool exchanges."""
+    if not messages or max_tokens <= 0 or estimate_tokens(messages) <= max_tokens:
+        return list(messages)
+
+    groups = group_messages(messages)
+    system_groups: list[list[dict]] = []
+    if preserve_system:
+        while groups:
+            first = groups[0]
+            if len(first) != 1 or first[0].get("role") != "system":
+                break
+            system_groups.append(groups.pop(0))
+
+    min_recent_groups = max(1, min_recent_groups)
+    recent = groups[-min_recent_groups:]
+    middle = groups[:-min_recent_groups]
+    notice_message = (
+        {"role": "system", "content": notice or _TRUNCATION_NOTICE}
+        if middle
+        else None
+    )
+    running = estimate_tokens(flatten_message_groups(system_groups))
+    running += estimate_tokens(flatten_message_groups(recent))
+    if notice_message is not None:
+        running += estimate_message_tokens(notice_message)
+
+    kept_middle: list[list[dict]] = []
+    for group in reversed(middle):
+        cost = estimate_message_group_tokens(group)
+        if running + cost > max_tokens:
+            break
+        kept_middle.insert(0, group)
+        running += cost
+
+    result = flatten_message_groups(system_groups)
+    if notice_message is not None and len(kept_middle) < len(middle):
+        result.append(notice_message)
+    result.extend(flatten_message_groups(kept_middle))
+    result.extend(flatten_message_groups(recent))
+    return result
 
 
 def truncate_messages(

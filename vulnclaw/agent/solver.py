@@ -19,7 +19,11 @@ from vulnclaw.agent.agent_state import (
     extract_flags,
     one_line,
 )
-from vulnclaw.agent.llm_client import build_chat_completion_kwargs, call_llm_auto
+from vulnclaw.agent.llm_client import (
+    _fit_context_window,
+    build_chat_completion_kwargs,
+    call_llm_auto,
+)
 from vulnclaw.agent.subagent.solve import (
     available as subagents_available,
 )
@@ -259,6 +263,7 @@ async def structured_call(agent: AgentContext, prompt: str, *, max_tokens: int =
 
     client = agent._get_client()
     messages = [{"role": "user", "content": prompt}]
+    messages = _fit_context_window(agent, messages, [], purpose="structured_call")
     kwargs = build_chat_completion_kwargs(agent, messages, max_tokens=max_tokens, temperature=0.1)
     response = client.chat.completions.create(**kwargs)
     if response and response.choices:
