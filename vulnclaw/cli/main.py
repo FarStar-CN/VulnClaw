@@ -460,8 +460,8 @@ def _run_repl() -> None:
                 )
 
                 persistent_prompt = (
-                    f"Perform an authorized persistent penetration test against {persistent_target}. ",
-                    _("cli.target_within_range_and_explicitly_authorized")
+                    f"Perform an authorized persistent penetration test against {persistent_target}. "
+                    + _("cli.target_within_range_and_explicitly_authorized")
                 )
 
                 all_cycle_results: list[PersistentCycleResult] = []
