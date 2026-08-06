@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ConfigView } from "../types/api";
 import { fetchProviderModels, updateConfig } from "../api/web";
 import { SectionCard } from "../components/SectionCard";
 import { useConfigQuery, useMcpDiagnosticsQuery, useProvidersQuery } from "../hooks/queries";
@@ -56,6 +57,7 @@ export function SettingsPage({ initialSection = "basic", onOpenAdvanced }: Setti
   const [provider, setProvider] = useState("openai");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [reportLanguage, setReportLanguage] = useState<ConfigView["language"]>("auto");
   const [models, setModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsHint, setModelsHint] = useState<string | null>(null);
@@ -113,6 +115,7 @@ export function SettingsPage({ initialSection = "basic", onOpenAdvanced }: Setti
     setProvider(configQuery.data.provider);
     setModel(configQuery.data.model);
     setBaseUrl(configQuery.data.base_url);
+    setReportLanguage(configQuery.data.language);
     setOutputDir(configQuery.data.output_dir);
     setMaxRounds(configQuery.data.max_rounds);
     setMaxContextTokens(configQuery.data.max_context_tokens);
@@ -215,6 +218,7 @@ export function SettingsPage({ initialSection = "basic", onOpenAdvanced }: Setti
         provider,
         model,
         base_url: baseUrl,
+        language: reportLanguage,
         output_dir: outputDir,
         max_rounds: maxRounds,
         max_context_tokens: maxContextTokens,
@@ -379,6 +383,18 @@ export function SettingsPage({ initialSection = "basic", onOpenAdvanced }: Setti
                 )}
                 <small>{modelsHint ?? t("settings.model_hint")}</small>
               </div>
+              <label className="field">
+                <span>{t("settings.report_language")}</span>
+                <select
+                  value={reportLanguage}
+                  onChange={(event) => setReportLanguage(event.target.value as ConfigView["language"])}
+                >
+                  <option value="auto">{t("settings.report_language_auto")}</option>
+                  <option value="zh">中文</option>
+                  <option value="en">English</option>
+                </select>
+                <small>{t("settings.report_language_hint")}</small>
+              </label>
             </div>
           )}
 
