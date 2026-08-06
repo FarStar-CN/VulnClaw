@@ -3214,7 +3214,7 @@ def web(
 
     if not FASTAPI_AVAILABLE:
         err_console.print(
-            "[!] FastAPI is missing. Install with [bold]pip install vulnclaw[web][/]."
+            "[!] FastAPI is missing. Install with [bold]pip install vulnclaw\\[web][/]."
         )
         raise typer.Exit(1)
 
@@ -3222,7 +3222,7 @@ def web(
         import uvicorn
     except ImportError:
         err_console.print(
-            "[!] uvicorn is missing. Install with [bold]pip install vulnclaw[web][/]."
+            "[!] uvicorn is missing. Install with [bold]pip install vulnclaw\\[web][/]."
         )
         raise typer.Exit(1)
 
@@ -3231,11 +3231,17 @@ def web(
 
     token = generate_token()
     if allow_remote:
+        # Non-loopback clients (which includes every browser reaching a
+        # container through Docker's port NAT) must authenticate. The UI cannot
+        # send a bearer header, so opening this URL once swaps the token for a
+        # session cookie; the browser carries it from then on.
+        browser_host = "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
         console.print(
             Panel(
-                f"Token: [bold]{token}[/]\n\n"
-                "Use this token in the Authorization header:\n"
-                f"[dim]Authorization: Bearer {token}[/]",
+                f"Open this URL once to sign the browser in:\n"
+                f"[bold]http://{browser_host}:{port}/?token={token}[/]\n\n"
+                f"Token: [bold]{token}[/]\n"
+                f"[dim]For API clients: Authorization: Bearer {token}[/]",
                 title="Web UI Auth Token",
                 border_style="yellow",
             )

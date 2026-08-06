@@ -1408,10 +1408,13 @@ class TestWebAuthLoopback:
                 self.host = host
 
         class _Req:
-            def __init__(self, path, host, headers=None):
+            def __init__(self, path, host, headers=None, cookies=None):
                 self.url = _URL(path)
                 self.client = _Client(host) if host else None
                 self.headers = headers or {}
+                # Real Starlette requests always expose .cookies; the auth gate
+                # consults it for the browser session cookie.
+                self.cookies = cookies or {}
 
         mw = AuthMiddleware(None)
 

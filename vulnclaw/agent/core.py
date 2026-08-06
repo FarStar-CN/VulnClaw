@@ -124,7 +124,7 @@ class AgentCore:
         elif status == RetrieverStatus.KEYWORD_FALLBACK:
             console.print(
                 "[yellow]⚠ 知识库已降级为关键词模式 "
-                "(chromadb 未安装，运行 pip install vulnclaw[kb] 启用语义搜索)[/yellow]"
+                "(chromadb 未安装，运行 pip install vulnclaw\\[kb] 启用语义搜索)[/yellow]"
             )
         else:
             console.print("[red]✗ 知识库已禁用 (无可用数据)[/red]")
