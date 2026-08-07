@@ -74,6 +74,8 @@ class AgentCore:
                 archive_max_files=config.session.memory_archive_max_files,
             ),
         )
+        # Wire the vault to the run output directory so archiving can persist.
+        self.context.vault_output_dir = config.session.output_dir
         self.active_role: str | None = None
         self._subagent_ctx = SubagentContext()
         self._client = None

@@ -138,6 +138,10 @@ class TestBuiltinToolSchemaSet:
         "brute_force_login",
         "unauth_test",
         "dir_enum",
+        "vault_archive",
+        "vault_restore",
+        "vault_search",
+        "vault_status",
     }
 
     def test_append_builtin_tool_schemas_exposes_stable_set(self):
