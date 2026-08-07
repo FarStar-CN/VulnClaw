@@ -1332,7 +1332,6 @@ def solve(
     )
     console.print(f"[*] Target: [bold]{target}[/] | Goal: [bold]{resolved_goal}[/]")
 
-    on_event = _make_solve_event_printer(console)
     holder: dict = {}
     stream_out = sys.stdout if stream else None
 

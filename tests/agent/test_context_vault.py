@@ -12,18 +12,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from vulnclaw.agent.context_budget import (
     _is_vault_pointer,
-    build_context_budget,
     prepare_context,
 )
 from vulnclaw.agent.context_vault import (
-    VaultConfig,
-    VaultManager,
     _REF_RE,
     _REF_TEMPLATE,
+    VaultManager,
     _has_unarchived_message,
     _protected_range,
     assign_refs,

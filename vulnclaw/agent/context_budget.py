@@ -13,6 +13,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from vulnclaw.agent.context_vault import (
+    VaultManager,
+    _content_text,
+    assign_refs,
+)
 from vulnclaw.agent.token_counter import (
     estimate_message_group_tokens,
     estimate_tokens,
@@ -20,15 +25,6 @@ from vulnclaw.agent.token_counter import (
     flatten_message_groups,
     group_messages,
     truncate_message_groups,
-)
-from vulnclaw.agent.context_vault import (
-    VaultBlock,
-    VaultManager,
-    _REF_RE,
-    _content_text,
-    _estimate_chars,
-    assign_refs,
-    ref_id,
 )
 
 _DIGEST_PREFIX = "[context digest v1]"

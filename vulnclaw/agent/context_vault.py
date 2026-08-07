@@ -189,7 +189,6 @@ def _ref_for(message: dict[str, Any]) -> str:
 
 def _range_of(messages: list[dict[str, Any]], start: str, end: str) -> list[dict[str, Any]]:
     """Return the message slice between two refs (inclusive, stable order)."""
-    ids = [ref_id(_ref_for(m)) for m in messages if isinstance(m, dict)]
     start_id = ref_id(start)
     end_id = ref_id(end)
     if start_id <= 0 or end_id <= 0:
