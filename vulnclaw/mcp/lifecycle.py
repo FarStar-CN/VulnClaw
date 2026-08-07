@@ -8,7 +8,6 @@ import re
 import subprocess
 import time
 from contextlib import suppress
-from datetime import timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -473,7 +472,7 @@ class MCPLifecycleManager(ProbeMixin):
         timeout_s = self._tool_timeout_seconds(config)
         async with stdio_client(server) as (read_stream, write_stream):
             async with ClientSession(
-                read_stream, write_stream, read_timeout_seconds=timedelta(seconds=timeout_s)
+                read_stream, write_stream, read_timeout_seconds=timeout_s
             ) as session:
                 await session.initialize()
                 return await asyncio.wait_for(
@@ -516,7 +515,7 @@ class MCPLifecycleManager(ProbeMixin):
         cm = stdio_client(server)
         read_stream, write_stream = await cm.__aenter__()
         session = ClientSession(
-            read_stream, write_stream, read_timeout_seconds=timedelta(seconds=timeout_s)
+            read_stream, write_stream, read_timeout_seconds=timeout_s
         )
         # 进入 ClientSession 上下文以启动 _receive_loop；否则后续调用读不到响应而卡死。
         try:
@@ -601,7 +600,7 @@ class MCPLifecycleManager(ProbeMixin):
             )
             read_stream, write_stream, _get_session_id = await cm.__aenter__()
             session = ClientSession(
-                read_stream, write_stream, read_timeout_seconds=timedelta(seconds=read_s)
+                read_stream, write_stream, read_timeout_seconds=read_s
             )
             await session.__aenter__()
             await session.initialize()
@@ -675,7 +674,7 @@ class MCPLifecycleManager(ProbeMixin):
             cm = sse_client(url)
             read_stream, write_stream = await cm.__aenter__()
             session = ClientSession(
-                read_stream, write_stream, read_timeout_seconds=timedelta(seconds=read_s)
+                read_stream, write_stream, read_timeout_seconds=read_s
             )
             await session.__aenter__()
             await session.initialize()
