@@ -207,6 +207,67 @@ class TerminalStreamSink:
         self._console.print()
 
 
+class JsonlStreamSink:
+    """Rust ratatui TUI protocol stream sink (newline-delimited JSON).
+
+    Emits the same event vocabulary the ``vulnclaw-tui-native`` workbench
+    parses: ``status`` / ``log`` / ``reasoning`` lines on stdout. Findings are
+    delivered by the caller in the final ``complete`` event (VulnClaw records
+    evidence, not a live finding stream).
+    """
+
+    def __init__(self, stream: Any = None, show_thinking: bool = False) -> None:
+        self._stream = stream if stream is not None else sys.stdout
+        self._show_thinking = show_thinking
+        self._status_printed = False
+
+    def _emit(self, event: dict) -> None:
+        self._stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self._stream.flush()
+
+    def on_status(self, message: str) -> None:
+        self._emit({"type": "status", "status": str(message or "")})
+        self._status_printed = True
+
+    def on_thinking_token(self, token: str) -> None:
+        if self._show_thinking and token:
+            self._emit({"type": "reasoning", "text": str(token)})
+
+    def on_content_token(self, token: str) -> None:
+        if token:
+            self._emit({"type": "log", "message": str(token)})
+            self._status_printed = False
+
+    def on_tool_call(self, tool_name: str, args: str) -> None:
+        self._emit({"type": "log", "message": f"→ tool: {tool_name} {str(args or '')[:100]}"})
+        self._status_printed = False
+
+    def on_tool_result(self, result_summary: str) -> None:
+        preview, _collapsed = _collapse_terminal_text(result_summary)
+        self._emit({"type": "log", "message": f"→ result: {preview}"})
+
+    def on_stream_end(self) -> None:
+        self._status_printed = False
+
+
+def emit_complete_event(
+    stream: Any,
+    *,
+    summary: str,
+    findings: list[dict[str, Any]],
+) -> None:
+    """Emit the terminal ``complete`` event of the Rust TUI protocol."""
+    stream.write(
+        json.dumps(
+            {"type": "complete", "summary": summary, "result": {"findings": findings}},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    stream.flush()
+
+
 ASCII_LOGO = (
     " _    __      __      ________\n"
     "| |  / /_  __/ /___  / ____/ /___ __      __\n"

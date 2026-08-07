@@ -1050,6 +1050,11 @@ def run(
     no_import: bool = typer.Option(
         False, "--no-import", help="Read legacy target state without importing it into a run"
     ),
+    stream: bool = typer.Option(
+        False,
+        "--stream",
+        help="Emit newline-delimited JSON events (status/log/finding/complete) for the Rust TUI",
+    ),
 ) -> None:
     """Run a full authorized pentest workflow.
 
@@ -1057,6 +1062,8 @@ def run(
     prompts, a machine-readable ``summary.json`` in the run directory, and an
     exit code that lets a pipeline tell a clean scan (0) from a broken one (1)
     from one that confirmed a verified finding (2) or only candidates (3).
+    Pass ``--stream`` to emit newline-delimited JSON events consumed by the
+    Rust ratatui TUI (``vulnclaw tui``).
     """
     config = load_config()
 
@@ -1107,6 +1114,7 @@ def run(
 
     agent_state_holder: dict = {}
     classification_holder: dict = {}
+    stream_out = sys.stdout if stream else None
 
     async def _run():
         async def runner(agent, shared_config):
@@ -1115,12 +1123,29 @@ def run(
             shared_config.session.solve_max_parallel = profile.max_parallel
             shared_config.session.max_rounds = profile.max_rounds
             # In headless mode suppress streaming thinking so nothing blocks on a TTY.
-            sink = (
-                None
-                if non_interactive
-                else TerminalStreamSink(console, shared_config.session.show_thinking)
-            )
-            on_event = None if non_interactive else _make_solve_event_printer(console)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(stream_out, shared_config.session.show_thinking)
+
+                def on_event(kind: str, payload: dict) -> None:
+                    if kind == "agent_step":
+                        sink._emit({"type": "log", "message": f"turn {payload.get('step', '?')}"})
+                    elif kind == "error":
+                        sink._emit({"type": "log", "message": f"error: {payload.get('error', '')}"})
+                    elif kind == "ask_user":
+                        sink._emit({"type": "log", "message": f"? {payload.get('question', '')}"})
+                    elif kind == "completed":
+                        sink._emit({"type": "status", "status": "goal reached"})
+                    elif kind == "no_path":
+                        sink._emit({"type": "log", "message": f"no path: {payload.get('reason', '')}"})
+            else:
+                sink = (
+                    None
+                    if non_interactive
+                    else TerminalStreamSink(console, shared_config.session.show_thinking)
+                )
+                on_event = None if non_interactive else _make_solve_event_printer(console)
             selected_engine = resolve_engine(shared_config, engine)
             # 默认走目标驱动 solve 引擎；engine=team 启用角色团队；engine=rounds 回退旧循环
             if selected_engine == "solve":
@@ -1211,6 +1236,32 @@ def run(
         return
 
     orchestrated = asyncio.run(_run())
+
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        findings: list[dict[str, Any]] = []
+        agent_state = agent_state_holder.get("agent_state") or {}
+        summary = (
+            f"{'✅ goal reached' if agent_state.get('completed') else '⊘ not reached'}"
+            f" — steps={agent_state.get('steps', 0)} evidence={agent_state.get('evidence', 0)}"
+        )
+        # Verified claims map onto the Rust TUI finding list.
+        for idx, claim in enumerate(
+            (agent_state.get("verified_claims") or [])[:50], start=1
+        ):
+            if isinstance(claim, dict):
+                findings.append(
+                    {
+                        "id": claim.get("id") or f"v{idx:03d}",
+                        "severity": "high",
+                        "title": str(claim.get("claim") or "")[:200],
+                        "target": target,
+                    }
+                )
+        emit_complete_event(stream_out, summary=summary, findings=findings)
+        return
+
     if agent_state_holder.get("agent_state"):
         agent_state = agent_state_holder["agent_state"]
         status = "✅ 目标达成" if agent_state.get("completed") else "⊘ 未达成"
@@ -1265,6 +1316,9 @@ def solve(
     repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
+    stream: bool = typer.Option(
+        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
+    ),
 ) -> None:
     """Model-led solve loop; runs until goal, user input, no path, or safety cap."""
     config = load_config()
@@ -1280,10 +1334,26 @@ def solve(
 
     on_event = _make_solve_event_printer(console)
     holder: dict = {}
+    stream_out = sys.stdout if stream else None
 
     async def _run():
         async def runner(agent, shared_config):
-            sink = TerminalStreamSink(console, shared_config.session.show_thinking)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(stream_out, shared_config.session.show_thinking)
+
+                def on_event(kind: str, payload: dict) -> None:
+                    if kind == "agent_step":
+                        sink._emit({"type": "log", "message": f"turn {payload.get('step', '?')}"})
+                    elif kind == "error":
+                        sink._emit({"type": "log", "message": f"error: {payload.get('error', '')}"})
+                    elif kind == "ask_user":
+                        sink._emit({"type": "log", "message": f"? {payload.get('question', '')}"})
+                    elif kind == "completed":
+                        sink._emit({"type": "status", "status": "goal reached"})
+            else:
+                sink = TerminalStreamSink(console, shared_config.session.show_thinking)
             result = await agent.solve(
                 task_prompt,
                 target=target,
@@ -1318,6 +1388,28 @@ def solve(
 
     asyncio.run(_run())
     agent_state = holder.get("agent_state") or {}
+
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        findings: list[dict[str, Any]] = []
+        for idx, claim in enumerate((agent_state.get("verified_claims") or [])[:50], start=1):
+            if isinstance(claim, dict):
+                findings.append(
+                    {
+                        "id": claim.get("id") or f"v{idx:03d}",
+                        "severity": "high",
+                        "title": str(claim.get("claim") or "")[:200],
+                        "target": target,
+                    }
+                )
+        summary = (
+            f"{'✅ goal reached' if agent_state.get('completed') else '⊘ not reached'}"
+            f" — steps={agent_state.get('steps', 0)} evidence={agent_state.get('evidence', 0)}"
+        )
+        emit_complete_event(stream_out, summary=summary, findings=findings)
+        return
+
     status = "✅ 目标达成" if agent_state.get("completed") else "⊘ 未达成"
     console.print(
         f"\n[bold]{status}[/bold] — steps={agent_state.get('steps', 0)} "
@@ -1570,6 +1662,9 @@ def recon(
     repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
+    stream: bool = typer.Option(
+        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
+    ),
 ) -> None:
     """Run reconnaissance only."""
     task_prompt = prompt if prompt else f"Perform authorized reconnaissance against {target} without exploitation."
@@ -1584,7 +1679,12 @@ def recon(
 
     async def _run():
         async def runner(agent, _config):
-            sink = TerminalStreamSink(console, _config.session.show_thinking)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
+            else:
+                sink = TerminalStreamSink(console, _config.session.show_thinking)
             # TerminalStreamSink 已实时流式显示，不重复 console.print
             return await agent.chat(task_prompt, target=target, stream_sink=sink)
 
@@ -1608,6 +1708,10 @@ def recon(
         )
 
     asyncio.run(_run())
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        emit_complete_event(sys.stdout, summary="recon done", findings=[])
 
 
 @app.command()
@@ -1658,6 +1762,9 @@ def scan(
     repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
+    stream: bool = typer.Option(
+        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
+    ),
 ) -> None:
     """Run vulnerability scanning only."""
     port_hint = f", focusing on ports {ports}" if ports else ""
@@ -1673,7 +1780,12 @@ def scan(
 
     async def _run():
         async def runner(agent, _config):
-            sink = TerminalStreamSink(console, _config.session.show_thinking)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
+            else:
+                sink = TerminalStreamSink(console, _config.session.show_thinking)
             # TerminalStreamSink 已实时流式显示，不重复 console.print
             return await agent.chat(task_prompt, target=target, stream_sink=sink)
 
@@ -1697,6 +1809,10 @@ def scan(
         )
 
     asyncio.run(_run())
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        emit_complete_event(sys.stdout, summary="scan done", findings=[])
 
 
 @app.command("network-scan")
@@ -1779,6 +1895,9 @@ def network_scan(
     repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
+    stream: bool = typer.Option(
+        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
+    ),
 ) -> None:
     """运行基于 nmap 的网络扫描，并对薄弱环节进行跟进。"""
     normalized_profile = profile.strip().lower()
@@ -1858,7 +1977,12 @@ def network_scan(
 
     async def _run():
         async def runner(agent, _config):
-            sink = TerminalStreamSink(console, _config.session.show_thinking)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
+            else:
+                sink = TerminalStreamSink(console, _config.session.show_thinking)
             rounds = max_rounds if max_rounds > 0 else _config.session.max_rounds
             if parallel_agents > 1:
                 from vulnclaw.agent.parallel_agents import run_parallel_pentest
@@ -1905,6 +2029,10 @@ def network_scan(
         )
 
     asyncio.run(_run())
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        emit_complete_event(sys.stdout, summary="network scan done", findings=[])
 
 
 @app.command()
@@ -1956,6 +2084,9 @@ def exploit(
     repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
+    stream: bool = typer.Option(
+        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
+    ),
 ) -> None:
     """Run exploitation only."""
     cve_hint = f" using {cve}" if cve else ""
@@ -1973,7 +2104,12 @@ def exploit(
 
     async def _run():
         async def runner(agent, _config):
-            sink = TerminalStreamSink(console, _config.session.show_thinking)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
+            else:
+                sink = TerminalStreamSink(console, _config.session.show_thinking)
             # TerminalStreamSink 已实时流式显示，不重复 console.print
             return await agent.chat(task_prompt, target=target, stream_sink=sink)
 
@@ -1997,6 +2133,10 @@ def exploit(
         )
 
     asyncio.run(_run())
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        emit_complete_event(sys.stdout, summary="exploit done", findings=[])
 
 
 @app.command()
