@@ -124,9 +124,11 @@ class TestToolGating:
         )
 
     def test_adviser_has_only_read_only_memory_search(self):
-        assert ROLE_REGISTRY["adviser"].allowed_tool_globs == ("memory_search",)
+        assert ROLE_REGISTRY["adviser"].allowed_tool_globs == ("memory_search", "vault_*")
         assert tool_allowed_for_role("memory_search", "adviser") is True
         assert tool_allowed_for_role("evidence_list", "adviser") is False
+        # Vault management is read-only-safe: it never touches the target.
+        assert tool_allowed_for_role("vault_search", "adviser") is True
 
     def test_filter_tools_for_role(self):
         tools = [_tool("evidence_list"), _tool("shell_command"), _tool("subdomain_enum")]

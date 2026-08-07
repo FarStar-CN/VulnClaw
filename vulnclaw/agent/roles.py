@@ -35,6 +35,7 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
             "load_skill_reference",
             "memory_search",
             "evidence_*",
+            "vault_*",
             "source_extract",
             "space_search",
             "subdomain_enum",
@@ -67,6 +68,7 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
             "load_skill_reference",
             "memory_search",
             "evidence_*",
+            "vault_*",
             "source_extract",
             "runtime_diff_probe",
             "shell_command",
@@ -94,6 +96,7 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
             "load_skill_reference",
             "memory_search",
             "evidence_*",
+            "vault_*",
             "source_extract",
             "runtime_diff_probe",
             "shell_command",
@@ -132,7 +135,7 @@ ROLE_REGISTRY: dict[str, AgentRole] = {
             "You are the Adviser specialist. Plan, critique, and decide whether to "
             "continue, re-plan, or stop. You have no execution tools."
         ),
-        allowed_tool_globs=("memory_search",),
+        allowed_tool_globs=("memory_search", "vault_*"),
         goal_template=(
             "Advisory objective: {objective}\n"
             "Done when: {done_when}\n"
@@ -172,6 +175,7 @@ SUBAGENT_ROLE_REGISTRY: dict[str, AgentRole] = {
         allowed_tool_globs=(
             "load_skill_reference",
             "evidence_*",
+            "vault_*",
             "source_extract",
             "runtime_diff_probe",
             "shell_command",

@@ -905,6 +905,9 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
             rendered = rendered[: max_chars - len(suffix)] + suffix
         return rendered
 
+    if tool_name in {"vault_archive", "vault_restore", "vault_search", "vault_status"}:
+        return execute_vault_tool(agent, tool_name, args)
+
     if tool_name == "source_extract":
         return await execute_source_extract(agent, args)
 
@@ -1141,6 +1144,82 @@ def build_openai_tools(
             )
 
     return tools
+
+
+async def execute_vault_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
+    """Dispatch the four context-vault tools (archive/restore/search/status)."""
+    context = getattr(agent, "context", None)
+    if context is None:
+        return "[!] vault tools require a session context"
+    vault = getattr(context, "vault", None)
+    if vault is None:
+        vault = context.ensure_vault()
+
+    if tool_name == "vault_status":
+        stats = vault.stats(context.get_messages())
+        lines = [
+            "[V] vault status",
+            f"  next ref: ‹v#{int(stats.get('next_ref', 0)) + 1:05d}›",
+            f"  active blocks: {stats.get('active_blocks', 0)}",
+            f"  restored blocks: {stats.get('restored_blocks', 0)}",
+            f"  archived messages: {stats.get('archived_messages', 0)}",
+            f"  chars saved: {stats.get('chars_saved', 0)}",
+        ]
+        return "\n".join(lines)
+
+    if tool_name == "vault_search":
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return "[!] vault_search requires a non-empty query"
+        limit = min(20, max(1, int(args.get("limit", 8))))
+        max_chars = max(512, int(getattr(context, "search_max_chars", 6000)))
+        hits = vault.search(query, limit=limit, max_chars=max_chars)
+        if not hits:
+            return "[-] No archived block matches the query"
+        rendered = json.dumps(hits, ensure_ascii=False, indent=2)
+        if len(rendered) > max_chars:
+            suffix = "\n...[vault search output truncated]"
+            rendered = rendered[: max_chars - len(suffix)] + suffix
+        return rendered
+
+    if tool_name == "vault_restore":
+        start = str(args.get("start") or "").strip()
+        end = str(args.get("end") or "").strip()
+        if not start or not end:
+            return "[!] vault_restore requires start and end refs (‹v#NNNNN›)"
+        ok, message, _ = vault.restore_range(context.get_messages(), start=start, end=end)
+        return ("[✓] " if ok else "[!] ") + message
+
+    if tool_name == "vault_archive":
+        start = str(args.get("start") or "").strip()
+        end = str(args.get("end") or "").strip()
+        if not start or not end:
+            return "[!] vault_archive requires start and end refs (‹v#NNNNN›)"
+        tier = int(args.get("tier", 2))
+        ok, message, block = vault.archive_range(
+            context.get_messages(),
+            start=start,
+            end=end,
+            tier=tier,
+            topic=str(args.get("topic") or ""),
+            summary=str(args.get("summary") or ""),
+            force=bool(args.get("force", False)),
+        )
+        if not ok:
+            return "[!] " + message
+        if block is not None and tier <= 1:
+            pointer = vault.render_pointer(block)
+            context.add_message(pointer)
+            return f"[✓] {message} — pointer injected into context"
+        if block is not None and tier == 2:
+            distilled = vault.render_distill(block, str(args.get("summary") or ""))
+            context.add_message(distilled)
+            return f"[✓] {message} — distilled summary injected into context"
+        if block is not None:
+            return f"[✓] {message} — folded into global digest (tier 3)"
+        return "[✓] " + message
+
+    return f"[!] unknown vault tool: {tool_name}"
 
 
 async def execute_nmap(agent: AgentContext, args: dict[str, Any]) -> str:

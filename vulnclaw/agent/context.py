@@ -1079,6 +1079,31 @@ class ContextManager:
         self.messages: list[dict[str, Any]] = []
         self.state = SessionState()
         self.memory_store = memory_store
+        # Context Vault: selective, model-driven archiving layered on top of the
+        # deterministic compactor.  Initialized lazily so tool dispatch and the
+        # budget pipeline can attach it without import cycles.
+        self.vault: Any = None
+        self.vault_output_dir: Path | None = None
+
+    def ensure_vault(self) -> Any:
+        """Lazily create the vault manager for this session."""
+        if self.vault is None:
+            from vulnclaw.agent.context_vault import VaultConfig, VaultManager
+
+            self.vault = VaultManager(
+                output_dir=self.vault_output_dir,
+                config=VaultConfig(),
+            )
+        return self.vault
+
+    def attach_vault(self, vault: Any, output_dir: Path | None = None) -> None:
+        """Attach an externally-created vault (used by tests and CLI wiring)."""
+        self.vault = vault
+        if output_dir is not None:
+            self.vault_output_dir = output_dir
+            setter = getattr(vault, "set_output_dir", None)
+            if callable(setter):
+                setter(output_dir)
 
     def add_user_message(self, content: str) -> None:
         """Add a user message to context."""
