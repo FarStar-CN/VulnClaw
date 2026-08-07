@@ -192,7 +192,8 @@ $ vulnclaw --help
  Usage: vulnclaw [OPTIONS] COMMAND [ARGS]...
 
  Commands:
-   run           🚀 Full pentest in one shot
+   run           🚀 Full pentest in one shot (defaults to the solve engine)
+   solve         🧩 Goal-driven solver (model-led, no fixed rounds)
    persistent    🔄 Persistent pentesting (100 rounds/cycle)
    recon         🔍 Reconnaissance only
    scan          🔎 Vulnerability scanning
@@ -200,6 +201,7 @@ $ vulnclaw --help
    report        📝 Generate report from session JSON
    repl          💬 Start the classic REPL
    config        ⚙️  Manage config (set/get/list/provider)
+   plugins       🧩 Manage vulnerability detection plugins (list/info/run)
    init          🔧 Initialize configuration
    doctor        🏥  Check runtime environment
    tui           🖥️  Open the terminal UI workbench

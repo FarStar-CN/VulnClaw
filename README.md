@@ -187,7 +187,8 @@ $ vulnclaw --help
  Usage: vulnclaw [OPTIONS] COMMAND [ARGS]...
 
  Commands:
-   run           🚀 一键全流程渗透测试
+   run           🚀 一键全流程渗透测试（默认使用 solve 引擎）
+   solve         🧩 目标驱动求解（模型主导，无固定轮数）
    persistent    🔄 持续性渗透测试（100轮/周期）
    recon         🔍 仅信息收集阶段
    scan          🔎 执行漏洞扫描阶段
@@ -195,6 +196,7 @@ $ vulnclaw --help
    report        📝 从会话记录生成报告
    repl          💬 启动经典 REPL 交互界面
    config        ⚙️  管理配置（set/get/list/provider）
+   plugins       🧩 管理漏洞检测插件（list/info/run）
    init          🔧 初始化配置
    doctor        🏥  检查运行环境
    tui           🖥️  打开终端图形化工作台
