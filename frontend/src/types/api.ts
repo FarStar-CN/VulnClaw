@@ -2,11 +2,14 @@ export type TaskCommand = "run" | "recon" | "scan" | "exploit" | "persistent";
 
 export type TaskStatus = "pending" | "restoring" | "running" | "completed" | "failed" | "stopped";
 
+export type ReportLanguage = "auto" | "zh" | "en";
+
 export interface ConfigView {
   provider: string;
   model: string;
   base_url: string;
   api_key_configured: boolean;
+  language: ReportLanguage;
   output_dir: string;
   max_rounds: number;
   max_context_tokens: number;
@@ -31,6 +34,7 @@ export interface ConfigUpdateRequest {
   provider?: string;
   model?: string;
   base_url?: string;
+  language?: ReportLanguage;
   output_dir?: string;
   max_rounds?: number;
   max_context_tokens?: number;

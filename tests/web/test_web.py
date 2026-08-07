@@ -862,6 +862,69 @@ class TestWebServices:
         assert view.python_execute_max_lines == 12
         assert view.python_execute_audit_enabled is False
 
+    def test_web_config_service_exposes_and_updates_language(self, monkeypatch):
+        """The settings dashboard must be able to read and set the report
+        language; without this the report generator only ever sees the default
+        (auto -> Chinese)."""
+        import vulnclaw.web.services.config_service as config_service
+        from vulnclaw.config.schema import VulnClawConfig
+        from vulnclaw.web.schemas import ConfigUpdateRequest
+
+        saved = VulnClawConfig()
+        saved.session.language = "zh"
+        monkeypatch.setattr(config_service, "load_config", lambda: saved)
+        monkeypatch.setattr(config_service, "save_config", lambda cfg: None)
+
+        # Current value is surfaced to the dashboard.
+        assert config_service.get_public_config().language == "zh"
+
+        # Switching to English persists onto the config and round-trips back.
+        view = config_service.update_public_config(ConfigUpdateRequest(language="en"))
+        assert view.language == "en"
+        assert saved.session.language == "en"
+
+    def test_web_config_service_clamps_unknown_language(self, monkeypatch):
+        """A hand-edited config value must not 500 the whole config endpoint."""
+        import vulnclaw.web.services.config_service as config_service
+        from vulnclaw.config.schema import VulnClawConfig
+
+        saved = VulnClawConfig()
+        saved.session.language = "fr"  # not one of auto/zh/en
+        monkeypatch.setattr(config_service, "load_config", lambda: saved)
+
+        assert config_service.get_public_config().language == "auto"
+
+    def test_generate_target_report_inits_i18n_from_config(self, monkeypatch):
+        """The standalone report endpoint must initialize i18n from the saved
+        config language — otherwise it ignores the setting and defaults to
+        Chinese. Regression test for reports only generating in Chinese."""
+        import vulnclaw.web.services.report_service as report_service
+        from vulnclaw.config.schema import VulnClawConfig
+
+        config = VulnClawConfig()
+        config.session.language = "en"
+
+        captured = {}
+
+        def fake_init_i18n(*, config=None):
+            captured["language"] = getattr(config.session, "language", None)
+
+        monkeypatch.setattr(report_service, "load_config", lambda: config)
+        monkeypatch.setattr(report_service, "init_i18n", fake_init_i18n)
+        monkeypatch.setattr(report_service, "load_target_state", lambda target: {"target": target})
+        monkeypatch.setattr(
+            report_service,
+            "generate_report_from_target_state",
+            lambda raw, report_format, output_path: output_path,
+        )
+
+        report_service.generate_target_report("https://example.com")
+
+        assert captured["language"] == "en", (
+            "generate_target_report must init i18n from config so the report "
+            "honors the configured language"
+        )
+
     @pytest.mark.asyncio
     async def test_orchestrator_shared_run_flow(self, monkeypatch):
         import vulnclaw.orchestrator as orchestrator
