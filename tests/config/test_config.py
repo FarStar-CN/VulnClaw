@@ -279,12 +279,27 @@ class TestVulnClawConfig:
         for provider in expected_providers:
             assert provider in PROVIDER_PRESETS, f"Missing provider: {provider}"
 
+    def test_ollama_preset_points_at_local_openai_endpoint(self):
+        """Ollama is a first-class preset so it appears in `vulnclaw config`
+        and the web UI dropdown; local models need no code path of their own
+        since Ollama speaks the OpenAI Chat Completions API."""
+        from vulnclaw.config.schema import PROVIDER_PRESETS, LLMProvider
+
+        assert LLMProvider("ollama") is LLMProvider.OLLAMA
+        preset = PROVIDER_PRESETS[LLMProvider.OLLAMA]
+        assert preset["base_url"] == "http://localhost:11434/v1"
+        # Default must be a tool-capable model — the agent drives everything
+        # through function calls.
+        assert preset["default_model"] == "llama3.1"
+        assert preset["label"]
+
     def test_llm_provider_enum(self):
         from vulnclaw.config.schema import LLMProvider
 
         assert hasattr(LLMProvider, "OPENAI")
         assert hasattr(LLMProvider, "ANTHROPIC")
         assert hasattr(LLMProvider, "DEEPSEEK")
+        assert hasattr(LLMProvider, "OLLAMA")
         assert hasattr(LLMProvider, "MINIMAX")
 
 
