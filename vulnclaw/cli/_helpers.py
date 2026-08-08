@@ -221,33 +221,65 @@ class JsonlStreamSink:
         self._stream = stream if stream is not None else sys.stdout
         self._show_thinking = show_thinking
         self._status_printed = False
+        # Token buffers: LLM streaming emits thinking/content one delta at a
+        # time (often a single word). Accumulate them and flush whole chunks so
+        # the TUI renders one coherent paragraph per `reasoning`/`log` event
+        # instead of one line per token.
+        self._thinking_buffer = ""
+        self._content_buffer = ""
 
     def _emit(self, event: dict) -> None:
         self._stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
         self._stream.flush()
 
+    def _flush_thinking(self) -> None:
+        if self._thinking_buffer:
+            if self._show_thinking:
+                self._emit({"type": "reasoning", "text": self._thinking_buffer})
+            self._thinking_buffer = ""
+
+    def _flush_content(self) -> None:
+        if self._content_buffer:
+            self._emit({"type": "log", "message": self._content_buffer})
+            self._content_buffer = ""
+            self._status_printed = False
+
+    def _flush_all(self) -> None:
+        self._flush_thinking()
+        self._flush_content()
+
     def on_status(self, message: str) -> None:
+        self._flush_all()
         self._emit({"type": "status", "status": str(message or "")})
         self._status_printed = True
 
     def on_thinking_token(self, token: str) -> None:
-        if self._show_thinking and token:
-            self._emit({"type": "reasoning", "text": str(token)})
+        if not token:
+            return
+        # Thinking and content never interleave mid-stream from the LLM, but
+        # flush the other buffer first so ordering stays correct if they do.
+        self._flush_content()
+        if self._show_thinking:
+            self._thinking_buffer += str(token)
 
     def on_content_token(self, token: str) -> None:
-        if token:
-            self._emit({"type": "log", "message": str(token)})
-            self._status_printed = False
+        if not token:
+            return
+        self._flush_thinking()
+        self._content_buffer += str(token)
 
     def on_tool_call(self, tool_name: str, args: str) -> None:
+        self._flush_all()
         self._emit({"type": "log", "message": f"→ tool: {tool_name} {str(args or '')[:100]}"})
         self._status_printed = False
 
     def on_tool_result(self, result_summary: str) -> None:
+        self._flush_all()
         preview, _collapsed = _collapse_terminal_text(result_summary)
         self._emit({"type": "log", "message": f"→ result: {preview}"})
 
     def on_stream_end(self) -> None:
+        self._flush_all()
         self._status_printed = False
 
 
