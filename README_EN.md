@@ -8,7 +8,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI_Compatible-green)](https://platform.openai.com/)
 [![MCP](https://img.shields.io/badge/Toolchain-MCP-orange)](https://modelcontextprotocol.io/)
-[![PyPI](https://img.shields.io/badge/PyPI-v0.3.7-blueviolet)](https://pypi.org/project/vulnclaw/)
+[![PyPI](https://img.shields.io/badge/PyPI-v0.3.8-blueviolet)](https://pypi.org/project/vulnclaw/)
 [![Security](https://img.shields.io/badge/Scope-Authorized_Only-red)](#-security-notice)
 [![AtomGitStars](https://atomgit.com/Unclecheng-li/VulnClaw/star/badge.svg)](https://atomgit.com/Unclecheng-li/VulnClaw)
 <picture>
@@ -67,7 +67,7 @@ Suitable for authorized pentests, CTF competitions, security training, and red t
 - **Lightweight Correction Layer** — Records repeated calls, degraded tools, timing, and new observations; repeated reads of the same evidence range are suppressed and evidence-only stalls trigger a stall guard without restoring the old stage planner
 - **Evidence-Level Anti-Hallucination Gate** — Claims about flags/conclusions must appear verbatim in real tool output to be accepted; prevents fabricated flags
 - **Natural Language Driven** — Describe your goal in plain English, auto-identifies phases and tools
-- **13 LLM Providers** — OpenAI / Anthropic / MiniMax / DeepSeek / Zhipu / Moonshot / Qwen / SiliconFlow / Doubao / Baichuan / StepFun / SenseTime / Yi, one-command switch
+- **14 LLM Providers** — OpenAI / Anthropic / MiniMax / DeepSeek / Zhipu / Moonshot / Qwen / SiliconFlow / Doubao / Baichuan / StepFun / SenseTime / Yi / local Ollama, one-command switch
 - **MCP Toolchain** — 4 MCP services: `fetch` / `memory` run locally out-of-the-box, `chrome-devtools` / `burp` connect to external MCP servers for browser automation and HTTP interception
 - **Enhanced fetch request tool** — Defaults to GET, returns the full response body, and supports HTTP/HTTPS, custom method/headers/params/cookies/body/data/form/json, timeout/redirect/TLS controls; TLS verification is off by default for CTF/lab HTTPS targets
 - **Native Traffic Evidence Store** — In-scope request/response pairs land in an append-only JSONL index under `evidence/traffic/`. Built-in `traffic_list` / `traffic_view` / `traffic_repeat` / `traffic_sitemap` tools read and replay the store
@@ -131,7 +131,7 @@ docker run --rm -it \
 
 ```bash
 # 1. Select provider (auto-fills Base URL and model name)
-vulnclaw config provider minimax   # or openai / anthropic / deepseek / zhipu / moonshot / qwen / siliconflow
+vulnclaw config provider minimax   # or openai / anthropic / deepseek / zhipu / moonshot / qwen / siliconflow / ollama
 
 # 1.2 (optional) custom Base URL or model name
 vulnclaw config set llm.base_url https://your-own-api.example.com/v1
@@ -192,7 +192,8 @@ $ vulnclaw --help
  Usage: vulnclaw [OPTIONS] COMMAND [ARGS]...
 
  Commands:
-   run           🚀 Full pentest in one shot
+   run           🚀 Full pentest in one shot (defaults to the solve engine)
+   solve         🧩 Goal-driven solver (model-led, no fixed rounds)
    persistent    🔄 Persistent pentesting (100 rounds/cycle)
    recon         🔍 Reconnaissance only
    scan          🔎 Vulnerability scanning
@@ -200,6 +201,7 @@ $ vulnclaw --help
    report        📝 Generate report from session JSON
    repl          💬 Start the classic REPL
    config        ⚙️  Manage config (set/get/list/provider)
+   plugins       🧩 Manage vulnerability detection plugins (list/info/run)
    init          🔧 Initialize configuration
    doctor        🏥  Check runtime environment
    tui           🖥️  Open the terminal UI workbench
@@ -544,6 +546,7 @@ vulnclaw config provider minimax   # one-command switch
 | StepFun | `provider stepfun` | step-3.5-flash |
 | SenseTime | `provider sensetime` | SenseNova-6.7-Flash-Lite |
 | Yi | `provider yi` | yi-lightning |
+| Ollama (local) | `provider ollama` | llama3.1 |
 | Custom | `provider custom` | manual |
 
 ### CLI Configuration
@@ -600,6 +603,7 @@ vulnclaw config set session.show_thinking false  # hide thinking process
 | `session.output_dir` | ./vulnclaw-output | Report output directory |
 | `session.report_format` | markdown | Report format (markdown / html) |
 | `session.poc_language` | python | PoC language (python / bash) |
+| `session.language` | auto | UI language (auto / zh / en), defaults to English |
 | `session.show_thinking` | false | Show LLM reasoning |
 | `session.persistent_rounds_per_cycle` | 100 | Rounds per cycle in persistent mode |
 | `session.persistent_max_cycles` | 10 | Max cycles (0=unlimited) |
@@ -638,6 +642,22 @@ vulnclaw config set session.show_thinking false  # hide thinking process
 Priority: **Environment Variables > Config File > Built-in Defaults**
 
 Config file: `~/.vulnclaw/config.yaml`.
+
+---
+
+## Language
+
+VulnClaw ships with a built-in **English / 中文 (Chinese)** bilingual interface. The default is **English** (`auto` mode falls back to English), so international users never hit a language wall; Chinese is fully preserved and both modes produce identical behavior.
+
+Switch the UI language any of three ways:
+
+| Method | Example |
+|---|---|
+| REPL command | `/language en` or `/language zh` (or `/language auto`) inside the interactive REPL |
+| Environment variable | `VULNCLAW_LANG=zh` / `VULNCLAW_LANG=en` |
+| Config file | `session.language: auto \| zh \| en` in `~/.vulnclaw/config.yaml` |
+
+Everything user-visible in the CLI follows the current language: REPL messages and status banners, event stream, solve reports, knowledge-base status, and LLM retry/recovery notices. Agent detection keyword tables are bilingual, so English or Chinese task phrasing is classified the same way. (Note: the web dashboard is not yet localized; that's planned separately.)
 
 ---
 

@@ -27,6 +27,7 @@ class LLMProvider(str, Enum):
     STEPFUN = "stepfun"
     SENSETIME = "sensetime"
     YI = "yi"
+    OLLAMA = "ollama"
     CUSTOM = "custom"
 
 
@@ -97,6 +98,16 @@ PROVIDER_PRESETS: dict[LLMProvider, dict[str, str]] = {
         "default_model": "yi-lightning",
         "label": "零一万物 (Yi)",
     },
+    # Local models via Ollama's OpenAI-compatible endpoint. No API key is
+    # required (the client sends a placeholder). The default model must support
+    # tool calling — VulnClaw drives everything through function calls — so pick
+    # a tool-capable model (llama3.1, qwen2.5, mistral-nemo, ...). Inside Docker
+    # use http://host.docker.internal:11434/v1; see DOCKER.md.
+    LLMProvider.OLLAMA: {
+        "base_url": "http://localhost:11434/v1",
+        "default_model": "llama3.1",
+        "label": "Ollama (本地)",
+    },
     LLMProvider.CUSTOM: {
         "base_url": "",
         "default_model": "",
@@ -110,7 +121,7 @@ class LLMConfig(BaseModel):
 
     provider: str = Field(
         default="openai",
-        description="LLM provider name (openai/anthropic/minimax/deepseek/zhipu/moonshot/qwen/siliconflow/doubao/baichuan/stepfun/sensetime/yi/custom)",
+        description="LLM provider name (openai/anthropic/minimax/deepseek/zhipu/moonshot/qwen/siliconflow/doubao/baichuan/stepfun/sensetime/yi/ollama/custom)",
     )
     api_key: str = Field(default="", description="Static API key for the chosen provider (auth_mode=static)")
     api_keys: list[str] = Field(

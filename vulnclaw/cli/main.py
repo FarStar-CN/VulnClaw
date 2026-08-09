@@ -270,7 +270,7 @@ def _repl_switch_language(args: str, agent: Any, config: Any) -> Any:
     init_i18n(lang=lang if lang != "auto" else None, config=config)
     rebuild_translations()
     agent.apply_config(config)
-    console.print(f"[green]✓[/] f{_('cli.language_set_to')} [bold]{lang}[/].")
+    console.print(f"[green]✓[/] {_('cli.language_set_to')} [bold]{lang}[/].")
     return config
 
 
@@ -460,8 +460,8 @@ def _run_repl() -> None:
                 )
 
                 persistent_prompt = (
-                    f"Perform an authorized persistent penetration test against {persistent_target}. ",
-                    _("cli.target_within_range_and_explicitly_authorized")
+                    f"Perform an authorized persistent penetration test against {persistent_target}. "
+                    + _("cli.target_within_range_and_explicitly_authorized")
                 )
 
                 all_cycle_results: list[PersistentCycleResult] = []
@@ -613,11 +613,11 @@ def _run_repl() -> None:
                                 console.print()
                                 console.print(
                                     Panel(
-                                        f"{'✅ 目标达成' if done else '⊘ 未达成'} — "
+                                        f"{_('cli.goal_achieved') if done else _('cli.goal_not_achieved')} — "
                                         f"steps={agent_state.get('steps', 0)} "
                                         f"evidence={agent_state.get('evidence', 0)} "
                                         f"tools={agent_state.get('tool_calls', 0)}\n"
-                                        f"原因: {agent_state.get('complete_reason') or '仍未达到完成条件'}",
+                                        f"{_('cli.reason')}: {agent_state.get('complete_reason') or _('cli.reason_not_complete')}",
                                         title="Solve",
                                         border_style="green" if done else "yellow",
                                     )
@@ -1050,6 +1050,11 @@ def run(
     no_import: bool = typer.Option(
         False, "--no-import", help="Read legacy target state without importing it into a run"
     ),
+    stream: bool = typer.Option(
+        False,
+        "--stream",
+        help="Emit newline-delimited JSON events (status/log/finding/complete) for the Rust TUI",
+    ),
 ) -> None:
     """Run a full authorized pentest workflow.
 
@@ -1057,6 +1062,8 @@ def run(
     prompts, a machine-readable ``summary.json`` in the run directory, and an
     exit code that lets a pipeline tell a clean scan (0) from a broken one (1)
     from one that confirmed a verified finding (2) or only candidates (3).
+    Pass ``--stream`` to emit newline-delimited JSON events consumed by the
+    Rust ratatui TUI (``vulnclaw tui``).
     """
     config = load_config()
 
@@ -1107,6 +1114,7 @@ def run(
 
     agent_state_holder: dict = {}
     classification_holder: dict = {}
+    stream_out = sys.stdout if stream else None
 
     async def _run():
         async def runner(agent, shared_config):
@@ -1115,12 +1123,29 @@ def run(
             shared_config.session.solve_max_parallel = profile.max_parallel
             shared_config.session.max_rounds = profile.max_rounds
             # In headless mode suppress streaming thinking so nothing blocks on a TTY.
-            sink = (
-                None
-                if non_interactive
-                else TerminalStreamSink(console, shared_config.session.show_thinking)
-            )
-            on_event = None if non_interactive else _make_solve_event_printer(console)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(stream_out, shared_config.session.show_thinking)
+
+                def on_event(kind: str, payload: dict) -> None:
+                    if kind == "agent_step":
+                        sink._emit({"type": "log", "message": f"turn {payload.get('step', '?')}"})
+                    elif kind == "error":
+                        sink._emit({"type": "log", "message": f"error: {payload.get('error', '')}"})
+                    elif kind == "ask_user":
+                        sink._emit({"type": "log", "message": f"? {payload.get('question', '')}"})
+                    elif kind == "completed":
+                        sink._emit({"type": "status", "status": "goal reached"})
+                    elif kind == "no_path":
+                        sink._emit({"type": "log", "message": f"no path: {payload.get('reason', '')}"})
+            else:
+                sink = (
+                    None
+                    if non_interactive
+                    else TerminalStreamSink(console, shared_config.session.show_thinking)
+                )
+                on_event = None if non_interactive else _make_solve_event_printer(console)
             selected_engine = resolve_engine(shared_config, engine)
             # 默认走目标驱动 solve 引擎；engine=team 启用角色团队；engine=rounds 回退旧循环
             if selected_engine == "solve":
@@ -1211,14 +1236,40 @@ def run(
         return
 
     orchestrated = asyncio.run(_run())
+
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        findings: list[dict[str, Any]] = []
+        agent_state = agent_state_holder.get("agent_state") or {}
+        summary = (
+            f"{'✅ goal reached' if agent_state.get('completed') else '⊘ not reached'}"
+            f" — steps={agent_state.get('steps', 0)} evidence={agent_state.get('evidence', 0)}"
+        )
+        # Verified claims map onto the Rust TUI finding list.
+        for idx, claim in enumerate(
+            (agent_state.get("verified_claims") or [])[:50], start=1
+        ):
+            if isinstance(claim, dict):
+                findings.append(
+                    {
+                        "id": claim.get("id") or f"v{idx:03d}",
+                        "severity": "high",
+                        "title": str(claim.get("claim") or "")[:200],
+                        "target": target,
+                    }
+                )
+        emit_complete_event(stream_out, summary=summary, findings=findings)
+        return
+
     if agent_state_holder.get("agent_state"):
         agent_state = agent_state_holder["agent_state"]
-        status = "✅ 目标达成" if agent_state.get("completed") else "⊘ 未达成"
+        status = _("cli.goal_achieved") if agent_state.get("completed") else _("cli.goal_not_achieved")
         console.print(
             f"\n[bold]{status}[/bold] — steps={agent_state.get('steps', 0)} "
             f"evidence={agent_state.get('evidence', 0)} "
             f"tools={agent_state.get('tool_calls', 0)} "
-            f"原因: {agent_state.get('complete_reason') or '仍未达到完成条件'}"
+            f"{_('cli.reason')}: {agent_state.get('complete_reason') or _('cli.reason_not_complete')}"
         )
     else:
         total_findings = orchestrated.summary["findings_count"]
@@ -1265,6 +1316,9 @@ def solve(
     repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
+    stream: bool = typer.Option(
+        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
+    ),
 ) -> None:
     """Model-led solve loop; runs until goal, user input, no path, or safety cap."""
     config = load_config()
@@ -1272,18 +1326,31 @@ def solve(
         err_console.print("[!] Configure LLM credentials first (api_key or auth_mode).")
         raise typer.Exit(1)
 
-    resolved_goal = goal or "找到 flag / 拿到 shell / 确认并验证高价值漏洞"
-    task_prompt = prompt or (
-        f"对 {target} 进行授权渗透测试。这是明确授权、在范围内的目标。目标(goal)：{resolved_goal}。"
-    )
+    resolved_goal = goal or _("cli.default_goal")
+    task_prompt = prompt or _("cli.task_prompt", target=target, goal=resolved_goal)
     console.print(f"[*] Target: [bold]{target}[/] | Goal: [bold]{resolved_goal}[/]")
 
-    on_event = _make_solve_event_printer(console)
     holder: dict = {}
+    stream_out = sys.stdout if stream else None
 
     async def _run():
         async def runner(agent, shared_config):
-            sink = TerminalStreamSink(console, shared_config.session.show_thinking)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(stream_out, shared_config.session.show_thinking)
+
+                def on_event(kind: str, payload: dict) -> None:
+                    if kind == "agent_step":
+                        sink._emit({"type": "log", "message": f"turn {payload.get('step', '?')}"})
+                    elif kind == "error":
+                        sink._emit({"type": "log", "message": f"error: {payload.get('error', '')}"})
+                    elif kind == "ask_user":
+                        sink._emit({"type": "log", "message": f"? {payload.get('question', '')}"})
+                    elif kind == "completed":
+                        sink._emit({"type": "status", "status": "goal reached"})
+            else:
+                sink = TerminalStreamSink(console, shared_config.session.show_thinking)
             result = await agent.solve(
                 task_prompt,
                 target=target,
@@ -1318,12 +1385,33 @@ def solve(
 
     asyncio.run(_run())
     agent_state = holder.get("agent_state") or {}
-    status = "✅ 目标达成" if agent_state.get("completed") else "⊘ 未达成"
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        findings: list[dict[str, Any]] = []
+        for idx, claim in enumerate((agent_state.get("verified_claims") or [])[:50], start=1):
+            if isinstance(claim, dict):
+                findings.append(
+                    {
+                        "id": claim.get("id") or f"v{idx:03d}",
+                        "severity": "high",
+                        "title": str(claim.get("claim") or "")[:200],
+                        "target": target,
+                    }
+                )
+        summary = (
+            f"{'✅ goal reached' if agent_state.get('completed') else '⊘ not reached'}"
+            f" — steps={agent_state.get('steps', 0)} evidence={agent_state.get('evidence', 0)}"
+        )
+        emit_complete_event(stream_out, summary=summary, findings=findings)
+        return
+
+    status = _("cli.goal_achieved") if agent_state.get("completed") else _("cli.goal_not_achieved")
     console.print(
         f"\n[bold]{status}[/bold] — steps={agent_state.get('steps', 0)} "
         f"evidence={agent_state.get('evidence', 0)} "
         f"tools={agent_state.get('tool_calls', 0)} "
-        f"原因: {agent_state.get('complete_reason') or '仍未达到完成条件'}"
+        f"{_('cli.reason')}: {agent_state.get('complete_reason') or _('cli.reason_not_complete')}"
     )
     if agent_state.get("completed"):
         # ``holder`` stores only the summary for status printing, so generate
@@ -1570,6 +1658,9 @@ def recon(
     repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
+    stream: bool = typer.Option(
+        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
+    ),
 ) -> None:
     """Run reconnaissance only."""
     task_prompt = prompt if prompt else f"Perform authorized reconnaissance against {target} without exploitation."
@@ -1584,7 +1675,12 @@ def recon(
 
     async def _run():
         async def runner(agent, _config):
-            sink = TerminalStreamSink(console, _config.session.show_thinking)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
+            else:
+                sink = TerminalStreamSink(console, _config.session.show_thinking)
             # TerminalStreamSink 已实时流式显示，不重复 console.print
             return await agent.chat(task_prompt, target=target, stream_sink=sink)
 
@@ -1608,6 +1704,10 @@ def recon(
         )
 
     asyncio.run(_run())
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        emit_complete_event(sys.stdout, summary="recon done", findings=[])
 
 
 @app.command()
@@ -1658,6 +1758,9 @@ def scan(
     repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
+    stream: bool = typer.Option(
+        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
+    ),
 ) -> None:
     """Run vulnerability scanning only."""
     port_hint = f", focusing on ports {ports}" if ports else ""
@@ -1673,7 +1776,12 @@ def scan(
 
     async def _run():
         async def runner(agent, _config):
-            sink = TerminalStreamSink(console, _config.session.show_thinking)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
+            else:
+                sink = TerminalStreamSink(console, _config.session.show_thinking)
             # TerminalStreamSink 已实时流式显示，不重复 console.print
             return await agent.chat(task_prompt, target=target, stream_sink=sink)
 
@@ -1697,6 +1805,10 @@ def scan(
         )
 
     asyncio.run(_run())
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        emit_complete_event(sys.stdout, summary="scan done", findings=[])
 
 
 @app.command("network-scan")
@@ -1779,11 +1891,14 @@ def network_scan(
     repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
+    stream: bool = typer.Option(
+        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
+    ),
 ) -> None:
     """运行基于 nmap 的网络扫描，并对薄弱环节进行跟进。"""
     normalized_profile = profile.strip().lower()
     if normalized_profile not in {"adaptive", "fast", "thorough", "stealth"}:
-        err_console.print("[!] profile 必须是以下之一: adaptive, fast, thorough, stealth")
+        err_console.print(f"[!] {_('cli.invalid_profile')}")
         raise typer.Exit(1)
 
     detected_wifi = None
@@ -1858,7 +1973,12 @@ def network_scan(
 
     async def _run():
         async def runner(agent, _config):
-            sink = TerminalStreamSink(console, _config.session.show_thinking)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
+            else:
+                sink = TerminalStreamSink(console, _config.session.show_thinking)
             rounds = max_rounds if max_rounds > 0 else _config.session.max_rounds
             if parallel_agents > 1:
                 from vulnclaw.agent.parallel_agents import run_parallel_pentest
@@ -1905,6 +2025,10 @@ def network_scan(
         )
 
     asyncio.run(_run())
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        emit_complete_event(sys.stdout, summary="network scan done", findings=[])
 
 
 @app.command()
@@ -1956,6 +2080,9 @@ def exploit(
     repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
     force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
     no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
+    stream: bool = typer.Option(
+        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
+    ),
 ) -> None:
     """Run exploitation only."""
     cve_hint = f" using {cve}" if cve else ""
@@ -1973,7 +2100,12 @@ def exploit(
 
     async def _run():
         async def runner(agent, _config):
-            sink = TerminalStreamSink(console, _config.session.show_thinking)
+            if stream:
+                from vulnclaw.cli._helpers import JsonlStreamSink
+
+                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
+            else:
+                sink = TerminalStreamSink(console, _config.session.show_thinking)
             # TerminalStreamSink 已实时流式显示，不重复 console.print
             return await agent.chat(task_prompt, target=target, stream_sink=sink)
 
@@ -1997,6 +2129,10 @@ def exploit(
         )
 
     asyncio.run(_run())
+    if stream:
+        from vulnclaw.cli._helpers import emit_complete_event
+
+        emit_complete_event(sys.stdout, summary="exploit done", findings=[])
 
 
 @app.command()
@@ -2650,11 +2786,11 @@ def kb_status() -> None:
     category_summary = ", ".join(f"{cat}={count}" for cat, count in sorted(stats.items()))
 
     if status == RetrieverStatus.CHROMADB_ACTIVE:
-        line = "[green]✓ 知识库已启用 (ChromaDB 语义检索)[/green]"
+        line = f"[green]{_('cli.kb_active')}[/green]"
     elif status == RetrieverStatus.KEYWORD_FALLBACK:
-        line = "[yellow]⚠ 知识库已降级为关键词模式 (chromadb 未安装)[/yellow]"
+        line = f"[yellow]{_('cli.kb_fallback')}[/yellow]"
     else:
-        line = "[red]✗ 知识库已禁用 (无可用数据)[/red]"
+        line = f"[red]{_('cli.kb_disabled')}[/red]"
 
     console.print(
         Panel(
@@ -2662,7 +2798,7 @@ def kb_status() -> None:
             f"Backend: [bold]{status.value}[/]\n"
             f"Detail: {detail or 'n/a'}\n"
             f"Entries: [bold]{total}[/] ({category_summary or 'empty'})\n"
-            f"语义搜索: 运行 [bold]pip install vulnclaw\\[kb][/] 启用 ChromaDB",
+            f"{_('cli.kb_semantic_hint')}",
             title="KB Status",
             border_style="cyan",
         )
@@ -3214,7 +3350,7 @@ def web(
 
     if not FASTAPI_AVAILABLE:
         err_console.print(
-            "[!] FastAPI is missing. Install with [bold]pip install vulnclaw[web][/]."
+            "[!] FastAPI is missing. Install with [bold]pip install vulnclaw\\[web][/]."
         )
         raise typer.Exit(1)
 
@@ -3222,7 +3358,7 @@ def web(
         import uvicorn
     except ImportError:
         err_console.print(
-            "[!] uvicorn is missing. Install with [bold]pip install vulnclaw[web][/]."
+            "[!] uvicorn is missing. Install with [bold]pip install vulnclaw\\[web][/]."
         )
         raise typer.Exit(1)
 
@@ -3231,11 +3367,17 @@ def web(
 
     token = generate_token()
     if allow_remote:
+        # Non-loopback clients (which includes every browser reaching a
+        # container through Docker's port NAT) must authenticate. The UI cannot
+        # send a bearer header, so opening this URL once swaps the token for a
+        # session cookie; the browser carries it from then on.
+        browser_host = "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
         console.print(
             Panel(
-                f"Token: [bold]{token}[/]\n\n"
-                "Use this token in the Authorization header:\n"
-                f"[dim]Authorization: Bearer {token}[/]",
+                f"Open this URL once to sign the browser in:\n"
+                f"[bold]http://{browser_host}:{port}/?token={token}[/]\n\n"
+                f"Token: [bold]{token}[/]\n"
+                f"[dim]For API clients: Authorization: Bearer {token}[/]",
                 title="Web UI Auth Token",
                 border_style="yellow",
             )

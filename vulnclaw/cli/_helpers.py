@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -14,6 +15,7 @@ from rich.text import Text
 
 from vulnclaw import __version__
 from vulnclaw.config.text_utils import format_think_tags, strip_think_tags
+from vulnclaw.i18n import _
 
 console = Console()
 err_console = Console(stderr=True)
@@ -182,7 +184,7 @@ class TerminalStreamSink:
 
     def on_tool_call(self, tool_name: str, args: str) -> None:
         self._console.print()
-        call_text = Text(f"→ 调用工具: {tool_name} ", style="bold cyan")
+        call_text = Text(f"{_('cli.tool_calling')} {tool_name} ", style="bold cyan")
         call_text.append(str(args or "")[:100])
         self._console.print(call_text, soft_wrap=True)
         self._status_printed = False
@@ -200,11 +202,104 @@ class TerminalStreamSink:
                 hint += f"; saved as {evidence_id}, use evidence_search/evidence_view to revisit"
             hint += "]"
             preview = f"{preview}{hint}"
-        _print_styled_plain(self._console, "→ 工具结果: ", preview)
+        _print_styled_plain(self._console, _("cli.tool_result"), preview)
 
     def on_stream_end(self) -> None:
         self._status_printed = False
         self._console.print()
+
+
+class JsonlStreamSink:
+    """Rust ratatui TUI protocol stream sink (newline-delimited JSON).
+
+    Emits the same event vocabulary the ``vulnclaw-tui-native`` workbench
+    parses: ``status`` / ``log`` / ``reasoning`` lines on stdout. Findings are
+    delivered by the caller in the final ``complete`` event (VulnClaw records
+    evidence, not a live finding stream).
+    """
+
+    def __init__(self, stream: Any = None, show_thinking: bool = False) -> None:
+        self._stream = stream if stream is not None else sys.stdout
+        self._show_thinking = show_thinking
+        self._status_printed = False
+        # Token buffers: LLM streaming emits thinking/content one delta at a
+        # time (often a single word). Accumulate them and flush whole chunks so
+        # the TUI renders one coherent paragraph per `reasoning`/`log` event
+        # instead of one line per token.
+        self._thinking_buffer = ""
+        self._content_buffer = ""
+
+    def _emit(self, event: dict) -> None:
+        self._stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self._stream.flush()
+
+    def _flush_thinking(self) -> None:
+        if self._thinking_buffer:
+            if self._show_thinking:
+                self._emit({"type": "reasoning", "text": self._thinking_buffer})
+            self._thinking_buffer = ""
+
+    def _flush_content(self) -> None:
+        if self._content_buffer:
+            self._emit({"type": "log", "message": self._content_buffer})
+            self._content_buffer = ""
+            self._status_printed = False
+
+    def _flush_all(self) -> None:
+        self._flush_thinking()
+        self._flush_content()
+
+    def on_status(self, message: str) -> None:
+        self._flush_all()
+        self._emit({"type": "status", "status": str(message or "")})
+        self._status_printed = True
+
+    def on_thinking_token(self, token: str) -> None:
+        if not token:
+            return
+        # Thinking and content never interleave mid-stream from the LLM, but
+        # flush the other buffer first so ordering stays correct if they do.
+        self._flush_content()
+        if self._show_thinking:
+            self._thinking_buffer += str(token)
+
+    def on_content_token(self, token: str) -> None:
+        if not token:
+            return
+        self._flush_thinking()
+        self._content_buffer += str(token)
+
+    def on_tool_call(self, tool_name: str, args: str) -> None:
+        self._flush_all()
+        self._emit({"type": "log", "message": f"→ tool: {tool_name} {str(args or '')[:100]}"})
+        self._status_printed = False
+
+    def on_tool_result(self, result_summary: str) -> None:
+        self._flush_all()
+        preview, _collapsed = _collapse_terminal_text(result_summary)
+        self._emit({"type": "log", "message": f"→ result: {preview}"})
+
+    def on_stream_end(self) -> None:
+        self._flush_all()
+        self._status_printed = False
+
+
+def emit_complete_event(
+    stream: Any,
+    *,
+    summary: str,
+    findings: list[dict[str, Any]],
+) -> None:
+    """Emit the terminal ``complete`` event of the Rust TUI protocol."""
+    stream.write(
+        json.dumps(
+            {"type": "complete", "summary": summary, "result": {"findings": findings}},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    stream.flush()
 
 
 ASCII_LOGO = (
@@ -256,21 +351,21 @@ def _make_solve_event_printer(target_console: Console) -> Any:
         elif kind == "agent_step":
             target_console.print(f"[cyan]◆ Turn {payload.get('step', '?')}[/cyan]")
         elif kind == "agent_observation":
-            reason = payload.get("reason") or "模型继续自主判断"
-            tools = ", ".join(payload.get("tools") or []) or "无"
+            reason = payload.get("reason") or _("cli.auto_continue")
+            tools = ", ".join(payload.get("tools") or []) or _("cli.none_short")
             evidence = (payload.get("evidence") or "").strip()
-            _print_styled_plain(target_console, "理由: ", str(reason)[:120], style="yellow")
-            _print_styled_plain(target_console, "工具: ", tools, style="magenta")
+            _print_styled_plain(target_console, _("cli.reason"), str(reason)[:120], style="yellow")
+            _print_styled_plain(target_console, _("cli.tools"), tools, style="magenta")
             if evidence:
-                _print_styled_plain(target_console, "发现: ", evidence[:220], style="green")
+                _print_styled_plain(target_console, _("cli.evidence"), evidence[:220], style="green")
         elif kind == "completed":
-            target_console.print("[green]✓ Goal: 目标达成[/green]")
+            target_console.print(f"[green]{_('cli.goal_completed')}[/green]")
         elif kind == "complete_rejected":
-            _print_styled_plain(target_console, "⚠ 拒绝完成: ", str(payload.get("reason", ""))[:90], style="red")
+            _print_styled_plain(target_console, _("cli.complete_rejected"), str(payload.get("reason", ""))[:90], style="red")
         elif kind == "ask_user":
-            _print_styled_plain(target_console, "? 需要用户: ", str(payload.get("question", ""))[:160], style="yellow")
+            _print_styled_plain(target_console, _("cli.ask_user"), str(payload.get("question", ""))[:160], style="yellow")
         elif kind == "no_path":
-            _print_styled_plain(target_console, "⊘ 无可行路径: ", str(payload.get("reason", ""))[:160], style="yellow")
+            _print_styled_plain(target_console, _("cli.no_path"), str(payload.get("reason", ""))[:160], style="yellow")
         elif kind == "error":
             _print_styled_plain(target_console, "error: ", str(payload.get("error", ""))[:160], style="red")
 

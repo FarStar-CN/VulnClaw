@@ -13,6 +13,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from vulnclaw.agent.context_vault import (
+    VaultManager,
+    _content_text,
+    assign_refs,
+)
 from vulnclaw.agent.token_counter import (
     estimate_message_group_tokens,
     estimate_tokens,
@@ -139,6 +144,19 @@ def _is_digest_message(message: dict[str, Any]) -> bool:
     return message.get("role") == "system" and str(message.get("content", "")).startswith(
         "[context digest"
     )
+
+
+def _is_vault_pointer(message: dict[str, Any]) -> bool:
+    """True for any vault-produced system message (pointer or distilled)."""
+    return message.get("role") == "system" and str(message.get("content", "")).startswith(
+        "[V]"
+    )
+
+
+def _vault_for(agent: Any) -> VaultManager | None:
+    context = getattr(agent, "context", None)
+    vault = getattr(context, "vault", None)
+    return vault if isinstance(vault, VaultManager) else None
 
 
 def _leading_system_groups(groups: list[list[dict[str, Any]]]) -> tuple[list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
@@ -275,6 +293,18 @@ def _build_digest(agent: Any, removed_groups: list[list[dict[str, Any]]], max_to
         lines.append("Compressed conversational observations (unverified unless cited above):")
         lines.extend(historical)
 
+    vault = _vault_for(agent)
+    if vault is not None and vault.blocks:
+        active = [block for block in vault.blocks if not block.restored]
+        if active:
+            lines.append("Vault archive index (search with vault_search):")
+            for block in active[-8:]:
+                lines.append(
+                    f"- V{block.block_id:04d} tier{block.tier} "
+                    f"{block.start_ref}–{block.end_ref} {len(block.summary or ''):,}c "
+                    f"{_content_text({'content': block.topic})[:120]}"
+                )
+
     rendered = _clip("\n".join(line for line in lines if line.strip()), max(800, max_tokens * 4))
     return rendered, list(dict.fromkeys(evidence_ids))[-32:]
 
@@ -291,7 +321,11 @@ def _compact_outbound_messages(
     body_groups = [
         group
         for group in body_groups
-        if not (len(group) == 1 and isinstance(group[0], dict) and _is_digest_message(group[0]))
+        if not (
+            len(group) == 1
+            and isinstance(group[0], dict)
+            and (_is_digest_message(group[0]) or _is_vault_pointer(group[0]))
+        )
     ]
     base = flatten_message_groups(system_groups) + [digest_message]
     kept, removed = _select_recent_groups(
@@ -395,6 +429,17 @@ def prepare_context(
     digest_message = {"role": "system", "content": digest}
     recent_groups = int(_number(getattr(session, "context_recent_message_groups", 12), 12, minimum=1))
 
+    # Vault-aware shaping: keep vault pointer/distill messages alongside the
+    # deterministic digest so archived ranges stay addressable after compaction.
+    vault = _vault_for(agent)
+    if vault is not None:
+        assign_refs(messages, vault.registry)
+    vault_pins: list[dict[str, Any]] = []
+    if vault is not None:
+        for message in messages:
+            if isinstance(message, dict) and _is_vault_pointer(message):
+                vault_pins.append(message)
+
     if should_compact:
         compacted_messages, kept_groups, removed_groups = _compact_outbound_messages(
             messages,
@@ -402,6 +447,12 @@ def prepare_context(
             target_tokens=budget.target_tokens,
             min_recent_groups=recent_groups,
         )
+        # Re-pin vault markers that live outside the retained recent groups.
+        if vault_pins:
+            existing = {str(m.get("content", "")) for m in compacted_messages}
+            missing = [pin for pin in vault_pins if str(pin.get("content", "")) not in existing]
+            if missing:
+                compacted_messages = [*compacted_messages, *missing]
         reason = "threshold"
     else:
         compacted_messages = truncate_message_groups(
@@ -425,6 +476,8 @@ def prepare_context(
             update = getattr(state, "update_context_digest", None)
             if callable(update):
                 update(digest, evidence_ids)
+        if vault is not None:
+            vault.persist()
 
     if state is not None and _bool(getattr(session, "context_compaction_audit_enabled", True), True):
         record = getattr(state, "record_context_compaction", None)

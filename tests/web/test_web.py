@@ -104,6 +104,11 @@ class TestWebServices:
         assert anthropic.base_url == "https://api.anthropic.com/v1"
         assert anthropic.default_model == "claude-sonnet-5"
         assert anthropic.label == "Anthropic Claude"
+        # Ollama is exposed so local models are selectable from the UI dropdown.
+        assert "ollama" in ids
+        ollama = next(p for p in view.providers if p.id == "ollama")
+        assert ollama.base_url == "http://localhost:11434/v1"
+        assert ollama.default_model == "llama3.1"
 
     def test_web_provider_service_fetch_models_uses_saved_key(self, monkeypatch):
         import vulnclaw.web.services.provider_service as provider_service
@@ -770,7 +775,7 @@ class TestWebServices:
         import vulnclaw.web.services.task_service as task_service
         from vulnclaw.agent.context import SessionState
         from vulnclaw.config.schema import VulnClawConfig
-        from vulnclaw.i18n import current_lang
+        from vulnclaw.i18n import current_lang, init_i18n
         from vulnclaw.web.schemas import TaskCreateRequest
         from vulnclaw.web.task_manager import WebTaskManager
 
@@ -826,6 +831,9 @@ class TestWebServices:
         request = TaskCreateRequest(command="persistent", target="https://example.com")
         record = manager.create_task(request)
 
+        # Start from a deterministic non-config state (a previously active
+        # language). The service must resolve the config language itself.
+        init_i18n(lang="zh")
         assert current_lang() == "zh"
 
         await task_service._run_task(manager, record.task_id, request)
@@ -856,6 +864,69 @@ class TestWebServices:
         assert view.python_execute_mode == "safe"
         assert view.python_execute_max_lines == 12
         assert view.python_execute_audit_enabled is False
+
+    def test_web_config_service_exposes_and_updates_language(self, monkeypatch):
+        """The settings dashboard must be able to read and set the report
+        language; without this the report generator only ever sees the default
+        (auto -> Chinese)."""
+        import vulnclaw.web.services.config_service as config_service
+        from vulnclaw.config.schema import VulnClawConfig
+        from vulnclaw.web.schemas import ConfigUpdateRequest
+
+        saved = VulnClawConfig()
+        saved.session.language = "zh"
+        monkeypatch.setattr(config_service, "load_config", lambda: saved)
+        monkeypatch.setattr(config_service, "save_config", lambda cfg: None)
+
+        # Current value is surfaced to the dashboard.
+        assert config_service.get_public_config().language == "zh"
+
+        # Switching to English persists onto the config and round-trips back.
+        view = config_service.update_public_config(ConfigUpdateRequest(language="en"))
+        assert view.language == "en"
+        assert saved.session.language == "en"
+
+    def test_web_config_service_clamps_unknown_language(self, monkeypatch):
+        """A hand-edited config value must not 500 the whole config endpoint."""
+        import vulnclaw.web.services.config_service as config_service
+        from vulnclaw.config.schema import VulnClawConfig
+
+        saved = VulnClawConfig()
+        saved.session.language = "fr"  # not one of auto/zh/en
+        monkeypatch.setattr(config_service, "load_config", lambda: saved)
+
+        assert config_service.get_public_config().language == "auto"
+
+    def test_generate_target_report_inits_i18n_from_config(self, monkeypatch):
+        """The standalone report endpoint must initialize i18n from the saved
+        config language — otherwise it ignores the setting and defaults to
+        Chinese. Regression test for reports only generating in Chinese."""
+        import vulnclaw.web.services.report_service as report_service
+        from vulnclaw.config.schema import VulnClawConfig
+
+        config = VulnClawConfig()
+        config.session.language = "en"
+
+        captured = {}
+
+        def fake_init_i18n(*, config=None):
+            captured["language"] = getattr(config.session, "language", None)
+
+        monkeypatch.setattr(report_service, "load_config", lambda: config)
+        monkeypatch.setattr(report_service, "init_i18n", fake_init_i18n)
+        monkeypatch.setattr(report_service, "load_target_state", lambda target: {"target": target})
+        monkeypatch.setattr(
+            report_service,
+            "generate_report_from_target_state",
+            lambda raw, report_format, output_path: output_path,
+        )
+
+        report_service.generate_target_report("https://example.com")
+
+        assert captured["language"] == "en", (
+            "generate_target_report must init i18n from config so the report "
+            "honors the configured language"
+        )
 
     @pytest.mark.asyncio
     async def test_orchestrator_shared_run_flow(self, monkeypatch):
@@ -1408,10 +1479,13 @@ class TestWebAuthLoopback:
                 self.host = host
 
         class _Req:
-            def __init__(self, path, host, headers=None):
+            def __init__(self, path, host, headers=None, cookies=None):
                 self.url = _URL(path)
                 self.client = _Client(host) if host else None
                 self.headers = headers or {}
+                # Real Starlette requests always expose .cookies; the auth gate
+                # consults it for the browser session cookie.
+                self.cookies = cookies or {}
 
         mw = AuthMiddleware(None)
 
