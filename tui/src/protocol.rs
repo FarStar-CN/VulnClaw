@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use std::sync::OnceLock;
 
 pub const PROTOCOL_VERSION: u8 = 1;
 
@@ -95,33 +96,28 @@ impl ClientRequest {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct BackendInfo {
-    #[serde(default)]
     pub pid: u32,
-    #[serde(default)]
     pub version: String,
+    #[serde(rename = "protocol_version")]
+    pub _protocol_version: u8,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct RuntimeInfo {
-    #[serde(default)]
     pub config_ready: bool,
-    #[serde(default)]
     pub provider: String,
-    #[serde(default)]
     pub model: String,
-    #[serde(default)]
+    #[serde(rename = "mcp_started")]
+    pub _mcp_started: u64,
     pub skills: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct BackendCapabilities {
-    #[serde(default)]
     pub commands: Vec<String>,
     #[serde(default)]
     pub control_operations: Vec<String>,
-    #[serde(default)]
     pub cancellation: bool,
-    #[serde(default)]
     pub authoritative_state: bool,
 }
 
@@ -157,11 +153,8 @@ where
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BackendEvent {
     Ready {
-        #[serde(default)]
         backend: BackendInfo,
-        #[serde(default)]
         capabilities: BackendCapabilities,
-        #[serde(default)]
         runtime: RuntimeInfo,
         state: StateSnapshot,
     },
@@ -170,44 +163,35 @@ pub enum BackendEvent {
     },
     TaskStarted {
         task_id: String,
-        #[serde(default)]
         command: String,
-        #[serde(default)]
         normalized_command: String,
-        #[serde(default, rename = "target")]
+        #[serde(rename = "target")]
         _target: String,
-        #[serde(default)]
         #[serde(rename = "resume")]
         _resume: bool,
-        #[serde(default, rename = "constraints")]
+        #[serde(rename = "constraints")]
         _constraints: Value,
         state: StateSnapshot,
     },
     Status {
         task_id: String,
-        #[serde(default)]
         status: String,
     },
     Reasoning {
         task_id: String,
-        #[serde(default)]
         text: String,
     },
     Log {
         task_id: String,
-        #[serde(default)]
         message: String,
     },
     ToolCall {
         task_id: String,
-        #[serde(default)]
         tool: String,
-        #[serde(default)]
         arguments: String,
     },
     ToolResult {
         task_id: String,
-        #[serde(default)]
         result: String,
     },
     Finding {
@@ -216,14 +200,11 @@ pub enum BackendEvent {
     },
     ApprovalRequired {
         task_id: String,
-        #[serde(default)]
         question: String,
     },
     TaskCompleted {
         task_id: String,
-        #[serde(default)]
         result: Value,
-        #[serde(default)]
         findings: Vec<Finding>,
         state: StateSnapshot,
     },
@@ -233,7 +214,6 @@ pub enum BackendEvent {
     },
     TaskFailed {
         task_id: String,
-        #[serde(default)]
         error: Value,
         state: StateSnapshot,
     },
@@ -241,17 +221,12 @@ pub enum BackendEvent {
         #[serde(rename = "request_id")]
         _request_id: String,
         operation: String,
-        #[serde(default)]
         result: Value,
-        #[serde(default)]
         state: Option<StateSnapshot>,
     },
     Error {
-        #[serde(default)]
         task_id: Option<String>,
-        #[serde(default)]
         code: String,
-        #[serde(default)]
         message: String,
     },
     ShutdownComplete,
@@ -259,17 +234,11 @@ pub enum BackendEvent {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Finding {
-    #[serde(default, alias = "finding_id")]
     pub id: String,
-    #[serde(default)]
     pub severity: String,
-    #[serde(default)]
     pub title: String,
-    #[serde(default)]
     pub target: String,
-    #[serde(default)]
     pub line: Option<u64>,
-    #[serde(default)]
     pub code_location: Option<String>,
     #[serde(default)]
     pub chain_depends_on: Vec<String>,
@@ -291,6 +260,23 @@ impl Finding {
     }
 }
 
+static PROTOCOL_VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
+
+fn protocol_validator() -> &'static jsonschema::Validator {
+    PROTOCOL_VALIDATOR.get_or_init(|| {
+        let schema = serde_json::from_str(include_str!("../../protocol/tui-v1.schema.json"))
+            .expect("embedded TUI protocol schema must be valid JSON");
+        jsonschema::draft202012::new(&schema)
+            .expect("embedded TUI protocol schema must be a valid Draft 2020-12 schema")
+    })
+}
+
+fn validate_protocol_value(value: &Value) -> Result<(), String> {
+    protocol_validator()
+        .validate(value)
+        .map_err(|error| format!("protocol schema violation: {error}"))
+}
+
 pub fn parse_backend_line(line: &str) -> Result<BackendEvent, String> {
     let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
     if value.get("protocol_version").and_then(Value::as_u64)
@@ -300,12 +286,16 @@ pub fn parse_backend_line(line: &str) -> Result<BackendEvent, String> {
             "unsupported backend protocol version; expected {PROTOCOL_VERSION}"
         ));
     }
+    validate_protocol_value(&value)?;
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_backend_line, BackendEvent, ClientRequest, PROTOCOL_VERSION};
+    use super::{
+        parse_backend_line, validate_protocol_value, BackendEvent, ClientRequest,
+        PROTOCOL_VERSION,
+    };
 
     fn complete_state() -> serde_json::Value {
         serde_json::json!({
@@ -362,9 +352,10 @@ mod tests {
         let line = serde_json::json!({
             "protocol_version": 1,
             "type": "task_completed",
+            "request_id": "r1",
             "task_id": "t1",
             "findings": [{
-                "finding_id": "f1",
+                "id": "f1",
                 "severity": "high",
                 "title": "SQLi",
                 "target": "app.test"
@@ -428,5 +419,104 @@ mod tests {
         let error = parse_backend_line(r#"{"protocol_version":2,"type":"shutdown_complete"}"#)
             .unwrap_err();
         assert!(error.contains("expected 1"));
+    }
+
+    #[test]
+    fn every_rust_client_request_follows_the_authoritative_schema() {
+        let requests = [
+            ClientRequest::initialize("r-init".into(), serde_json::json!({})),
+            ClientRequest::start_task(
+                "r-start".into(),
+                "t1".into(),
+                "/run target.test".into(),
+            ),
+            ClientRequest::cancel_task("r-cancel".into(), "t1".into()),
+            ClientRequest::get_state("r-state".into()),
+            ClientRequest::control(
+                "r-control".into(),
+                "example.inspect",
+                serde_json::json!({}),
+            ),
+            ClientRequest::shutdown("r-shutdown".into()),
+        ];
+
+        for request in requests {
+            let value = serde_json::to_value(request).unwrap();
+            validate_protocol_value(&value).unwrap();
+        }
+    }
+
+    #[test]
+    fn rust_accepts_every_server_event_in_the_shared_example_session() {
+        const SERVER_EVENT_TYPES: &[&str] = &[
+            "ready",
+            "state",
+            "task_started",
+            "status",
+            "reasoning",
+            "log",
+            "tool_call",
+            "tool_result",
+            "finding",
+            "approval_required",
+            "task_completed",
+            "task_cancelled",
+            "task_failed",
+            "control_result",
+            "error",
+            "shutdown_complete",
+        ];
+
+        for line in include_str!("../../protocol/examples/tui-v1-session.jsonl").lines() {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            validate_protocol_value(&value).unwrap();
+            if value["type"]
+                .as_str()
+                .is_some_and(|kind| SERVER_EVENT_TYPES.contains(&kind))
+            {
+                parse_backend_line(line).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_schema_invalid_required_event_fields_before_deserializing() {
+        let ready = serde_json::json!({
+            "protocol_version": 1,
+            "type": "ready",
+            "request_id": "r1",
+            "backend": {"pid": 7, "version": "test", "protocol_version": 1},
+            "capabilities": {
+                "commands": ["run"],
+                "control_operations": [],
+                "cancellation": true,
+                "authoritative_state": true
+            },
+            "runtime": {
+                "config_ready": true,
+                "provider": "test",
+                "model": "test",
+                "mcp_started": 0,
+                "skills": []
+            },
+            "state": complete_state()
+        });
+
+        for path in [
+            &["request_id"][..],
+            &["backend", "protocol_version"][..],
+            &["runtime", "mcp_started"][..],
+            &["capabilities", "commands"][..],
+        ] {
+            let mut invalid = ready.clone();
+            let (field, parents) = path.split_last().unwrap();
+            let mut parent = &mut invalid;
+            for segment in parents {
+                parent = parent.get_mut(*segment).unwrap();
+            }
+            parent.as_object_mut().unwrap().remove(*field);
+            let error = parse_backend_line(&invalid.to_string()).unwrap_err();
+            assert!(error.contains("protocol schema violation"), "{path:?}: {error}");
+        }
     }
 }
