@@ -48,6 +48,7 @@
 
     "clientInfo": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "name": { "type": "string" },
         "version": { "type": "string" }
@@ -55,25 +56,28 @@
     },
     "bootstrap": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "target": { "type": "string" },
+        "target": { "type": "string", "maxLength": 2048 },
         "mode": { "type": "string" },
         "command": {
           "enum": ["run", "scan", "recon", "exploit", "persistent"]
         },
-        "only_host": { "type": ["string", "null"] },
+        "only_host": { "type": ["string", "null"], "maxLength": 253 },
         "only_port": { "type": ["integer", "null"], "minimum": 1, "maximum": 65535 },
-        "only_path": { "type": ["string", "null"] },
-        "blocked_host": { "type": ["string", "null"] },
-        "blocked_path": { "type": ["string", "null"] },
+        "only_path": { "type": ["string", "null"], "maxLength": 2048 },
+        "blocked_host": { "type": ["string", "null"], "maxLength": 253 },
+        "blocked_path": { "type": ["string", "null"], "maxLength": 2048 },
         "allow_actions": {
           "type": "array",
           "items": { "type": "string" },
+          "maxItems": 20,
           "uniqueItems": true
         },
         "block_actions": {
           "type": "array",
           "items": { "type": "string" },
+          "maxItems": 20,
           "uniqueItems": true
         },
         "resume": { "type": "boolean" }
@@ -81,20 +85,71 @@
     },
     "initializePayload": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "client": { "$ref": "#/$defs/clientInfo" },
         "bootstrap": { "$ref": "#/$defs/bootstrap" }
       }
     },
-    "commandPayload": {
+    "taskOptions": {
       "type": "object",
-      "required": ["command_line"],
+      "additionalProperties": false,
       "properties": {
-        "command_line": { "type": "string", "minLength": 1 }
+        "engine": { "enum": ["solve", "team", "rounds"] },
+        "scope": { "type": ["string", "null"], "maxLength": 32 },
+        "ports": { "type": ["string", "null"], "maxLength": 512 },
+        "max_steps": { "type": ["integer", "null"], "minimum": 1, "maximum": 10000 },
+        "max_directions": { "type": ["integer", "null"], "minimum": 1, "maximum": 100 },
+        "max_tool_rounds": { "type": ["integer", "null"], "minimum": 1, "maximum": 100 },
+        "max_parallel": { "type": ["integer", "null"], "minimum": 1, "maximum": 64 },
+        "max_rounds": { "type": ["integer", "null"], "minimum": 1, "maximum": 1000 },
+        "rounds_per_cycle": { "type": ["integer", "null"], "minimum": 1, "maximum": 1000 },
+        "max_cycles": { "type": ["integer", "null"], "minimum": 0, "maximum": 1000 },
+        "auto_report": { "type": ["boolean", "null"] },
+        "cve": { "type": ["string", "null"], "maxLength": 64 },
+        "cmd": { "type": ["string", "null"], "maxLength": 512 },
+        "only_port": { "type": ["integer", "null"], "minimum": 1, "maximum": 65535 },
+        "only_host": { "type": ["string", "null"], "maxLength": 253 },
+        "only_path": { "type": ["string", "null"], "maxLength": 2048 },
+        "blocked_host": { "type": ["string", "null"], "maxLength": 253 },
+        "blocked_path": { "type": ["string", "null"], "maxLength": 2048 },
+        "allow_actions": { "type": ["array", "null"], "items": { "type": "string" }, "maxItems": 20, "uniqueItems": true },
+        "block_actions": { "type": ["array", "null"], "items": { "type": "string" }, "maxItems": 20, "uniqueItems": true }
+      }
+    },
+    "taskRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "target"],
+      "properties": {
+        "command": { "enum": ["run", "scan", "recon", "exploit", "persistent"] },
+        "target": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "prompt": { "type": ["string", "null"], "maxLength": 32768 },
+        "resume": { "type": "boolean" },
+        "snapshot_id": { "type": ["string", "null"], "maxLength": 160 },
+        "run_name": { "type": ["string", "null"], "maxLength": 120 },
+        "resume_run_name": { "type": ["string", "null"], "maxLength": 120 },
+        "runs_dir": { "type": ["string", "null"], "maxLength": 4096 },
+        "additional_targets": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
+        "target_type": { "type": ["string", "null"], "maxLength": 32 },
+        "mount": { "type": "boolean" },
+        "repair": { "type": "boolean" },
+        "force_fresh": { "type": "boolean" },
+        "no_import": { "type": "boolean" },
+        "options": { "$ref": "#/$defs/taskOptions" }
+      }
+    },
+    "startTaskPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task"],
+      "properties": {
+        "task": { "$ref": "#/$defs/taskRequest" }
       }
     },
     "controlPayload": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["operation", "arguments"],
       "properties": {
         "operation": { "type": "string", "minLength": 1 },
@@ -103,6 +158,7 @@
     },
     "emptyPayload": {
       "type": "object",
+      "additionalProperties": false,
       "maxProperties": 0
     },
 
@@ -123,7 +179,7 @@
         {
           "properties": {
             "type": { "const": "start_task" },
-            "payload": { "$ref": "#/$defs/commandPayload" }
+            "payload": { "$ref": "#/$defs/startTaskPayload" }
           }
         }
       ]
@@ -173,6 +229,7 @@
       ]
     },
     "clientMessage": {
+      "unevaluatedProperties": false,
       "oneOf": [
         { "$ref": "#/$defs/initializeRequest" },
         { "$ref": "#/$defs/startTaskRequest" },
@@ -185,6 +242,7 @@
 
     "taskConstraints": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "allowed_ports": { "type": "array", "items": { "type": "integer" } },
         "blocked_ports": { "type": "array", "items": { "type": "integer" } },
@@ -200,6 +258,7 @@
     },
     "evidenceRef": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "kind": { "type": "string" },
         "path": { "type": "string" },
@@ -208,6 +267,7 @@
     },
     "finding": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["id", "severity", "title", "target"],
       "properties": {
         "id": { "type": "string" },
@@ -230,6 +290,8 @@
           "type": "array",
           "items": { "$ref": "#/$defs/evidenceRef" }
         },
+        "skill_provenance": { "type": ["object", "null"] },
+        "subagent_provenance": { "type": ["object", "null"] },
         "poc_script": { "type": ["string", "null"] },
         "evidence_level": { "type": "string" },
         "lifecycle_status": { "type": "string" },
@@ -242,6 +304,7 @@
     },
     "backendTaskState": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["active", "task_id"],
       "properties": {
         "active": { "type": "boolean" },
@@ -250,6 +313,7 @@
     },
     "stateSnapshot": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "target",
         "phase",
@@ -282,6 +346,7 @@
     },
     "backendInfo": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["pid", "version", "protocol_version"],
       "properties": {
         "pid": { "type": "integer", "minimum": 1 },
@@ -291,6 +356,7 @@
     },
     "capabilities": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["commands", "cancellation", "authoritative_state"],
       "properties": {
         "commands": {
@@ -309,6 +375,7 @@
     },
     "runtimeInfo": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["config_ready", "provider", "model", "mcp_started", "skills"],
       "properties": {
         "config_ready": { "type": "boolean" },
@@ -320,12 +387,14 @@
     },
     "taskResult": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "status": { "type": "string" },
         "exit_code": { "type": "integer" },
         "summary": { "type": "object" },
         "run": {
           "type": ["object", "null"],
+          "additionalProperties": false,
           "properties": {
             "name": { "type": "string" },
             "directory": { "type": "string" },
@@ -340,6 +409,7 @@
     },
     "structuredError": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["code", "message"],
       "properties": {
         "code": { "type": "string" },
@@ -378,14 +448,10 @@
       "allOf": [
         { "$ref": "#/$defs/taskEventEnvelope" },
         {
-          "required": ["request_id", "command", "normalized_command", "target", "resume", "constraints", "state"],
+          "required": ["request_id", "task", "state"],
           "properties": {
             "type": { "const": "task_started" },
-            "command": { "type": "string" },
-            "normalized_command": { "type": "string" },
-            "target": { "type": "string" },
-            "resume": { "type": "boolean" },
-            "constraints": { "$ref": "#/$defs/taskConstraints" },
+            "task": { "$ref": "#/$defs/taskRequest" },
             "state": { "$ref": "#/$defs/stateSnapshot" }
           }
         }
@@ -554,6 +620,7 @@
       ]
     },
     "serverEvent": {
+      "unevaluatedProperties": false,
       "oneOf": [
         { "$ref": "#/$defs/readyEvent" },
         { "$ref": "#/$defs/stateEvent" },

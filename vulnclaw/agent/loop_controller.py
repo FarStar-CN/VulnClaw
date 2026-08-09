@@ -110,7 +110,7 @@ async def auto_pentest(
     agent.context.add_user_message(user_input)
     agent._reset_runtime_state(user_input=user_input, detected_phase=detected_phase)
     if task_constraints is not None:
-        agent._apply_task_constraints(task_constraints)
+        agent.apply_task_constraints(task_constraints)
     _configure_reflexion(agent)
 
     for round_num in range(1, max_rounds + 1):
@@ -319,7 +319,7 @@ async def persistent_pentest(
     agent.context.add_user_message(user_input)
     agent._reset_runtime_state(user_input=user_input)
     if task_constraints is not None:
-        agent._apply_task_constraints(task_constraints)
+        agent.apply_task_constraints(task_constraints)
 
     findings_at_cycle_start = len(agent.context.state.findings)
     cycle_num = 0

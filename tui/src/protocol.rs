@@ -39,13 +39,13 @@ impl ClientRequest {
         }
     }
 
-    pub fn start_task(request_id: String, task_id: String, command_line: String) -> Self {
+    pub fn start_task(request_id: String, task_id: String, task: Value) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
             kind: "start_task",
             request_id,
             task_id: Some(task_id),
-            payload: serde_json::json!({"command_line": command_line}),
+            payload: serde_json::json!({"task": task}),
         }
     }
 
@@ -153,24 +153,20 @@ where
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BackendEvent {
     Ready {
+        request_id: String,
         backend: BackendInfo,
         capabilities: BackendCapabilities,
         runtime: RuntimeInfo,
         state: StateSnapshot,
     },
     State {
+        request_id: Option<String>,
         state: StateSnapshot,
     },
     TaskStarted {
+        request_id: String,
         task_id: String,
-        command: String,
-        normalized_command: String,
-        #[serde(rename = "target")]
-        _target: String,
-        #[serde(rename = "resume")]
-        _resume: bool,
-        #[serde(rename = "constraints")]
-        _constraints: Value,
+        task: Value,
         state: StateSnapshot,
     },
     Status {
@@ -203,33 +199,38 @@ pub enum BackendEvent {
         question: String,
     },
     TaskCompleted {
+        request_id: String,
         task_id: String,
         result: Value,
         findings: Vec<Finding>,
         state: StateSnapshot,
     },
     TaskCancelled {
+        request_id: String,
         task_id: String,
         state: StateSnapshot,
     },
     TaskFailed {
+        request_id: String,
         task_id: String,
         error: Value,
         state: StateSnapshot,
     },
     ControlResult {
-        #[serde(rename = "request_id")]
-        _request_id: String,
+        request_id: String,
         operation: String,
         result: Value,
         state: Option<StateSnapshot>,
     },
     Error {
+        request_id: Option<String>,
         task_id: Option<String>,
         code: String,
         message: String,
     },
-    ShutdownComplete,
+    ShutdownComplete {
+        request_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -271,7 +272,7 @@ fn protocol_validator() -> &'static jsonschema::Validator {
     })
 }
 
-fn validate_protocol_value(value: &Value) -> Result<(), String> {
+pub(crate) fn validate_protocol_value(value: &Value) -> Result<(), String> {
     protocol_validator()
         .validate(value)
         .map_err(|error| format!("protocol schema violation: {error}"))
@@ -312,13 +313,18 @@ mod tests {
 
     #[test]
     fn start_request_has_version_and_task_identity() {
-        let request = ClientRequest::start_task("r1".into(), "t1".into(), "/run host".into());
+        let request = ClientRequest::start_task(
+            "r1".into(),
+            "t1".into(),
+            serde_json::json!({"command": "run", "target": "host"}),
+        );
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["protocol_version"], PROTOCOL_VERSION);
         assert_eq!(value["type"], "start_task");
         assert_eq!(value["request_id"], "r1");
         assert_eq!(value["task_id"], "t1");
-        assert_eq!(value["payload"]["command_line"], "/run host");
+        assert_eq!(value["payload"]["task"]["command"], "run");
+        assert_eq!(value["payload"]["task"]["target"], "host");
     }
 
     #[test]
@@ -428,7 +434,7 @@ mod tests {
             ClientRequest::start_task(
                 "r-start".into(),
                 "t1".into(),
-                "/run target.test".into(),
+                serde_json::json!({"command": "run", "target": "target.test"}),
             ),
             ClientRequest::cancel_task("r-cancel".into(), "t1".into()),
             ClientRequest::get_state("r-state".into()),

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::protocol::{parse_backend_line, AppEvent, ClientRequest};
+use crate::protocol::{parse_backend_line, validate_protocol_value, AppEvent, ClientRequest};
 
 #[derive(Clone)]
 pub struct BackendHandle {
@@ -19,7 +19,9 @@ impl BackendHandle {
             .stdin
             .lock()
             .map_err(|_| std::io::Error::other("backend stdin lock poisoned"))?;
-        serde_json::to_writer(&mut *input, request).map_err(std::io::Error::other)?;
+        let value = serde_json::to_value(request).map_err(std::io::Error::other)?;
+        validate_protocol_value(&value).map_err(std::io::Error::other)?;
+        serde_json::to_writer(&mut *input, &value).map_err(std::io::Error::other)?;
         input.write_all(b"\n")?;
         input.flush()
     }
@@ -161,8 +163,8 @@ for line in sys.stdin:
         print(json.dumps(base | {"type": "control_result", "request_id": msg["request_id"], "operation": msg["payload"]["operation"], "result": {"backend_pid": os.getpid()}}), flush=True)
     elif msg["type"] == "start_task":
         task_id = msg["task_id"]
-        print(json.dumps(base | {"type": "task_started", "request_id": msg["request_id"], "task_id": task_id, "command": "run", "normalized_command": msg["payload"]["command_line"], "target": "target.test", "resume": True, "constraints": constraints, "state": state(True, task_id)}), flush=True)
-        print(json.dumps(base | {"type": "task_completed", "request_id": msg["request_id"], "task_id": task_id, "result": {"backend_pid": os.getpid()}, "findings": [], "state": state()}), flush=True)
+        print(json.dumps(base | {"type": "task_started", "request_id": msg["request_id"], "task_id": task_id, "task": msg["payload"]["task"], "state": state(True, task_id)}), flush=True)
+        print(json.dumps(base | {"type": "task_completed", "request_id": msg["request_id"], "task_id": task_id, "result": {"summary": {"backend_pid": os.getpid()}}, "findings": [], "state": state()}), flush=True)
     elif msg["type"] == "shutdown":
         print(json.dumps(base | {"type": "shutdown_complete", "request_id": msg["request_id"]}), flush=True)
         break
@@ -212,7 +214,10 @@ for line in sys.stdin:
                 .send(&ClientRequest::start_task(
                     format!("r-{index}"),
                     format!("t-{index}"),
-                    format!("/run target-{index}.test"),
+                    serde_json::json!({
+                        "command": "run",
+                        "target": format!("target-{index}.test")
+                    }),
                 ))
                 .unwrap();
             loop {
@@ -220,7 +225,7 @@ for line in sys.stdin:
                     AppEvent::Backend(BackendEvent::TaskCompleted {
                         task_id, result, ..
                     }) if task_id == format!("t-{index}") => {
-                        assert_eq!(result["backend_pid"], ready_pid);
+                        assert_eq!(result["summary"]["backend_pid"], ready_pid);
                         break;
                     }
                     _ => continue,

@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, TextIO
+
+from jsonschema import Draft202012Validator, ValidationError
 
 PROTOCOL_VERSION = 1
 
@@ -125,6 +129,17 @@ def decode_client_message(line: str) -> ClientMessage:
             request_id=request_id,
             task_id=task_id,
         )
+    try:
+        _protocol_validator().validate(raw)
+    except ValidationError as exc:
+        path = ".".join(str(part) for part in exc.absolute_path)
+        location = f" at {path}" if path else ""
+        raise ProtocolError(
+            "invalid_message",
+            f"protocol schema violation{location}: {exc.message}",
+            request_id=request_id,
+            task_id=task_id,
+        ) from exc
     return ClientMessage(kind, request_id, task_id, payload)
 
 
@@ -165,6 +180,10 @@ class JsonlWriter:
         self._lock = threading.Lock()
 
     def write(self, message: dict[str, Any]) -> None:
+        event_type = message.get("type")
+        if event_type not in SERVER_EVENT_TYPES:
+            raise ValueError(f"writer accepts server events only, got: {event_type!r}")
+        _protocol_validator().validate(message)
         line = encode_message(message)
         with self._lock:
             self._stream.write(line)
@@ -193,3 +212,13 @@ def _optional_identifier(value: Any) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+@lru_cache(maxsize=1)
+def _protocol_validator() -> Draft202012Validator:
+    packaged = Path(__file__).with_name("protocol") / "tui-v1.schema.json"
+    source = Path(__file__).resolve().parent.parent / "protocol" / "tui-v1.schema.json"
+    path = packaged if packaged.exists() else source
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    return Draft202012Validator(schema)

@@ -9,12 +9,21 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
-import shlex
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TextIO
-from urllib.parse import urlparse
 
+from vulnclaw.config.domain_models import validate_action_constraints
+from vulnclaw.task_service import (
+    SCOPE_FIELDS,
+    TASK_COMMANDS,
+    PreparedTask,
+    TaskOptions,
+    build_scope_constraints,
+    execute_task,
+    prepare_task,
+    task_request_from_payload,
+)
 from vulnclaw.tui_protocol import (
     PROTOCOL_VERSION,
     ClientMessage,
@@ -23,62 +32,12 @@ from vulnclaw.tui_protocol import (
     decode_client_message,
 )
 
-SUPPORTED_COMMANDS = frozenset({"run", "scan", "recon", "exploit", "persistent"})
 # Concrete management operations are capability-gated feature extensions. The
 # base backend owns mutable session scope defaults; client posture remains local.
 SUPPORTED_CONTROL_OPERATIONS = frozenset({"session.scope.reset", "session.scope.update"})
-SESSION_SCOPE_OPTION_FIELDS = {
-    "--only-host": "only_host",
-    "--only-port": "only_port",
-    "--only-path": "only_path",
-    "--blocked-host": "blocked_host",
-    "--blocked-path": "blocked_path",
-    "--allow-actions": "allow_actions",
-    "--block-actions": "block_actions",
-}
-SESSION_SCOPE_FIELDS = frozenset(SESSION_SCOPE_OPTION_FIELDS.values())
-VALUE_OPTIONS = frozenset(
-    {
-        "--prompt",
-        "--engine",
-        "--scope",
-        "--ports",
-        "--cve",
-        "--cmd",
-        "--only-port",
-        "--only-host",
-        "--only-path",
-        "--blocked-host",
-        "--blocked-path",
-        "--allow-actions",
-        "--block-actions",
-        "--snapshot",
-        "--run-name",
-        "--resume-run",
-        "--runs-dir",
-        "--target-type",
-        "--max-steps",
-        "--max-tool-rounds",
-        "--max-rounds",
-    }
+RUNTIME_STATE_FIELDS = frozenset(
+    {"target", "phase", "task_constraints", "findings", "evidence", "constraint_violations"}
 )
-REPEATABLE_OPTIONS = frozenset({"--target"})
-BOOLEAN_OPTIONS = frozenset(
-    {"--resume", "--no-resume", "--mount", "--repair", "--force-fresh", "--no-import"}
-)
-
-
-@dataclass(frozen=True)
-class ParsedTask:
-    """Python-owned normalized task request."""
-
-    command: str
-    target: str
-    prompt: str
-    resume: bool
-    constraints: Any
-    options: dict[str, Any] = field(default_factory=dict)
-    normalized_command: str = ""
 
 
 @dataclass
@@ -99,7 +58,7 @@ class BackendRuntime:
 
 
 RuntimeFactory = Callable[[], Any | Awaitable[Any]]
-TaskRunner = Callable[[Any, ParsedTask, "BackendStreamSink"], Awaitable[dict[str, Any]]]
+TaskRunner = Callable[[Any, PreparedTask, "BackendStreamSink"], Awaitable[dict[str, Any]]]
 
 
 class BackendStreamSink:
@@ -210,11 +169,14 @@ class BackendSession:
         self.bootstrap = bootstrap
         self.current_target = str(bootstrap.get("target") or "")
         bootstrap_command = str(bootstrap.get("command") or "run").lstrip("/")
-        if bootstrap_command not in SUPPORTED_COMMANDS:
+        if bootstrap_command not in TASK_COMMANDS:
             bootstrap_command = "run"
         try:
-            initial_constraints = _build_task_constraints(
-                self.current_target, {}, bootstrap
+            scope = TaskOptions.model_validate(
+                {field: bootstrap[field] for field in SCOPE_FIELDS if field in bootstrap}
+            )
+            initial_constraints = build_scope_constraints(
+                self.current_target, scope.model_dump()
             )
             _validate_task_action(bootstrap_command, initial_constraints)
         except ValueError as exc:
@@ -229,7 +191,7 @@ class BackendSession:
         agent = getattr(self.runtime, "agent", None)
         if agent is not None:
             agent.session_state.target = self.current_target or None
-            apply_constraints = getattr(agent, "_apply_task_constraints", None)
+            apply_constraints = getattr(agent, "apply_task_constraints", None)
             if callable(apply_constraints):
                 apply_constraints(initial_constraints)
         self.initialized = True
@@ -242,7 +204,7 @@ class BackendSession:
                 "protocol_version": PROTOCOL_VERSION,
             },
             capabilities={
-                "commands": sorted(SUPPORTED_COMMANDS),
+                "commands": sorted(TASK_COMMANDS),
                 "control_operations": sorted(SUPPORTED_CONTROL_OPERATIONS),
                 "cancellation": True,
                 "authoritative_state": True,
@@ -260,16 +222,11 @@ class BackendSession:
                 request_id=message.request_id,
                 task_id=message.task_id,
             )
-        command_line = message.payload.get("command_line")
-        if not isinstance(command_line, str) or not command_line.strip():
-            raise ProtocolError(
-                "invalid_task",
-                "start_task payload.command_line must be a non-empty string",
-                request_id=message.request_id,
-                task_id=message.task_id,
-            )
         try:
-            task = parse_task_command(command_line, defaults=self.bootstrap)
+            request = task_request_from_payload(
+                message.payload.get("task"), defaults=self.bootstrap
+            )
+            task = prepare_task(request)
         except ValueError as exc:
             raise ProtocolError(
                 "invalid_task",
@@ -278,12 +235,12 @@ class BackendSession:
                 task_id=message.task_id,
             ) from exc
 
-        self.current_target = task.target
+        self.current_target = request.target
         self.current_constraints = _model_dump(task.constraints)
         agent = getattr(self.runtime, "agent", None)
         if agent is not None:
-            agent.session_state.target = task.target
-            apply_constraints = getattr(agent, "_apply_task_constraints", None)
+            agent.session_state.target = request.target
+            apply_constraints = getattr(agent, "apply_task_constraints", None)
             if callable(apply_constraints):
                 apply_constraints(task.constraints)
         self.active_task_id = message.task_id
@@ -292,16 +249,12 @@ class BackendSession:
             self._execute_task(message.request_id, message.task_id or "", task)
         )
 
-    async def _execute_task(self, request_id: str, task_id: str, task: ParsedTask) -> None:
+    async def _execute_task(self, request_id: str, task_id: str, task: PreparedTask) -> None:
         self.writer.event(
             "task_started",
             request_id=request_id,
             task_id=task_id,
-            command=task.command,
-            normalized_command=task.normalized_command,
-            target=task.target,
-            resume=task.resume,
-            constraints=_model_dump(task.constraints),
+            task=task.request.model_dump(mode="json", exclude_none=True),
             state=self.state_snapshot(),
         )
         sink = BackendStreamSink(
@@ -432,10 +385,18 @@ class BackendSession:
         """Extension point for feature-owned management operations."""
 
         if operation == "session.scope.update":
-            command_line = arguments.get("command_line")
-            if not isinstance(command_line, str) or not command_line.strip():
-                raise ValueError("session.scope.update requires a non-empty arguments.command_line")
-            updates = _parse_session_scope_update(command_line)
+            raw_scope = arguments.get("scope")
+            if not isinstance(raw_scope, dict) or not raw_scope:
+                raise ValueError("session.scope.update requires a non-empty arguments.scope")
+            unknown = set(raw_scope) - SCOPE_FIELDS
+            if unknown:
+                raise ValueError(f"unsupported scope field(s): {', '.join(sorted(unknown))}")
+            options = TaskOptions.model_validate(raw_scope)
+            updates = {
+                key: value
+                for key, value in options.model_dump().items()
+                if key in SCOPE_FIELDS and key in options.model_fields_set
+            }
             bootstrap = dict(self.bootstrap)
             bootstrap.update(updates)
             self._apply_session_scope(bootstrap)
@@ -450,7 +411,7 @@ class BackendSession:
             bootstrap = {
                 key: value
                 for key, value in self.bootstrap.items()
-                if key not in SESSION_SCOPE_FIELDS
+                if key not in SCOPE_FIELDS
             }
             self._apply_session_scope(bootstrap)
             return (
@@ -466,12 +427,12 @@ class BackendSession:
         )
 
     def _apply_session_scope(self, bootstrap: dict[str, Any]) -> None:
-        constraints = _build_task_constraints(self.current_target, {}, bootstrap)
+        constraints = build_scope_constraints(self.current_target, bootstrap)
         self.bootstrap = bootstrap
         self.current_constraints = _model_dump(constraints)
         agent = getattr(self.runtime, "agent", None)
         if agent is not None:
-            apply_constraints = getattr(agent, "_apply_task_constraints", None)
+            apply_constraints = getattr(agent, "apply_task_constraints", None)
             if callable(apply_constraints):
                 apply_constraints(constraints)
 
@@ -533,7 +494,13 @@ class BackendSession:
         if callable(runtime_state):
             extra = runtime_state()
             if isinstance(extra, dict):
-                state.update(_json_safe(extra))
+                state.update(
+                    {
+                        key: _json_safe(value)
+                        for key, value in extra.items()
+                        if key in RUNTIME_STATE_FIELDS
+                    }
+                )
         else:
             agent = getattr(self.runtime, "agent", None)
             session = getattr(agent, "session_state", None)
@@ -566,121 +533,10 @@ class BackendSession:
             )
 
 
-def parse_task_command(command_line: str, *, defaults: dict[str, Any] | None = None) -> ParsedTask:
-    """Parse a raw terminal command into one validated Python task."""
-
-    try:
-        tokens = shlex.split(command_line)
-    except ValueError as exc:
-        raise ValueError(f"could not parse command: {exc}") from exc
-    if tokens and tokens[0] == "vulnclaw":
-        tokens.pop(0)
-    if not tokens:
-        raise ValueError("task command is empty")
-    command = tokens.pop(0).lstrip("/").lower()
-    if command not in SUPPORTED_COMMANDS:
-        raise ValueError(f"unsupported task command: {command}")
-    if not tokens or tokens[0].startswith("--"):
-        raise ValueError(f"/{command} requires a target")
-    target = tokens.pop(0).strip()
-    if not target:
-        raise ValueError("target must not be empty")
-
-    options: dict[str, Any] = {}
-    additional_targets: list[str] = []
-    index = 0
-    while index < len(tokens):
-        option = tokens[index]
-        if option in BOOLEAN_OPTIONS:
-            options[option[2:].replace("-", "_")] = True
-            index += 1
-            continue
-        if option in VALUE_OPTIONS or option in REPEATABLE_OPTIONS:
-            if index + 1 >= len(tokens):
-                raise ValueError(f"{option} requires a value")
-            value = tokens[index + 1]
-            if option in REPEATABLE_OPTIONS:
-                additional_targets.append(value)
-            else:
-                options[option[2:].replace("-", "_")] = value
-            index += 2
-            continue
-        raise ValueError(f"unsupported option: {option}")
-    if additional_targets:
-        options["additional_targets"] = additional_targets
-
-    if "only_port" in options:
-        try:
-            port = int(options["only_port"])
-        except (TypeError, ValueError) as exc:
-            raise ValueError("--only-port must be an integer") from exc
-        if not 1 <= port <= 65535:
-            raise ValueError("--only-port must be between 1 and 65535")
-        options["only_port"] = port
-    for name in ("max_steps", "max_tool_rounds", "max_rounds"):
-        if name in options:
-            try:
-                options[name] = int(options[name])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"--{name.replace('_', '-')} must be an integer") from exc
-            if options[name] < 1:
-                raise ValueError(f"--{name.replace('_', '-')} must be positive")
-    if options.get("engine") not in (None, "solve", "team", "rounds"):
-        raise ValueError("--engine must be one of: solve, team, rounds")
-
-    defaults = defaults or {}
-    resume = not bool(options.get("no_resume"))
-    if "resume" in options:
-        resume = True
-    elif "no_resume" not in options and "resume" in defaults:
-        resume = bool(defaults["resume"])
-
-    constraints = _build_task_constraints(target, options, defaults)
-    _validate_task_action(command, constraints)
-
-    prompt = _build_task_prompt(command, target, options)
-    if block := constraints.to_prompt_block():
-        prompt = f"{prompt}\n\n{block}"
-    normalized = shlex.join([f"/{command}", target, *tokens])
-    return ParsedTask(command, target, prompt, resume, constraints, options, normalized)
-
-
-def _parse_session_scope_update(command_line: str) -> dict[str, Any]:
-    try:
-        tokens = shlex.split(command_line)
-    except ValueError as exc:
-        raise ValueError(f"could not parse scope options: {exc}") from exc
-    if not tokens:
-        raise ValueError("scope update is empty")
-
-    updates: dict[str, Any] = {}
-    index = 0
-    while index < len(tokens):
-        option = tokens[index]
-        field = SESSION_SCOPE_OPTION_FIELDS.get(option)
-        if field is None:
-            supported = ", ".join(sorted(SESSION_SCOPE_OPTION_FIELDS))
-            raise ValueError(f"unsupported scope option: {option}; expected one of: {supported}")
-        if index + 1 >= len(tokens):
-            raise ValueError(f"{option} requires a value")
-        updates[field] = tokens[index + 1]
-        index += 2
-
-    if "only_port" in updates:
-        try:
-            port = int(updates["only_port"])
-        except (TypeError, ValueError) as exc:
-            raise ValueError("--only-port must be an integer") from exc
-        if not 1 <= port <= 65535:
-            raise ValueError("--only-port must be between 1 and 65535")
-        updates["only_port"] = port
-    return updates
-
-
 def _session_scope_defaults(bootstrap: dict[str, Any]) -> dict[str, Any]:
     return {
         field: _json_safe(bootstrap[field])
-        for field in sorted(SESSION_SCOPE_FIELDS)
+        for field in sorted(SCOPE_FIELDS)
         if field in bootstrap
     }
 
@@ -697,13 +553,8 @@ async def _create_runtime() -> BackendRuntime:
 
 
 async def _run_task(
-    runtime: BackendRuntime, task: ParsedTask, sink: BackendStreamSink
+    runtime: BackendRuntime, task: PreparedTask, sink: BackendStreamSink
 ) -> dict[str, Any]:
-    from vulnclaw.config.schema import resolve_engine
-    from vulnclaw.orchestrator import run_agent_task
-
-    agent = runtime.agent
-
     def on_event(kind: str, payload: dict[str, Any]) -> None:
         if kind == "agent_step":
             sink._event("log", message=f"turn {payload.get('step', '?')}")
@@ -716,67 +567,13 @@ async def _run_task(
         elif kind == "no_path":
             sink._event("log", message=f"no path: {payload.get('reason', '')}")
 
-    async def runner(shared_agent: Any) -> Any:
-        if task.command == "run":
-            selected_engine = resolve_engine(runtime.config, task.options.get("engine"))
-            if selected_engine == "solve":
-                return await shared_agent.solve(
-                    task.prompt,
-                    target=task.target,
-                    max_steps=task.options.get(
-                        "max_steps", getattr(runtime.config.session, "solve_max_steps", 80)
-                    ),
-                    max_tool_rounds=task.options.get(
-                        "max_tool_rounds",
-                        getattr(runtime.config.session, "solve_max_tool_rounds", 6),
-                    ),
-                    stream_sink=sink,
-                    on_event=on_event,
-                    task_constraints=task.constraints,
-                )
-            shared_agent._apply_task_constraints(task.constraints)
-            return await shared_agent.auto_pentest(
-                task.prompt,
-                target=task.target,
-                max_rounds=task.options.get(
-                    "max_rounds", getattr(runtime.config.session, "max_rounds", 15)
-                ),
-                stream_sink=sink,
-                engine=selected_engine,
-                task_constraints=task.constraints,
-            )
-        if task.command == "persistent":
-            shared_agent._apply_task_constraints(task.constraints)
-            return await shared_agent.persistent_pentest(
-                task.prompt,
-                target=task.target,
-                stream_sink=sink,
-                task_constraints=task.constraints,
-            )
-        return await shared_agent.chat(
-            task.prompt,
-            target=task.target,
-            stream_sink=sink,
-            task_constraints=task.constraints,
-        )
-
-    result = await run_agent_task(
-        agent=agent,
-        command=task.command,
-        target=task.target,
-        resume=task.resume,
-        snapshot_id=task.options.get("snapshot"),
-        run_name=task.options.get("run_name"),
-        resume_run_name=task.options.get("resume_run"),
-        runs_dir=task.options.get("runs_dir"),
-        additional_targets=task.options.get("additional_targets"),
-        target_type=task.options.get("target_type"),
-        mount=bool(task.options.get("mount")),
-        repair=bool(task.options.get("repair")),
-        force_fresh=bool(task.options.get("force_fresh")),
-        no_import=bool(task.options.get("no_import")),
-        runner=runner,
+    execution = await execute_task(
+        runtime.agent,
+        task,
+        stream_sink=sink,
+        on_event=on_event,
     )
+    result = execution.run
     run_context = result.run_context
     return {
         "status": result.status,
@@ -831,24 +628,6 @@ def main() -> None:
     protocol_output = sys.stdout
     sys.stdout = sys.stderr
     asyncio.run(serve(sys.stdin, JsonlWriter(protocol_output)))
-
-
-def _build_task_prompt(command: str, target: str, options: dict[str, Any]) -> str:
-    if custom := options.get("prompt"):
-        return str(custom)
-    if command == "recon":
-        return f"Perform authorized reconnaissance against {target} without exploitation."
-    if command == "scan":
-        port_hint = f", focusing on ports {options['ports']}" if options.get("ports") else ""
-        return f"Perform authorized vulnerability scanning against {target}{port_hint} without exploitation."
-    if command == "exploit":
-        cve_hint = f" using {options['cve']}" if options.get("cve") else ""
-        command_hint = options.get("cmd", "id")
-        return f"Attempt authorized exploitation against {target}{cve_hint} and verify with command: {command_hint}"
-    if command == "persistent":
-        return f"Continuously perform an authorized pentest against {target} until stopped."
-    scope = options.get("scope", "full")
-    return f"Perform an authorized {scope} pentest against {target}. This target is explicitly in scope."
 
 
 def _runtime_metadata(runtime: Any) -> dict[str, Any]:
@@ -911,73 +690,10 @@ def _collect_evidence(session: Any) -> list[dict[str, Any]]:
     return evidence
 
 
-def _target_hosts(target: str) -> list[str]:
-    parsed = urlparse(target if "://" in target else f"//{target}")
-    host = parsed.hostname
-    if host:
-        return [host.lower()]
-    return []
-
-
-def _build_task_constraints(
-    target: str, options: dict[str, Any], defaults: dict[str, Any]
-) -> Any:
-    from vulnclaw.agent.context import TaskConstraints
-
-    only_host = _option_or_default(options, defaults, "only_host")
-    only_path = _option_or_default(options, defaults, "only_path")
-    blocked_host = _option_or_default(options, defaults, "blocked_host")
-    blocked_path = _option_or_default(options, defaults, "blocked_path")
-    only_port = _option_or_default(options, defaults, "only_port")
-    if only_port not in (None, ""):
-        try:
-            only_port = int(only_port)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("only_port must be an integer") from exc
-        if not 1 <= only_port <= 65535:
-            raise ValueError("only_port must be between 1 and 65535")
-
-    constraints = TaskConstraints(
-        allowed_ports=[only_port] if only_port else [],
-        allowed_hosts=[str(only_host)] if only_host else _target_hosts(target),
-        blocked_hosts=_split_values(blocked_host),
-        allowed_paths=_split_values(only_path),
-        blocked_paths=_split_values(blocked_path),
-        allowed_actions=_split_values(
-            _option_or_default(options, defaults, "allow_actions")
-        ),
-        blocked_actions=_split_values(
-            _option_or_default(options, defaults, "block_actions")
-        ),
-    )
-    constraints.strict_mode = not constraints.is_empty()
-    return constraints
-
-
 def _validate_task_action(command: str, constraints: Any) -> None:
-    from vulnclaw.agent.context import validate_action_constraints
-
     violation = validate_action_constraints(command, constraints)
     if violation is not None:
         raise ValueError(violation)
-
-
-def _option_or_default(
-    options: dict[str, Any], defaults: dict[str, Any], name: str
-) -> Any:
-    if name in options:
-        return options[name]
-    return defaults.get(name)
-
-
-def _split_values(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        raw = value
-    else:
-        raw = str(value).split(",")
-    return [str(item).strip() for item in raw if str(item).strip()]
 
 
 def _model_dump(value: Any) -> Any:

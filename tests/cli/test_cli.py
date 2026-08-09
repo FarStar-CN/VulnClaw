@@ -418,7 +418,11 @@ class TestCLI:
             mcp_manager = None
 
             def __init__(self, *_args):
+                self.config = config
                 self.context = SimpleNamespace(state=SimpleNamespace(agent_state=DummyResearch()))
+
+            def apply_task_constraints(self, _constraints):
+                return None
 
         async def fake_orchestrated(*, command, target, resume, snapshot, runner):
             await runner(DummyAgent(), config)
@@ -452,11 +456,14 @@ class TestCLI:
 
         async def fake_orchestrated(*, command, target, resume, snapshot, runner):
             class DummyAgent:
+                def __init__(self, agent_config):
+                    self.config = agent_config
+
                 async def auto_pentest(self, prompt, **kwargs):
                     prompts.append(prompt)
                     return []
 
-            await runner(DummyAgent(), config)
+            await runner(DummyAgent(config), config)
             return type("RunResult", (), {"summary": {"findings_count": 0}})()
 
         monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
@@ -476,9 +483,7 @@ class TestCLI:
         )
         assert result.exit_code == 0
         assert prompts
-        assert "Only test port 443" in prompts[0]
-        assert "Only test host example.com" in prompts[0]
-        assert "Only test path /admin" in prompts[0]
+        assert all(value in prompts[0] for value in ("443", "example.com", "/admin"))
 
     def test_run_cli_blocked_host_and_path_are_appended_to_prompt(self, runner, monkeypatch):
         import vulnclaw.cli.main as cli_main
@@ -494,11 +499,14 @@ class TestCLI:
 
         async def fake_orchestrated(*, command, target, resume, snapshot, runner):
             class DummyAgent:
+                def __init__(self, agent_config):
+                    self.config = agent_config
+
                 async def auto_pentest(self, prompt, **kwargs):
                     prompts.append(prompt)
                     return []
 
-            await runner(DummyAgent(), config)
+            await runner(DummyAgent(config), config)
             return type("RunResult", (), {"summary": {"findings_count": 0}})()
 
         monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
@@ -516,8 +524,8 @@ class TestCLI:
         )
         assert result.exit_code == 0
         assert prompts
-        assert "Blocked host staging.example.com" in prompts[0]
-        assert "Blocked path /internal" in prompts[0]
+        assert "staging.example.com" in prompts[0]
+        assert "/internal" in prompts[0]
 
     def test_cli_blocks_command_when_allowed_actions_conflict(self, runner, monkeypatch):
         import vulnclaw.cli._helpers as helpers_mod

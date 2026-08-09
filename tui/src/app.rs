@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
@@ -226,6 +227,17 @@ pub struct OperationReceipt {
     pub findings: usize,
 }
 
+#[derive(Clone, Debug)]
+enum PendingRequest {
+    Initialize,
+    #[allow(dead_code)]
+    GetState,
+    StartTask(String),
+    CancelTask(String),
+    Control(String),
+    Shutdown,
+}
+
 pub struct App {
     pub mode: ExecutionMode,
     pub permission: PermissionMode,
@@ -267,6 +279,7 @@ pub struct App {
     pub evidence: Vec<serde_json::Value>,
     pub constraint_violations: Vec<String>,
     request_counter: u64,
+    pending_requests: HashMap<String, PendingRequest>,
     pub active_receipt: Option<OperationReceipt>,
     pub last_receipt: Option<OperationReceipt>,
     /// Monotonic instant the current worker started, used to render a live
@@ -330,6 +343,7 @@ impl App {
             evidence: Vec::new(),
             constraint_violations: Vec::new(),
             request_counter: 0,
+            pending_requests: HashMap::new(),
             active_receipt: None,
             last_receipt: None,
             worker_started_at: None,
@@ -358,11 +372,14 @@ impl App {
                     .ok()
                     .and_then(|raw| serde_json::from_str(&raw).ok())
                     .unwrap_or_else(|| serde_json::json!({}));
-                let request = ClientRequest::initialize(self.next_request_id(), bootstrap);
+                let request_id = self.next_request_id();
+                let request = ClientRequest::initialize(request_id.clone(), bootstrap);
                 if let Err(error) = handle.send(&request) {
                     handle.wait_or_kill(std::time::Duration::from_millis(100));
                     self.error(format!("Could not initialize Python backend: {error}"));
                 } else {
+                    self.pending_requests
+                        .insert(request_id, PendingRequest::Initialize);
                     self.backend = Some(handle);
                     self.status("Connecting to the VulnClaw Python backend...");
                 }
@@ -752,11 +769,19 @@ impl App {
         match event {
             AppEvent::Backend(stream) => match stream {
                 BackendEvent::Ready {
+                    request_id,
                     backend,
                     capabilities,
                     runtime,
                     state,
                 } => {
+                    if !matches!(
+                        self.pending_requests.remove(&request_id),
+                        Some(PendingRequest::Initialize)
+                    ) {
+                        self.error(format!("Unexpected ready response: {request_id}"));
+                        return;
+                    }
                     self.backend_ready = true;
                     self.backend_pid = Some(backend.pid);
                     self.config_ready = Some(runtime.config_ready);
@@ -805,16 +830,31 @@ impl App {
                         );
                     }
                 }
-                BackendEvent::State { state } => self.apply_backend_state(state),
+                BackendEvent::State { request_id, state } => {
+                    if let Some(request_id) = request_id {
+                        if !matches!(
+                            self.pending_requests.remove(&request_id),
+                            Some(PendingRequest::GetState)
+                        ) {
+                            self.error(format!("Unexpected state response: {request_id}"));
+                            return;
+                        }
+                    }
+                    self.apply_backend_state(state);
+                }
                 BackendEvent::TaskStarted {
+                    request_id,
                     task_id,
-                    command,
-                    normalized_command,
-                    _target: _,
-                    _resume: _,
-                    _constraints: _,
+                    task,
                     state,
                 } => {
+                    if !matches!(
+                        self.pending_requests.get(&request_id),
+                        Some(PendingRequest::StartTask(expected)) if expected == &task_id
+                    ) {
+                        self.error(format!("Unexpected task_started response: {request_id}"));
+                        return;
+                    }
                     if self.active_task_id.as_deref() != Some(task_id.as_str()) {
                         return;
                     }
@@ -822,10 +862,8 @@ impl App {
                     self.worker_started_at = Some(Instant::now());
                     self.apply_backend_state(state);
                     if let Some(receipt) = self.active_receipt.as_mut() {
-                        receipt.phase = format!("{} running", command);
-                        if !normalized_command.is_empty() {
-                            receipt.command = normalized_command;
-                        }
+                        let command = task["command"].as_str().unwrap_or("task");
+                        receipt.phase = format!("{command} running");
                     }
                 }
                 BackendEvent::Status {
@@ -892,15 +930,20 @@ impl App {
                     self.push(TranscriptKind::Status, format!("Approval required: {question}"));
                 }
                 BackendEvent::TaskCompleted {
+                    request_id,
                     task_id,
                     result,
                     findings: _,
                     state,
                 } => {
+                    if !self.matches_task_response(&request_id, &task_id) {
+                        return;
+                    }
                     if !self.is_current_task(&task_id) {
                         return;
                     }
                     self.apply_backend_state(state);
+                    self.clear_task_requests(&task_id);
                     self.finish_task("Completed");
                     let run_name = result
                         .get("run")
@@ -913,23 +956,36 @@ impl App {
                         format!("VulnClaw task completed. Run: {run_name}")
                     });
                 }
-                BackendEvent::TaskCancelled { task_id, state } => {
+                BackendEvent::TaskCancelled {
+                    request_id,
+                    task_id,
+                    state,
+                } => {
+                    if !self.matches_task_response(&request_id, &task_id) {
+                        return;
+                    }
                     if !self.is_current_task(&task_id) {
                         return;
                     }
                     self.apply_backend_state(state);
+                    self.clear_task_requests(&task_id);
                     self.finish_task("Cancelled");
                     self.status("VulnClaw task cancelled; backend session remains available.");
                 }
                 BackendEvent::TaskFailed {
+                    request_id,
                     task_id,
                     error,
                     state,
                 } => {
+                    if !self.matches_task_response(&request_id, &task_id) {
+                        return;
+                    }
                     if !self.is_current_task(&task_id) {
                         return;
                     }
                     self.apply_backend_state(state);
+                    self.clear_task_requests(&task_id);
                     self.finish_task("Failed");
                     let message = error
                         .get("message")
@@ -938,11 +994,18 @@ impl App {
                     self.error(format!("VulnClaw task failed: {message}"));
                 }
                 BackendEvent::ControlResult {
-                    _request_id: _,
+                    request_id,
                     operation,
                     result,
                     state,
                 } => {
+                    if !matches!(
+                        self.pending_requests.remove(&request_id),
+                        Some(PendingRequest::Control(expected)) if expected == operation
+                    ) {
+                        self.error(format!("Unexpected control response: {request_id}"));
+                        return;
+                    }
                     if let Some(state) = state {
                         self.apply_backend_state(state);
                     }
@@ -957,16 +1020,52 @@ impl App {
                     );
                 }
                 BackendEvent::Error {
+                    request_id,
                     task_id,
                     code,
                     message,
                 } => {
-                    if task_id.is_some() && task_id == self.active_task_id {
+                    let rejected_task = if let Some(request_id) = request_id {
+                        match self.pending_requests.remove(&request_id) {
+                            None => {
+                                self.error(format!(
+                                    "Unexpected backend error response: {request_id}"
+                                ));
+                                return;
+                            }
+                            Some(
+                                PendingRequest::StartTask(expected)
+                                | PendingRequest::CancelTask(expected),
+                            ) => {
+                                if task_id.as_deref() != Some(expected.as_str()) {
+                                    self.error(format!(
+                                        "Mismatched task error response: {request_id}"
+                                    ));
+                                    return;
+                                }
+                                true
+                            }
+                            Some(_) => false,
+                        }
+                    } else {
+                        false
+                    };
+                    if rejected_task {
+                        if task_id != self.active_task_id {
+                            self.error("Mismatched active task error response.");
+                            return;
+                        }
                         self.finish_task("Rejected");
                     }
                     self.error(format!("Backend {code}: {message}"));
                 }
-                BackendEvent::ShutdownComplete => {
+                BackendEvent::ShutdownComplete { request_id } => {
+                    if !matches!(
+                        self.pending_requests.remove(&request_id),
+                        Some(PendingRequest::Shutdown)
+                    ) {
+                        return;
+                    }
                     self.backend_ready = false;
                     self.backend_commands.clear();
                     self.backend_control_operations.clear();
@@ -982,6 +1081,7 @@ impl App {
                 self.backend_commands.clear();
                 self.backend_control_operations.clear();
                 self.backend_supports_cancellation = false;
+                self.pending_requests.clear();
                 self.worker_active = false;
                 self.worker_started_at = None;
                 if let Some(mut receipt) = self.active_receipt.take() {
@@ -1002,6 +1102,28 @@ impl App {
 
     fn is_current_task(&self, task_id: &str) -> bool {
         self.active_task_id.as_deref() == Some(task_id)
+    }
+
+    fn matches_task_response(&mut self, request_id: &str, task_id: &str) -> bool {
+        let matches = matches!(
+            self.pending_requests.get(request_id),
+            Some(PendingRequest::StartTask(expected) | PendingRequest::CancelTask(expected))
+                if expected == task_id
+        );
+        if !matches {
+            self.error(format!("Unexpected task response: {request_id}"));
+        }
+        matches
+    }
+
+    fn clear_task_requests(&mut self, task_id: &str) {
+        self.pending_requests.retain(|_, pending| {
+            !matches!(
+                pending,
+                PendingRequest::StartTask(expected) | PendingRequest::CancelTask(expected)
+                    if expected == task_id
+            )
+        });
     }
 
     fn apply_backend_state(&mut self, state: StateSnapshot) {
@@ -1111,7 +1233,8 @@ impl App {
             ));
             return false;
         }
-        let request = ClientRequest::control(self.next_request_id(), operation, arguments);
+        let request_id = self.next_request_id();
+        let request = ClientRequest::control(request_id.clone(), operation, arguments);
         let send_result = self
             .backend
             .as_ref()
@@ -1121,6 +1244,8 @@ impl App {
             self.error(format!("Could not send {operation} to Python backend: {error}"));
             return false;
         }
+        self.pending_requests
+            .insert(request_id, PendingRequest::Control(operation.to_owned()));
         true
     }
 
@@ -1137,7 +1262,13 @@ impl App {
         } else {
             (
                 "session.scope.update",
-                serde_json::json!({"command_line": arguments}),
+                match parse_scope_payload(arguments) {
+                    Ok(scope) => serde_json::json!({"scope": scope}),
+                    Err(error) => {
+                        self.error(error);
+                        return;
+                    }
+                },
             )
         };
         if self.request_control(operation, payload) {
@@ -1154,12 +1285,16 @@ impl App {
             self.error("The Python backend is not ready.");
             return;
         }
+        let task = match parse_task_payload(&command_line) {
+            Ok(task) => task,
+            Err(error) => {
+                self.error(error);
+                return;
+            }
+        };
         let task_id = format!("task-{}-{}", std::process::id(), self.request_counter + 1);
-        let request = ClientRequest::start_task(
-            self.next_request_id(),
-            task_id.clone(),
-            command_line.clone(),
-        );
+        let request_id = self.next_request_id();
+        let request = ClientRequest::start_task(request_id.clone(), task_id.clone(), task);
         self.active_receipt = Some(OperationReceipt {
             command: command_line,
             phase: "Submitting".to_owned(),
@@ -1167,7 +1302,7 @@ impl App {
         });
         self.worker_active = true;
         self.worker_started_at = Some(Instant::now());
-        self.active_task_id = Some(task_id);
+        self.active_task_id = Some(task_id.clone());
         let send_result = self
             .backend
             .as_ref()
@@ -1176,6 +1311,9 @@ impl App {
         if let Err(error) = send_result {
             self.finish_task("Failed to submit");
             self.error(format!("Could not submit task to Python backend: {error}"));
+        } else {
+            self.pending_requests
+                .insert(request_id, PendingRequest::StartTask(task_id));
         }
     }
 
@@ -1188,9 +1326,12 @@ impl App {
             self.error("The connected backend does not support task cancellation.");
             return;
         }
-        let request = ClientRequest::cancel_task(self.next_request_id(), task_id);
+        let request_id = self.next_request_id();
+        let request = ClientRequest::cancel_task(request_id.clone(), task_id.clone());
         match self.backend.as_ref().map(|backend| backend.send(&request)) {
             Some(Ok(())) => {
+                self.pending_requests
+                    .insert(request_id, PendingRequest::CancelTask(task_id));
                 self.update_receipt("Cancelling");
                 self.status("Cancellation requested; waiting for Python checkpoint.");
             }
@@ -1203,8 +1344,11 @@ impl App {
         let Some(backend) = self.backend.take() else {
             return;
         };
-        let request = ClientRequest::shutdown(self.next_request_id());
+        let request_id = self.next_request_id();
+        let request = ClientRequest::shutdown(request_id.clone());
         let _ = backend.send(&request);
+        self.pending_requests
+            .insert(request_id, PendingRequest::Shutdown);
         backend.wait_or_kill(std::time::Duration::from_secs(2));
         self.backend_ready = false;
         self.backend_commands.clear();
@@ -1292,6 +1436,142 @@ fn split_slash_command(command: &str) -> Option<(&str, &str)> {
     (!verb.is_empty()).then_some((verb, remainder.trim_start()))
 }
 
+fn parse_task_payload(command_line: &str) -> Result<serde_json::Value, String> {
+    let (command, arguments) = split_slash_command(command_line)
+        .ok_or_else(|| "task must start with a slash command".to_owned())?;
+    let mut tokens = shell_words::split(arguments).map_err(|error| error.to_string())?;
+    if tokens.is_empty() || tokens[0].starts_with('-') {
+        return Err(format!("/{command} requires a target"));
+    }
+    let target = tokens.remove(0);
+    let (root, options) = parse_option_fields(&tokens)?;
+    let mut task = serde_json::Map::from_iter([
+        ("command".to_owned(), serde_json::Value::String(command.to_owned())),
+        ("target".to_owned(), serde_json::Value::String(target)),
+        ("options".to_owned(), serde_json::Value::Object(options)),
+    ]);
+    task.extend(root);
+    Ok(serde_json::Value::Object(task))
+}
+
+fn parse_scope_payload(arguments: &str) -> Result<serde_json::Value, String> {
+    let tokens = shell_words::split(arguments).map_err(|error| error.to_string())?;
+    let (root, options) = parse_option_fields(&tokens)?;
+    if !root.is_empty() {
+        return Err("scope accepts scope options only".to_owned());
+    }
+    const ALLOWED: &[&str] = &[
+        "only_port",
+        "only_host",
+        "only_path",
+        "blocked_host",
+        "blocked_path",
+        "allow_actions",
+        "block_actions",
+    ];
+    if let Some(field) = options.keys().find(|field| !ALLOWED.contains(&field.as_str())) {
+        return Err(format!("unsupported scope option: --{}", field.replace('_', "-")));
+    }
+    Ok(serde_json::Value::Object(options))
+}
+
+fn parse_option_fields(
+    tokens: &[String],
+) -> Result<(serde_json::Map<String, serde_json::Value>, serde_json::Map<String, serde_json::Value>), String>
+{
+    let mut root = serde_json::Map::new();
+    let mut options = serde_json::Map::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        let raw = tokens[index].as_str();
+        let (name, inline) = raw
+            .split_once('=')
+            .map_or((raw, None), |(name, value)| (name, Some(value)));
+        let boolean = matches!(
+            name,
+            "--resume" | "--no-resume" | "--mount" | "--repair" | "--force-fresh"
+                | "--no-import" | "--no-report"
+        );
+        let value = if boolean {
+            if inline.is_some() {
+                return Err(format!("{name} does not accept a value"));
+            }
+            None
+        } else if let Some(value) = inline {
+            Some(value.to_owned())
+        } else {
+            index += 1;
+            Some(
+                tokens
+                    .get(index)
+                    .ok_or_else(|| format!("{name} requires a value"))?
+                    .to_owned(),
+            )
+        };
+
+        match name {
+            "--resume" => root.insert("resume".into(), true.into()),
+            "--no-resume" => root.insert("resume".into(), false.into()),
+            "--mount" | "--repair" | "--force-fresh" | "--no-import" => root.insert(
+                name.trim_start_matches("--").replace('-', "_"),
+                true.into(),
+            ),
+            "--no-report" => options.insert("auto_report".into(), false.into()),
+            "--prompt" | "--snapshot" | "--run-name" | "--resume-run" | "--runs-dir"
+            | "--target-type" => {
+                let field = match name {
+                    "--snapshot" => "snapshot_id",
+                    "--resume-run" => "resume_run_name",
+                    _ => name.trim_start_matches("--"),
+                }
+                .replace('-', "_");
+                root.insert(field, value.unwrap().into())
+            }
+            "--target" => {
+                root.entry("additional_targets")
+                    .or_insert_with(|| serde_json::json!([]))
+                    .as_array_mut()
+                    .expect("additional_targets is an array")
+                    .push(value.unwrap().into());
+                None
+            }
+            "--allow-actions" | "--block-actions" => options.insert(
+                name.trim_start_matches("--").replace('-', "_"),
+                serde_json::Value::Array(
+                    value
+                        .unwrap()
+                        .split(',')
+                        .filter(|item| !item.trim().is_empty())
+                        .map(|item| item.trim().into())
+                        .collect(),
+                ),
+            ),
+            "--only-port" | "--max-steps" | "--max-directions" | "--max-tool-rounds"
+            | "--max-parallel" | "--max-rounds" | "--rounds" | "-r" | "--cycles"
+            | "-c" => {
+                let number = value
+                    .unwrap()
+                    .parse::<u64>()
+                    .map_err(|_| format!("{name} must be an integer"))?;
+                let field = match name {
+                    "--rounds" | "-r" => "rounds_per_cycle",
+                    "--cycles" | "-c" => "max_cycles",
+                    _ => name.trim_start_matches("--"),
+                }
+                .replace('-', "_");
+                options.insert(field, number.into())
+            }
+            _ if name.starts_with("--") => options.insert(
+                name.trim_start_matches("--").replace('-', "_"),
+                value.unwrap().into(),
+            ),
+            _ => return Err(format!("unsupported option: {name}")),
+        };
+        index += 1;
+    }
+    Ok((root, options))
+}
+
 fn normalize_backend_command(command: String) -> Option<String> {
     let normalized = command.trim().trim_start_matches('/');
     if normalized.is_empty()
@@ -1322,7 +1602,10 @@ fn next_char_boundary(text: &str, index: usize) -> usize {
 mod tests {
     use std::sync::mpsc;
 
-    use super::{strip_prompt_prefix, ActivePane, App, ExecutionMode, PermissionMode};
+    use super::{
+        parse_scope_payload, parse_task_payload, strip_prompt_prefix, ActivePane, App,
+        ExecutionMode, PendingRequest, PermissionMode,
+    };
 
     #[test]
     fn strip_prompt_prefix_tolerates_pasted_transcript_prefix() {
@@ -1404,6 +1687,8 @@ mod tests {
     fn ready_event_hydrates_backend_capabilities() {
         let (sender, _) = mpsc::channel();
         let mut app = App::new(sender);
+        app.pending_requests
+            .insert("r1".into(), PendingRequest::Initialize);
         let event = crate::protocol::parse_backend_line(
             r#"{"protocol_version":1,"type":"ready","request_id":"r1","backend":{"pid":7,"version":"test","protocol_version":1},"capabilities":{"commands":["scan","run"],"control_operations":["example.inspect"],"cancellation":true,"authoritative_state":true},"runtime":{"config_ready":true,"provider":"test","model":"test","mcp_started":0,"skills":[]},"state":{"target":"","phase":"idle","task_constraints":{},"task":{"active":false,"task_id":null},"last_run":null,"findings":[],"evidence":[],"constraint_violations":[]}}"#,
         )
@@ -1431,6 +1716,7 @@ mod tests {
 
         app.apply_event(crate::protocol::AppEvent::Backend(
             crate::protocol::BackendEvent::State {
+                request_id: None,
                 state: crate::protocol::StateSnapshot {
                     target: String::new(),
                     phase: String::new(),
@@ -1458,20 +1744,46 @@ mod tests {
     }
 
     #[test]
+    fn response_ids_are_correlated_with_request_kind_and_task() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+        app.worker_active = true;
+        app.active_task_id = Some("t1".into());
+        app.pending_requests.insert(
+            "r-control".into(),
+            PendingRequest::Control("session.scope.update".into()),
+        );
+
+        app.apply_event(crate::protocol::AppEvent::Backend(
+            crate::protocol::BackendEvent::Error {
+                request_id: Some("r-control".into()),
+                task_id: Some("t1".into()),
+                code: "task_busy".into(),
+                message: "scope cannot change while a task is active".into(),
+            },
+        ));
+
+        assert!(app.worker_active);
+        assert_eq!(app.active_task_id.as_deref(), Some("t1"));
+    }
+
+    #[test]
     fn task_event_summaries_never_override_authoritative_state() {
         let (sender, _) = mpsc::channel();
         let mut app = App::new(sender);
         app.worker_active = true;
         app.active_task_id = Some("t1".into());
+        app.pending_requests
+            .insert("r-start".into(), PendingRequest::StartTask("t1".into()));
 
         app.apply_event(crate::protocol::AppEvent::Backend(
             crate::protocol::BackendEvent::TaskStarted {
+                request_id: "r-start".into(),
                 task_id: "t1".into(),
-                command: "run".into(),
-                normalized_command: "/run authoritative.test".into(),
-                _target: "summary.test".into(),
-                _resume: true,
-                _constraints: serde_json::json!({"allowed_hosts": ["summary.test"]}),
+                task: serde_json::json!({
+                    "command": "run",
+                    "target": "summary.test"
+                }),
                 state: crate::protocol::StateSnapshot {
                     target: "authoritative.test".into(),
                     phase: "recon".into(),
@@ -1509,6 +1821,7 @@ mod tests {
         };
         app.apply_event(crate::protocol::AppEvent::Backend(
             crate::protocol::BackendEvent::TaskCompleted {
+                request_id: "r-start".into(),
                 task_id: "t1".into(),
                 result: serde_json::json!({}),
                 findings: vec![summary_finding],
@@ -1615,6 +1928,26 @@ mod tests {
     }
 
     #[test]
+    fn task_command_is_only_a_presentation_adapter_for_the_structured_dto() {
+        let task = parse_task_payload(
+            "/scan https://app.test/admin --ports 80,443 --only-port 443 --no-resume",
+        )
+        .unwrap();
+
+        assert_eq!(task["command"], "scan");
+        assert_eq!(task["target"], "https://app.test/admin");
+        assert_eq!(task["resume"], false);
+        assert_eq!(task["options"]["ports"], "80,443");
+        assert_eq!(task["options"]["only_port"], 443);
+    }
+
+    #[test]
+    fn scope_adapter_rejects_non_scope_fields() {
+        let error = parse_scope_payload("--engine solve").unwrap_err();
+        assert!(error.contains("unsupported scope option"));
+    }
+
+    #[test]
     fn streamed_events_update_and_finalize_the_work_receipt() {
         let (sender, _) = mpsc::channel();
         let mut app = App::new(sender);
@@ -1625,6 +1958,8 @@ mod tests {
         });
         app.worker_active = true;
         app.active_task_id = Some("t1".into());
+        app.pending_requests
+            .insert("r-start".into(), PendingRequest::StartTask("t1".into()));
         let finding = crate::protocol::Finding {
             severity: "high".into(),
             title: "Test finding".into(),
@@ -1638,6 +1973,7 @@ mod tests {
         ));
         app.apply_event(crate::protocol::AppEvent::Backend(
             crate::protocol::BackendEvent::TaskCompleted {
+                request_id: "r-start".into(),
                 task_id: "t1".into(),
                 result: serde_json::json!({}),
                 findings: Vec::new(),

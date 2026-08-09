@@ -10,7 +10,8 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
-from vulnclaw.tui_backend import BackendSession, parse_task_command
+from vulnclaw.task_service import TaskCreateRequest, TaskOptions, prepare_task
+from vulnclaw.tui_backend import BackendSession
 from vulnclaw.tui_protocol import JsonlWriter, ProtocolError, decode_client_message
 
 
@@ -57,6 +58,19 @@ def events(stream: io.StringIO) -> list[dict[str, Any]]:
     return [json.loads(line) for line in stream.getvalue().splitlines()]
 
 
+def task_payload(
+    command: str, target: str, *, options: dict[str, Any] | None = None, resume: bool = True
+) -> dict[str, Any]:
+    return {
+        "task": {
+            "command": command,
+            "target": target,
+            "resume": resume,
+            "options": options or {},
+        }
+    }
+
+
 def protocol_validator() -> Draft202012Validator:
     schema_path = Path(__file__).resolve().parents[2] / "protocol" / "tui-v1.schema.json"
     return Draft202012Validator(json.loads(schema_path.read_text(encoding="utf-8")))
@@ -69,7 +83,7 @@ async def test_initialize_and_two_tasks_share_one_session_backend_pid() -> None:
 
     async def runner(fake: FakeRuntime, task, sink) -> dict[str, Any]:
         fake.run_count += 1
-        sink.on_status(f"running {task.target}")
+        sink.on_status(f"running {task.request.target}")
         return {
             "status": "completed",
             "run": {"name": f"run-{fake.run_count}"},
@@ -78,7 +92,7 @@ async def test_initialize_and_two_tasks_share_one_session_backend_pid() -> None:
                     "id": f"f-{fake.run_count}",
                     "severity": "high",
                     "title": f"Finding {fake.run_count}",
-                    "target": task.target,
+                    "target": task.request.target,
                 }
             ],
         }
@@ -104,7 +118,7 @@ async def test_initialize_and_two_tasks_share_one_session_backend_pid() -> None:
                 "start_task",
                 f"r-{index}",
                 task_id=f"t-{index}",
-                payload={"command_line": f"/run https://target-{index}.test"},
+                payload=task_payload("run", f"https://target-{index}.test"),
             )
         )
         await session.wait_for_idle()
@@ -165,10 +179,12 @@ async def test_scope_control_updates_defaults_for_later_tasks_and_can_reset() ->
             payload={
                 "operation": "session.scope.update",
                 "arguments": {
-                    "command_line": (
-                        "--only-host session.test --only-port 443 "
-                        "--allow-actions recon,scan --block-actions exploit"
-                    )
+                    "scope": {
+                        "only_host": "session.test",
+                        "only_port": 443,
+                        "allow_actions": ["recon", "scan"],
+                        "block_actions": ["exploit"],
+                    }
                 },
             },
         )
@@ -187,7 +203,7 @@ async def test_scope_control_updates_defaults_for_later_tasks_and_can_reset() ->
             "start_task",
             "r-task",
             task_id="t-task",
-            payload={"command_line": "/scan target.test"},
+            payload=task_payload("scan", "target.test"),
         )
     )
     await session.wait_for_idle()
@@ -235,7 +251,7 @@ async def test_scope_control_rejects_invalid_options() -> None:
                 "r-scope",
                 payload={
                     "operation": "session.scope.update",
-                    "arguments": {"command_line": "--only-port nope"},
+                    "arguments": {"scope": {"unknown": "value"}},
                 },
             )
         )
@@ -264,7 +280,7 @@ async def test_concurrent_task_is_rejected_as_busy() -> None:
             "start_task",
             "r-1",
             task_id="t-1",
-            payload={"command_line": "/run example.test"},
+            payload=task_payload("run", "example.test"),
         )
     )
     await started.wait()
@@ -275,7 +291,7 @@ async def test_concurrent_task_is_rejected_as_busy() -> None:
                 "start_task",
                 "r-2",
                 task_id="t-2",
-                payload={"command_line": "/run other.test"},
+                payload=task_payload("run", "other.test"),
             )
         )
     assert caught.value.code == "task_busy"
@@ -286,7 +302,7 @@ async def test_concurrent_task_is_rejected_as_busy() -> None:
                 "r-scope",
                 payload={
                     "operation": "session.scope.update",
-                    "arguments": {"command_line": "--only-port 443"},
+                    "arguments": {"scope": {"only_port": 443}},
                 },
             )
         )
@@ -343,7 +359,7 @@ async def test_cancel_keeps_backend_available_and_shutdown_stops_runtime_once() 
             "start_task",
             "r-1",
             task_id="t-1",
-            payload={"command_line": "/run first.test"},
+            payload=task_payload("run", "first.test"),
         )
     )
     await started.wait()
@@ -355,7 +371,9 @@ async def test_cancel_keeps_backend_available_and_shutdown_stops_runtime_once() 
             "start_task",
             "r-2",
             task_id="t-2",
-            payload={"command_line": "/recon second.test --allow-actions recon"},
+            payload=task_payload(
+                "recon", "second.test", options={"allow_actions": ["recon"]}
+            ),
         )
     )
     await session.wait_for_idle()
@@ -375,16 +393,27 @@ async def test_cancel_keeps_backend_available_and_shutdown_stops_runtime_once() 
     assert runtime.stop_calls == 1
 
 
-def test_python_parses_scope_and_action_constraints() -> None:
-    task = parse_task_command(
-        "/scan https://app.example/admin --only-port 443 --only-host app.example "
-        "--only-path /admin --blocked-host internal.example --blocked-path /debug "
-        "--allow-actions recon,scan --block-actions exploit --no-resume"
+def test_python_prepares_scope_and_action_constraints() -> None:
+    task = prepare_task(
+        TaskCreateRequest(
+            command="scan",
+            target="https://app.example/admin",
+            resume=False,
+            options=TaskOptions(
+                only_port=443,
+                only_host="app.example",
+                only_path="/admin",
+                blocked_host="internal.example",
+                blocked_path="/debug",
+                allow_actions=["recon", "scan"],
+                block_actions=["exploit"],
+            ),
+        )
     )
 
-    assert task.command == "scan"
-    assert task.target == "https://app.example/admin"
-    assert task.resume is False
+    assert task.request.command == "scan"
+    assert task.request.target == "https://app.example/admin"
+    assert task.request.resume is False
     assert task.constraints.allowed_ports == [443]
     assert task.constraints.allowed_hosts == ["app.example"]
     assert task.constraints.allowed_paths == ["/admin"]
@@ -397,4 +426,10 @@ def test_python_parses_scope_and_action_constraints() -> None:
 
 def test_python_rejects_command_outside_allowed_actions() -> None:
     with pytest.raises(ValueError, match="outside allowed actions"):
-        parse_task_command("/exploit target.test --allow-actions recon,scan")
+        prepare_task(
+            TaskCreateRequest(
+                command="exploit",
+                target="target.test",
+                options=TaskOptions(allow_actions=["recon", "scan"]),
+            )
+        )

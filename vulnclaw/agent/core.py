@@ -474,7 +474,7 @@ class AgentCore:
         # Chat is free-form by default, but protocol/API callers can provide an
         # already parsed scope.  This keeps the Python core authoritative instead
         # of forcing presentation clients to encode constraints back into prose.
-        self._apply_task_constraints(task_constraints or TaskConstraints())
+        self.apply_task_constraints(task_constraints or TaskConstraints())
 
         # Detect target and phase from input
         detected_target = target or self._detect_target(user_input)
@@ -553,7 +553,7 @@ class AgentCore:
             from vulnclaw.agent.team import run_team_pentest
 
             if task_constraints is not None:
-                self._apply_task_constraints(task_constraints)
+                self.apply_task_constraints(task_constraints)
 
             await run_team_pentest(
                 self,
@@ -602,7 +602,7 @@ class AgentCore:
             self.context.state.target = detected_target
         self._reset_runtime_state(user_input=user_input)
         if task_constraints is not None:
-            self._apply_task_constraints(task_constraints)
+            self.apply_task_constraints(task_constraints)
         self.context.add_user_message(user_input)
 
         resolved_goal = goal or user_input
@@ -617,7 +617,7 @@ class AgentCore:
             on_event=on_event,
         )
 
-    def _apply_task_constraints(self, constraints: TaskConstraints) -> None:
+    def apply_task_constraints(self, constraints: TaskConstraints) -> None:
         """Install one authoritative constraint object across the runtime."""
 
         self.context.state.task_constraints = constraints

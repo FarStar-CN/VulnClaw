@@ -26,7 +26,9 @@ def test_decode_valid_start_task() -> None:
                 "type": "start_task",
                 "request_id": "r1",
                 "task_id": "t1",
-                "payload": {"command_line": "/run https://example.test"},
+                "payload": {
+                    "task": {"command": "run", "target": "https://example.test"}
+                },
             }
         )
     )
@@ -34,7 +36,8 @@ def test_decode_valid_start_task() -> None:
     assert message.type == "start_task"
     assert message.request_id == "r1"
     assert message.task_id == "t1"
-    assert message.payload["command_line"].startswith("/run")
+    assert message.payload["task"]["command"] == "run"
+    assert message.payload["task"]["target"] == "https://example.test"
 
 
 def test_decode_valid_generic_control_request() -> None:
@@ -120,6 +123,30 @@ def test_writer_emits_one_versioned_json_object_per_line() -> None:
     }
 
 
+def test_runtime_validation_rejects_unknown_fields_in_both_directions() -> None:
+    request = {
+        "protocol_version": 1,
+        "type": "start_task",
+        "request_id": "r1",
+        "task_id": "t1",
+        "payload": {"task": {"command": "run", "target": "example.test"}},
+        "unexpected": True,
+    }
+    with pytest.raises(ProtocolError, match="schema violation"):
+        decode_client_message(json.dumps(request))
+
+    stream = io.StringIO()
+    with pytest.raises(ValidationError):
+        JsonlWriter(stream).write(
+            make_event(
+                "shutdown_complete",
+                request_id="r2",
+                unexpected=True,
+            )
+        )
+    assert stream.getvalue() == ""
+
+
 def test_on_disk_schema_covers_every_v1_message_shape() -> None:
     schema_path = Path(__file__).resolve().parents[2] / "protocol" / "tui-v1.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -166,7 +193,7 @@ def test_on_disk_schema_covers_every_v1_message_shape() -> None:
             "type": "start_task",
             "request_id": "r2",
             "task_id": "t1",
-            "payload": {"command_line": "/run example.test"},
+            "payload": {"task": {"command": "run", "target": "example.test"}},
         },
         {
             "protocol_version": 1,
@@ -212,11 +239,7 @@ def test_on_disk_schema_covers_every_v1_message_shape() -> None:
             "type": "task_started",
             "request_id": "r2",
             "task_id": "t1",
-            "command": "run",
-            "normalized_command": "/run example.test",
-            "target": "example.test",
-            "resume": True,
-            "constraints": constraints,
+            "task": {"command": "run", "target": "example.test"},
             "state": state,
         },
         {"protocol_version": 1, "type": "status", "task_id": "t1", "status": "running"},
@@ -299,10 +322,14 @@ def test_on_disk_schema_covers_every_v1_message_shape() -> None:
         "protocol_version": 1,
         "type": "start_task",
         "request_id": "r2",
-        "payload": {"command_line": "/run example.test"},
+        "payload": {"task": {"command": "run", "target": "example.test"}},
     }
     with pytest.raises(ValidationError):
         validator.validate(invalid_start)
+
+    unknown_field = dict(messages[1], unexpected=True)
+    with pytest.raises(ValidationError):
+        validator.validate(unknown_field)
 
     incomplete_state = dict(state)
     incomplete_state.pop("phase")
