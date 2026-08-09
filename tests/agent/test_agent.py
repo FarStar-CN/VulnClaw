@@ -1735,10 +1735,17 @@ class TestAgentCoreLoop:
             return None
 
         monkeypatch.setattr(llm_client.asyncio, "sleep", no_sleep)
+        from vulnclaw.i18n import init_i18n
+
+        init_i18n(lang="zh")  # retry-annotation prefix is localized; the fake
+        # LLM response below carries the Chinese recovery text
         result = await llm_client.call_llm_auto(dummy, "sys", "round")
         assert "LLM恢复" in result
         assert "恢复成功" in result
         assert loop.calls == 3
+        # retry count must be substituted, not printed verbatim as {attempts}
+        assert "{attempt" not in result
+        assert "第 2 次重连后恢复" in result
 
     @pytest.mark.asyncio
     async def test_llm_client_bad_request_errors_are_not_retried(self, monkeypatch):

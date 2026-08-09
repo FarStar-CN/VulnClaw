@@ -10,6 +10,7 @@ escaped (``vulnclaw\\[kb]``) in every Rich-rendered string.
 import pytest
 
 import vulnclaw.agent.core as core_mod
+from vulnclaw.i18n import current_lang, init_i18n
 from vulnclaw.kb.retriever import RetrieverStatus
 
 
@@ -32,14 +33,19 @@ class TestKbDegradationHint:
     def test_hint_keeps_the_kb_extra(self, monkeypatch, capsys):
         monkeypatch.setattr(core_mod, "KnowledgeRetriever", _KeywordFallbackRetriever)
 
-        agent = object.__new__(core_mod.AgentCore)
-        agent._report_kb_status()
+        prev_lang = current_lang()
+        init_i18n(lang="zh")  # the degradation warning is localized; pin zh
+        try:
+            agent = object.__new__(core_mod.AgentCore)
+            agent._report_kb_status()
 
-        out = capsys.readouterr().out
-        assert "降级为关键词模式" in out, "expected the degradation warning to be printed"
-        assert "pip install vulnclaw[kb]" in out, (
-            f"install hint lost its [kb] extra to Rich markup parsing; got: {out!r}"
-        )
+            out = capsys.readouterr().out
+            assert "降级为关键词模式" in out, "expected the degradation warning to be printed"
+            assert "pip install vulnclaw[kb]" in out, (
+                f"install hint lost its [kb] extra to Rich markup parsing; got: {out!r}"
+            )
+        finally:
+            init_i18n(lang=prev_lang)
 
 
 class TestWebExtraHints:
