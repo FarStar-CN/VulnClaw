@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from vulnclaw.agent.agent_state import (
     OBSERVATION_ONLY_TOOLS,
@@ -337,7 +337,9 @@ def _near_miss_evidence_reason(state: AgentState) -> str:
 
     for evidence in state.evidence[-8:]:
         body = "\n".join(
-            part for part in (evidence.summary, evidence.preview[:1600], evidence.content[:1600]) if part
+            part
+            for part in (evidence.summary, evidence.preview[:1600], evidence.content[:1600])
+            if part
         )
         lower = body.lower()
         if any(marker in lower for marker in _NEAR_MISS_EVIDENCE_MARKERS):
@@ -349,19 +351,15 @@ def _near_miss_evidence_reason(state: AgentState) -> str:
 def _no_path_rejection_reason(state: AgentState, no_path_text: str) -> str:
     """Reject the first premature NO_PATH near unresolved high-signal evidence."""
 
-    if any(
-        str(hint).startswith(_NEAR_MISS_GUARD_PREFIX)
-        for hint in state.correction_hints[-8:]
-    ):
+    if any(str(hint).startswith(_NEAR_MISS_GUARD_PREFIX) for hint in state.correction_hints[-8:]):
         return ""
 
     lower = (no_path_text or "").lower()
     reason = _near_miss_evidence_reason(state)
     if not reason:
         return ""
-    if (
-        not any(marker in lower for marker in _NO_PATH_PREMATURE_MARKERS)
-        and any(marker in lower for marker in _NO_PATH_EXHAUSTIVE_MARKERS)
+    if not any(marker in lower for marker in _NO_PATH_PREMATURE_MARKERS) and any(
+        marker in lower for marker in _NO_PATH_EXHAUSTIVE_MARKERS
     ):
         return ""
 
@@ -378,10 +376,10 @@ def _ask_user_rejection_reason(state: AgentState, question: str) -> str:
     lower = (question or "").lower()
     asks_for_external_help = any(marker in lower for marker in _ASK_EXTERNAL_HELP_MARKERS)
     asks_for_true_blocker = any(marker in lower for marker in _ASK_TRUE_BLOCKER_MARKERS)
-    if any(
-        str(hint).startswith(_ASK_USER_GUARD_PREFIX)
-        for hint in state.correction_hints[-8:]
-    ) and not asks_for_external_help:
+    if (
+        any(str(hint).startswith(_ASK_USER_GUARD_PREFIX) for hint in state.correction_hints[-8:])
+        and not asks_for_external_help
+    ):
         return ""
 
     reason = _near_miss_evidence_reason(state)
@@ -395,8 +393,7 @@ def _ask_user_rejection_reason(state: AgentState, question: str) -> str:
         "parser/filter boundary:" in getattr(fact, "text", "").lower()
         for fact in state.pinned_facts[-16:]
     ) or any(
-        "parser/filter differential:" in str(hint).lower()
-        for hint in state.correction_hints[-8:]
+        "parser/filter differential:" in str(hint).lower() for hint in state.correction_hints[-8:]
     )
 
     if asks_for_external_help or (_goal_wants_flag(state.goal) and parser_filter_hinted):
@@ -488,7 +485,11 @@ def _completion_gate(state: AgentState, text: str) -> tuple[bool, str, list[str]
     flags_in_evidence = extract_flags(evidence_text)
     if _goal_wants_flag(state.goal):
         if not flags_in_answer:
-            return False, "goal appears to require a flag/shell, but FINAL did not include a flag", cited
+            return (
+                False,
+                "goal appears to require a flag/shell, but FINAL did not include a flag",
+                cited,
+            )
         ungrounded = [flag for flag in flags_in_answer if flag not in flags_in_evidence]
         if ungrounded:
             return False, f"claimed flag not present in tool evidence: {ungrounded[0]}", cited
@@ -526,9 +527,7 @@ def _implicit_flag_completion(state: AgentState, text: str) -> tuple[bool, str, 
     if not grounded:
         return False, "", []
     evidence_ids = [
-        item.id
-        for item in state.evidence
-        if any(flag in (item.content or "") for flag in grounded)
+        item.id for item in state.evidence if any(flag in (item.content or "") for flag in grounded)
     ]
     return True, f"verified flag from recorded evidence: {grounded[0]}", evidence_ids
 
@@ -559,6 +558,7 @@ async def solve(
     max_tool_rounds: int = 6,
     stream_sink: Any = None,
     on_event: Optional[Callable[[str, dict], None]] = None,
+    input_provider: Optional[Callable[[str], Awaitable[str]]] = None,
 ) -> SolveResult:
     """Run the model-led solve loop."""
 
@@ -573,6 +573,7 @@ async def solve(
             max_tool_rounds=max_tool_rounds,
             stream_sink=stream_sink,
             on_event=on_event,
+            input_provider=input_provider,
         )
     finally:
         await shutdown_subagents(agent)
@@ -588,6 +589,7 @@ async def _solve_impl(
     max_tool_rounds: int = 6,
     stream_sink: Any = None,
     on_event: Optional[Callable[[str, dict], None]] = None,
+    input_provider: Optional[Callable[[str], Awaitable[str]]] = None,
 ) -> SolveResult:
     """Run the model-led solve loop."""
 
@@ -601,6 +603,30 @@ async def _solve_impl(
     def emit(kind: str, payload: dict) -> None:
         if on_event is not None:
             on_event(kind, payload)
+
+    async def request_user_input(question: str, *, pause_reason: str) -> bool:
+        """Pause this solve turn for a frontend answer when a provider exists.
+
+        Returns true when an answer was supplied and the same solve loop should
+        continue.  Callers without an interactive provider retain the existing
+        batch behaviour and receive ``SolveResult(needs_user=True)``.
+        """
+
+        state.ask_user(question)
+        emit("ask_user", {"question": question, "reason": pause_reason})
+        if input_provider is None:
+            return False
+
+        answer = (await input_provider(question)).strip()
+        if not answer:
+            raise ValueError("interactive input provider returned an empty answer")
+        for index in range(len(state.pending_questions) - 1, -1, -1):
+            if state.pending_questions[index] == question:
+                state.pending_questions.pop(index)
+                break
+        agent.context.add_user_message(f"[user response]\n{answer}")
+        emit("user_input_received", {"question": question})
+        return True
 
     repeated_errors = 0
     observation_only_streak = 0
@@ -663,6 +689,7 @@ async def _solve_impl(
 
         stall_guard_message = ""
         stop_for_stall = False
+        stall_question = ""
         if _is_observation_only_turn(tools_used, new_evidence_count):
             observation_only_streak += 1
             if observation_only_streak == 2:
@@ -685,10 +712,8 @@ async def _solve_impl(
                     "The agent repeatedly reread saved evidence without producing new evidence. "
                     "Please provide a new hypothesis/scope, or rerun after adjusting the approach."
                 )
-                state.ask_user(question)
-                needs_user = True
                 reason = "stalled after repeated evidence-only turns"
-                emit("ask_user", {"question": question, "reason": reason})
+                stall_question = question
                 stop_for_stall = True
         else:
             observation_only_streak = 0
@@ -703,6 +728,11 @@ async def _solve_impl(
         if hasattr(agent, "_finding_parser"):
             agent._finding_parser.parse(cleaned)
         if stop_for_stall:
+            if await request_user_input(stall_question, pause_reason=reason):
+                observation_only_streak = 0
+                reason = "runaway safety budget reached"
+                continue
+            needs_user = True
             break
 
         if _has_marker(cleaned, _ASK_MARKERS):
@@ -716,10 +746,11 @@ async def _solve_impl(
                     f"{rejection} Continue only after reassessing the unresolved evidence."
                 )
                 continue
-            state.ask_user(question)
-            needs_user = True
             reason = "waiting for user input"
-            emit("ask_user", {"question": question})
+            if await request_user_input(question, pause_reason=reason):
+                reason = "runaway safety budget reached"
+                continue
+            needs_user = True
             break
 
         if _has_marker(cleaned, _NO_PATH_MARKERS):

@@ -152,19 +152,30 @@ mod tests {
     const FAKE_BACKEND: &str = r#"
 import json, os, sys
 constraints = {"allowed_ports": [], "blocked_ports": [], "allowed_hosts": [], "blocked_hosts": [], "allowed_paths": [], "blocked_paths": [], "allowed_actions": [], "blocked_actions": [], "notes": [], "strict_mode": False}
-def state(active=False, task_id=None):
-    return {"target": "target.test", "phase": "idle", "task_constraints": constraints, "task": {"active": active, "task_id": task_id}, "last_run": None, "findings": [], "evidence": [], "constraint_violations": []}
+def state(active=False, task_id=None, interaction=None):
+    return {"target": "target.test", "phase": "idle", "task_constraints": constraints, "task": {"active": active, "task_id": task_id}, "last_run": None, "findings": [], "evidence": [], "constraint_violations": [], "interaction": interaction}
+pending = None
 for line in sys.stdin:
     msg = json.loads(line)
     base = {"protocol_version": 1}
     if msg["type"] == "initialize":
-        print(json.dumps(base | {"type": "ready", "request_id": msg["request_id"], "backend": {"pid": os.getpid(), "version": "test", "protocol_version": 1}, "capabilities": {"commands": ["run"], "control_operations": ["example.inspect"], "cancellation": True, "authoritative_state": True}, "runtime": {"config_ready": True, "provider": "test", "model": "test", "mcp_started": 0, "skills": []}, "state": state()}), flush=True)
+        print(json.dumps(base | {"type": "ready", "request_id": msg["request_id"], "backend": {"pid": os.getpid(), "version": "test", "protocol_version": 1}, "capabilities": {"commands": ["run"], "control_operations": ["example.inspect"], "cancellation": True, "authoritative_state": True, "interactive_input": True}, "runtime": {"config_ready": True, "provider": "test", "model": "test", "mcp_started": 0, "skills": []}, "state": state()}), flush=True)
     elif msg["type"] == "control":
         print(json.dumps(base | {"type": "control_result", "request_id": msg["request_id"], "operation": msg["payload"]["operation"], "result": {"backend_pid": os.getpid()}}), flush=True)
     elif msg["type"] == "start_task":
         task_id = msg["task_id"]
         print(json.dumps(base | {"type": "task_started", "request_id": msg["request_id"], "task_id": task_id, "task": msg["payload"]["task"], "state": state(True, task_id)}), flush=True)
-        print(json.dumps(base | {"type": "task_completed", "request_id": msg["request_id"], "task_id": task_id, "result": {"summary": {"backend_pid": os.getpid()}}, "findings": [], "state": state()}), flush=True)
+        if "interactive" in msg["payload"]["task"]["target"]:
+            interaction = {"task_id": task_id, "interaction_id": "interaction-1", "question": "Which path?", "input_kind": "text"}
+            pending = (msg["request_id"], task_id)
+            print(json.dumps(base | {"type": "input_required", "task_id": task_id, "interaction_id": "interaction-1", "question": "Which path?", "input_kind": "text", "state": state(True, task_id, interaction)}), flush=True)
+        else:
+            print(json.dumps(base | {"type": "task_completed", "request_id": msg["request_id"], "task_id": task_id, "result": {"summary": {"backend_pid": os.getpid()}}, "findings": [], "state": state()}), flush=True)
+    elif msg["type"] == "provide_input":
+        start_request_id, task_id = pending
+        print(json.dumps(base | {"type": "input_accepted", "request_id": msg["request_id"], "task_id": task_id, "interaction_id": msg["payload"]["interaction_id"]}), flush=True)
+        print(json.dumps(base | {"type": "task_completed", "request_id": start_request_id, "task_id": task_id, "result": {"summary": {"answer": msg["payload"]["answer"]}}, "findings": [], "state": state()}), flush=True)
+        pending = None
     elif msg["type"] == "shutdown":
         print(json.dumps(base | {"type": "shutdown_complete", "request_id": msg["request_id"]}), flush=True)
         break
@@ -230,6 +241,92 @@ for line in sys.stdin:
                     }
                     _ => continue,
                 }
+            }
+        }
+
+        backend
+            .send(&ClientRequest::shutdown("r-shutdown".into()))
+            .unwrap();
+        backend.wait_or_kill(Duration::from_secs(2));
+    }
+
+    #[test]
+    fn transport_keeps_one_task_open_across_interactive_input() {
+        let python = if std::path::Path::new("../.venv/bin/python").exists() {
+            "../.venv/bin/python"
+        } else {
+            "python"
+        };
+        let mut command = Command::new(python);
+        command.arg("-u").arg("-c").arg(FAKE_BACKEND);
+        let (sender, receiver) = mpsc::channel();
+        let backend = spawn_backend_process(command, sender).unwrap();
+
+        backend
+            .send(&ClientRequest::initialize(
+                "r-init".into(),
+                serde_json::json!({}),
+            ))
+            .unwrap();
+        loop {
+            if matches!(
+                receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
+                AppEvent::Backend(BackendEvent::Ready { .. })
+            ) {
+                break;
+            }
+        }
+
+        backend
+            .send(&ClientRequest::start_task(
+                "r-start".into(),
+                "t1".into(),
+                serde_json::json!({"command": "run", "target": "interactive.test"}),
+            ))
+            .unwrap();
+        let interaction_id = loop {
+            match receiver.recv_timeout(Duration::from_secs(3)).unwrap() {
+                AppEvent::Backend(BackendEvent::InputRequired {
+                    task_id,
+                    interaction_id,
+                    state,
+                    ..
+                }) => {
+                    assert_eq!(task_id, "t1");
+                    assert!(state.task.active);
+                    break interaction_id;
+                }
+                AppEvent::Backend(BackendEvent::TaskCompleted { .. }) => {
+                    panic!("task completed before receiving interactive input")
+                }
+                _ => continue,
+            }
+        };
+
+        backend
+            .send(&ClientRequest::provide_input(
+                "r-input".into(),
+                "t1".into(),
+                interaction_id,
+                "/admin".into(),
+            ))
+            .unwrap();
+        let mut accepted = false;
+        loop {
+            match receiver.recv_timeout(Duration::from_secs(3)).unwrap() {
+                AppEvent::Backend(BackendEvent::InputAccepted { task_id, .. }) => {
+                    assert_eq!(task_id, "t1");
+                    accepted = true;
+                }
+                AppEvent::Backend(BackendEvent::TaskCompleted {
+                    task_id, result, ..
+                }) => {
+                    assert!(accepted);
+                    assert_eq!(task_id, "t1");
+                    assert_eq!(result["summary"]["answer"], "/admin");
+                    break;
+                }
+                _ => continue,
             }
         }
 

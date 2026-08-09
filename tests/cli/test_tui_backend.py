@@ -168,9 +168,7 @@ async def test_scope_control_updates_defaults_for_later_tasks_and_can_reset() ->
         captured_constraints.append(task.constraints)
         return {"status": "completed", "findings": []}
 
-    session = BackendSession(
-        JsonlWriter(stream), runtime_factory=FakeRuntime, task_runner=runner
-    )
+    session = BackendSession(JsonlWriter(stream), runtime_factory=FakeRuntime, task_runner=runner)
     await session.handle(request("initialize", "r-init"))
     await session.handle(
         request(
@@ -271,9 +269,7 @@ async def test_concurrent_task_is_rejected_as_busy() -> None:
         await release.wait()
         return {"findings": []}
 
-    session = BackendSession(
-        JsonlWriter(stream), runtime_factory=FakeRuntime, task_runner=runner
-    )
+    session = BackendSession(JsonlWriter(stream), runtime_factory=FakeRuntime, task_runner=runner)
     await session.handle(request("initialize", "r-init"))
     await session.handle(
         request(
@@ -309,6 +305,230 @@ async def test_concurrent_task_is_rejected_as_busy() -> None:
     assert control_error.value.code == "task_busy"
     release.set()
     await session.wait_for_idle()
+
+
+@pytest.mark.asyncio
+async def test_interactive_input_pauses_and_resumes_the_same_task() -> None:
+    stream = io.StringIO()
+    answers: list[str] = []
+
+    async def runner(runtime, task, sink):
+        answer = await sink.request_input("Which path is authorized?")
+        answers.append(answer)
+        return {"status": "completed", "summary": {"answer": answer}, "findings": []}
+
+    session = BackendSession(JsonlWriter(stream), runtime_factory=FakeRuntime, task_runner=runner)
+    await session.handle(request("initialize", "r-init"))
+    await session.handle(
+        request(
+            "start_task",
+            "r-start",
+            task_id="t-1",
+            payload=task_payload("run", "example.test"),
+        )
+    )
+    while session.pending_interaction is None:
+        await asyncio.sleep(0)
+
+    before_answer = events(stream)
+    required = next(event for event in before_answer if event["type"] == "input_required")
+    assert session.active_task is not None and not session.active_task.done()
+    assert not any(event["type"] == "task_completed" for event in before_answer)
+    assert required["state"]["task"] == {"active": True, "task_id": "t-1"}
+    assert required["state"]["interaction"]["interaction_id"] == required["interaction_id"]
+
+    await session.handle(
+        request(
+            "provide_input",
+            "r-input",
+            task_id="t-1",
+            payload={
+                "interaction_id": required["interaction_id"],
+                "answer": "The /admin path is authorized.",
+            },
+        )
+    )
+    await session.wait_for_idle()
+
+    emitted = events(stream)
+    for event in emitted:
+        protocol_validator().validate(event)
+    emitted_types = [event["type"] for event in emitted]
+    assert emitted_types.index("input_required") < emitted_types.index("input_accepted")
+    assert emitted_types.index("input_accepted") < emitted_types.index("task_completed")
+    assert answers == ["The /admin path is authorized."]
+    completed = next(event for event in emitted if event["type"] == "task_completed")
+    assert completed["result"]["summary"]["answer"] == "The /admin path is authorized."
+    assert completed["state"]["interaction"] is None
+
+
+@pytest.mark.asyncio
+async def test_cancelling_while_input_is_pending_unblocks_the_task() -> None:
+    stream = io.StringIO()
+
+    async def runner(runtime, task, sink):
+        await sink.request_input("Continue?")
+        return {"findings": []}
+
+    session = BackendSession(JsonlWriter(stream), runtime_factory=FakeRuntime, task_runner=runner)
+    await session.handle(request("initialize", "r-init"))
+    await session.handle(
+        request(
+            "start_task",
+            "r-start",
+            task_id="t-1",
+            payload=task_payload("run", "example.test"),
+        )
+    )
+    while session.pending_interaction is None:
+        await asyncio.sleep(0)
+
+    await session.handle(request("cancel_task", "r-cancel", task_id="t-1"))
+    await session.wait_for_idle()
+
+    emitted = events(stream)
+    assert any(event["type"] == "input_required" for event in emitted)
+    assert any(event["type"] == "task_cancelled" for event in emitted)
+    assert not any(event["type"] == "task_completed" for event in emitted)
+    assert session.pending_interaction is None
+
+
+@pytest.mark.asyncio
+async def test_interactive_input_rejects_invalid_and_duplicate_answers() -> None:
+    stream = io.StringIO()
+
+    async def runner(runtime, task, sink):
+        answer = await sink.request_input("Continue?")
+        return {"summary": {"answer": answer}, "findings": []}
+
+    session = BackendSession(JsonlWriter(stream), runtime_factory=FakeRuntime, task_runner=runner)
+    await session.handle(request("initialize", "r-init"))
+    await session.handle(
+        request(
+            "start_task",
+            "r-start",
+            task_id="t-1",
+            payload=task_payload("run", "example.test"),
+        )
+    )
+    while session.pending_interaction is None:
+        await asyncio.sleep(0)
+    interaction_id = session.pending_interaction.interaction_id
+
+    with pytest.raises(ProtocolError, match="does not match") as mismatch:
+        await session.handle(
+            request(
+                "provide_input",
+                "r-mismatch",
+                task_id="t-1",
+                payload={"interaction_id": "wrong", "answer": "yes"},
+            )
+        )
+    assert mismatch.value.code == "interaction_mismatch"
+
+    with pytest.raises(ProtocolError, match="non-empty") as invalid:
+        await session.handle(
+            request(
+                "provide_input",
+                "r-empty",
+                task_id="t-1",
+                payload={"interaction_id": interaction_id, "answer": "   "},
+            )
+        )
+    assert invalid.value.code == "invalid_input"
+
+    await session.handle(
+        request(
+            "provide_input",
+            "r-answer",
+            task_id="t-1",
+            payload={"interaction_id": interaction_id, "answer": "yes"},
+        )
+    )
+    with pytest.raises(ProtocolError, match="no interactive input") as duplicate:
+        await session.handle(
+            request(
+                "provide_input",
+                "r-duplicate",
+                task_id="t-1",
+                payload={"interaction_id": interaction_id, "answer": "yes"},
+            )
+        )
+    assert duplicate.value.code == "input_not_pending"
+    await session.wait_for_idle()
+
+
+@pytest.mark.asyncio
+async def test_interactive_input_timeout_fails_instead_of_completing_task() -> None:
+    stream = io.StringIO()
+
+    async def runner(runtime, task, sink):
+        await sink.request_input("Continue?")
+        return {"findings": []}
+
+    session = BackendSession(
+        JsonlWriter(stream),
+        runtime_factory=FakeRuntime,
+        task_runner=runner,
+        input_timeout_seconds=0.01,
+    )
+    await session.handle(request("initialize", "r-init"))
+    await session.handle(
+        request(
+            "start_task",
+            "r-start",
+            task_id="t-1",
+            payload=task_payload("run", "example.test"),
+        )
+    )
+    await session.wait_for_idle()
+
+    emitted = events(stream)
+    failed = next(event for event in emitted if event["type"] == "task_failed")
+    assert "interactive input timed out" in failed["error"]["message"]
+    assert failed["state"]["task"] == {"active": False, "task_id": None}
+    assert failed["state"]["interaction"] is None
+    assert not any(event["type"] == "task_completed" for event in emitted)
+    for event in emitted:
+        protocol_validator().validate(event)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_while_input_is_pending_cancels_task_and_closes_runtime() -> None:
+    stream = io.StringIO()
+    runtime = FakeRuntime()
+
+    async def runner(fake, task, sink):
+        await sink.request_input("Continue?")
+        return {"findings": []}
+
+    session = BackendSession(
+        JsonlWriter(stream), runtime_factory=lambda: runtime, task_runner=runner
+    )
+    await session.handle(request("initialize", "r-init"))
+    await session.handle(
+        request(
+            "start_task",
+            "r-start",
+            task_id="t-1",
+            payload=task_payload("run", "example.test"),
+        )
+    )
+    while session.pending_interaction is None:
+        await asyncio.sleep(0)
+
+    await session.handle(request("shutdown", "r-shutdown"))
+
+    emitted = events(stream)
+    assert [event["type"] for event in emitted][-2:] == [
+        "task_cancelled",
+        "shutdown_complete",
+    ]
+    cancelled = next(event for event in emitted if event["type"] == "task_cancelled")
+    assert cancelled["request_id"] == "r-shutdown"
+    assert not any(event["type"] == "task_completed" for event in emitted)
+    assert session.pending_interaction is None
+    assert runtime.stop_calls == 1
 
 
 @pytest.mark.asyncio
@@ -371,9 +591,7 @@ async def test_cancel_keeps_backend_available_and_shutdown_stops_runtime_once() 
             "start_task",
             "r-2",
             task_id="t-2",
-            payload=task_payload(
-                "recon", "second.test", options={"allow_actions": ["recon"]}
-            ),
+            payload=task_payload("recon", "second.test", options={"allow_actions": ["recon"]}),
         )
     )
     await session.wait_for_idle()

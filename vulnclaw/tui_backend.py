@@ -34,6 +34,7 @@ from vulnclaw.tui_protocol import (
 
 # Concrete management operations are capability-gated feature extensions. The
 # base backend owns mutable session scope defaults; client posture remains local.
+DEFAULT_INPUT_TIMEOUT_SECONDS = 15 * 60
 SUPPORTED_CONTROL_OPERATIONS = frozenset({"session.scope.reset", "session.scope.update"})
 RUNTIME_STATE_FIELDS = frozenset(
     {"target", "phase", "task_constraints", "findings", "evidence", "constraint_violations"}
@@ -59,15 +60,34 @@ class BackendRuntime:
 
 RuntimeFactory = Callable[[], Any | Awaitable[Any]]
 TaskRunner = Callable[[Any, PreparedTask, "BackendStreamSink"], Awaitable[dict[str, Any]]]
+InputRequester = Callable[[str], Awaitable[str]]
+
+
+@dataclass
+class PendingInteraction:
+    """One backend-owned question waiting for the connected TUI client."""
+
+    task_id: str
+    interaction_id: str
+    question: str
+    future: asyncio.Future[str]
 
 
 class BackendStreamSink:
     """Adapt AgentCore streaming callbacks to protocol-v1 task events."""
 
-    def __init__(self, writer: JsonlWriter, task_id: str, *, show_thinking: bool) -> None:
+    def __init__(
+        self,
+        writer: JsonlWriter,
+        task_id: str,
+        *,
+        show_thinking: bool,
+        input_requester: InputRequester | None = None,
+    ) -> None:
         self._writer = writer
         self._task_id = task_id
         self._show_thinking = show_thinking
+        self._input_requester = input_requester
         self._thinking_buffer = ""
         self._content_buffer = ""
 
@@ -116,6 +136,16 @@ class BackendStreamSink:
     def on_stream_end(self) -> None:
         self._flush_all()
 
+    async def request_input(self, question: str) -> str:
+        """Suspend the active task until the TUI answers this question."""
+
+        self._flush_all()
+        if self._input_requester is None:
+            raise RuntimeError("interactive input is not available for this client")
+        answer = await self._input_requester(str(question or ""))
+        self.on_status("User input received; resuming task.")
+        return answer
+
 
 class BackendSession:
     """Stateful request dispatcher for one connected TUI client."""
@@ -126,10 +156,14 @@ class BackendSession:
         *,
         runtime_factory: RuntimeFactory = None,
         task_runner: TaskRunner = None,
+        input_timeout_seconds: float = DEFAULT_INPUT_TIMEOUT_SECONDS,
     ) -> None:
+        if input_timeout_seconds <= 0:
+            raise ValueError("input_timeout_seconds must be positive")
         self.writer = writer
         self._runtime_factory = runtime_factory or _create_runtime
         self._task_runner = task_runner or _run_task
+        self._input_timeout_seconds = input_timeout_seconds
         self.runtime: Any | None = None
         self.bootstrap: dict[str, Any] = {}
         self.initialized = False
@@ -137,6 +171,8 @@ class BackendSession:
         self.active_task: asyncio.Task[None] | None = None
         self.active_task_id: str | None = None
         self.cancel_request_id: str | None = None
+        self.pending_interaction: PendingInteraction | None = None
+        self.interaction_counter = 0
         self.current_target = ""
         self.current_constraints: dict[str, Any] = {}
         self.last_run: dict[str, Any] | None = None
@@ -146,6 +182,7 @@ class BackendSession:
             "initialize": self._initialize,
             "start_task": self._start_task,
             "cancel_task": self._cancel_task,
+            "provide_input": self._provide_input,
             "get_state": self._get_state,
             "control": self._control,
             "shutdown": self._shutdown,
@@ -175,9 +212,7 @@ class BackendSession:
             scope = TaskOptions.model_validate(
                 {field: bootstrap[field] for field in SCOPE_FIELDS if field in bootstrap}
             )
-            initial_constraints = build_scope_constraints(
-                self.current_target, scope.model_dump()
-            )
+            initial_constraints = build_scope_constraints(self.current_target, scope.model_dump())
             _validate_task_action(bootstrap_command, initial_constraints)
         except ValueError as exc:
             raise ProtocolError(
@@ -208,6 +243,7 @@ class BackendSession:
                 "control_operations": sorted(SUPPORTED_CONTROL_OPERATIONS),
                 "cancellation": True,
                 "authoritative_state": True,
+                "interactive_input": True,
             },
             runtime=_runtime_metadata(self.runtime),
             state=self.state_snapshot(),
@@ -264,6 +300,7 @@ class BackendSession:
                 getattr(getattr(self.runtime, "config", None), "session", None)
                 and getattr(self.runtime.config.session, "show_thinking", False)
             ),
+            input_requester=lambda question: self._request_input(task_id, question),
         )
         try:
             result = await self._task_runner(self.runtime, task, sink)
@@ -302,6 +339,11 @@ class BackendSession:
                 state=self.state_snapshot(active=False),
             )
         finally:
+            pending = self.pending_interaction
+            if pending is not None and pending.task_id == task_id:
+                self.pending_interaction = None
+                if not pending.future.done():
+                    pending.future.cancel()
             self.active_task_id = None
             self.cancel_request_id = None
             self.active_task = None
@@ -321,6 +363,75 @@ class BackendSession:
             )
         self.cancel_request_id = message.request_id
         self.active_task.cancel()
+
+    async def _request_input(self, task_id: str, question: str) -> str:
+        question = question.strip()
+        if not question:
+            raise RuntimeError("interactive question must not be empty")
+        if self.active_task_id != task_id:
+            raise RuntimeError(f"task {task_id} is no longer active")
+        if self.pending_interaction is not None:
+            raise RuntimeError("another interactive question is already pending")
+
+        self.interaction_counter += 1
+        interaction_id = f"interaction-{os.getpid()}-{self.interaction_counter}"
+        future = asyncio.get_running_loop().create_future()
+        pending = PendingInteraction(task_id, interaction_id, question, future)
+        self.pending_interaction = pending
+        self.writer.event(
+            "input_required",
+            task_id=task_id,
+            interaction_id=interaction_id,
+            question=question,
+            input_kind="text",
+            state=self.state_snapshot(),
+        )
+        try:
+            return await asyncio.wait_for(future, timeout=self._input_timeout_seconds)
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"interactive input timed out after {self._input_timeout_seconds:g} seconds"
+            ) from exc
+        finally:
+            if self.pending_interaction is pending:
+                self.pending_interaction = None
+
+    async def _provide_input(self, message: ClientMessage) -> None:
+        self._require_initialized(message)
+        pending = self.pending_interaction
+        if pending is None:
+            raise ProtocolError(
+                "input_not_pending",
+                "no interactive input is currently pending",
+                request_id=message.request_id,
+                task_id=message.task_id,
+            )
+        interaction_id = message.payload.get("interaction_id")
+        answer = message.payload.get("answer")
+        if message.task_id != pending.task_id or interaction_id != pending.interaction_id:
+            raise ProtocolError(
+                "interaction_mismatch",
+                "provide_input does not match the pending task interaction",
+                request_id=message.request_id,
+                task_id=message.task_id,
+            )
+        if not isinstance(answer, str) or not answer.strip():
+            raise ProtocolError(
+                "invalid_input",
+                "provide_input payload.answer must be a non-empty string",
+                request_id=message.request_id,
+                task_id=message.task_id,
+            )
+
+        self.pending_interaction = None
+        self.writer.event(
+            "input_accepted",
+            request_id=message.request_id,
+            task_id=pending.task_id,
+            interaction_id=pending.interaction_id,
+        )
+        if not pending.future.done():
+            pending.future.set_result(answer.strip())
 
     async def _get_state(self, message: ClientMessage) -> None:
         self._require_initialized(message)
@@ -409,9 +520,7 @@ class BackendSession:
             )
         if operation == "session.scope.reset":
             bootstrap = {
-                key: value
-                for key, value in self.bootstrap.items()
-                if key not in SCOPE_FIELDS
+                key: value for key, value in self.bootstrap.items() if key not in SCOPE_FIELDS
             }
             self._apply_session_scope(bootstrap)
             return (
@@ -489,6 +598,7 @@ class BackendSession:
             "findings": _runtime_findings(self.runtime),
             "evidence": [],
             "constraint_violations": [],
+            "interaction": self._interaction_snapshot(),
         }
         runtime_state = getattr(self.runtime, "state_snapshot", None)
         if callable(runtime_state):
@@ -521,7 +631,19 @@ class BackendSession:
                 )
         state["task"] = {"active": active, "task_id": self.active_task_id if active else None}
         state["last_run"] = self.last_run
+        state["interaction"] = self._interaction_snapshot()
         return _json_safe(state)
+
+    def _interaction_snapshot(self) -> dict[str, Any] | None:
+        pending = self.pending_interaction
+        if pending is None:
+            return None
+        return {
+            "task_id": pending.task_id,
+            "interaction_id": pending.interaction_id,
+            "question": pending.question,
+            "input_kind": "text",
+        }
 
     def _require_initialized(self, message: ClientMessage) -> None:
         if not self.initialized:
@@ -535,9 +657,7 @@ class BackendSession:
 
 def _session_scope_defaults(bootstrap: dict[str, Any]) -> dict[str, Any]:
     return {
-        field: _json_safe(bootstrap[field])
-        for field in sorted(SCOPE_FIELDS)
-        if field in bootstrap
+        field: _json_safe(bootstrap[field]) for field in sorted(SCOPE_FIELDS) if field in bootstrap
     }
 
 
@@ -560,8 +680,6 @@ async def _run_task(
             sink._event("log", message=f"turn {payload.get('step', '?')}")
         elif kind == "error":
             sink._event("log", message=f"error: {payload.get('error', '')}")
-        elif kind == "ask_user":
-            sink._event("approval_required", question=str(payload.get("question", "")))
         elif kind == "completed":
             sink._event("status", status="goal reached")
         elif kind == "no_path":
@@ -572,6 +690,7 @@ async def _run_task(
         task,
         stream_sink=sink,
         on_event=on_event,
+        input_provider=sink.request_input,
     )
     result = execution.run
     run_context = result.run_context
@@ -647,9 +766,7 @@ def _runtime_metadata(runtime: Any) -> dict[str, Any]:
         )
 
         configured = bool(llm is not None and has_llm_credentials(llm))
-        skills = sorted(
-            set(list_core_skills() + list_specialized_skills() + list_custom_skills())
-        )
+        skills = sorted(set(list_core_skills() + list_specialized_skills() + list_custom_skills()))
     except Exception:
         configured = False
         skills = []

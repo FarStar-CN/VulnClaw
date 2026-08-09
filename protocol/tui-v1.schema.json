@@ -156,6 +156,15 @@
         "arguments": { "type": "object" }
       }
     },
+    "provideInputPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interaction_id", "answer"],
+      "properties": {
+        "interaction_id": { "$ref": "#/$defs/identifier" },
+        "answer": { "type": "string", "minLength": 1 }
+      }
+    },
     "emptyPayload": {
       "type": "object",
       "additionalProperties": false,
@@ -191,6 +200,17 @@
           "properties": {
             "type": { "const": "cancel_task" },
             "payload": { "$ref": "#/$defs/emptyPayload" }
+          }
+        }
+      ]
+    },
+    "provideInputRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/taskRequestEnvelope" },
+        {
+          "properties": {
+            "type": { "const": "provide_input" },
+            "payload": { "$ref": "#/$defs/provideInputPayload" }
           }
         }
       ]
@@ -234,6 +254,7 @@
         { "$ref": "#/$defs/initializeRequest" },
         { "$ref": "#/$defs/startTaskRequest" },
         { "$ref": "#/$defs/cancelTaskRequest" },
+        { "$ref": "#/$defs/provideInputRequest" },
         { "$ref": "#/$defs/getStateRequest" },
         { "$ref": "#/$defs/controlRequest" },
         { "$ref": "#/$defs/shutdownRequest" }
@@ -311,6 +332,17 @@
         "task_id": { "type": ["string", "null"] }
       }
     },
+    "inputInteraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "interaction_id", "question", "input_kind"],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/identifier" },
+        "interaction_id": { "$ref": "#/$defs/identifier" },
+        "question": { "type": "string", "minLength": 1 },
+        "input_kind": { "const": "text" }
+      }
+    },
     "stateSnapshot": {
       "type": "object",
       "additionalProperties": false,
@@ -322,7 +354,8 @@
         "last_run",
         "findings",
         "evidence",
-        "constraint_violations"
+        "constraint_violations",
+        "interaction"
       ],
       "properties": {
         "target": { "type": "string" },
@@ -330,6 +363,12 @@
         "task_constraints": { "$ref": "#/$defs/taskConstraints" },
         "task": { "$ref": "#/$defs/backendTaskState" },
         "last_run": { "type": ["object", "null"] },
+        "interaction": {
+          "oneOf": [
+            { "$ref": "#/$defs/inputInteraction" },
+            { "type": "null" }
+          ]
+        },
         "findings": {
           "type": "array",
           "items": { "$ref": "#/$defs/finding" }
@@ -370,7 +409,8 @@
           "uniqueItems": true
         },
         "cancellation": { "type": "boolean" },
-        "authoritative_state": { "type": "boolean" }
+        "authoritative_state": { "type": "boolean" },
+        "interactive_input": { "type": "boolean" }
       }
     },
     "runtimeInfo": {
@@ -542,6 +582,33 @@
         }
       ]
     },
+    "inputRequiredEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/taskEventEnvelope" },
+        {
+          "required": ["interaction_id", "question", "input_kind", "state"],
+          "properties": {
+            "type": { "const": "input_required" },
+            "interaction_id": { "$ref": "#/$defs/identifier" },
+            "question": { "type": "string", "minLength": 1 },
+            "input_kind": { "const": "text" },
+            "state": { "$ref": "#/$defs/stateSnapshot" }
+          }
+        }
+      ]
+    },
+    "inputAcceptedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/taskEventEnvelope" },
+        {
+          "required": ["request_id", "interaction_id"],
+          "properties": {
+            "type": { "const": "input_accepted" },
+            "interaction_id": { "$ref": "#/$defs/identifier" }
+          }
+        }
+      ]
+    },
     "taskCompletedEvent": {
       "allOf": [
         { "$ref": "#/$defs/taskEventEnvelope" },
@@ -632,6 +699,8 @@
         { "$ref": "#/$defs/toolResultEvent" },
         { "$ref": "#/$defs/findingEvent" },
         { "$ref": "#/$defs/approvalRequiredEvent" },
+        { "$ref": "#/$defs/inputRequiredEvent" },
+        { "$ref": "#/$defs/inputAcceptedEvent" },
         { "$ref": "#/$defs/taskCompletedEvent" },
         { "$ref": "#/$defs/taskCancelledEvent" },
         { "$ref": "#/$defs/taskFailedEvent" },

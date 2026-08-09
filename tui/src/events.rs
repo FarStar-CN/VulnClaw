@@ -22,6 +22,30 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    if app.pending_interaction.is_some() {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => app.stop_worker(),
+            (KeyCode::Char('y'), KeyModifiers::CONTROL) => app.copy_active_pane(),
+            (KeyCode::PageUp, _) => app.scroll_active_pane(false),
+            (KeyCode::PageDown, _) => app.scroll_active_pane(true),
+            (KeyCode::Esc, _) => app.clear_composer(),
+            (KeyCode::Enter, _) => app.submit(),
+            (KeyCode::Backspace, _) => app.delete_input(),
+            (KeyCode::Delete, _) => app.delete_forward_input(),
+            (KeyCode::Left, _) => app.move_input_cursor(false),
+            (KeyCode::Right, _) => app.move_input_cursor(true),
+            (KeyCode::Home, _) => app.move_input_cursor_to_edge(false),
+            (KeyCode::End, _) => app.move_input_cursor_to_edge(true),
+            (KeyCode::Char(character), modifiers)
+                if !modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.append_input(character)
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
             if app.worker_active {
@@ -120,6 +144,28 @@ mod tests {
         // confirmation prompt and must not change the execution mode.
         assert_eq!(app.mode, ExecutionMode::Agent);
         assert!(app.pending_task.is_some());
+    }
+
+    #[test]
+    fn input_required_captures_text_without_changing_execution_mode() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+        app.pending_interaction = Some(crate::protocol::InputInteraction {
+            task_id: "t1".into(),
+            interaction_id: "interaction-1".into(),
+            question: "Which path?".into(),
+            input_kind: "text".into(),
+        });
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(app.mode, ExecutionMode::Agent);
+        assert_eq!(app.input, "y");
+        assert!(app.pending_interaction.is_some());
     }
 
     #[test]

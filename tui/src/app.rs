@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::exec::BackendHandle;
 use crate::prompts::text;
-use crate::protocol::{AppEvent, BackendEvent, ClientRequest, Finding, StateSnapshot};
+use crate::protocol::{
+    AppEvent, BackendEvent, ClientRequest, Finding, InputInteraction, StateSnapshot,
+};
 use crate::sessions::{self, SessionState};
 use crate::skills::catalog::{skill_tree, SkillNode};
 
@@ -234,6 +236,10 @@ enum PendingRequest {
     GetState,
     StartTask(String),
     CancelTask(String),
+    ProvideInput {
+        task_id: String,
+        interaction_id: String,
+    },
     Control(String),
     Shutdown,
 }
@@ -271,6 +277,7 @@ pub struct App {
     /// Optional management operations advertised by the Python backend.
     pub backend_control_operations: Vec<String>,
     pub backend_supports_cancellation: bool,
+    pub backend_supports_interactive_input: bool,
     pub target: String,
     pub phase: String,
     pub active_task_id: Option<String>,
@@ -287,6 +294,8 @@ pub struct App {
     pub worker_started_at: Option<Instant>,
     pub show_attack_chain: bool,
     pub pending_task: Option<String>,
+    pub pending_interaction: Option<InputInteraction>,
+    pub input_submitting: bool,
     pub skills: Vec<SkillNode>,
     /// Last known terminal viewport size, captured each frame. Used to render an
     /// offscreen copy of the focused pane for independent clipboard copies.
@@ -335,6 +344,7 @@ impl App {
             backend_commands: Vec::new(),
             backend_control_operations: Vec::new(),
             backend_supports_cancellation: false,
+            backend_supports_interactive_input: false,
             target: String::new(),
             phase: "idle".to_owned(),
             active_task_id: None,
@@ -349,6 +359,8 @@ impl App {
             worker_started_at: None,
             show_attack_chain: false,
             pending_task: None,
+            pending_interaction: None,
+            input_submitting: false,
             skills: skill_tree(),
             terminal_size: Rect::default(),
             toast: String::new(),
@@ -389,6 +401,10 @@ impl App {
     }
 
     pub fn submit(&mut self) {
+        if self.pending_interaction.is_some() {
+            self.submit_interaction_response();
+            return;
+        }
         let command = strip_prompt_prefix(self.input.trim());
         if command.is_empty() {
             return;
@@ -487,7 +503,9 @@ impl App {
     /// transcript view, not the narrow Workspace sidebar.
     fn transcript_panel_rect(&self) -> Rect {
         let area = self.terminal_size;
-        let composer_height: u16 = if self.pending_task.is_some() {
+        let composer_height: u16 = if self.pending_interaction.is_some() {
+            4
+        } else if self.pending_task.is_some() {
             3
         } else if self.palette_visible() {
             7
@@ -545,7 +563,9 @@ impl App {
     /// Mirrors the split used by `ui::layout::render_workbench` so the copied
     /// region never bleeds into neighbouring panes.
     pub fn active_pane_rect(&self, area: Rect) -> Rect {
-        let composer_height: u16 = if self.pending_task.is_some() {
+        let composer_height: u16 = if self.pending_interaction.is_some() {
+            4
+        } else if self.pending_task.is_some() {
             3
         } else if self.palette_visible() {
             7
@@ -697,7 +717,8 @@ impl App {
     }
 
     pub fn palette_visible(&self) -> bool {
-        self.input_cursor == self.input.len()
+        self.pending_interaction.is_none()
+            && self.input_cursor == self.input.len()
             && self.input.trim_start().starts_with('/')
             && !self.suggested_commands().is_empty()
     }
@@ -800,6 +821,7 @@ impl App {
                     self.backend_control_operations.sort();
                     self.backend_control_operations.dedup();
                     self.backend_supports_cancellation = capabilities.cancellation;
+                    self.backend_supports_interactive_input = capabilities.interactive_input;
                     if !capabilities.authoritative_state {
                         self.error(
                             "Backend does not advertise authoritative state; refusing task commands.",
@@ -927,7 +949,63 @@ impl App {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.push(TranscriptKind::Status, format!("Approval required: {question}"));
+                    self.push(
+                        TranscriptKind::Error,
+                        format!(
+                            "Legacy one-way approval notice received: {question}. The backend cannot be resumed through this event."
+                        ),
+                    );
+                }
+                BackendEvent::InputRequired {
+                    task_id,
+                    interaction_id,
+                    question,
+                    input_kind,
+                    state,
+                } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
+                    }
+                    self.apply_backend_state(state);
+                    self.pending_interaction = Some(InputInteraction {
+                        task_id,
+                        interaction_id,
+                        question: question.clone(),
+                        input_kind,
+                    });
+                    self.input_submitting = false;
+                    self.clear_composer();
+                    self.update_receipt("Waiting for user input");
+                    self.push(TranscriptKind::Status, format!("Input required: {question}"));
+                }
+                BackendEvent::InputAccepted {
+                    request_id,
+                    task_id,
+                    interaction_id,
+                } => {
+                    if !matches!(
+                        self.pending_requests.remove(&request_id),
+                        Some(PendingRequest::ProvideInput {
+                            task_id: expected_task,
+                            interaction_id: expected_interaction,
+                        }) if expected_task == task_id && expected_interaction == interaction_id
+                    ) {
+                        self.error(format!("Unexpected input_accepted response: {request_id}"));
+                        return;
+                    }
+                    if !self.is_current_task(&task_id)
+                        || !self
+                            .pending_interaction
+                            .as_ref()
+                            .is_some_and(|pending| pending.interaction_id == interaction_id)
+                    {
+                        self.error("Input acknowledgement does not match the active interaction.");
+                        return;
+                    }
+                    self.pending_interaction = None;
+                    self.input_submitting = false;
+                    self.update_receipt("Resuming");
+                    self.status("Input accepted by the Python backend; task resumed.");
                 }
                 BackendEvent::TaskCompleted {
                     request_id,
@@ -1045,6 +1123,16 @@ impl App {
                                 }
                                 true
                             }
+                            Some(PendingRequest::ProvideInput { task_id: expected, .. }) => {
+                                if task_id.as_deref() != Some(expected.as_str()) {
+                                    self.error(format!(
+                                        "Mismatched input error response: {request_id}"
+                                    ));
+                                    return;
+                                }
+                                self.input_submitting = false;
+                                false
+                            }
                             Some(_) => false,
                         }
                     } else {
@@ -1082,6 +1170,7 @@ impl App {
                 self.backend_control_operations.clear();
                 self.backend_supports_cancellation = false;
                 self.pending_requests.clear();
+                self.backend_supports_interactive_input = false;
                 self.worker_active = false;
                 self.worker_started_at = None;
                 if let Some(mut receipt) = self.active_receipt.take() {
@@ -1089,6 +1178,8 @@ impl App {
                     self.last_receipt = Some(receipt);
                 }
                 self.active_task_id = None;
+                self.pending_interaction = None;
+                self.input_submitting = false;
                 if self.running {
                     self.error(if success {
                         "Python backend exited."
@@ -1122,6 +1213,10 @@ impl App {
                 pending,
                 PendingRequest::StartTask(expected) | PendingRequest::CancelTask(expected)
                     if expected == task_id
+            ) && !matches!(
+                pending,
+                PendingRequest::ProvideInput { task_id: expected, .. }
+                    if expected == task_id
             )
         });
     }
@@ -1136,6 +1231,10 @@ impl App {
         self.last_run = state.last_run;
         self.evidence = state.evidence;
         self.constraint_violations = state.constraint_violations;
+        self.pending_interaction = state.interaction;
+        if self.pending_interaction.is_none() {
+            self.input_submitting = false;
+        }
         if let Some(receipt) = self.active_receipt.as_mut() {
             receipt.findings = self.findings.len();
         }
@@ -1163,6 +1262,8 @@ impl App {
         self.worker_active = false;
         self.worker_started_at = None;
         self.active_task_id = None;
+        self.pending_interaction = None;
+        self.input_submitting = false;
         if let Some(mut receipt) = self.active_receipt.take() {
             receipt.phase = phase.to_owned();
             receipt.findings = self.findings.len();
@@ -1317,6 +1418,57 @@ impl App {
         }
     }
 
+    fn submit_interaction_response(&mut self) {
+        if self.input_submitting {
+            self.error("An input response is already being submitted.");
+            return;
+        }
+        if !self.backend_supports_interactive_input {
+            self.error("The connected backend does not support interactive input.");
+            return;
+        }
+        let answer = self.input.trim().to_owned();
+        if answer.is_empty() {
+            self.error("Enter a response before submitting.");
+            return;
+        }
+        let Some(interaction) = self.pending_interaction.clone() else {
+            return;
+        };
+        if self.active_task_id.as_deref() != Some(interaction.task_id.as_str()) {
+            self.error("The pending input no longer belongs to the active task.");
+            return;
+        }
+        let request_id = self.next_request_id();
+        let request = ClientRequest::provide_input(
+            request_id.clone(),
+            interaction.task_id.clone(),
+            interaction.interaction_id.clone(),
+            answer.clone(),
+        );
+        let send_result = self
+            .backend
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("backend disconnected"))
+            .and_then(|backend| backend.send(&request));
+        if let Err(error) = send_result {
+            self.error(format!("Could not submit input to Python backend: {error}"));
+            return;
+        }
+        self.push(TranscriptKind::User, format!("> {answer}"));
+        self.clear_composer();
+        self.input_submitting = true;
+        self.pending_requests.insert(
+            request_id,
+            PendingRequest::ProvideInput {
+                task_id: interaction.task_id,
+                interaction_id: interaction.interaction_id,
+            },
+        );
+        self.update_receipt("Submitting user input");
+        self.status("Submitting input to the Python backend...");
+    }
+
     /// Request cancellation of the active task without terminating the backend.
     pub fn stop_worker(&mut self) {
         let Some(task_id) = self.active_task_id.clone() else {
@@ -1354,6 +1506,9 @@ impl App {
         self.backend_commands.clear();
         self.backend_control_operations.clear();
         self.backend_supports_cancellation = false;
+        self.backend_supports_interactive_input = false;
+        self.pending_interaction = None;
+        self.input_submitting = false;
     }
 
     fn push(&mut self, kind: TranscriptKind, text: impl Into<String>) {
@@ -1690,7 +1845,7 @@ mod tests {
         app.pending_requests
             .insert("r1".into(), PendingRequest::Initialize);
         let event = crate::protocol::parse_backend_line(
-            r#"{"protocol_version":1,"type":"ready","request_id":"r1","backend":{"pid":7,"version":"test","protocol_version":1},"capabilities":{"commands":["scan","run"],"control_operations":["example.inspect"],"cancellation":true,"authoritative_state":true},"runtime":{"config_ready":true,"provider":"test","model":"test","mcp_started":0,"skills":[]},"state":{"target":"","phase":"idle","task_constraints":{},"task":{"active":false,"task_id":null},"last_run":null,"findings":[],"evidence":[],"constraint_violations":[]}}"#,
+            r#"{"protocol_version":1,"type":"ready","request_id":"r1","backend":{"pid":7,"version":"test","protocol_version":1},"capabilities":{"commands":["scan","run"],"control_operations":["example.inspect"],"cancellation":true,"authoritative_state":true,"interactive_input":true},"runtime":{"config_ready":true,"provider":"test","model":"test","mcp_started":0,"skills":[]},"state":{"target":"","phase":"idle","task_constraints":{},"task":{"active":false,"task_id":null},"last_run":null,"findings":[],"evidence":[],"constraint_violations":[],"interaction":null}}"#,
         )
         .unwrap();
 
@@ -1699,6 +1854,7 @@ mod tests {
         assert_eq!(app.backend_commands, vec!["run", "scan"]);
         assert_eq!(app.backend_control_operations, vec!["example.inspect"]);
         assert!(app.backend_supports_cancellation);
+        assert!(app.backend_supports_interactive_input);
     }
 
     #[test]
@@ -1729,6 +1885,7 @@ mod tests {
                     last_run: Some(serde_json::json!({"status": "completed"})),
                     evidence: vec![serde_json::json!({"path": "fresh"})],
                     constraint_violations: vec!["fresh violation".into()],
+                    interaction: None,
                 },
             },
         ));
@@ -1798,6 +1955,7 @@ mod tests {
                     last_run: None,
                     evidence: Vec::new(),
                     constraint_violations: Vec::new(),
+                    interaction: None,
                 },
             },
         ));
@@ -1837,12 +1995,72 @@ mod tests {
                     last_run: Some(serde_json::json!({"status": "completed"})),
                     evidence: Vec::new(),
                     constraint_violations: Vec::new(),
+                    interaction: None,
                 },
             },
         ));
 
         assert_eq!(app.findings.len(), 1);
         assert_eq!(app.findings[0].id, "state-finding");
+    }
+
+    #[test]
+    fn input_required_and_accepted_keep_the_same_task_active() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+        app.active_task_id = Some("t1".into());
+        app.worker_active = true;
+
+        app.apply_event(crate::protocol::AppEvent::Backend(
+            crate::protocol::BackendEvent::InputRequired {
+                task_id: "t1".into(),
+                interaction_id: "interaction-1".into(),
+                question: "Which path is authorized?".into(),
+                input_kind: "text".into(),
+                state: crate::protocol::StateSnapshot {
+                    target: "target.test".into(),
+                    task: crate::protocol::BackendTaskState {
+                        active: true,
+                        task_id: Some("t1".into()),
+                    },
+                    interaction: Some(crate::protocol::InputInteraction {
+                        task_id: "t1".into(),
+                        interaction_id: "interaction-1".into(),
+                        question: "Which path is authorized?".into(),
+                        input_kind: "text".into(),
+                    }),
+                    ..Default::default()
+                },
+            },
+        ));
+
+        assert!(app.worker_active);
+        assert_eq!(app.active_task_id.as_deref(), Some("t1"));
+        assert_eq!(
+            app.pending_interaction.as_ref().unwrap().interaction_id,
+            "interaction-1"
+        );
+        app.input_submitting = true;
+        app.pending_requests.insert(
+            "r-input".into(),
+            PendingRequest::ProvideInput {
+                task_id: "t1".into(),
+                interaction_id: "interaction-1".into(),
+            },
+        );
+
+        app.apply_event(crate::protocol::AppEvent::Backend(
+            crate::protocol::BackendEvent::InputAccepted {
+                request_id: "r-input".into(),
+                task_id: "t1".into(),
+                interaction_id: "interaction-1".into(),
+            },
+        ));
+
+        assert!(app.worker_active);
+        assert_eq!(app.active_task_id.as_deref(), Some("t1"));
+        assert!(app.pending_interaction.is_none());
+        assert!(!app.input_submitting);
     }
 
     #[test]

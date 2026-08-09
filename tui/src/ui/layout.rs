@@ -18,7 +18,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Compact single-line composer (CodeWhale Compact density): one input row,
     // no bordered title box that reads as a second line. The command palette and
     // the task-confirmation prompt get their own taller regions when active.
-    let composer_height = if app.pending_task.is_some() {
+    let composer_height = if app.pending_interaction.is_some() {
+        4
+    } else if app.pending_task.is_some() {
         3
     } else if app.palette_visible() {
         7
@@ -163,6 +165,26 @@ fn render_workbench(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
+    if let Some(interaction) = app.pending_interaction.as_ref() {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Length(1)])
+            .split(area);
+        frame.render_widget(
+            Paragraph::new(interaction.question.as_str())
+                .wrap(Wrap { trim: true })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(theme::GOLD)
+                        .title("Input required"),
+                ),
+            rows[0],
+        );
+        render_composer_input(frame, app, rows[1]);
+        return;
+    }
+
     if app.pending_task.is_some() {
         frame.render_widget(
             Paragraph::new("TUI confirmation is required. Press Y to start, or Esc to cancel.")
@@ -187,7 +209,15 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_composer_input(frame: &mut Frame, app: &App, composer_area: Rect) {
     let content = if app.input.is_empty() {
-        "Type / for commands"
+        if app.pending_interaction.is_some() {
+            if app.input_submitting {
+                "Waiting for backend acknowledgement..."
+            } else {
+                "Type an answer and press Enter"
+            }
+        } else {
+            "Type / for commands"
+        }
     } else {
         app.input.as_str()
     };
@@ -265,6 +295,15 @@ fn render_hotbar(frame: &mut Frame, app: &App, area: Rect) {
         (
             " Y confirm | Esc cancel",
             Style::default().fg(theme::TEXT_HINT),
+        )
+    } else if app.pending_interaction.is_some() {
+        (
+            if app.input_submitting {
+                " Waiting for backend acknowledgement | Ctrl+C cancel task"
+            } else {
+                " Enter submit answer | Esc clear | Ctrl+C cancel task"
+            },
+            Style::default().fg(theme::GOLD),
         )
     } else if app.worker_active {
         (
@@ -403,5 +442,33 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Task confirmation required"));
         assert!(rendered.contains("Y confirm"));
+    }
+
+    #[test]
+    fn input_required_renders_question_and_answer_composer() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+        app.pending_interaction = Some(crate::protocol::InputInteraction {
+            task_id: "t1".into(),
+            interaction_id: "interaction-1".into(),
+            question: "Which path is authorized?".into(),
+            input_kind: "text".into(),
+        });
+        app.worker_active = true;
+        let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("Input required"));
+        assert!(rendered.contains("Which path is authorized?"));
+        assert!(rendered.contains("Type an answer and press Enter"));
+        assert!(rendered.contains("Enter submit answer"));
     }
 }

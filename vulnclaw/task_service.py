@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, get_args
+from typing import Any, Awaitable, Callable, Literal, get_args
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -226,7 +226,9 @@ def build_task_prompt(request: TaskCreateRequest, constraints: TaskConstraints) 
             f"with command: {options.cmd or 'id'}"
         )
     elif request.command == "persistent":
-        prompt = f"Continuously perform an authorized pentest against {request.target} until stopped."
+        prompt = (
+            f"Continuously perform an authorized pentest against {request.target} until stopped."
+        )
     else:
         prompt = (
             f"Perform an authorized {options.scope or 'full'} pentest against {request.target}. "
@@ -245,6 +247,7 @@ async def run_task_action(
     on_step: Callable[[int, Any], None] | None = None,
     on_cycle_step: Callable[[int, int, Any], None] | None = None,
     on_cycle_complete: Callable[[int, Any], None] | None = None,
+    input_provider: Callable[[str], Awaitable[str]] | None = None,
 ) -> Any:
     """Execute one prepared task through public AgentCore APIs."""
 
@@ -262,6 +265,7 @@ async def run_task_action(
                 ),
                 stream_sink=stream_sink,
                 on_event=on_event,
+                input_provider=input_provider,
                 task_constraints=task.constraints,
             )
         if engine == "team":
@@ -333,6 +337,7 @@ async def execute_task(
     on_step: Callable[[int, Any], None] | None = None,
     on_cycle_step: Callable[[int, int, Any], None] | None = None,
     on_cycle_complete: Callable[[int, Any], None] | None = None,
+    input_provider: Callable[[str], Awaitable[str]] | None = None,
 ) -> TaskExecution:
     """Run a structured task through shared persistence and execution semantics."""
 
@@ -351,6 +356,7 @@ async def execute_task(
             on_step=on_step,
             on_cycle_step=on_cycle_step,
             on_cycle_complete=on_cycle_complete,
+            input_provider=input_provider,
         )
         return action_result
 

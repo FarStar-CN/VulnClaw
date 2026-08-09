@@ -59,6 +59,24 @@ impl ClientRequest {
         }
     }
 
+    pub fn provide_input(
+        request_id: String,
+        task_id: String,
+        interaction_id: String,
+        answer: String,
+    ) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            kind: "provide_input",
+            request_id,
+            task_id: Some(task_id),
+            payload: serde_json::json!({
+                "interaction_id": interaction_id,
+                "answer": answer
+            }),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn get_state(request_id: String) -> Self {
         Self {
@@ -119,6 +137,8 @@ pub struct BackendCapabilities {
     pub control_operations: Vec<String>,
     pub cancellation: bool,
     pub authoritative_state: bool,
+    #[serde(default)]
+    pub interactive_input: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -126,6 +146,14 @@ pub struct BackendTaskState {
     pub active: bool,
     #[serde(deserialize_with = "deserialize_required_option")]
     pub task_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct InputInteraction {
+    pub task_id: String,
+    pub interaction_id: String,
+    pub question: String,
+    pub input_kind: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -139,6 +167,8 @@ pub struct StateSnapshot {
     pub last_run: Option<Value>,
     pub evidence: Vec<Value>,
     pub constraint_violations: Vec<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub interaction: Option<InputInteraction>,
 }
 
 fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -197,6 +227,18 @@ pub enum BackendEvent {
     ApprovalRequired {
         task_id: String,
         question: String,
+    },
+    InputRequired {
+        task_id: String,
+        interaction_id: String,
+        question: String,
+        input_kind: String,
+        state: StateSnapshot,
+    },
+    InputAccepted {
+        request_id: String,
+        task_id: String,
+        interaction_id: String,
     },
     TaskCompleted {
         request_id: String,
@@ -307,7 +349,8 @@ mod tests {
             "last_run": null,
             "findings": [],
             "evidence": [],
-            "constraint_violations": []
+            "constraint_violations": [],
+            "interaction": null
         })
     }
 
@@ -325,6 +368,43 @@ mod tests {
         assert_eq!(value["task_id"], "t1");
         assert_eq!(value["payload"]["task"]["command"], "run");
         assert_eq!(value["payload"]["task"]["target"], "host");
+    }
+
+    #[test]
+    fn provide_input_request_correlates_task_and_interaction() {
+        let request = ClientRequest::provide_input(
+            "r-input".into(),
+            "t1".into(),
+            "interaction-1".into(),
+            "The admin path is in scope.".into(),
+        );
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["type"], "provide_input");
+        assert_eq!(value["request_id"], "r-input");
+        assert_eq!(value["task_id"], "t1");
+        assert_eq!(value["payload"]["interaction_id"], "interaction-1");
+        assert_eq!(value["payload"]["answer"], "The admin path is in scope.");
+    }
+
+    #[test]
+    fn parses_interactive_input_events_with_authoritative_state() {
+        let event = parse_backend_line(
+            r#"{"protocol_version":1,"type":"input_required","task_id":"t1","interaction_id":"interaction-1","question":"Which path?","input_kind":"text","state":{"target":"target.test","phase":"recon","task_constraints":{"allowed_hosts":["target.test"]},"task":{"active":true,"task_id":"t1"},"last_run":null,"findings":[],"evidence":[{"kind":"http","path":"evidence.json"}],"constraint_violations":[],"interaction":{"task_id":"t1","interaction_id":"interaction-1","question":"Which path?","input_kind":"text"}}}"#,
+        )
+        .unwrap();
+        match event {
+            BackendEvent::InputRequired {
+                interaction_id,
+                state,
+                ..
+            } => {
+                assert_eq!(interaction_id, "interaction-1");
+                assert!(state.task.active);
+                assert_eq!(state.evidence.len(), 1);
+                assert_eq!(state.interaction.unwrap().question, "Which path?");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]
@@ -391,6 +471,7 @@ mod tests {
             "findings",
             "evidence",
             "constraint_violations",
+            "interaction",
         ] {
             let mut state = complete_state();
             state.as_object_mut().unwrap().remove(field);
@@ -437,6 +518,12 @@ mod tests {
                 serde_json::json!({"command": "run", "target": "target.test"}),
             ),
             ClientRequest::cancel_task("r-cancel".into(), "t1".into()),
+            ClientRequest::provide_input(
+                "r-input".into(),
+                "t1".into(),
+                "interaction-1".into(),
+                "answer".into(),
+            ),
             ClientRequest::get_state("r-state".into()),
             ClientRequest::control(
                 "r-control".into(),
@@ -465,6 +552,8 @@ mod tests {
             "tool_result",
             "finding",
             "approval_required",
+            "input_required",
+            "input_accepted",
             "task_completed",
             "task_cancelled",
             "task_failed",

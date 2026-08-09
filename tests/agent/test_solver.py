@@ -159,6 +159,53 @@ async def test_solve_stops_for_user_question(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_solve_pauses_and_continues_with_interactive_input(monkeypatch):
+    agent = _Agent()
+    calls = {"n": 0}
+    questions: list[str] = []
+
+    async def fake_call_llm_auto(agent_arg, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "Need scope clarification\nASK_USER: May I test the admin path?"
+        state = agent_arg.context.state.agent_state
+        record = state.remember_tool_result(
+            tool="fetch",
+            arguments={"url": "http://t/admin"},
+            output="admin path allowed and reachable",
+            status=200,
+        )
+        state.record_tool_call(
+            tool="fetch",
+            arguments={"url": "http://t/admin"},
+            evidence_id=record.id,
+            summary=record.summary,
+        )
+        return f"FINAL: admin path allowed and reachable evidence {record.id}"
+
+    async def provide_input(question: str) -> str:
+        questions.append(question)
+        return "Yes, /admin is in scope."
+
+    monkeypatch.setattr("vulnclaw.agent.solver.call_llm_auto", fake_call_llm_auto)
+
+    result = await solve(
+        agent,
+        origin="http://t",
+        goal="test target",
+        max_steps=3,
+        input_provider=provide_input,
+    )
+
+    assert result.completed is True
+    assert result.needs_user is False
+    assert calls["n"] == 2
+    assert questions == ["May I test the admin path?"]
+    assert not agent.context.state.agent_state.pending_questions
+    assert any("/admin is in scope" in message["content"] for message in agent.context.messages)
+
+
+@pytest.mark.asyncio
 async def test_solve_records_step_observation(monkeypatch):
     agent = _Agent()
 
@@ -235,7 +282,9 @@ async def test_solve_stops_repeated_evidence_only_stall(monkeypatch):
     assert result.needs_user is True
     assert result.reason == "stalled after repeated evidence-only turns"
     assert calls["n"] == 6
-    assert "repeatedly reread saved evidence" in agent.context.state.agent_state.pending_questions[0]
+    assert (
+        "repeatedly reread saved evidence" in agent.context.state.agent_state.pending_questions[0]
+    )
 
 
 @pytest.mark.asyncio
@@ -261,7 +310,9 @@ async def test_solve_rejects_premature_no_path_near_high_signal_evidence(monkeyp
                 ),
                 status=200,
             )
-            state.pin_fact("Source sink: cookie-controlled input reaches eval", evidence_id=record.id)
+            state.pin_fact(
+                "Source sink: cookie-controlled input reaches eval", evidence_id=record.id
+            )
             state.record_progress_signal(
                 kind="tool_observation",
                 detail="same-body probe with request surface observed",
@@ -315,7 +366,9 @@ async def test_solve_rejects_premature_ask_user_for_writeup_near_parser_filter(m
                 "filter before unserialize; validate parser-accepted lexical variants locally.",
                 evidence_id=record.id,
             )
-            state.pin_fact("Source sink: cookie-controlled input reaches eval", evidence_id=record.id)
+            state.pin_fact(
+                "Source sink: cookie-controlled input reaches eval", evidence_id=record.id
+            )
             return "ASK_USER: 是否允许我结合公开题解/外部资料继续？"
 
         record = state.remember_tool_result(

@@ -26,9 +26,7 @@ def test_decode_valid_start_task() -> None:
                 "type": "start_task",
                 "request_id": "r1",
                 "task_id": "t1",
-                "payload": {
-                    "task": {"command": "run", "target": "https://example.test"}
-                },
+                "payload": {"task": {"command": "run", "target": "https://example.test"}},
             }
         )
     )
@@ -60,33 +58,45 @@ def test_decode_valid_generic_control_request() -> None:
     assert message.payload["operation"] == "example.inspect"
 
 
+def test_decode_valid_provide_input_request() -> None:
+    message = decode_client_message(
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "type": "provide_input",
+                "request_id": "r-input",
+                "task_id": "t1",
+                "payload": {
+                    "interaction_id": "interaction-1",
+                    "answer": "The admin path is in scope.",
+                },
+            }
+        )
+    )
+
+    assert message.task_id == "t1"
+    assert message.payload["interaction_id"] == "interaction-1"
+
+
 @pytest.mark.parametrize(
     ("raw", "code"),
     [
         ("not-json", "invalid_json"),
         (json.dumps([]), "invalid_message"),
         (
-            json.dumps(
-                {"protocol_version": 99, "type": "initialize", "request_id": "r1"}
-            ),
+            json.dumps({"protocol_version": 99, "type": "initialize", "request_id": "r1"}),
             "unsupported_protocol",
         ),
         (
-            json.dumps(
-                {"protocol_version": 1, "type": "surprise", "request_id": "r1"}
-            ),
+            json.dumps({"protocol_version": 1, "type": "surprise", "request_id": "r1"}),
             "unsupported_message",
         ),
         (
-            json.dumps(
-                {"protocol_version": 1, "type": "start_task", "request_id": "r1"}
-            ),
+            json.dumps({"protocol_version": 1, "type": "start_task", "request_id": "r1"}),
             "invalid_message",
         ),
         (
-            json.dumps(
-                {"protocol_version": 1, "type": "initialize", "request_id": "r1"}
-            ),
+            json.dumps({"protocol_version": 1, "type": "initialize", "request_id": "r1"}),
             "invalid_message",
         ),
     ],
@@ -109,6 +119,7 @@ def test_writer_emits_one_versioned_json_object_per_line() -> None:
         "findings": [],
         "evidence": [],
         "constraint_violations": [],
+        "interaction": None,
     }
 
     writer.write(make_event("state", request_id="r1", state=state))
@@ -180,6 +191,7 @@ def test_on_disk_schema_covers_every_v1_message_shape() -> None:
         "findings": [finding],
         "evidence": [],
         "constraint_violations": [],
+        "interaction": None,
     }
     messages = [
         {
@@ -201,6 +213,16 @@ def test_on_disk_schema_covers_every_v1_message_shape() -> None:
             "request_id": "r3",
             "task_id": "t1",
             "payload": {},
+        },
+        {
+            "protocol_version": 1,
+            "type": "provide_input",
+            "request_id": "r-input",
+            "task_id": "t1",
+            "payload": {
+                "interaction_id": "interaction-1",
+                "answer": "The admin path is in scope.",
+            },
         },
         {"protocol_version": 1, "type": "get_state", "request_id": "r4", "payload": {}},
         {
@@ -267,6 +289,31 @@ def test_on_disk_schema_covers_every_v1_message_shape() -> None:
         },
         {
             "protocol_version": 1,
+            "type": "input_required",
+            "task_id": "t1",
+            "interaction_id": "interaction-1",
+            "question": "Which path is authorized?",
+            "input_kind": "text",
+            "state": {
+                **state,
+                "task": {"active": True, "task_id": "t1"},
+                "interaction": {
+                    "task_id": "t1",
+                    "interaction_id": "interaction-1",
+                    "question": "Which path is authorized?",
+                    "input_kind": "text",
+                },
+            },
+        },
+        {
+            "protocol_version": 1,
+            "type": "input_accepted",
+            "request_id": "r-input",
+            "task_id": "t1",
+            "interaction_id": "interaction-1",
+        },
+        {
+            "protocol_version": 1,
             "type": "task_completed",
             "request_id": "r2",
             "task_id": "t1",
@@ -314,9 +361,7 @@ def test_on_disk_schema_covers_every_v1_message_shape() -> None:
     for message in messages:
         validator.validate(message)
 
-    assert {message["type"] for message in messages} == (
-        CLIENT_MESSAGE_TYPES | SERVER_EVENT_TYPES
-    )
+    assert {message["type"] for message in messages} == (CLIENT_MESSAGE_TYPES | SERVER_EVENT_TYPES)
 
     invalid_start = {
         "protocol_version": 1,
@@ -334,9 +379,7 @@ def test_on_disk_schema_covers_every_v1_message_shape() -> None:
     incomplete_state = dict(state)
     incomplete_state.pop("phase")
     with pytest.raises(ValidationError):
-        validator.validate(
-            {"protocol_version": 1, "type": "state", "state": incomplete_state}
-        )
+        validator.validate({"protocol_version": 1, "type": "state", "state": incomplete_state})
 
     example_path = schema_path.parent / "examples" / "tui-v1-session.jsonl"
     for line in example_path.read_text(encoding="utf-8").splitlines():

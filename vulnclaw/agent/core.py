@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from vulnclaw.agent.anti_loop import (
     detect_attack_path,
@@ -332,9 +332,7 @@ class AgentCore:
             proxy_base = ensure_proxy_running()
             if self._client is None:
                 try:
-                    self._client = make_openai_client(
-                        api_key="local-proxy", base_url=proxy_base
-                    )
+                    self._client = make_openai_client(api_key="local-proxy", base_url=proxy_base)
                 except ImportError:
                     raise RuntimeError("请安装 openai 包: pip install openai")
             return self._client
@@ -381,11 +379,7 @@ class AgentCore:
         # Collect skill context — dynamically dispatch based on user input
         skill_context = self._get_active_skill_context(user_input=user_input)
 
-        phase = (
-            self.context.state.phase
-            if self.context.state.phase != PentestPhase.IDLE
-            else None
-        )
+        phase = self.context.state.phase if self.context.state.phase != PentestPhase.IDLE else None
         personnel_keywords = [
             "社会工程",
             "社工",
@@ -592,6 +586,7 @@ class AgentCore:
         max_tool_rounds: int = 6,
         stream_sink: Optional["StreamSink"] = None,
         on_event: Optional[Callable[[str, dict], None]] = None,
+        input_provider: Optional[Callable[[str], Awaitable[str]]] = None,
         task_constraints: Optional[TaskConstraints] = None,
     ) -> Any:
         """运行模型主导 solve。"""
@@ -615,6 +610,7 @@ class AgentCore:
             max_tool_rounds=max_tool_rounds,
             stream_sink=stream_sink,
             on_event=on_event,
+            input_provider=input_provider,
         )
 
     def apply_task_constraints(self, constraints: TaskConstraints) -> None:
@@ -717,17 +713,11 @@ class AgentCore:
     def _build_openai_tools(self) -> list[dict]:
         """Build OpenAI function calling schema from MCP tools + built-in tools."""
         cfg = getattr(self.config, "subagent", None)
-        session_kind = str(
-            getattr(getattr(self.context, "state", None), "session_kind", "")
-            or ""
-        )
+        session_kind = str(getattr(getattr(self.context, "state", None), "session_kind", "") or "")
         include_subagent_tool = bool(
             cfg
             and cfg.enabled
-            and (
-                self._subagent_ctx.depth == 0
-                or session_kind == "group_leader"
-            )
+            and (self._subagent_ctx.depth == 0 or session_kind == "group_leader")
         )
         return build_openai_tools(
             self.mcp_manager,
