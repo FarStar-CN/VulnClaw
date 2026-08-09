@@ -904,6 +904,40 @@ class TestCLI:
         assert launched[0].blocked_host == "staging.example.com"
         assert launched[0].allow_actions == ("recon",)
 
+    def test_native_tui_launcher_passes_python_and_bootstrap(self, monkeypatch):
+        import json
+        import sys
+
+        import vulnclaw.cli.tui as tui_mod
+
+        captured = {}
+        monkeypatch.setattr(tui_mod, "_find_tui_binary", lambda: "/tmp/vulnclaw-tui")
+
+        def fake_call(args, *, env):
+            captured["args"] = args
+            captured["env"] = env
+            return 0
+
+        monkeypatch.setattr(tui_mod.subprocess, "call", fake_call)
+        state = tui_mod.TuiState(
+            target="https://example.test",
+            mode="deep",
+            only_port="443",
+            blocked_host="internal.example.test",
+        )
+
+        with pytest.raises(SystemExit) as caught:
+            tui_mod.run_tui(initial_state=state)
+
+        assert caught.value.code == 0
+        assert captured["args"] == ["/tmp/vulnclaw-tui"]
+        assert captured["env"]["VULNCLAW_PYTHON"] == sys.executable
+        bootstrap = json.loads(captured["env"]["VULNCLAW_TUI_BOOTSTRAP"])
+        assert bootstrap["target"] == "https://example.test"
+        assert bootstrap["command"] == "scan"
+        assert bootstrap["only_port"] == 443
+        assert bootstrap["allow_actions"] == ["recon", "scan", "exploit"]
+
     def test_tui_scope_prompt_updates_action_constraints(self, monkeypatch):
         import vulnclaw.cli.tui as tui_mod
 

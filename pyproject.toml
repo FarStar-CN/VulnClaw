@@ -47,6 +47,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
+    "jsonschema>=4.20.0",
     "ruff>=0.4.0",
     "build>=1.2.0",
 ]
@@ -81,6 +82,7 @@ vulnclaw = "vulnclaw.cli.main:app"
 exclude = [
     "/frontend/node_modules",
     "/frontend/dist",
+    "/tui/target",
     "/.test-tmp",
     "/.pytest_cache",
     "/dist",
@@ -96,8 +98,10 @@ packages = ["vulnclaw"]
 include = [
     "/vulnclaw",
     "/frontend",
+    "/tui",
     "/tests",
     "/scripts",
+    "/protocol",
     "/README.md",
     "/README_EN.md",
     "/LICENSE",
@@ -107,6 +111,7 @@ include = [
 exclude = [
     "/frontend/node_modules",
     "/frontend/dist",
+    "/tui/target",
     "/.test-tmp",
     "/.pytest_cache",
     "/dist",

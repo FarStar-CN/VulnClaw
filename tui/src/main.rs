@@ -74,8 +74,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> io::Result
             }
         }
     }
-    // Reap any still-running VulnClaw worker so it cannot outlive the TUI as an
-    // orphan (e.g. if the user quits via Ctrl+C while a command is active).
-    app.stop_worker();
+    // Gracefully stop and reap the one session backend. Task cancellation never
+    // tears this process down; only leaving the TUI does.
+    app.shutdown_backend();
     Ok(())
 }

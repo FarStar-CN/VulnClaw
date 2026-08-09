@@ -1,13 +1,11 @@
-use std::env;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-use crate::exec::{self, WorkerHandle};
+use crate::exec::BackendHandle;
 use crate::prompts::text;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use crate::protocol::{AppEvent, Finding, StreamEvent};
+use crate::protocol::{AppEvent, BackendEvent, ClientRequest, Finding, StateSnapshot};
 use crate::sessions::{self, SessionState};
 use crate::skills::catalog::{skill_tree, SkillNode};
 
@@ -205,192 +203,17 @@ pub struct TranscriptItem {
     pub text: String,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SlashCommand {
-    pub command: &'static str,
+    pub command: String,
     pub description: &'static str,
 }
 
-const SLASH_COMMANDS: &[SlashCommand] = &[
-    SlashCommand {
-        command: "/scan ",
-        description: "scan a target (port/service sweep)",
-    },
-    SlashCommand {
-        command: "/run ",
-        description: "run a penetration task",
-    },
-    SlashCommand {
-        command: "/recon ",
-        description: "run reconnaissance",
-    },
-    SlashCommand {
-        command: "/exploit ",
-        description: "attempt an exploit against a target",
-    },
-    SlashCommand {
-        command: "/report",
-        description: "show report export guidance",
-    },
-    SlashCommand {
-        command: "/config",
-        description: "open the configuration editor",
-    },
-    SlashCommand {
-        command: "/clear",
-        description: "clear the transcript",
-    },
-    SlashCommand {
-        command: "/help",
-        description: "list available commands",
-    },
-];
-
-/// First-run / on-demand API configuration wizard state.
-#[derive(Clone, Debug)]
-pub struct SetupState {
-    pub step: u8, // 0 provider, 1 api_key, 2 base_url, 3 model
-    pub provider_index: usize,
-    pub api_key: String,
-    pub base_url: String,
-    pub model: String,
-    pub cursor: usize,
-    pub message: String,
-    pub error: bool,
-}
-
-impl SetupState {
-    pub fn new() -> Self {
-        Self {
-            step: 0,
-            provider_index: 0,
-            api_key: String::new(),
-            base_url: String::new(),
-            model: String::new(),
-            cursor: 0,
-            message: String::new(),
-            error: false,
-        }
-    }
-
-    /// Insert at the editing cursor for the current text step.
-    pub fn insert_char(&mut self, c: char) {
-        match self.step {
-            1 => {
-                self.api_key.insert(self.cursor, c);
-                self.cursor += 1;
-            }
-            2 => {
-                self.base_url.insert(self.cursor, c);
-                self.cursor += 1;
-            }
-            3 => {
-                self.model.insert(self.cursor, c);
-                self.cursor += 1;
-            }
-            _ => {}
-        }
-    }
-
-    pub fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        match self.step {
-            1 => {
-                self.api_key.remove(self.cursor - 1);
-            }
-            2 => {
-                self.base_url.remove(self.cursor - 1);
-            }
-            3 => {
-                self.model.remove(self.cursor - 1);
-            }
-            _ => {}
-        }
-        self.cursor -= 1;
-    }
-
-    pub fn move_cursor(&mut self, right: bool) {
-        let len = match self.step {
-            1 => self.api_key.chars().count(),
-            2 => self.base_url.chars().count(),
-            3 => self.model.chars().count(),
-            _ => 0,
-        };
-        if right {
-            self.cursor = (self.cursor + 1).min(len);
-        } else {
-            self.cursor = self.cursor.saturating_sub(1);
-        }
-    }
-}
-
-/// Provider presets surfaced in the setup wizard. `name` is the value written
-/// to `llm.provider`; base_url/model defaults mirror the `vulnclaw` schema
-/// presets so the user can accept them as-is.
-pub struct ProviderPreset {
-    pub name: &'static str,
-    pub label: &'static str,
-    pub base_url: &'static str,
-    pub model: &'static str,
-}
-
-pub const PROVIDERS: &[ProviderPreset] = &[
-    ProviderPreset {
-        name: "deepseek",
-        label: "DeepSeek",
-        base_url: "https://api.deepseek.com/v1",
-        model: "deepseek-chat",
-    },
-    ProviderPreset {
-        name: "openai",
-        label: "OpenAI",
-        base_url: "https://api.openai.com/v1",
-        model: "gpt-4o",
-    },
-    ProviderPreset {
-        name: "siliconflow",
-        label: "SiliconFlow",
-        base_url: "https://api.siliconflow.cn/v1",
-        model: "deepseek-ai/DeepSeek-V4-Flash",
-    },
-    ProviderPreset {
-        name: "qwen",
-        label: "Qwen (通义千问)",
-        base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        model: "qwen3-max",
-    },
-    ProviderPreset {
-        name: "zhipu",
-        label: "Zhipu (智谱 GLM)",
-        base_url: "https://open.bigmodel.cn/api/paas/v4",
-        model: "glm-4.7",
-    },
-    ProviderPreset {
-        name: "moonshot",
-        label: "Moonshot (Kimi)",
-        base_url: "https://api.moonshot.cn/v1",
-        model: "kimi-k2.6",
-    },
-    ProviderPreset {
-        name: "doubao",
-        label: "Doubao (豆包)",
-        base_url: "https://ark.cn-beijing.volces.com/api/v3",
-        model: "Doubao-Seed-2.0-Pro",
-    },
-    ProviderPreset {
-        name: "anthropic",
-        label: "Anthropic Claude",
-        base_url: "https://api.anthropic.com/v1",
-        model: "claude-sonnet-5",
-    },
-    ProviderPreset {
-        name: "custom",
-        label: "Custom (自定义)",
-        base_url: "",
-        model: "",
-    },
+const LOCAL_SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/report", "show report export guidance"),
+    ("/config", "show configuration guidance"),
+    ("/clear", "clear the transcript"),
+    ("/help", "list available commands"),
 ];
 
 const MAX_COMMAND_HISTORY: usize = 50;
@@ -424,30 +247,46 @@ pub struct App {
     pub show_reasoning: bool,
     pub running: bool,
     pub worker_active: bool,
-    /// Killable handle to the spawned VulnClaw Python core process, if one is
-    /// running. Stored so we can abort it on demand (Ctrl+C while a command is
-    /// active) and so it cannot outlive the TUI as an orphan on quit.
-    pub worker: Option<WorkerHandle>,
+    /// One persistent Python backend for the entire terminal session.
+    pub backend: Option<BackendHandle>,
+    pub backend_ready: bool,
+    pub backend_pid: Option<u32>,
+    pub config_ready: Option<bool>,
+    /// Task verbs advertised by the backend in `ready.capabilities.commands`.
+    /// Local presentation commands such as `/help` are deliberately separate.
+    pub backend_commands: Vec<String>,
+    /// Optional management operations advertised by the Python backend.
+    pub backend_control_operations: Vec<String>,
+    pub backend_supports_cancellation: bool,
+    pub target: String,
+    pub phase: String,
+    pub active_task_id: Option<String>,
+    pub task_constraints: serde_json::Value,
+    pub last_run: Option<serde_json::Value>,
+    pub evidence: Vec<serde_json::Value>,
+    pub constraint_violations: Vec<String>,
+    request_counter: u64,
     pub active_receipt: Option<OperationReceipt>,
     pub last_receipt: Option<OperationReceipt>,
     /// Monotonic instant the current worker started, used to render a live
     /// elapsed-time readout (`mm:ss`) in the header while a command runs.
     pub worker_started_at: Option<Instant>,
     pub show_attack_chain: bool,
-    pub pending_task: Option<Vec<String>>,
+    pub pending_task: Option<String>,
     pub skills: Vec<SkillNode>,
-    pub setup: Option<SetupState>,
     /// Last known terminal viewport size, captured each frame. Used to render an
     /// offscreen copy of the focused pane for independent clipboard copies.
     pub terminal_size: Rect,
     /// Transient feedback line shown in the hotbar (e.g. "Copied …"). Cleared on
     /// the next key press.
     pub toast: String,
+    #[cfg_attr(test, allow(dead_code))]
     sender: Sender<AppEvent>,
 }
 
 impl App {
     pub fn new(sender: Sender<AppEvent>) -> Self {
+        #[allow(unused_mut)]
         let mut app = Self {
             mode: ExecutionMode::Agent,
             permission: PermissionMode::AutoReview,
@@ -475,25 +314,60 @@ impl App {
             show_reasoning: true,
             running: true,
             worker_active: false,
-            worker: None,
+            backend: None,
+            backend_ready: false,
+            backend_pid: None,
+            config_ready: None,
+            backend_commands: Vec::new(),
+            backend_control_operations: Vec::new(),
+            backend_supports_cancellation: false,
+            target: String::new(),
+            phase: "idle".to_owned(),
+            active_task_id: None,
+            task_constraints: serde_json::json!({}),
+            last_run: None,
+            evidence: Vec::new(),
+            constraint_violations: Vec::new(),
+            request_counter: 0,
             active_receipt: None,
             last_receipt: None,
             worker_started_at: None,
             show_attack_chain: false,
             pending_task: None,
             skills: skill_tree(),
-            setup: None,
             terminal_size: Rect::default(),
             toast: String::new(),
             sender,
         };
-        // First-run / on-demand wizard: only enter setup when we can confirm
-        // the LLM key is missing (vulnclaw CLI reachable). If the CLI is
-        // unavailable we stay out of setup so the app never hard-blocks.
-        if !app.config_is_ready() {
-            app.setup = Some(SetupState::new());
-        }
+        #[cfg(not(test))]
+        app.connect_backend();
         app
+    }
+
+    fn next_request_id(&mut self) -> String {
+        self.request_counter = self.request_counter.saturating_add(1);
+        format!("rust-{}-{}", std::process::id(), self.request_counter)
+    }
+
+    #[cfg(not(test))]
+    fn connect_backend(&mut self) {
+        match crate::exec::spawn_backend(self.sender.clone()) {
+            Ok(handle) => {
+                let bootstrap = std::env::var("VULNCLAW_TUI_BOOTSTRAP")
+                    .ok()
+                    .and_then(|raw| serde_json::from_str(&raw).ok())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let request = ClientRequest::initialize(self.next_request_id(), bootstrap);
+                if let Err(error) = handle.send(&request) {
+                    handle.wait_or_kill(std::time::Duration::from_millis(100));
+                    self.error(format!("Could not initialize Python backend: {error}"));
+                } else {
+                    self.backend = Some(handle);
+                    self.status("Connecting to the VulnClaw Python backend...");
+                }
+            }
+            Err(error) => self.error(format!("Could not start VulnClaw Python backend: {error}")),
+        }
     }
 
     pub fn submit(&mut self) {
@@ -505,26 +379,35 @@ impl App {
         self.push(TranscriptKind::User, format!("> {command}"));
         self.clear_composer();
         if command == "/help" {
-            self.status(text::HELP);
+            let backend = if self.backend_commands.is_empty() {
+                "none advertised yet".to_owned()
+            } else {
+                self.backend_commands
+                    .iter()
+                    .map(|command| format!("/{command} <target>"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            self.status(format!(
+                "Backend tasks: {backend}. Local commands: /report, /config, /clear, /help. Ctrl+C aborts a running command."
+            ));
         } else if command == "/clear" {
             self.transcript.clear();
             self.transcript_scroll = 0;
             self.transcript_follow = true;
             self.status("Transcript cleared. Findings remain available in the inspector.");
-        } else if let Some(arguments) = command.strip_prefix("/run ") {
-            self.request_task("run", arguments);
-        } else if let Some(arguments) = command.strip_prefix("/scan ") {
-            self.request_task("scan", arguments);
-        } else if let Some(arguments) = command.strip_prefix("/recon ") {
-            self.request_task("recon", arguments);
-        } else if let Some(arguments) = command.strip_prefix("/exploit ") {
-            self.request_task("exploit", arguments);
         } else if command == "/report" {
             self.status(
                 "Use vulnclaw report <result.json> [--pdf] to write the report; the TUI shows findings live.",
             );
         } else if command == "/config" {
             self.status("Use vulnclaw config set <key> <value> for llm.provider / llm.api_key / llm.base_url / llm.model.");
+        } else if let Some((verb, arguments)) = split_slash_command(&command) {
+            if self.backend_commands.iter().any(|item| item == verb) {
+                self.request_task(verb, arguments);
+            } else {
+                self.error(format!("Unknown command: {command}"));
+            }
         } else {
             self.error(format!("Unknown command: {command}"));
         }
@@ -716,179 +599,9 @@ impl App {
         self.clear_history_navigation();
     }
 
-    /// Whether an LLM API key is already configured. When the `vulnclaw` CLI is
-    /// unreachable we optimistically return `true` so the wizard never hard-
-    /// blocks the app in odd environments (or during tests).
-    pub fn config_is_ready(&self) -> bool {
-        let output = match exec::run_vulnclaw_sync(&["config", "show"]) {
-            Ok(o) if o.status.success() => o,
-            _ => return true,
-        };
-        let text = String::from_utf8_lossy(&output.stdout);
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix("api_key:") {
-                let value = rest.trim().trim_matches('\'').trim();
-                if !value.is_empty() {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Advance the setup wizard one step; the final step persists the config.
-    fn setup_advance(&mut self) {
-        let step = match &self.setup {
-            Some(s) => s.step,
-            None => return,
-        };
-        match step {
-            0 => {
-                if let Some(setup) = &mut self.setup {
-                    if let Some(preset) = PROVIDERS.get(setup.provider_index) {
-                        setup.base_url = preset.base_url.to_string();
-                        setup.model = preset.model.to_string();
-                        setup.api_key.clear();
-                        setup.cursor = 0;
-                    }
-                    setup.step = 1;
-                    setup.error = false;
-                    setup.message = "Paste your API key, then press Enter.".into();
-                }
-            }
-            1 => {
-                if let Some(setup) = &mut self.setup {
-                    if setup.api_key.trim().is_empty() {
-                        setup.error = true;
-                        setup.message = "API key cannot be empty. Esc to skip setup.".into();
-                        return;
-                    }
-                    setup.step = 2;
-                    setup.cursor = setup.base_url.chars().count();
-                    setup.error = false;
-                    setup.message = "Base URL — Enter to accept, or type to edit.".into();
-                }
-            }
-            2 => {
-                if let Some(setup) = &mut self.setup {
-                    setup.step = 3;
-                    setup.cursor = setup.model.chars().count();
-                    setup.error = false;
-                    setup.message = "Model — Enter to accept, or type to edit.".into();
-                }
-            }
-            3 => {
-                self.finish_setup();
-            }
-            _ => {}
-        }
-    }
-
-    /// Persist the wizard's choices via `vulnclaw config set` (unified YAML).
-    fn finish_setup(&mut self) {
-        let provider = match &self.setup {
-            Some(s) => PROVIDERS
-                .get(s.provider_index)
-                .map(|p| p.name)
-                .unwrap_or("deepseek"),
-            None => "deepseek",
-        };
-        let api_key = self
-            .setup
-            .as_ref()
-            .map(|s| s.api_key.clone())
-            .unwrap_or_default();
-        let base_url = self
-            .setup
-            .as_ref()
-            .map(|s| s.base_url.clone())
-            .unwrap_or_default();
-        let model = self
-            .setup
-            .as_ref()
-            .map(|s| s.model.clone())
-            .unwrap_or_default();
-
-        let _ = exec::run_vulnclaw_sync(&["config", "set", "llm.provider", provider]);
-        let _ = exec::run_vulnclaw_sync(&["config", "set", "llm.api_key", &api_key]);
-        if !base_url.is_empty() {
-            let _ = exec::run_vulnclaw_sync(&["config", "set", "llm.base_url", &base_url]);
-        }
-        if !model.is_empty() {
-            let _ = exec::run_vulnclaw_sync(&["config", "set", "llm.model", &model]);
-        }
-        self.setup = None;
-        self.status("API configured. VulnClaw is ready — L3 review and Agent modes enabled.");
-    }
-
-    /// Route key events while the setup wizard is active.
-    pub fn setup_handle_key(&mut self, key: KeyEvent) {
-        let step = match &self.setup {
-            Some(s) => s.step,
-            None => return,
-        };
-        match (key.code, key.modifiers) {
-            (KeyCode::Up, _) if step == 0 => {
-                if let Some(setup) = &mut self.setup {
-                    setup.provider_index = setup.provider_index.saturating_sub(1);
-                }
-            }
-            (KeyCode::Down, _) if step == 0 => {
-                if let Some(setup) = &mut self.setup {
-                    setup.provider_index =
-                        (setup.provider_index + 1).min(PROVIDERS.len().saturating_sub(1));
-                }
-            }
-            (KeyCode::Left, _) if step != 0 => {
-                if let Some(setup) = &mut self.setup {
-                    setup.move_cursor(false);
-                }
-            }
-            (KeyCode::Right, _) if step != 0 => {
-                if let Some(setup) = &mut self.setup {
-                    setup.move_cursor(true);
-                }
-            }
-            (KeyCode::Backspace, _) if step != 0 => {
-                if let Some(setup) = &mut self.setup {
-                    setup.backspace();
-                }
-            }
-            (KeyCode::Char(c), modifiers)
-                if step != 0 && !modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                if let Some(setup) = &mut self.setup {
-                    setup.insert_char(c);
-                }
-            }
-            (KeyCode::Enter, _) => {
-                self.setup_advance();
-            }
-            (KeyCode::Esc, _) => {
-                self.setup = None;
-                self.status("Setup skipped. Configure later: vulnclaw config set llm.api_key <key>");
-            }
-            _ => {}
-        }
-    }
-
-    /// Insert pasted/IME text. Routes to the setup wizard's current field when
-    /// the wizard is active (so pasting an API key lands in `api_key`, not the
-    /// hidden main command line), otherwise to the main input. Newlines are
-    /// dropped so a multi-line paste never advances the wizard a step.
+    /// Insert pasted/IME text into the presentation-only composer. Newlines are
+    /// dropped so a multi-line paste never submits more than one command.
     pub fn insert_text(&mut self, text: &str) {
-        if let Some(setup) = &mut self.setup {
-            if setup.step != 0 {
-                for character in text
-                    .chars()
-                    .filter(|character| *character != '\r' && *character != '\n')
-                {
-                    setup.insert_char(character);
-                }
-            }
-            return;
-        }
         for character in text
             .chars()
             .filter(|character| *character != '\r' && *character != '\n')
@@ -974,9 +687,16 @@ impl App {
         if !query.starts_with('/') {
             return Vec::new();
         }
-        SLASH_COMMANDS
-            .iter()
-            .copied()
+        let backend = self.backend_commands.iter().map(|command| SlashCommand {
+            command: format!("/{command} "),
+            description: "run a task through the Python backend",
+        });
+        let local = LOCAL_SLASH_COMMANDS.iter().map(|(command, description)| SlashCommand {
+            command: (*command).to_owned(),
+            description,
+        });
+        backend
+            .chain(local)
             .filter(|item| item.command.starts_with(&query))
             .collect()
     }
@@ -1012,11 +732,11 @@ impl App {
     }
 
     pub fn confirm_task(&mut self) {
-        let Some(args) = self.pending_task.take() else {
+        let Some(command_line) = self.pending_task.take() else {
             return;
         };
         self.status("TUI confirmation recorded. Starting task.");
-        self.start_worker(args);
+        self.start_task(command_line);
     }
 
     pub fn dismiss_task(&mut self) {
@@ -1027,54 +747,293 @@ impl App {
 
     pub fn apply_event(&mut self, event: AppEvent) {
         match event {
-            AppEvent::Stream(stream) => match stream {
-                StreamEvent::Status(message) => {
+            AppEvent::Backend(stream) => match stream {
+                BackendEvent::Ready {
+                    backend,
+                    capabilities,
+                    runtime,
+                    state,
+                } => {
+                    self.backend_ready = true;
+                    self.backend_pid = Some(backend.pid);
+                    self.config_ready = Some(runtime.config_ready);
+                    self.backend_commands = capabilities
+                        .commands
+                        .into_iter()
+                        .filter_map(normalize_backend_command)
+                        .collect();
+                    self.backend_commands.sort();
+                    self.backend_commands.dedup();
+                    self.backend_control_operations = capabilities
+                        .control_operations
+                        .into_iter()
+                        .filter(|operation| !operation.trim().is_empty())
+                        .collect();
+                    self.backend_control_operations.sort();
+                    self.backend_control_operations.dedup();
+                    self.backend_supports_cancellation = capabilities.cancellation;
+                    if !capabilities.authoritative_state {
+                        self.error(
+                            "Backend does not advertise authoritative state; refusing task commands.",
+                        );
+                        self.backend_commands.clear();
+                    }
+                    self.apply_backend_state(state);
+                    if !runtime.skills.is_empty() {
+                        self.skills = vec![SkillNode {
+                            name: "Python skills".into(),
+                            children: runtime
+                                .skills
+                                .into_iter()
+                                .map(|name| SkillNode {
+                                    name,
+                                    children: Vec::new(),
+                                })
+                                .collect(),
+                        }];
+                    }
+                    self.status(format!(
+                        "Python backend ready (pid {}, VulnClaw {}, {}/{}).",
+                        backend.pid, backend.version, runtime.provider, runtime.model
+                    ));
+                    if !runtime.config_ready {
+                        self.error(
+                            "LLM credentials are not configured. Run `vulnclaw config set` before starting a task.",
+                        );
+                    }
+                }
+                BackendEvent::State { state } => self.apply_backend_state(state),
+                BackendEvent::TaskStarted {
+                    task_id,
+                    command,
+                    normalized_command,
+                    _target: _,
+                    _resume: _,
+                    _constraints: _,
+                    state,
+                } => {
+                    if self.active_task_id.as_deref() != Some(task_id.as_str()) {
+                        return;
+                    }
+                    self.worker_active = true;
+                    self.worker_started_at = Some(Instant::now());
+                    self.apply_backend_state(state);
+                    if let Some(receipt) = self.active_receipt.as_mut() {
+                        receipt.phase = format!("{} running", command);
+                        if !normalized_command.is_empty() {
+                            receipt.command = normalized_command;
+                        }
+                    }
+                }
+                BackendEvent::Status {
+                    task_id,
+                    status: message,
+                } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
+                    }
                     self.update_receipt(&message);
                     self.status(message);
                 }
-                StreamEvent::Finding(finding) => {
-                    if let Some(receipt) = self.active_receipt.as_mut() {
-                        receipt.findings += 1;
-                        receipt.phase = "Receiving findings".to_owned();
+                BackendEvent::Finding { task_id, finding } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
                     }
-                    self.push(TranscriptKind::Finding, finding.summary());
-                    self.findings.push(finding);
+                    self.upsert_finding(finding);
                 }
-                StreamEvent::Reasoning(chunk) => {
+                BackendEvent::Reasoning { task_id, text: chunk } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
+                    }
                     self.update_receipt("Thinking");
                     self.push(TranscriptKind::Reasoning, chunk);
                 }
-                StreamEvent::Log(line) => {
+                BackendEvent::Log {
+                    task_id,
+                    message: line,
+                } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
+                    }
                     self.update_receipt("Running");
                     self.push(TranscriptKind::Log, line);
                 }
-                StreamEvent::Complete(summary) => {
-                    self.update_receipt("Finalizing");
-                    self.status(summary);
+                BackendEvent::ToolCall {
+                    task_id,
+                    tool,
+                    arguments,
+                } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
+                    }
+                    self.update_receipt("Using tool");
+                    self.push(
+                        TranscriptKind::Log,
+                        format!("→ tool: {tool} {}", truncate_text(&arguments, 160)),
+                    );
+                }
+                BackendEvent::ToolResult { task_id, result } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
+                    }
+                    self.update_receipt("Running");
+                    self.push(
+                        TranscriptKind::Log,
+                        format!("→ result: {}", truncate_text(&result, 240)),
+                    );
+                }
+                BackendEvent::ApprovalRequired { task_id, question } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
+                    }
+                    self.push(TranscriptKind::Status, format!("Approval required: {question}"));
+                }
+                BackendEvent::TaskCompleted {
+                    task_id,
+                    result,
+                    findings: _,
+                    state,
+                } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
+                    }
+                    self.apply_backend_state(state);
+                    self.finish_task("Completed");
+                    let run_name = result
+                        .get("run")
+                        .and_then(|run| run.get("name"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    self.status(if run_name.is_empty() {
+                        "VulnClaw task completed.".to_owned()
+                    } else {
+                        format!("VulnClaw task completed. Run: {run_name}")
+                    });
+                }
+                BackendEvent::TaskCancelled { task_id, state } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
+                    }
+                    self.apply_backend_state(state);
+                    self.finish_task("Cancelled");
+                    self.status("VulnClaw task cancelled; backend session remains available.");
+                }
+                BackendEvent::TaskFailed {
+                    task_id,
+                    error,
+                    state,
+                } => {
+                    if !self.is_current_task(&task_id) {
+                        return;
+                    }
+                    self.apply_backend_state(state);
+                    self.finish_task("Failed");
+                    let message = error
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("task failed");
+                    self.error(format!("VulnClaw task failed: {message}"));
+                }
+                BackendEvent::ControlResult {
+                    _request_id: _,
+                    operation,
+                    result: _,
+                    state,
+                } => {
+                    if let Some(state) = state {
+                        self.apply_backend_state(state);
+                    }
+                    self.status(format!("Backend control {operation} completed."));
+                }
+                BackendEvent::Error {
+                    task_id,
+                    code,
+                    message,
+                } => {
+                    if task_id.is_some() && task_id == self.active_task_id {
+                        self.finish_task("Rejected");
+                    }
+                    self.error(format!("Backend {code}: {message}"));
+                }
+                BackendEvent::ShutdownComplete => {
+                    self.backend_ready = false;
+                    self.backend_commands.clear();
+                    self.backend_control_operations.clear();
                 }
             },
-            AppEvent::Error(message) => {
-                self.update_receipt("Error");
-                self.error(message)
+            AppEvent::BackendDiagnostic(message) => {
+                self.push(TranscriptKind::Log, format!("backend: {message}"));
             }
-            AppEvent::Finished(success) => {
-                self.worker = None;
+            AppEvent::BackendExited(success) => {
+                self.backend = None;
+                self.backend_ready = false;
+                self.backend_pid = None;
+                self.backend_commands.clear();
+                self.backend_control_operations.clear();
+                self.backend_supports_cancellation = false;
                 self.worker_active = false;
                 self.worker_started_at = None;
                 if let Some(mut receipt) = self.active_receipt.take() {
-                    receipt.phase = if success {
-                        "Completed".to_owned()
-                    } else {
-                        "Failed".to_owned()
-                    };
+                    receipt.phase = "Backend disconnected".to_owned();
                     self.last_receipt = Some(receipt);
                 }
-                self.status(if success {
-                    "VulnClaw command completed."
-                } else {
-                    "VulnClaw command completed with a non-zero status."
-                });
+                self.active_task_id = None;
+                if self.running {
+                    self.error(if success {
+                        "Python backend exited."
+                    } else {
+                        "Python backend exited with a non-zero status."
+                    });
+                }
             }
+        }
+    }
+
+    fn is_current_task(&self, task_id: &str) -> bool {
+        self.active_task_id.as_deref() == Some(task_id)
+    }
+
+    fn apply_backend_state(&mut self, state: StateSnapshot) {
+        self.target = state.target;
+        self.phase = state.phase;
+        self.findings = state.findings;
+        self.worker_active = state.task.active;
+        self.active_task_id = state.task.task_id;
+        self.task_constraints = state.task_constraints;
+        self.last_run = state.last_run;
+        self.evidence = state.evidence;
+        self.constraint_violations = state.constraint_violations;
+        if let Some(receipt) = self.active_receipt.as_mut() {
+            receipt.findings = self.findings.len();
+        }
+    }
+
+    fn upsert_finding(&mut self, finding: Finding) {
+        let summary = finding.summary();
+        if let Some(existing) = self
+            .findings
+            .iter_mut()
+            .find(|item| !finding.id.is_empty() && item.id == finding.id)
+        {
+            *existing = finding;
+        } else {
+            self.findings.push(finding);
+            self.push(TranscriptKind::Finding, summary);
+        }
+        if let Some(receipt) = self.active_receipt.as_mut() {
+            receipt.findings = self.findings.len();
+            receipt.phase = "Receiving findings".to_owned();
+        }
+    }
+
+    fn finish_task(&mut self, phase: &str) {
+        self.worker_active = false;
+        self.worker_started_at = None;
+        self.active_task_id = None;
+        if let Some(mut receipt) = self.active_receipt.take() {
+            receipt.phase = phase.to_owned();
+            receipt.findings = self.findings.len();
+            self.last_receipt = Some(receipt);
         }
     }
 
@@ -1108,76 +1067,118 @@ impl App {
             );
             return;
         }
-        let mut parts = match split_arguments(arguments) {
-            Ok(parts) => parts,
-            Err(error) => {
-                self.error(error);
-                return;
-            }
-        };
-        if parts.is_empty() {
+        let arguments = arguments.trim();
+        if arguments.is_empty() {
             self.error(format!(
                 "/{command} requires a target: /{command} <target> [--only-port N] [--only-host H] [--blocked-host H]"
             ));
             return;
         }
-        let target = parts[0].clone();
-        let mut args = vec![command.to_owned()];
-        args.append(&mut parts);
-        // The Rust TUI consumes the JSONL stream protocol; always ask the
-        // Python core to emit events instead of Rich text.
-        args.push("--stream".to_owned());
-        self.pending_task = Some(args);
+        let target = arguments.split_whitespace().next().unwrap_or(arguments);
+        self.pending_task = Some(format!("/{command} {arguments}"));
         self.status(format!(
             "/{command} armed for {target}. Press Y to run, or Esc to cancel."
         ));
     }
 
-    fn start_worker(&mut self, args: Vec<String>) {
+    #[allow(dead_code)]
+    fn request_control(&mut self, operation: &str, arguments: serde_json::Value) -> bool {
+        if self.worker_active {
+            self.error("Administrative settings cannot change while a task is running.");
+            return false;
+        }
+        if !self.backend_ready {
+            self.error("The Python backend is not ready.");
+            return false;
+        }
+        if !self
+            .backend_control_operations
+            .iter()
+            .any(|candidate| candidate == operation)
+        {
+            self.error(format!(
+                "The connected backend does not support control operation {operation}."
+            ));
+            return false;
+        }
+        let request = ClientRequest::control(self.next_request_id(), operation, arguments);
+        let send_result = self
+            .backend
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("backend disconnected"))
+            .and_then(|backend| backend.send(&request));
+        if let Err(error) = send_result {
+            self.error(format!("Could not send {operation} to Python backend: {error}"));
+            return false;
+        }
+        true
+    }
+
+    fn start_task(&mut self, command_line: String) {
         if self.worker_active {
             self.error("A VulnClaw command is already running.");
             return;
         }
-        self.worker_active = true;
-        self.worker_started_at = Some(Instant::now());
+        if !self.backend_ready {
+            self.error("The Python backend is not ready.");
+            return;
+        }
+        let task_id = format!("task-{}-{}", std::process::id(), self.request_counter + 1);
+        let request = ClientRequest::start_task(
+            self.next_request_id(),
+            task_id.clone(),
+            command_line.clone(),
+        );
         self.active_receipt = Some(OperationReceipt {
-            command: args.join(" "),
-            phase: "Starting".to_owned(),
+            command: command_line,
+            phase: "Submitting".to_owned(),
             findings: 0,
         });
-        match exec::spawn_vulnclaw(args, self.sender.clone()) {
-            Ok(handle) => self.worker = Some(handle),
-            Err(error) => {
-                self.worker_active = false;
-                if let Some(mut receipt) = self.active_receipt.take() {
-                    receipt.phase = "Failed to start".to_owned();
-                    self.last_receipt = Some(receipt);
-                }
-                self.error(format!("Could not start VulnClaw Python core: {error}"));
-            }
+        self.worker_active = true;
+        self.worker_started_at = Some(Instant::now());
+        self.active_task_id = Some(task_id);
+        let send_result = self
+            .backend
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("backend disconnected"))
+            .and_then(|backend| backend.send(&request));
+        if let Err(error) = send_result {
+            self.finish_task("Failed to submit");
+            self.error(format!("Could not submit task to Python backend: {error}"));
         }
     }
 
-    /// Abort a running VulnClaw worker (e.g. an in-flight Task agent) and reap
-    /// the child process so it cannot outlive the TUI as an orphan. The TUI is
-    /// the sole taker of the `Child`, so this reliably terminates it even on
-    /// Windows (where dropping a `Child` does not kill the process).
+    /// Request cancellation of the active task without terminating the backend.
     pub fn stop_worker(&mut self) {
-        if let Some(handle) = self.worker.take() {
-            if let Ok(mut guard) = handle.lock() {
-                if let Some(mut child) = guard.take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
+        let Some(task_id) = self.active_task_id.clone() else {
+            return;
+        };
+        if !self.backend_supports_cancellation {
+            self.error("The connected backend does not support task cancellation.");
+            return;
+        }
+        let request = ClientRequest::cancel_task(self.next_request_id(), task_id);
+        match self.backend.as_ref().map(|backend| backend.send(&request)) {
+            Some(Ok(())) => {
+                self.update_receipt("Cancelling");
+                self.status("Cancellation requested; waiting for Python checkpoint.");
             }
+            Some(Err(error)) => self.error(format!("Could not cancel task: {error}")),
+            None => self.error("Could not cancel task: backend disconnected."),
         }
-        self.worker_active = false;
-        self.worker_started_at = None;
-        if let Some(mut receipt) = self.active_receipt.take() {
-            receipt.phase = "Aborted".to_owned();
-            self.last_receipt = Some(receipt);
-        }
-        self.status("VulnClaw command aborted by user (Ctrl+C).");
+    }
+
+    pub fn shutdown_backend(&mut self) {
+        let Some(backend) = self.backend.take() else {
+            return;
+        };
+        let request = ClientRequest::shutdown(self.next_request_id());
+        let _ = backend.send(&request);
+        backend.wait_or_kill(std::time::Duration::from_secs(2));
+        self.backend_ready = false;
+        self.backend_commands.clear();
+        self.backend_control_operations.clear();
+        self.backend_supports_cancellation = false;
     }
 
     fn push(&mut self, kind: TranscriptKind, text: impl Into<String>) {
@@ -1227,28 +1228,14 @@ impl App {
     }
 }
 
-fn split_arguments(arguments: &str) -> Result<Vec<String>, String> {
-    let mut arguments_out = Vec::new();    let mut current = String::new();
-    let mut quote = None;
-    for character in arguments.chars() {
-        match character {
-            '\'' | '"' if quote.is_none() => quote = Some(character),
-            character if quote == Some(character) => quote = None,
-            character if character.is_whitespace() && quote.is_none() => {
-                if !current.is_empty() {
-                    arguments_out.push(std::mem::take(&mut current));
-                }
-            }
-            character => current.push(character),
-        }
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let preview = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
     }
-    if quote.is_some() {
-        return Err("Task command has an unclosed quoted argument.".to_owned());
-    }
-    if !current.is_empty() {
-        arguments_out.push(current);
-    }
-    Ok(arguments_out)
 }
 
 /// Strip a leading transcript/prompt artifact such as `You > ` or `> ` that a
@@ -1265,6 +1252,25 @@ fn strip_prompt_prefix(command: &str) -> String {
         }
     }
     trimmed.to_owned()
+}
+
+fn split_slash_command(command: &str) -> Option<(&str, &str)> {
+    let raw = command.strip_prefix('/')?;
+    let split_at = raw.find(char::is_whitespace).unwrap_or(raw.len());
+    let (verb, remainder) = raw.split_at(split_at);
+    (!verb.is_empty()).then_some((verb, remainder.trim_start()))
+}
+
+fn normalize_backend_command(command: String) -> Option<String> {
+    let normalized = command.trim().trim_start_matches('/');
+    if normalized.is_empty()
+        || !normalized
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return None;
+    }
+    Some(normalized.to_owned())
 }
 
 fn previous_char_boundary(text: &str, index: usize) -> usize {
@@ -1285,9 +1291,7 @@ fn next_char_boundary(text: &str, index: usize) -> usize {
 mod tests {
     use std::sync::mpsc;
 
-    use super::{
-        App, ActivePane, ExecutionMode, PermissionMode, SetupState, strip_prompt_prefix,
-    };
+    use super::{strip_prompt_prefix, ActivePane, App, ExecutionMode, PermissionMode};
 
     #[test]
     fn strip_prompt_prefix_tolerates_pasted_transcript_prefix() {
@@ -1310,12 +1314,167 @@ mod tests {
     fn composer_suggests_and_completes_slash_commands() {
         let (sender, _) = mpsc::channel();
         let mut app = App::new(sender);
-        app.append_input('/');
-        app.select_next_command(true);
+        app.backend_commands = vec!["run".into()];
+        app.insert_text("/ru");
 
         assert!(app.palette_visible());
         assert!(app.accept_selected_command());
         assert_eq!(app.input, "/run ");
+    }
+
+    #[test]
+    fn task_dispatch_uses_backend_advertised_commands() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+        app.backend_commands = vec!["recon".into()];
+        app.insert_text("/recon https://lab.example");
+        app.submit();
+
+        assert_eq!(
+            app.pending_task.as_deref(),
+            Some("/recon https://lab.example")
+        );
+
+        app.dismiss_task();
+        app.insert_text("/run https://lab.example");
+        app.submit();
+        assert!(app.pending_task.is_none());
+        assert!(app
+            .transcript
+            .iter()
+            .any(|item| item.text.contains("Unknown command: /run")));
+    }
+
+    #[test]
+    fn ready_event_hydrates_backend_capabilities() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+        let event = crate::protocol::parse_backend_line(
+            r#"{"protocol_version":1,"type":"ready","request_id":"r1","backend":{"pid":7,"version":"test","protocol_version":1},"capabilities":{"commands":["scan","run"],"control_operations":["example.inspect"],"cancellation":true,"authoritative_state":true},"runtime":{"config_ready":true,"provider":"test","model":"test","mcp_started":0,"skills":[]},"state":{"target":"","phase":"idle","task_constraints":{},"task":{"active":false,"task_id":null},"last_run":null,"findings":[],"evidence":[],"constraint_violations":[]}}"#,
+        )
+        .unwrap();
+
+        app.apply_event(crate::protocol::AppEvent::Backend(event));
+
+        assert_eq!(app.backend_commands, vec!["run", "scan"]);
+        assert_eq!(app.backend_control_operations, vec!["example.inspect"]);
+        assert!(app.backend_supports_cancellation);
+    }
+
+    #[test]
+    fn authoritative_state_replaces_and_clears_every_business_field() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+        app.target = "stale.test".into();
+        app.phase = "stale".into();
+        app.worker_active = true;
+        app.active_task_id = Some("stale-task".into());
+        app.task_constraints = serde_json::json!({"allowed_hosts": ["stale.test"]});
+        app.last_run = Some(serde_json::json!({"status": "stale"}));
+        app.evidence = vec![serde_json::json!({"path": "stale"})];
+        app.constraint_violations = vec!["stale violation".into()];
+
+        app.apply_event(crate::protocol::AppEvent::Backend(
+            crate::protocol::BackendEvent::State {
+                state: crate::protocol::StateSnapshot {
+                    target: String::new(),
+                    phase: String::new(),
+                    task_constraints: serde_json::json!({"allowed_ports": [443]}),
+                    findings: Vec::new(),
+                    task: crate::protocol::BackendTaskState {
+                        active: false,
+                        task_id: None,
+                    },
+                    last_run: Some(serde_json::json!({"status": "completed"})),
+                    evidence: vec![serde_json::json!({"path": "fresh"})],
+                    constraint_violations: vec!["fresh violation".into()],
+                },
+            },
+        ));
+
+        assert!(app.target.is_empty());
+        assert!(app.phase.is_empty());
+        assert!(!app.worker_active);
+        assert!(app.active_task_id.is_none());
+        assert_eq!(app.task_constraints["allowed_ports"][0], 443);
+        assert_eq!(app.last_run.as_ref().unwrap()["status"], "completed");
+        assert_eq!(app.evidence[0]["path"], "fresh");
+        assert_eq!(app.constraint_violations, vec!["fresh violation"]);
+    }
+
+    #[test]
+    fn task_event_summaries_never_override_authoritative_state() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+        app.worker_active = true;
+        app.active_task_id = Some("t1".into());
+
+        app.apply_event(crate::protocol::AppEvent::Backend(
+            crate::protocol::BackendEvent::TaskStarted {
+                task_id: "t1".into(),
+                command: "run".into(),
+                normalized_command: "/run authoritative.test".into(),
+                _target: "summary.test".into(),
+                _resume: true,
+                _constraints: serde_json::json!({"allowed_hosts": ["summary.test"]}),
+                state: crate::protocol::StateSnapshot {
+                    target: "authoritative.test".into(),
+                    phase: "recon".into(),
+                    task_constraints: serde_json::json!({
+                        "allowed_hosts": ["authoritative.test"]
+                    }),
+                    findings: Vec::new(),
+                    task: crate::protocol::BackendTaskState {
+                        active: true,
+                        task_id: Some("t1".into()),
+                    },
+                    last_run: None,
+                    evidence: Vec::new(),
+                    constraint_violations: Vec::new(),
+                },
+            },
+        ));
+
+        assert_eq!(app.target, "authoritative.test");
+        assert_eq!(
+            app.task_constraints["allowed_hosts"][0],
+            "authoritative.test"
+        );
+
+        let authoritative_finding = crate::protocol::Finding {
+            id: "state-finding".into(),
+            severity: "high".into(),
+            title: "Authoritative".into(),
+            target: "authoritative.test".into(),
+            ..Default::default()
+        };
+        let summary_finding = crate::protocol::Finding {
+            id: "summary-finding".into(),
+            ..Default::default()
+        };
+        app.apply_event(crate::protocol::AppEvent::Backend(
+            crate::protocol::BackendEvent::TaskCompleted {
+                task_id: "t1".into(),
+                result: serde_json::json!({}),
+                findings: vec![summary_finding],
+                state: crate::protocol::StateSnapshot {
+                    target: "authoritative.test".into(),
+                    phase: "reporting".into(),
+                    task_constraints: app.task_constraints.clone(),
+                    findings: vec![authoritative_finding],
+                    task: crate::protocol::BackendTaskState {
+                        active: false,
+                        task_id: None,
+                    },
+                    last_run: Some(serde_json::json!({"status": "completed"})),
+                    evidence: Vec::new(),
+                    constraint_violations: Vec::new(),
+                },
+            },
+        ));
+
+        assert_eq!(app.findings.len(), 1);
+        assert_eq!(app.findings[0].id, "state-finding");
     }
 
     #[test]
@@ -1352,6 +1511,7 @@ mod tests {
         let (sender, _) = mpsc::channel();
         let mut app = App::new(sender);
         app.mode = ExecutionMode::Plan;
+        app.backend_commands = vec!["run".into()];
         app.insert_text("/run https://lab.example");
         app.submit();
 
@@ -1377,39 +1537,11 @@ mod tests {
     }
 
     #[test]
-    fn paste_routes_into_setup_wizard_field() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        let mut setup = SetupState::new();
-        setup.step = 1; // API key step
-        app.setup = Some(setup);
-
-        app.insert_text("sk-pasted-key");
-
-        assert_eq!(app.setup.as_ref().unwrap().api_key, "sk-pasted-key");
-        assert!(app.input.is_empty(), "main input must stay untouched");
-    }
-
-    #[test]
     fn paste_in_main_input_still_works() {
         let (sender, _) = mpsc::channel();
         let mut app = App::new(sender);
         app.insert_text("hello world");
         assert_eq!(app.input, "hello world");
-    }
-
-    #[test]
-    fn paste_newlines_dropped_in_setup_do_not_advance_step() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        let mut setup = SetupState::new();
-        setup.step = 1;
-        app.setup = Some(setup);
-
-        app.insert_text("sk-key\n\n");
-
-        assert_eq!(app.setup.as_ref().unwrap().step, 1);
-        assert_eq!(app.setup.as_ref().unwrap().api_key, "sk-key");
     }
 
     #[test]
@@ -1432,19 +1564,38 @@ mod tests {
         let (sender, _) = mpsc::channel();
         let mut app = App::new(sender);
         app.active_receipt = Some(super::OperationReceipt {
-            command: "run https://lab.example --stream".into(),
+            command: "/run https://lab.example".into(),
             phase: "Starting".into(),
             findings: 0,
         });
         app.worker_active = true;
-        app.apply_event(crate::protocol::AppEvent::Stream(
-            crate::protocol::StreamEvent::Finding(crate::protocol::Finding {
-                severity: "high".into(),
-                title: "Test finding".into(),
-                ..Default::default()
-            }),
+        app.active_task_id = Some("t1".into());
+        let finding = crate::protocol::Finding {
+            severity: "high".into(),
+            title: "Test finding".into(),
+            ..Default::default()
+        };
+        app.apply_event(crate::protocol::AppEvent::Backend(
+            crate::protocol::BackendEvent::Finding {
+                task_id: "t1".into(),
+                finding: finding.clone(),
+            },
         ));
-        app.apply_event(crate::protocol::AppEvent::Finished(true));
+        app.apply_event(crate::protocol::AppEvent::Backend(
+            crate::protocol::BackendEvent::TaskCompleted {
+                task_id: "t1".into(),
+                result: serde_json::json!({}),
+                findings: Vec::new(),
+                state: crate::protocol::StateSnapshot {
+                    findings: vec![finding],
+                    task: crate::protocol::BackendTaskState {
+                        active: false,
+                        task_id: None,
+                    },
+                    ..Default::default()
+                },
+            },
+        ));
 
         assert!(app.active_receipt.is_none());
         assert_eq!(app.last_receipt.as_ref().unwrap().findings, 1);
