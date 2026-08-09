@@ -116,7 +116,10 @@ async def test_initialize_and_two_tasks_share_one_session_backend_pid() -> None:
     ready = next(event for event in emitted if event["type"] == "ready")
     completed = [event for event in emitted if event["type"] == "task_completed"]
     assert ready["backend"]["pid"] == os.getpid()
-    assert ready["capabilities"]["control_operations"] == []
+    assert ready["capabilities"]["control_operations"] == [
+        "session.scope.reset",
+        "session.scope.update",
+    ]
     assert ready["state"]["target"] == "bootstrap.test"
     assert ready["state"]["task_constraints"]["allowed_actions"] == ["recon", "scan"]
     assert runtime.run_count == 2
@@ -140,6 +143,105 @@ async def test_unadvertised_control_operation_is_rejected() -> None:
         )
 
     assert caught.value.code == "unsupported_operation"
+
+
+@pytest.mark.asyncio
+async def test_scope_control_updates_defaults_for_later_tasks_and_can_reset() -> None:
+    stream = io.StringIO()
+    captured_constraints: list[Any] = []
+
+    async def runner(runtime, task, sink):
+        captured_constraints.append(task.constraints)
+        return {"status": "completed", "findings": []}
+
+    session = BackendSession(
+        JsonlWriter(stream), runtime_factory=FakeRuntime, task_runner=runner
+    )
+    await session.handle(request("initialize", "r-init"))
+    await session.handle(
+        request(
+            "control",
+            "r-scope",
+            payload={
+                "operation": "session.scope.update",
+                "arguments": {
+                    "command_line": (
+                        "--only-host session.test --only-port 443 "
+                        "--allow-actions recon,scan --block-actions exploit"
+                    )
+                },
+            },
+        )
+    )
+
+    updated = events(stream)[-1]
+    protocol_validator().validate(updated)
+    assert updated["type"] == "control_result"
+    assert updated["operation"] == "session.scope.update"
+    assert updated["result"]["scope"]["only_port"] == 443
+    assert updated["state"]["task_constraints"]["allowed_hosts"] == ["session.test"]
+    assert updated["state"]["task_constraints"]["allowed_actions"] == ["recon", "scan"]
+
+    await session.handle(
+        request(
+            "start_task",
+            "r-task",
+            task_id="t-task",
+            payload={"command_line": "/scan target.test"},
+        )
+    )
+    await session.wait_for_idle()
+    assert captured_constraints[0].allowed_hosts == ["session.test"]
+    assert captured_constraints[0].allowed_ports == [443]
+    assert captured_constraints[0].allowed_actions == ["recon", "scan"]
+
+    await session.handle(
+        request(
+            "control",
+            "r-reset",
+            payload={"operation": "session.scope.reset", "arguments": {}},
+        )
+    )
+    reset = events(stream)[-1]
+    protocol_validator().validate(reset)
+    assert reset["operation"] == "session.scope.reset"
+    assert reset["result"]["scope"] == {}
+    assert reset["state"]["task_constraints"]["allowed_ports"] == []
+    assert reset["state"]["task_constraints"]["allowed_actions"] == []
+    assert reset["state"]["task_constraints"]["allowed_hosts"] == ["target.test"]
+    assert not (
+        set(session.bootstrap)
+        & {
+            "only_host",
+            "only_port",
+            "only_path",
+            "blocked_host",
+            "blocked_path",
+            "allow_actions",
+            "block_actions",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_scope_control_rejects_invalid_options() -> None:
+    session = BackendSession(JsonlWriter(io.StringIO()), runtime_factory=FakeRuntime)
+    await session.handle(request("initialize", "r-init"))
+
+    with pytest.raises(ProtocolError) as caught:
+        await session.handle(
+            request(
+                "control",
+                "r-scope",
+                payload={
+                    "operation": "session.scope.update",
+                    "arguments": {"command_line": "--only-port nope"},
+                },
+            )
+        )
+
+    assert caught.value.code == "invalid_control"
+    assert caught.value.request_id == "r-scope"
 
 
 @pytest.mark.asyncio
@@ -177,6 +279,18 @@ async def test_concurrent_task_is_rejected_as_busy() -> None:
             )
         )
     assert caught.value.code == "task_busy"
+    with pytest.raises(ProtocolError) as control_error:
+        await session.handle(
+            request(
+                "control",
+                "r-scope",
+                payload={
+                    "operation": "session.scope.update",
+                    "arguments": {"command_line": "--only-port 443"},
+                },
+            )
+        )
+    assert control_error.value.code == "task_busy"
     release.set()
     await session.wait_for_idle()
 

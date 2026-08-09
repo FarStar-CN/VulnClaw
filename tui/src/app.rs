@@ -210,6 +210,7 @@ pub struct SlashCommand {
 }
 
 const LOCAL_SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/scope ", "update session scope defaults"),
     ("/report", "show report export guidance"),
     ("/config", "show configuration guidance"),
     ("/clear", "clear the transcript"),
@@ -389,7 +390,7 @@ impl App {
                     .join(", ")
             };
             self.status(format!(
-                "Backend tasks: {backend}. Local commands: /report, /config, /clear, /help. Ctrl+C aborts a running command."
+                "Backend tasks: {backend}. Local commands: /scope, /report, /config, /clear, /help. Ctrl+C aborts a running command."
             ));
         } else if command == "/clear" {
             self.transcript.clear();
@@ -403,7 +404,9 @@ impl App {
         } else if command == "/config" {
             self.status("Use vulnclaw config set <key> <value> for llm.provider / llm.api_key / llm.base_url / llm.model.");
         } else if let Some((verb, arguments)) = split_slash_command(&command) {
-            if self.backend_commands.iter().any(|item| item == verb) {
+            if verb == "scope" {
+                self.request_scope_control(arguments);
+            } else if self.backend_commands.iter().any(|item| item == verb) {
                 self.request_task(verb, arguments);
             } else {
                 self.error(format!("Unknown command: {command}"));
@@ -937,13 +940,21 @@ impl App {
                 BackendEvent::ControlResult {
                     _request_id: _,
                     operation,
-                    result: _,
+                    result,
                     state,
                 } => {
                     if let Some(state) = state {
                         self.apply_backend_state(state);
                     }
-                    self.status(format!("Backend control {operation} completed."));
+                    self.status(
+                        result
+                            .get("message")
+                            .and_then(serde_json::Value::as_str)
+                            .map_or_else(
+                                || format!("Backend control {operation} completed."),
+                                str::to_owned,
+                            ),
+                    );
                 }
                 BackendEvent::Error {
                     task_id,
@@ -1081,7 +1092,6 @@ impl App {
         ));
     }
 
-    #[allow(dead_code)]
     fn request_control(&mut self, operation: &str, arguments: serde_json::Value) -> bool {
         if self.worker_active {
             self.error("Administrative settings cannot change while a task is running.");
@@ -1112,6 +1122,27 @@ impl App {
             return false;
         }
         true
+    }
+
+    fn request_scope_control(&mut self, arguments: &str) {
+        let arguments = arguments.trim();
+        if arguments.is_empty() {
+            self.status(
+                "Usage: /scope [--only-host H] [--only-port N] [--only-path P] [--blocked-host H] [--blocked-path P] [--allow-actions A,B] [--block-actions A,B], or /scope --clear.",
+            );
+            return;
+        }
+        let (operation, payload) = if arguments == "--clear" {
+            ("session.scope.reset", serde_json::json!({}))
+        } else {
+            (
+                "session.scope.update",
+                serde_json::json!({"command_line": arguments}),
+            )
+        };
+        if self.request_control(operation, payload) {
+            self.status("Session scope change requested.");
+        }
     }
 
     fn start_task(&mut self, command_line: String) {
@@ -1343,6 +1374,30 @@ mod tests {
             .transcript
             .iter()
             .any(|item| item.text.contains("Unknown command: /run")));
+    }
+
+    #[test]
+    fn scope_command_routes_to_capability_gated_control() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+
+        app.insert_text("/scope");
+        app.submit();
+        assert!(app
+            .transcript
+            .iter()
+            .any(|item| item.text.contains("Usage: /scope")));
+
+        app.insert_text("/scope --only-port 443");
+        app.submit();
+        assert!(app.transcript.iter().any(|item| {
+            item.text
+                .contains("The Python backend is not ready")
+        }));
+        assert!(!app
+            .transcript
+            .iter()
+            .any(|item| item.text.contains("Unknown command: /scope")));
     }
 
     #[test]

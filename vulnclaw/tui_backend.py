@@ -24,10 +24,19 @@ from vulnclaw.tui_protocol import (
 )
 
 SUPPORTED_COMMANDS = frozenset({"run", "scan", "recon", "exploit", "persistent"})
-# Concrete management operations are feature extensions.  The transport and
-# capability negotiation live in the architecture layer, while this base
-# backend intentionally advertises no optional business controls.
-SUPPORTED_CONTROL_OPERATIONS: frozenset[str] = frozenset()
+# Concrete management operations are capability-gated feature extensions. The
+# base backend owns mutable session scope defaults; client posture remains local.
+SUPPORTED_CONTROL_OPERATIONS = frozenset({"session.scope.reset", "session.scope.update"})
+SESSION_SCOPE_OPTION_FIELDS = {
+    "--only-host": "only_host",
+    "--only-port": "only_port",
+    "--only-path": "only_path",
+    "--blocked-host": "blocked_host",
+    "--blocked-path": "blocked_path",
+    "--allow-actions": "allow_actions",
+    "--block-actions": "block_actions",
+}
+SESSION_SCOPE_FIELDS = frozenset(SESSION_SCOPE_OPTION_FIELDS.values())
 VALUE_OPTIONS = frozenset(
     {
         "--prompt",
@@ -398,7 +407,23 @@ class BackendSession:
                 f"unsupported control operation: {operation}",
                 request_id=message.request_id,
             )
-        result, state = await self._execute_control_operation(operation, arguments)
+        if self.active_task is not None and not self.active_task.done():
+            raise ProtocolError(
+                "task_busy",
+                "session scope cannot change while a task is active",
+                request_id=message.request_id,
+                task_id=self.active_task_id,
+            )
+        try:
+            result, state = await self._execute_control_operation(operation, arguments)
+        except ProtocolError:
+            raise
+        except ValueError as exc:
+            raise ProtocolError(
+                "invalid_control",
+                str(exc),
+                request_id=message.request_id,
+            ) from exc
         self._write_control_result(message, operation, result, state=state)
 
     async def _execute_control_operation(
@@ -406,11 +431,49 @@ class BackendSession:
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Extension point for feature-owned management operations."""
 
-        del arguments
+        if operation == "session.scope.update":
+            command_line = arguments.get("command_line")
+            if not isinstance(command_line, str) or not command_line.strip():
+                raise ValueError("session.scope.update requires a non-empty arguments.command_line")
+            updates = _parse_session_scope_update(command_line)
+            bootstrap = dict(self.bootstrap)
+            bootstrap.update(updates)
+            self._apply_session_scope(bootstrap)
+            return (
+                {
+                    "message": "Session scope defaults updated.",
+                    "scope": _session_scope_defaults(self.bootstrap),
+                },
+                self.state_snapshot(),
+            )
+        if operation == "session.scope.reset":
+            bootstrap = {
+                key: value
+                for key, value in self.bootstrap.items()
+                if key not in SESSION_SCOPE_FIELDS
+            }
+            self._apply_session_scope(bootstrap)
+            return (
+                {
+                    "message": "Session scope defaults cleared.",
+                    "scope": {},
+                },
+                self.state_snapshot(),
+            )
         raise ProtocolError(
             "unsupported_operation",
             f"unsupported control operation: {operation}",
         )
+
+    def _apply_session_scope(self, bootstrap: dict[str, Any]) -> None:
+        constraints = _build_task_constraints(self.current_target, {}, bootstrap)
+        self.bootstrap = bootstrap
+        self.current_constraints = _model_dump(constraints)
+        agent = getattr(self.runtime, "agent", None)
+        if agent is not None:
+            apply_constraints = getattr(agent, "_apply_task_constraints", None)
+            if callable(apply_constraints):
+                apply_constraints(constraints)
 
     def _write_control_result(
         self,
@@ -580,6 +643,46 @@ def parse_task_command(command_line: str, *, defaults: dict[str, Any] | None = N
         prompt = f"{prompt}\n\n{block}"
     normalized = shlex.join([f"/{command}", target, *tokens])
     return ParsedTask(command, target, prompt, resume, constraints, options, normalized)
+
+
+def _parse_session_scope_update(command_line: str) -> dict[str, Any]:
+    try:
+        tokens = shlex.split(command_line)
+    except ValueError as exc:
+        raise ValueError(f"could not parse scope options: {exc}") from exc
+    if not tokens:
+        raise ValueError("scope update is empty")
+
+    updates: dict[str, Any] = {}
+    index = 0
+    while index < len(tokens):
+        option = tokens[index]
+        field = SESSION_SCOPE_OPTION_FIELDS.get(option)
+        if field is None:
+            supported = ", ".join(sorted(SESSION_SCOPE_OPTION_FIELDS))
+            raise ValueError(f"unsupported scope option: {option}; expected one of: {supported}")
+        if index + 1 >= len(tokens):
+            raise ValueError(f"{option} requires a value")
+        updates[field] = tokens[index + 1]
+        index += 2
+
+    if "only_port" in updates:
+        try:
+            port = int(updates["only_port"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("--only-port must be an integer") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError("--only-port must be between 1 and 65535")
+        updates["only_port"] = port
+    return updates
+
+
+def _session_scope_defaults(bootstrap: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: _json_safe(bootstrap[field])
+        for field in sorted(SESSION_SCOPE_FIELDS)
+        if field in bootstrap
+    }
 
 
 async def _create_runtime() -> BackendRuntime:
