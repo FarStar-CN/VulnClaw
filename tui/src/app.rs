@@ -47,9 +47,8 @@ fn extract_rect_text(buffer: &Buffer, rect: Rect) -> String {
 
 #[cfg(not(windows))]
 fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = *chunk.get(1).unwrap_or(&0) as u32;
@@ -107,7 +106,6 @@ fn copy_to_clipboard(text: &str) -> bool {
         true
     }
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExecutionMode {
@@ -299,9 +297,19 @@ pub struct App {
 }
 
 impl App {
+    /// Create an application and connect it to the default Python backend.
     pub fn new(sender: Sender<AppEvent>) -> Self {
-        #[allow(unused_mut)]
-        let mut app = Self {
+        let mut app = Self::new_disconnected(sender);
+        app.connect_backend();
+        app
+    }
+
+    /// Create application state without starting a backend process.
+    ///
+    /// This is useful for embedding, UI previews, and tests that exercise pure
+    /// state and rendering behavior.
+    pub fn new_disconnected(sender: Sender<AppEvent>) -> Self {
+        Self {
             mode: ExecutionMode::Agent,
             permission: PermissionMode::AutoReview,
             active_pane: ActivePane::Transcript,
@@ -353,9 +361,20 @@ impl App {
             terminal_size: Rect::default(),
             toast: String::new(),
             sender,
-        };
-        #[cfg(not(test))]
-        app.connect_backend();
+        }
+    }
+
+    /// Create application state around an already spawned backend transport.
+    ///
+    /// The constructor sends the protocol initialization request immediately,
+    /// allowing callers to inject a controlled backend implementation.
+    pub fn with_backend(
+        sender: Sender<AppEvent>,
+        backend: BackendHandle,
+        bootstrap: serde_json::Value,
+    ) -> Self {
+        let mut app = Self::new_disconnected(sender);
+        app.initialize_backend(backend, bootstrap);
         app
     }
 
@@ -364,7 +383,6 @@ impl App {
         format!("rust-{}-{}", std::process::id(), self.request_counter)
     }
 
-    #[cfg(not(test))]
     fn connect_backend(&mut self) {
         match crate::exec::spawn_backend(self.sender.clone()) {
             Ok(handle) => {
@@ -372,19 +390,23 @@ impl App {
                     .ok()
                     .and_then(|raw| serde_json::from_str(&raw).ok())
                     .unwrap_or_else(|| serde_json::json!({}));
-                let request_id = self.next_request_id();
-                let request = ClientRequest::initialize(request_id.clone(), bootstrap);
-                if let Err(error) = handle.send(&request) {
-                    handle.wait_or_kill(std::time::Duration::from_millis(100));
-                    self.error(format!("Could not initialize Python backend: {error}"));
-                } else {
-                    self.pending_requests
-                        .insert(request_id, PendingRequest::Initialize);
-                    self.backend = Some(handle);
-                    self.status("Connecting to the VulnClaw Python backend...");
-                }
+                self.initialize_backend(handle, bootstrap);
             }
             Err(error) => self.error(format!("Could not start VulnClaw Python backend: {error}")),
+        }
+    }
+
+    fn initialize_backend(&mut self, handle: BackendHandle, bootstrap: serde_json::Value) {
+        let request_id = self.next_request_id();
+        let request = ClientRequest::initialize(request_id.clone(), bootstrap);
+        if let Err(error) = handle.send(&request) {
+            handle.wait_or_kill(std::time::Duration::from_millis(100));
+            self.error(format!("Could not initialize Python backend: {error}"));
+        } else {
+            self.pending_requests
+                .insert(request_id, PendingRequest::Initialize);
+            self.backend = Some(handle);
+            self.status("Connecting to the VulnClaw Python backend...");
         }
     }
 
@@ -471,7 +493,7 @@ impl App {
                 } else {
                     self.transcript_scroll = self.transcript_scroll.saturating_sub(1);
                 }
-                let max_u16 = (max as u16).min(u16::MAX);
+                let max_u16 = u16::try_from(max).unwrap_or(u16::MAX);
                 if self.transcript_scroll > max_u16 {
                     self.transcript_scroll = max_u16;
                 }
@@ -502,7 +524,11 @@ impl App {
         };
         let panels = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(28), Constraint::Min(36), Constraint::Length(40)])
+            .constraints([
+                Constraint::Length(28),
+                Constraint::Min(36),
+                Constraint::Length(40),
+            ])
             .split(workbench);
         panels[1]
     }
@@ -529,7 +555,8 @@ impl App {
     /// clears the flag so we stop yanking the view away from the user.
     pub fn autoscroll_transcript(&mut self) {
         if self.transcript_follow {
-            self.transcript_scroll = (self.transcript_max_scroll() as u16).min(u16::MAX);
+            self.transcript_scroll =
+                u16::try_from(self.transcript_max_scroll()).unwrap_or(u16::MAX);
         }
     }
 
@@ -560,7 +587,11 @@ impl App {
         };
         let panels = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(28), Constraint::Min(36), Constraint::Length(40)])
+            .constraints([
+                Constraint::Length(28),
+                Constraint::Min(36),
+                Constraint::Length(40),
+            ])
             .split(workbench);
         match self.active_pane {
             ActivePane::Workspace => panels[0],
@@ -711,10 +742,12 @@ impl App {
             command: format!("/{command} "),
             description: "run a task through the Python backend",
         });
-        let local = LOCAL_SLASH_COMMANDS.iter().map(|(command, description)| SlashCommand {
-            command: (*command).to_owned(),
-            description,
-        });
+        let local = LOCAL_SLASH_COMMANDS
+            .iter()
+            .map(|(command, description)| SlashCommand {
+                command: (*command).to_owned(),
+                description,
+            });
         backend
             .chain(local)
             .filter(|item| item.command.starts_with(&query))
@@ -767,7 +800,7 @@ impl App {
 
     pub fn apply_event(&mut self, event: AppEvent) {
         match event {
-            AppEvent::Backend(stream) => match stream {
+            AppEvent::Backend(stream) => match *stream {
                 BackendEvent::Ready {
                     request_id,
                     backend,
@@ -882,7 +915,10 @@ impl App {
                     }
                     self.upsert_finding(finding);
                 }
-                BackendEvent::Reasoning { task_id, text: chunk } => {
+                BackendEvent::Reasoning {
+                    task_id,
+                    text: chunk,
+                } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
@@ -927,7 +963,10 @@ impl App {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.push(TranscriptKind::Status, format!("Approval required: {question}"));
+                    self.push(
+                        TranscriptKind::Status,
+                        format!("Approval required: {question}"),
+                    );
                 }
                 BackendEvent::TaskCompleted {
                     request_id,
@@ -1025,7 +1064,7 @@ impl App {
                     code,
                     message,
                 } => {
-                    let rejected_task = if let Some(request_id) = request_id {
+                    let rejected_start = if let Some(request_id) = request_id {
                         match self.pending_requests.remove(&request_id) {
                             None => {
                                 self.error(format!(
@@ -1033,10 +1072,7 @@ impl App {
                                 ));
                                 return;
                             }
-                            Some(
-                                PendingRequest::StartTask(expected)
-                                | PendingRequest::CancelTask(expected),
-                            ) => {
+                            Some(PendingRequest::StartTask(expected)) => {
                                 if task_id.as_deref() != Some(expected.as_str()) {
                                     self.error(format!(
                                         "Mismatched task error response: {request_id}"
@@ -1045,12 +1081,21 @@ impl App {
                                 }
                                 true
                             }
+                            Some(PendingRequest::CancelTask(expected)) => {
+                                if task_id.as_deref() != Some(expected.as_str()) {
+                                    self.error(format!(
+                                        "Mismatched task error response: {request_id}"
+                                    ));
+                                    return;
+                                }
+                                false
+                            }
                             Some(_) => false,
                         }
                     } else {
                         false
                     };
-                    if rejected_task {
+                    if rejected_start {
                         if task_id != self.active_task_id {
                             self.error("Mismatched active task error response.");
                             return;
@@ -1241,7 +1286,9 @@ impl App {
             .ok_or_else(|| std::io::Error::other("backend disconnected"))
             .and_then(|backend| backend.send(&request));
         if let Err(error) = send_result {
-            self.error(format!("Could not send {operation} to Python backend: {error}"));
+            self.error(format!(
+                "Could not send {operation} to Python backend: {error}"
+            ));
             return false;
         }
         self.pending_requests
@@ -1418,7 +1465,8 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
 /// The real command always starts with `/`, so we keep everything after the
 /// last `>` whose trailing content begins with `/`. Inputs without a `>` are
 /// returned unchanged, so valid commands are never corrupted.
-fn strip_prompt_prefix(command: &str) -> String {
+/// Remove transcript-style prompt prefixes from pasted slash commands.
+pub fn strip_prompt_prefix(command: &str) -> String {
     let trimmed = command.trim_start();
     if let Some(pos) = trimmed.rfind('>') {
         let rest = trimmed[pos + 1..].trim_start();
@@ -1436,7 +1484,9 @@ fn split_slash_command(command: &str) -> Option<(&str, &str)> {
     (!verb.is_empty()).then_some((verb, remainder.trim_start()))
 }
 
-fn parse_task_payload(command_line: &str) -> Result<serde_json::Value, String> {
+/// Adapt a presentation-layer slash command into the structured task DTO sent
+/// over the TUI protocol.
+pub fn parse_task_payload(command_line: &str) -> Result<serde_json::Value, String> {
     let (command, arguments) = split_slash_command(command_line)
         .ok_or_else(|| "task must start with a slash command".to_owned())?;
     let mut tokens = shell_words::split(arguments).map_err(|error| error.to_string())?;
@@ -1446,7 +1496,10 @@ fn parse_task_payload(command_line: &str) -> Result<serde_json::Value, String> {
     let target = tokens.remove(0);
     let (root, options) = parse_option_fields(&tokens)?;
     let mut task = serde_json::Map::from_iter([
-        ("command".to_owned(), serde_json::Value::String(command.to_owned())),
+        (
+            "command".to_owned(),
+            serde_json::Value::String(command.to_owned()),
+        ),
         ("target".to_owned(), serde_json::Value::String(target)),
         ("options".to_owned(), serde_json::Value::Object(options)),
     ]);
@@ -1454,7 +1507,8 @@ fn parse_task_payload(command_line: &str) -> Result<serde_json::Value, String> {
     Ok(serde_json::Value::Object(task))
 }
 
-fn parse_scope_payload(arguments: &str) -> Result<serde_json::Value, String> {
+/// Parse `/scope` arguments into the backend's structured scope options.
+pub fn parse_scope_payload(arguments: &str) -> Result<serde_json::Value, String> {
     let tokens = shell_words::split(arguments).map_err(|error| error.to_string())?;
     let (root, options) = parse_option_fields(&tokens)?;
     if !root.is_empty() {
@@ -1469,16 +1523,22 @@ fn parse_scope_payload(arguments: &str) -> Result<serde_json::Value, String> {
         "allow_actions",
         "block_actions",
     ];
-    if let Some(field) = options.keys().find(|field| !ALLOWED.contains(&field.as_str())) {
-        return Err(format!("unsupported scope option: --{}", field.replace('_', "-")));
+    if let Some(field) = options
+        .keys()
+        .find(|field| !ALLOWED.contains(&field.as_str()))
+    {
+        return Err(format!(
+            "unsupported scope option: --{}",
+            field.replace('_', "-")
+        ));
     }
     Ok(serde_json::Value::Object(options))
 }
 
-fn parse_option_fields(
-    tokens: &[String],
-) -> Result<(serde_json::Map<String, serde_json::Value>, serde_json::Map<String, serde_json::Value>), String>
-{
+type JsonObject = serde_json::Map<String, serde_json::Value>;
+type ParsedOptionFields = (JsonObject, JsonObject);
+
+fn parse_option_fields(tokens: &[String]) -> Result<ParsedOptionFields, String> {
     let mut root = serde_json::Map::new();
     let mut options = serde_json::Map::new();
     let mut index = 0;
@@ -1489,8 +1549,13 @@ fn parse_option_fields(
             .map_or((raw, None), |(name, value)| (name, Some(value)));
         let boolean = matches!(
             name,
-            "--resume" | "--no-resume" | "--mount" | "--repair" | "--force-fresh"
-                | "--no-import" | "--no-report"
+            "--resume"
+                | "--no-resume"
+                | "--mount"
+                | "--repair"
+                | "--force-fresh"
+                | "--no-import"
+                | "--no-report"
         );
         let value = if boolean {
             if inline.is_some() {
@@ -1512,10 +1577,9 @@ fn parse_option_fields(
         match name {
             "--resume" => root.insert("resume".into(), true.into()),
             "--no-resume" => root.insert("resume".into(), false.into()),
-            "--mount" | "--repair" | "--force-fresh" | "--no-import" => root.insert(
-                name.trim_start_matches("--").replace('-', "_"),
-                true.into(),
-            ),
+            "--mount" | "--repair" | "--force-fresh" | "--no-import" => {
+                root.insert(name.trim_start_matches("--").replace('-', "_"), true.into())
+            }
             "--no-report" => options.insert("auto_report".into(), false.into()),
             "--prompt" | "--snapshot" | "--run-name" | "--resume-run" | "--runs-dir"
             | "--target-type" => {
@@ -1547,8 +1611,7 @@ fn parse_option_fields(
                 ),
             ),
             "--only-port" | "--max-steps" | "--max-directions" | "--max-tool-rounds"
-            | "--max-parallel" | "--max-rounds" | "--rounds" | "-r" | "--cycles"
-            | "-c" => {
+            | "--max-parallel" | "--max-rounds" | "--rounds" | "-r" | "--cycles" | "-c" => {
                 let number = value
                     .unwrap()
                     .parse::<u64>()
@@ -1596,517 +1659,4 @@ fn next_char_boundary(text: &str, index: usize) -> usize {
         .chars()
         .next()
         .map_or(index, |character| index + character.len_utf8())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::mpsc;
-
-    use super::{
-        parse_scope_payload, parse_task_payload, strip_prompt_prefix, ActivePane, App,
-        ExecutionMode, PendingRequest, PermissionMode,
-    };
-
-    #[test]
-    fn strip_prompt_prefix_tolerates_pasted_transcript_prefix() {
-        assert_eq!(
-            strip_prompt_prefix("You  > /run https://example.com"),
-            "/run https://example.com"
-        );
-        // Doubled prefix (composer prompt + pasted prefix) also resolves.
-        assert_eq!(
-            strip_prompt_prefix("You  > You  > /run https://example.com"),
-            "/run https://example.com"
-        );
-        // Bare "> " prefix from the transcript echo.
-        assert_eq!(strip_prompt_prefix("> /shield scan ."), "/shield scan .");
-        // Clean command without a prompt artifact is left untouched.
-        assert_eq!(strip_prompt_prefix("/help"), "/help");
-    }
-
-    #[test]
-    fn composer_suggests_and_completes_slash_commands() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.backend_commands = vec!["run".into()];
-        app.insert_text("/ru");
-
-        assert!(app.palette_visible());
-        assert!(app.accept_selected_command());
-        assert_eq!(app.input, "/run ");
-    }
-
-    #[test]
-    fn task_dispatch_uses_backend_advertised_commands() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.backend_commands = vec!["recon".into()];
-        app.insert_text("/recon https://lab.example");
-        app.submit();
-
-        assert_eq!(
-            app.pending_task.as_deref(),
-            Some("/recon https://lab.example")
-        );
-
-        app.dismiss_task();
-        app.insert_text("/run https://lab.example");
-        app.submit();
-        assert!(app.pending_task.is_none());
-        assert!(app
-            .transcript
-            .iter()
-            .any(|item| item.text.contains("Unknown command: /run")));
-    }
-
-    #[test]
-    fn scope_command_routes_to_capability_gated_control() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-
-        app.insert_text("/scope");
-        app.submit();
-        assert!(app
-            .transcript
-            .iter()
-            .any(|item| item.text.contains("Usage: /scope")));
-
-        app.insert_text("/scope --only-port 443");
-        app.submit();
-        assert!(app.transcript.iter().any(|item| {
-            item.text
-                .contains("The Python backend is not ready")
-        }));
-        assert!(!app
-            .transcript
-            .iter()
-            .any(|item| item.text.contains("Unknown command: /scope")));
-    }
-
-    #[test]
-    fn ready_event_hydrates_backend_capabilities() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.pending_requests
-            .insert("r1".into(), PendingRequest::Initialize);
-        let event = crate::protocol::parse_backend_line(
-            r#"{"protocol_version":1,"type":"ready","request_id":"r1","backend":{"pid":7,"version":"test","protocol_version":1},"capabilities":{"commands":["scan","run"],"control_operations":["example.inspect"],"cancellation":true,"authoritative_state":true},"runtime":{"config_ready":true,"provider":"test","model":"test","mcp_started":0,"skills":[]},"state":{"target":"","phase":"idle","task_constraints":{},"task":{"active":false,"task_id":null},"last_run":null,"findings":[],"evidence":[],"constraint_violations":[]}}"#,
-        )
-        .unwrap();
-
-        app.apply_event(crate::protocol::AppEvent::Backend(event));
-
-        assert_eq!(app.backend_commands, vec!["run", "scan"]);
-        assert_eq!(app.backend_control_operations, vec!["example.inspect"]);
-        assert!(app.backend_supports_cancellation);
-    }
-
-    #[test]
-    fn authoritative_state_replaces_and_clears_every_business_field() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.target = "stale.test".into();
-        app.phase = "stale".into();
-        app.worker_active = true;
-        app.active_task_id = Some("stale-task".into());
-        app.task_constraints = serde_json::json!({"allowed_hosts": ["stale.test"]});
-        app.last_run = Some(serde_json::json!({"status": "stale"}));
-        app.evidence = vec![serde_json::json!({"path": "stale"})];
-        app.constraint_violations = vec!["stale violation".into()];
-
-        app.apply_event(crate::protocol::AppEvent::Backend(
-            crate::protocol::BackendEvent::State {
-                request_id: None,
-                state: crate::protocol::StateSnapshot {
-                    target: String::new(),
-                    phase: String::new(),
-                    task_constraints: serde_json::json!({"allowed_ports": [443]}),
-                    findings: Vec::new(),
-                    task: crate::protocol::BackendTaskState {
-                        active: false,
-                        task_id: None,
-                    },
-                    last_run: Some(serde_json::json!({"status": "completed"})),
-                    evidence: vec![serde_json::json!({"path": "fresh"})],
-                    constraint_violations: vec!["fresh violation".into()],
-                },
-            },
-        ));
-
-        assert!(app.target.is_empty());
-        assert!(app.phase.is_empty());
-        assert!(!app.worker_active);
-        assert!(app.active_task_id.is_none());
-        assert_eq!(app.task_constraints["allowed_ports"][0], 443);
-        assert_eq!(app.last_run.as_ref().unwrap()["status"], "completed");
-        assert_eq!(app.evidence[0]["path"], "fresh");
-        assert_eq!(app.constraint_violations, vec!["fresh violation"]);
-    }
-
-    #[test]
-    fn response_ids_are_correlated_with_request_kind_and_task() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.worker_active = true;
-        app.active_task_id = Some("t1".into());
-        app.pending_requests.insert(
-            "r-control".into(),
-            PendingRequest::Control("session.scope.update".into()),
-        );
-
-        app.apply_event(crate::protocol::AppEvent::Backend(
-            crate::protocol::BackendEvent::Error {
-                request_id: Some("r-control".into()),
-                task_id: Some("t1".into()),
-                code: "task_busy".into(),
-                message: "scope cannot change while a task is active".into(),
-            },
-        ));
-
-        assert!(app.worker_active);
-        assert_eq!(app.active_task_id.as_deref(), Some("t1"));
-    }
-
-    #[test]
-    fn task_event_summaries_never_override_authoritative_state() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.worker_active = true;
-        app.active_task_id = Some("t1".into());
-        app.pending_requests
-            .insert("r-start".into(), PendingRequest::StartTask("t1".into()));
-
-        app.apply_event(crate::protocol::AppEvent::Backend(
-            crate::protocol::BackendEvent::TaskStarted {
-                request_id: "r-start".into(),
-                task_id: "t1".into(),
-                task: serde_json::json!({
-                    "command": "run",
-                    "target": "summary.test"
-                }),
-                state: crate::protocol::StateSnapshot {
-                    target: "authoritative.test".into(),
-                    phase: "recon".into(),
-                    task_constraints: serde_json::json!({
-                        "allowed_hosts": ["authoritative.test"]
-                    }),
-                    findings: Vec::new(),
-                    task: crate::protocol::BackendTaskState {
-                        active: true,
-                        task_id: Some("t1".into()),
-                    },
-                    last_run: None,
-                    evidence: Vec::new(),
-                    constraint_violations: Vec::new(),
-                },
-            },
-        ));
-
-        assert_eq!(app.target, "authoritative.test");
-        assert_eq!(
-            app.task_constraints["allowed_hosts"][0],
-            "authoritative.test"
-        );
-
-        let authoritative_finding = crate::protocol::Finding {
-            id: "state-finding".into(),
-            severity: "high".into(),
-            title: "Authoritative".into(),
-            target: "authoritative.test".into(),
-            ..Default::default()
-        };
-        let summary_finding = crate::protocol::Finding {
-            id: "summary-finding".into(),
-            ..Default::default()
-        };
-        app.apply_event(crate::protocol::AppEvent::Backend(
-            crate::protocol::BackendEvent::TaskCompleted {
-                request_id: "r-start".into(),
-                task_id: "t1".into(),
-                result: serde_json::json!({}),
-                findings: vec![summary_finding],
-                state: crate::protocol::StateSnapshot {
-                    target: "authoritative.test".into(),
-                    phase: "reporting".into(),
-                    task_constraints: app.task_constraints.clone(),
-                    findings: vec![authoritative_finding],
-                    task: crate::protocol::BackendTaskState {
-                        active: false,
-                        task_id: None,
-                    },
-                    last_run: Some(serde_json::json!({"status": "completed"})),
-                    evidence: Vec::new(),
-                    constraint_violations: Vec::new(),
-                },
-            },
-        ));
-
-        assert_eq!(app.findings.len(), 1);
-        assert_eq!(app.findings[0].id, "state-finding");
-    }
-
-    #[test]
-    fn mode_and_permission_cycles_are_independent() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.cycle_mode();
-        app.cycle_permission();
-
-        // Default posture is Agent; one Tab cycles to the read-only Plan.
-        assert_eq!(app.mode, ExecutionMode::Plan);
-        assert_eq!(app.permission, PermissionMode::FullAccess);
-        assert!(app.pending_task.is_none());
-    }
-
-    #[test]
-    fn composer_supports_cursor_editing_and_history() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.insert_text("/hep");
-        app.move_input_cursor(false);
-        app.insert_text("l");
-        app.submit();
-        app.insert_text("draft");
-        app.recall_history(true);
-
-        assert_eq!(app.input, "/help");
-        app.recall_history(false);
-        assert_eq!(app.input, "draft");
-    }
-
-    #[test]
-    fn plan_mode_blocks_task_before_a_confirmation_can_be_armed() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.mode = ExecutionMode::Plan;
-        app.backend_commands = vec!["run".into()];
-        app.insert_text("/run https://lab.example");
-        app.submit();
-
-        assert!(app.pending_task.is_none());
-        assert!(!app.worker_active);
-        assert!(app
-            .transcript
-            .iter()
-            .any(|item| item.text.contains("Plan mode is read-only")));
-    }
-
-    #[test]
-    fn agent_mode_arms_a_task_and_waits_for_confirmation() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.mode = ExecutionMode::Agent;
-        app.permission = PermissionMode::FullAccess;
-
-        app.request_task("run", "https://lab.example");
-
-        assert!(app.pending_task.is_some());
-        assert!(!app.worker_active);
-    }
-
-    #[test]
-    fn paste_in_main_input_still_works() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.insert_text("hello world");
-        assert_eq!(app.input, "hello world");
-    }
-
-    #[test]
-    fn task_requires_a_target() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.mode = ExecutionMode::Agent;
-
-        app.request_task("run", "");
-
-        assert!(app.pending_task.is_none());
-        assert!(app
-            .transcript
-            .iter()
-            .any(|item| item.text.contains("requires a target")));
-    }
-
-    #[test]
-    fn task_command_is_only_a_presentation_adapter_for_the_structured_dto() {
-        let task = parse_task_payload(
-            "/scan https://app.test/admin --ports 80,443 --only-port 443 --no-resume",
-        )
-        .unwrap();
-
-        assert_eq!(task["command"], "scan");
-        assert_eq!(task["target"], "https://app.test/admin");
-        assert_eq!(task["resume"], false);
-        assert_eq!(task["options"]["ports"], "80,443");
-        assert_eq!(task["options"]["only_port"], 443);
-    }
-
-    #[test]
-    fn scope_adapter_rejects_non_scope_fields() {
-        let error = parse_scope_payload("--engine solve").unwrap_err();
-        assert!(error.contains("unsupported scope option"));
-    }
-
-    #[test]
-    fn streamed_events_update_and_finalize_the_work_receipt() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.active_receipt = Some(super::OperationReceipt {
-            command: "/run https://lab.example".into(),
-            phase: "Starting".into(),
-            findings: 0,
-        });
-        app.worker_active = true;
-        app.active_task_id = Some("t1".into());
-        app.pending_requests
-            .insert("r-start".into(), PendingRequest::StartTask("t1".into()));
-        let finding = crate::protocol::Finding {
-            severity: "high".into(),
-            title: "Test finding".into(),
-            ..Default::default()
-        };
-        app.apply_event(crate::protocol::AppEvent::Backend(
-            crate::protocol::BackendEvent::Finding {
-                task_id: "t1".into(),
-                finding: finding.clone(),
-            },
-        ));
-        app.apply_event(crate::protocol::AppEvent::Backend(
-            crate::protocol::BackendEvent::TaskCompleted {
-                request_id: "r-start".into(),
-                task_id: "t1".into(),
-                result: serde_json::json!({}),
-                findings: Vec::new(),
-                state: crate::protocol::StateSnapshot {
-                    findings: vec![finding],
-                    task: crate::protocol::BackendTaskState {
-                        active: false,
-                        task_id: None,
-                    },
-                    ..Default::default()
-                },
-            },
-        ));
-
-        assert!(app.active_receipt.is_none());
-        assert_eq!(app.last_receipt.as_ref().unwrap().findings, 1);
-        assert_eq!(app.last_receipt.as_ref().unwrap().phase, "Completed");
-    }
-
-    #[test]
-    fn active_pane_rect_partitions_the_workbench_without_overlap() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 28);
-
-        app.active_pane = ActivePane::Workspace;
-        let workspace = app.active_pane_rect(app.terminal_size);
-        app.active_pane = ActivePane::Transcript;
-        let transcript = app.active_pane_rect(app.terminal_size);
-        app.active_pane = ActivePane::Findings;
-        let findings = app.active_pane_rect(app.terminal_size);
-
-        // The three panes are laid out left-to-right and must not overlap.
-        assert_eq!(workspace.x, 0);
-        assert!(workspace.right() <= transcript.x, "workspace right of transcript start");
-        assert!(transcript.right() <= findings.x, "transcript right of findings start");
-        assert!(findings.right() <= 120);
-        // None of them spans the full screen — each is an independent region.
-        assert!(workspace.width < 120);
-        assert!(transcript.width < 120);
-        assert!(findings.width < 120);
-    }
-
-    #[test]
-    fn copy_active_pane_renders_only_the_focused_region() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 28);
-        app.active_pane = ActivePane::Transcript;
-
-        // Drive the same offscreen render path the real copy uses, then pull the
-        // transcript region and confirm it contains transcript content but not
-        // the findings title (proving the copy is pane-scoped, not whole-screen).
-        let rect = app.active_pane_rect(app.terminal_size);
-        let backend = ratatui::backend::TestBackend::new(120, 28);
-        let mut term = ratatui::Terminal::new(backend).unwrap();
-        term.draw(|f| crate::ui::draw(f, &app)).unwrap();
-        let text = super::extract_rect_text(term.backend().buffer(), rect);
-
-        assert!(text.contains("Session transcript"));
-        assert!(
-            !text.contains("Findings inspector"),
-            "transcript copy must not bleed into the findings pane"
-        );
-    }
-
-    #[test]
-    fn transcript_autoscroll_pins_to_bottom_and_tracks_growth() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        // 120x30 -> transcript panel height 26, visible inner rows = 24.
-        app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
-        app.active_pane = ActivePane::Transcript;
-
-        // Short lines never wrap at the ~50-col inner width, so the pin point is
-        // purely a function of content length.
-        for i in 0..5 {
-            app.push(crate::app::TranscriptKind::Log, format!("line {i}"));
-        }
-        app.autoscroll_transcript();
-        let small = app.transcript_scroll as usize;
-        assert!(app.transcript_follow);
-        assert_eq!(small, app.transcript_max_scroll());
-
-        for i in 5..45 {
-            app.push(crate::app::TranscriptKind::Log, format!("line {i}"));
-        }
-        app.autoscroll_transcript();
-        let large = app.transcript_scroll as usize;
-        assert!(app.transcript_follow);
-        assert_eq!(large, app.transcript_max_scroll());
-        // More content => larger bottom offset => the view followed the growth.
-        assert!(large > small);
-    }
-
-    #[test]
-    fn transcript_short_content_has_zero_scroll() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
-        app.active_pane = ActivePane::Transcript;
-        app.autoscroll_transcript();
-        // Only the two welcome lines — they fit, so no scrolling is needed.
-        assert_eq!(app.transcript_max_scroll(), 0);
-        assert_eq!(app.transcript_scroll, 0);
-        assert!(app.transcript_follow);
-    }
-
-    #[test]
-    fn scrolling_up_pauses_follow_and_bottom_resumes_it() {
-        let (sender, _) = mpsc::channel();
-        let mut app = App::new(sender);
-        app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
-        app.active_pane = ActivePane::Transcript;
-        for i in 0..45 {
-            app.push(crate::app::TranscriptKind::Log, format!("line {i}"));
-        }
-        app.autoscroll_transcript();
-        let max = app.transcript_max_scroll() as u16;
-        assert!(max > 0);
-        assert_eq!(app.transcript_scroll, max);
-        assert!(app.transcript_follow);
-
-        // Scroll up once to read history: follow must switch off.
-        app.scroll_active_pane(false);
-        assert!(!app.transcript_follow);
-        assert_eq!(app.transcript_scroll, max - 1);
-
-        // Scroll back down to the bottom: follow must switch back on.
-        for _ in 0..(max as usize + 2) {
-            app.scroll_active_pane(true);
-        }
-        assert!(app.transcript_follow);
-        assert_eq!(app.transcript_scroll, max);
-    }
 }

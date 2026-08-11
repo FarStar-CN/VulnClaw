@@ -4,9 +4,17 @@ version = "0.1.0"
 edition = "2021"
 description = "Terminal workbench for VulnClaw"
 
+[lib]
+name = "vulnclaw_tui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vulnclaw-tui-native"
 path = "src/main.rs"
+
+[[test]]
+name = "tui"
+path = "../tests/tui/main.rs"
 
 [dependencies]
 crossterm = "0.28"

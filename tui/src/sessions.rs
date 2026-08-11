@@ -93,37 +93,3 @@ fn expand_home(path: PathBuf) -> PathBuf {
     }
     path
 }
-
-#[cfg(test)]
-mod tests {
-    use std::sync::mpsc;
-
-    use super::SessionState;
-    use crate::app::{App, ExecutionMode, PermissionMode};
-
-    #[test]
-    fn session_round_trip_preserves_composer_history_and_posture() {
-        let (sender, _) = mpsc::channel();
-        let mut source = App::new(sender);
-        source.insert_text("/help");
-        source.submit();
-        source.cycle_mode();
-        source.cycle_permission();
-        let state = SessionState::from_app(&source);
-
-        let (target_sender, _) = mpsc::channel();
-        let mut target = App::new(target_sender);
-        state.apply(&mut target);
-
-        assert_eq!(target.command_history, vec!["/help"]);
-        // Source started in Agent, cycled once to Plan — the round trip must
-        // restore that exact posture.
-        assert_eq!(target.mode, ExecutionMode::Plan);
-        assert_eq!(target.permission, PermissionMode::FullAccess);
-        assert!(target.input.is_empty());
-        assert!(
-            !target.transcript.iter().any(|item| item.text == "> /help"),
-            "business transcript must be hydrated by Python, not Rust persistence"
-        );
-    }
-}
