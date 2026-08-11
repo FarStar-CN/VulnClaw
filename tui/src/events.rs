@@ -13,16 +13,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     // A transient toast (e.g. "Copied …") lives until the next key press.
     app.toast.clear();
 
-    if app.setup.is_some() {
-        // Allow Ctrl+C to quit even from the setup wizard.
-        if let (KeyCode::Char('c'), KeyModifiers::CONTROL) = (key.code, key.modifiers) {
-            app.running = false;
-            return;
-        }
-        app.setup_handle_key(key);
-        return;
-    }
-
     if app.pending_task.is_some() {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_task(),
@@ -122,7 +112,7 @@ mod tests {
     fn task_confirmation_captures_shortcuts() {
         let (sender, _) = mpsc::channel();
         let mut app = App::new(sender);
-        app.pending_task = Some(vec!["task".into(), "run".into()]);
+        app.pending_task = Some("/run target.test".into());
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
@@ -163,18 +153,22 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_aborts_a_running_worker_instead_of_quitting() {
+    fn ctrl_c_requests_task_cancel_without_quitting_or_killing_backend() {
         let (sender, _) = mpsc::channel();
         let mut app = App::new(sender);
         app.worker_active = true;
+        app.active_task_id = Some("t1".into());
 
         handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
         );
 
-        assert!(!app.worker_active);
-        assert!(app.running, "TUI should stay open after aborting a run");
+        assert!(
+            app.worker_active,
+            "task remains active until Python acknowledges cancellation"
+        );
+        assert!(app.running, "TUI should stay open after requesting cancellation");
     }
 
     #[test]

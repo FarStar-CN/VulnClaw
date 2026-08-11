@@ -64,6 +64,7 @@ mod tests {
             title: "Hardcoded credential".into(),
             target: "src/app.py".into(),
             line: Some(12),
+            code_location: None,
             chain_depends_on: Vec::new(),
         });
         let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
