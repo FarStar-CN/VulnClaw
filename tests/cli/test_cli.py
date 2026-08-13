@@ -190,7 +190,7 @@ class TestCLI:
         new_state = SessionState(target="https://new.example")
         new_state.advance_phase(PentestPhase.EXPLOITATION)
 
-        observed: dict[str, str] = {}
+        observed: dict[str, object] = {}
 
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
         monkeypatch.setattr(
@@ -235,6 +235,7 @@ class TestCLI:
             )()
 
         async def fake_persistent_pentest(self, user_input: str, target=None, **kwargs):
+            observed["user_input"] = user_input
             observed["target_arg"] = target or ""
             observed["state_target"] = self.context.state.target or ""
             observed["phase"] = self.context.state.phase.value
@@ -253,6 +254,8 @@ class TestCLI:
         assert observed["target_arg"] == "https://new.example"
         assert observed["state_target"] == "https://new.example"
         assert observed["phase"] == PentestPhase.EXPLOITATION.value
+        assert isinstance(observed["user_input"], str)
+        assert "https://new.example" in observed["user_input"]
 
     def test_report_target_mode(self, runner, monkeypatch, tmp_path):
         import vulnclaw.target_state.store as store_mod

@@ -270,7 +270,7 @@ def _repl_switch_language(args: str, agent: Any, config: Any) -> Any:
     init_i18n(lang=lang if lang != "auto" else None, config=config)
     rebuild_translations()
     agent.apply_config(config)
-    console.print(f"[green]✓[/] f{_('cli.language_set_to')} [bold]{lang}[/].")
+    console.print(f"[green]✓[/] {_('cli.language_set_to')} [bold]{lang}[/].")
     return config
 
 
@@ -460,8 +460,8 @@ def _run_repl() -> None:
                 )
 
                 persistent_prompt = (
-                    f"Perform an authorized persistent penetration test against {persistent_target}. ",
-                    _("cli.target_within_range_and_explicitly_authorized")
+                    f"Perform an authorized persistent penetration test against {persistent_target}. "
+                    + _("cli.target_within_range_and_explicitly_authorized")
                 )
 
                 all_cycle_results: list[PersistentCycleResult] = []
@@ -613,11 +613,11 @@ def _run_repl() -> None:
                                 console.print()
                                 console.print(
                                     Panel(
-                                        f"{'✅ 目标达成' if done else '⊘ 未达成'} — "
+                                        f"{_('cli.goal_achieved') if done else _('cli.goal_not_achieved')} — "
                                         f"steps={agent_state.get('steps', 0)} "
                                         f"evidence={agent_state.get('evidence', 0)} "
                                         f"tools={agent_state.get('tool_calls', 0)}\n"
-                                        f"原因: {agent_state.get('complete_reason') or '仍未达到完成条件'}",
+                                        f"{_('cli.reason')}: {agent_state.get('complete_reason') or _('cli.reason_not_complete')}",
                                         title="Solve",
                                         border_style="green" if done else "yellow",
                                     )
@@ -1269,12 +1269,12 @@ def run(
 
     if agent_state_holder.get("agent_state"):
         agent_state = agent_state_holder["agent_state"]
-        status = "✅ 目标达成" if agent_state.get("completed") else "⊘ 未达成"
+        status = _("cli.goal_achieved") if agent_state.get("completed") else _("cli.goal_not_achieved")
         console.print(
             f"\n[bold]{status}[/bold] — steps={agent_state.get('steps', 0)} "
             f"evidence={agent_state.get('evidence', 0)} "
             f"tools={agent_state.get('tool_calls', 0)} "
-            f"原因: {agent_state.get('complete_reason') or '仍未达到完成条件'}"
+            f"{_('cli.reason')}: {agent_state.get('complete_reason') or _('cli.reason_not_complete')}"
         )
     else:
         total_findings = orchestrated.summary["findings_count"]
@@ -1331,10 +1331,8 @@ def solve(
         err_console.print("[!] Configure LLM credentials first (api_key or auth_mode).")
         raise typer.Exit(1)
 
-    resolved_goal = goal or "找到 flag / 拿到 shell / 确认并验证高价值漏洞"
-    task_prompt = prompt or (
-        f"对 {target} 进行授权渗透测试。这是明确授权、在范围内的目标。目标(goal)：{resolved_goal}。"
-    )
+    resolved_goal = goal or _("cli.default_goal")
+    task_prompt = prompt or _("cli.task_prompt", target=target, goal=resolved_goal)
     console.print(f"[*] Target: [bold]{target}[/] | Goal: [bold]{resolved_goal}[/]")
 
     holder: dict = {}
@@ -1392,7 +1390,6 @@ def solve(
 
     asyncio.run(_run())
     agent_state = holder.get("agent_state") or {}
-
     if stream:
         from vulnclaw.cli._helpers import emit_complete_event
 
@@ -1414,12 +1411,12 @@ def solve(
         emit_complete_event(stream_out, summary=summary, findings=findings)
         return
 
-    status = "✅ 目标达成" if agent_state.get("completed") else "⊘ 未达成"
+    status = _("cli.goal_achieved") if agent_state.get("completed") else _("cli.goal_not_achieved")
     console.print(
         f"\n[bold]{status}[/bold] — steps={agent_state.get('steps', 0)} "
         f"evidence={agent_state.get('evidence', 0)} "
         f"tools={agent_state.get('tool_calls', 0)} "
-        f"原因: {agent_state.get('complete_reason') or '仍未达到完成条件'}"
+        f"{_('cli.reason')}: {agent_state.get('complete_reason') or _('cli.reason_not_complete')}"
     )
     if agent_state.get("completed"):
         # ``holder`` stores only the summary for status printing, so generate
@@ -1906,7 +1903,7 @@ def network_scan(
     """运行基于 nmap 的网络扫描，并对薄弱环节进行跟进。"""
     normalized_profile = profile.strip().lower()
     if normalized_profile not in {"adaptive", "fast", "thorough", "stealth"}:
-        err_console.print("[!] profile 必须是以下之一: adaptive, fast, thorough, stealth")
+        err_console.print(f"[!] {_('cli.invalid_profile')}")
         raise typer.Exit(1)
 
     detected_wifi = None
@@ -2794,11 +2791,11 @@ def kb_status() -> None:
     category_summary = ", ".join(f"{cat}={count}" for cat, count in sorted(stats.items()))
 
     if status == RetrieverStatus.CHROMADB_ACTIVE:
-        line = "[green]✓ 知识库已启用 (ChromaDB 语义检索)[/green]"
+        line = f"[green]{_('cli.kb_active')}[/green]"
     elif status == RetrieverStatus.KEYWORD_FALLBACK:
-        line = "[yellow]⚠ 知识库已降级为关键词模式 (chromadb 未安装)[/yellow]"
+        line = f"[yellow]{_('cli.kb_fallback')}[/yellow]"
     else:
-        line = "[red]✗ 知识库已禁用 (无可用数据)[/red]"
+        line = f"[red]{_('cli.kb_disabled')}[/red]"
 
     console.print(
         Panel(
@@ -2806,7 +2803,7 @@ def kb_status() -> None:
             f"Backend: [bold]{status.value}[/]\n"
             f"Detail: {detail or 'n/a'}\n"
             f"Entries: [bold]{total}[/] ({category_summary or 'empty'})\n"
-            f"语义搜索: 运行 [bold]pip install vulnclaw\\[kb][/] 启用 ChromaDB",
+            f"{_('cli.kb_semantic_hint')}",
             title="KB Status",
             border_style="cyan",
         )
@@ -3358,7 +3355,7 @@ def web(
 
     if not FASTAPI_AVAILABLE:
         err_console.print(
-            "[!] FastAPI is missing. Install with [bold]pip install vulnclaw[web][/]."
+            "[!] FastAPI is missing. Install with [bold]pip install vulnclaw\\[web][/]."
         )
         raise typer.Exit(1)
 
@@ -3366,7 +3363,7 @@ def web(
         import uvicorn
     except ImportError:
         err_console.print(
-            "[!] uvicorn is missing. Install with [bold]pip install vulnclaw[web][/]."
+            "[!] uvicorn is missing. Install with [bold]pip install vulnclaw\\[web][/]."
         )
         raise typer.Exit(1)
 
@@ -3375,11 +3372,17 @@ def web(
 
     token = generate_token()
     if allow_remote:
+        # Non-loopback clients (which includes every browser reaching a
+        # container through Docker's port NAT) must authenticate. The UI cannot
+        # send a bearer header, so opening this URL once swaps the token for a
+        # session cookie; the browser carries it from then on.
+        browser_host = "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
         console.print(
             Panel(
-                f"Token: [bold]{token}[/]\n\n"
-                "Use this token in the Authorization header:\n"
-                f"[dim]Authorization: Bearer {token}[/]",
+                f"Open this URL once to sign the browser in:\n"
+                f"[bold]http://{browser_host}:{port}/?token={token}[/]\n\n"
+                f"Token: [bold]{token}[/]\n"
+                f"[dim]For API clients: Authorization: Bearer {token}[/]",
                 title="Web UI Auth Token",
                 border_style="yellow",
             )

@@ -13,6 +13,8 @@ TaskCommand = Literal["run", "recon", "scan", "exploit", "persistent"]
 TaskStatus = Literal["pending", "restoring", "running", "completed", "failed", "stopped"]
 PythonExecuteMode = Literal["safe", "lab", "trusted-local"]
 ContextCompactionMode = Literal["structured"]
+# Report / UI language: auto follows env detection, zh/en force a language.
+ReportLanguage = Literal["auto", "zh", "en"]
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -258,6 +260,7 @@ class ConfigView(BaseModel):
     model: str
     base_url: str
     api_key_configured: bool
+    language: ReportLanguage
     output_dir: str
     max_rounds: int
     max_context_tokens: int
@@ -282,6 +285,7 @@ class ConfigUpdateRequest(BaseModel):
     provider: Optional[str] = Field(default=None, min_length=1, max_length=64)
     model: Optional[str] = Field(default=None, min_length=1, max_length=160)
     base_url: Optional[str] = Field(default=None, max_length=512)
+    language: Optional[ReportLanguage] = None
     output_dir: Optional[str] = Field(default=None, min_length=1, max_length=1024)
     max_rounds: Optional[int] = Field(default=None, ge=1, le=100)
     max_context_tokens: Optional[int] = Field(default=None, ge=1024, le=10_000_000)

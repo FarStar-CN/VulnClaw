@@ -2,7 +2,14 @@
 
 The token is generated once and persisted to ``~/.vulnclaw/web_token``.
 All ``/api/`` routes (except ``/api/health``) require a valid
-``Authorization: Bearer <token>`` header.
+``Authorization: Bearer <token>`` header, a session cookie carrying the same
+token, or a loopback peer address.
+
+The cookie exists because the shipped browser UI cannot send a bearer header:
+``fetch`` here adds none and an SSE ``EventSource`` cannot attach one at all.
+Opening the UI once at ``/?token=<token>`` exchanges the token for an
+``HttpOnly``/``SameSite=Strict`` session cookie, which the browser then sends
+on every subsequent request including the event stream.
 """
 
 from __future__ import annotations
@@ -23,6 +30,9 @@ except ImportError:  # pragma: no cover
 
 TOKEN_DIR = Path.home() / ".vulnclaw"
 TOKEN_FILE = TOKEN_DIR / "web_token"
+
+#: Name of the session cookie that carries the bearer token for browser clients.
+SESSION_COOKIE = "vulnclaw_session"
 
 
 def _token_path() -> Path:
@@ -65,6 +75,29 @@ def verify_token(token: str) -> bool:
         return False
     stored = path.read_text(encoding="utf-8").strip()
     return hmac.compare_digest(stored, token)
+
+
+def attach_session_cookie(response, token: str) -> None:  # type: ignore[no-untyped-def]
+    """Store *token* on the browser as an HttpOnly session cookie.
+
+    ``secure`` is deliberately left off: the UI is served over plain HTTP on
+    localhost and inside Docker, where a Secure cookie would never be sent
+    back. ``SameSite=Strict`` keeps the cookie off cross-site requests, which
+    is what guards the state-changing ``/api/`` routes against CSRF.
+    """
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        samesite="strict",
+        path="/",
+    )
+
+
+def request_has_valid_session(request) -> bool:  # type: ignore[no-untyped-def]
+    """Whether *request* carries a session cookie holding a valid token."""
+    cookie = request.cookies.get(SESSION_COOKIE, "")
+    return bool(cookie) and verify_token(cookie)
 
 
 def _client_is_loopback(client_host: str | None) -> bool:
@@ -110,6 +143,7 @@ if _HAS_STARLETTE:
                 path.startswith("/api/")
                 and path not in self._EXEMPT_PATHS
                 and not _client_is_loopback(client_host)
+                and not request_has_valid_session(request)
             ):
                 auth_header = request.headers.get("Authorization", "")
                 if not auth_header.startswith("Bearer "):

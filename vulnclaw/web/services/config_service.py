@@ -11,11 +11,15 @@ from vulnclaw.web.schemas import ConfigUpdateRequest, ConfigView
 def get_public_config() -> ConfigView:
     """Return a safe-to-display subset of configuration."""
     config = load_config()
+    # `language` is a plain str in the on-disk config; clamp anything unexpected
+    # to "auto" so a hand-edited value can't 500 the whole config endpoint.
+    language = config.session.language if config.session.language in ("auto", "zh", "en") else "auto"
     return ConfigView(
         provider=config.llm.provider,
         model=config.llm.model,
         base_url=config.llm.base_url,
         api_key_configured=bool(config.llm.api_key),
+        language=language,
         output_dir=str(config.session.output_dir),
         max_rounds=config.session.max_rounds,
         max_context_tokens=config.llm.max_context_tokens,
@@ -47,6 +51,8 @@ def update_public_config(payload: ConfigUpdateRequest) -> ConfigView:
         config.llm.model = payload.model
     if payload.base_url is not None:
         config.llm.base_url = payload.base_url
+    if payload.language is not None:
+        config.session.language = payload.language
     if payload.output_dir is not None:
         config.session.output_dir = Path(payload.output_dir)
     if payload.max_rounds is not None:
