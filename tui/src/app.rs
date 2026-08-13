@@ -1,4 +1,3 @@
-use std::env;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
@@ -227,6 +226,10 @@ const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         command: "/exploit ",
         description: "attempt an exploit against a target",
+    },
+    SlashCommand {
+        command: "/codescan ",
+        description: "scan local source code (no network target needed)",
     },
     SlashCommand {
         command: "/report",
@@ -519,6 +522,8 @@ impl App {
             self.request_task("recon", arguments);
         } else if let Some(arguments) = command.strip_prefix("/exploit ") {
             self.request_task("exploit", arguments);
+        } else if let Some(arguments) = command.strip_prefix("/codescan ") {
+            self.request_code_scan(arguments);
         } else if command == "/report" {
             self.status(
                 "Use vulnclaw report <result.json> [--pdf] to write the report; the TUI shows findings live.",
@@ -1117,7 +1122,7 @@ impl App {
         };
         if parts.is_empty() {
             self.error(format!(
-                "/{command} requires a target: /{command} <target> [--only-port N] [--only-host H] [--blocked-host H]"
+                "/{command} requires a target: /{command} <target>"
             ));
             return;
         }
@@ -1130,6 +1135,39 @@ impl App {
         self.pending_task = Some(args);
         self.status(format!(
             "/{command} armed for {target}. Press Y to run, or Esc to cancel."
+        ));
+    }
+
+    /// Arm a local source-code scan (`vulnclaw code scan <path> --stream`).
+    /// Kept separate from `request_task` because the Python sub-command is two
+    /// words (`code scan`), which must be split into separate argv entries.
+    fn request_code_scan(&mut self, arguments: &str) {
+        if self.mode == ExecutionMode::Plan {
+            self.error(
+                "Plan mode is read-only. Press Tab to switch to Agent before running a task.",
+            );
+            return;
+        }
+        let mut parts = match split_arguments(arguments) {
+            Ok(parts) => parts,
+            Err(error) => {
+                self.error(error);
+                return;
+            }
+        };
+        if parts.is_empty() {
+            self.error("/codescan requires a path: /codescan <file-or-dir>");
+            return;
+        }
+        let target = parts[0].clone();
+        let mut args = vec!["code".to_owned(), "scan".to_owned()];
+        args.append(&mut parts);
+        // The Rust TUI consumes the JSONL stream protocol; always ask the
+        // Python core to emit events instead of Rich text.
+        args.push("--stream".to_owned());
+        self.pending_task = Some(args);
+        self.status(format!(
+            "/codescan armed for {target}. Press Y to run, or Esc to cancel."
         ));
     }
 
@@ -1374,6 +1412,46 @@ mod tests {
 
         assert!(app.pending_task.is_some());
         assert!(!app.worker_active);
+    }
+
+    #[test]
+    fn codescan_arms_split_argv_and_plan_mode_blocks_it() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+        app.mode = ExecutionMode::Agent;
+        app.permission = PermissionMode::FullAccess;
+
+        app.request_code_scan("demo/unsafe-ai-sample.ts");
+
+        let args = app.pending_task.clone().expect("codescan should arm");
+        assert_eq!(args, vec!["code", "scan", "demo/unsafe-ai-sample.ts", "--stream"]);
+        assert!(!app.worker_active);
+
+        // Plan mode is read-only: the same request must be rejected.
+        let (sender2, _) = mpsc::channel();
+        let mut app2 = App::new(sender2);
+        app2.mode = ExecutionMode::Plan;
+        app2.request_code_scan("demo/unsafe-ai-sample.ts");
+        assert!(app2.pending_task.is_none());
+        assert!(app2
+            .transcript
+            .iter()
+            .any(|item| item.text.contains("Plan mode is read-only")));
+    }
+
+    #[test]
+    fn codescan_requires_a_path() {
+        let (sender, _) = mpsc::channel();
+        let mut app = App::new(sender);
+        app.mode = ExecutionMode::Agent;
+
+        app.request_code_scan("");
+
+        assert!(app.pending_task.is_none());
+        assert!(app
+            .transcript
+            .iter()
+            .any(|item| item.text.contains("/codescan requires a path")));
     }
 
     #[test]

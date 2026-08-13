@@ -941,6 +941,11 @@ app = typer.Typer(
     add_completion=False,
 )
 
+# ── Code sub-command group (local source-code scanning) ──────────────
+from vulnclaw.cli.code import code_app  # noqa: E402
+
+app.add_typer(code_app, name="code")
+
 
 @app.command()
 def run(
