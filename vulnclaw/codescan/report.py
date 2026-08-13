@@ -58,7 +58,7 @@ def format_text(result: ScanResult) -> str:
     if not result.findings:
         return result.summary()
 
-    from rich.console import Console, ConsoleOptions
+    from rich.console import Console
     from rich.table import Table
 
     table = Table(title="VulnClaw Code Scan", show_lines=False)

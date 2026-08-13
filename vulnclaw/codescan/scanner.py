@@ -15,15 +15,16 @@ the rest of VulnClaw unchanged.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
 from vulnclaw.codescan.rules import (
-    L1Rule,
     L1_RULES,
     L2_RULES,
     CodeFinding,
+    L1Rule,
     detect_language,
     should_scan_file,
 )
@@ -171,7 +172,7 @@ def scan_code(
         progress: optional callable(file_path, findings_so_far) for streaming UI.
     """
     start = time.perf_counter()
-    layer_set = {l.upper() for l in layers}
+    layer_set = {lyr.upper() for lyr in layers}
     result = ScanResult(path=path, layers=sorted(layer_set))
 
     files, skipped = _iter_source_files(path)

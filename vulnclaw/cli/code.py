@@ -15,7 +15,6 @@ from typing import Optional
 
 import typer
 from rich.panel import Panel
-from rich.text import Text
 
 from vulnclaw.cli._helpers import console, err_console
 

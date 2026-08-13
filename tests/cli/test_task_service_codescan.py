@@ -7,7 +7,6 @@ a ``/codescan <path>`` request must stream ``finding`` events and finish with a
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 from typing import Any

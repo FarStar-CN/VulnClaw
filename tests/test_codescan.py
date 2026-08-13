@@ -8,13 +8,10 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
-from vulnclaw.codescan.rules import L1_RULES, L2_RULES, CodeFinding, L1Rule
+from vulnclaw.codescan.report import format_json, format_markdown, format_sarif
+from vulnclaw.codescan.rules import L1_RULES, L2_RULES, L1Rule
 from vulnclaw.codescan.scanner import scan_code
-from vulnclaw.codescan.report import format_json, format_sarif, format_markdown
 from vulnclaw.codescan.stream import emit_code_scan_stream
-
 
 SAMPLE_TS = """\
 import { OpenAI } from "openai";

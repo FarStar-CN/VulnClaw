@@ -15,7 +15,6 @@ import json
 import sys
 from typing import Any
 
-from vulnclaw.codescan.report import _finding_to_vuln_dict
 from vulnclaw.codescan.scanner import ScanResult
 
 
