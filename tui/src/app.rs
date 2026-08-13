@@ -208,14 +208,12 @@ pub struct SlashCommand {
     pub description: &'static str,
 }
 
-
 const LOCAL_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/scope ", "update session scope defaults"),
     ("/report", "show report export guidance"),
     ("/config", "show configuration guidance"),
     ("/clear", "clear the transcript"),
     ("/help", "list available commands"),
-
 ];
 
 const MAX_COMMAND_HISTORY: usize = 50;
@@ -438,8 +436,6 @@ impl App {
             self.transcript_scroll = 0;
             self.transcript_follow = true;
             self.status("Transcript cleared. Findings remain available in the inspector.");
-
-
         } else if command == "/report" {
             self.status(
                 "Use vulnclaw report <result.json> [--pdf] to write the report; the TUI shows findings live.",
@@ -1251,9 +1247,7 @@ impl App {
         }
         let arguments = arguments.trim();
         if arguments.is_empty() {
-            self.error(format!(
-                "/{command} requires a target: /{command} <target>"
-            ));
+            self.error(format!("/{command} requires a target: /{command} <target>"));
             return;
         }
         let target = arguments.split_whitespace().next().unwrap_or(arguments);
@@ -1262,7 +1256,6 @@ impl App {
             "/{command} armed for {target}. Press Y to run, or Esc to cancel."
         ));
     }
-
 
     fn request_control(&mut self, operation: &str, arguments: serde_json::Value) -> bool {
         if self.worker_active {
@@ -1329,7 +1322,6 @@ impl App {
     }
 
     fn start_task(&mut self, command_line: String) {
-
         if self.worker_active {
             self.error("A VulnClaw command is already running.");
             return;
@@ -1666,5 +1658,3 @@ fn next_char_boundary(text: &str, index: usize) -> usize {
         .next()
         .map_or(index, |character| index + character.len_utf8())
 }
-
-
