@@ -100,7 +100,9 @@ pub fn render(app: &App) -> Paragraph<'static> {
     if let Some(receipt) = app.active_receipt.as_ref() {
         lines.push(Line::from(Span::styled(
             format!("LIVE  {}", receipt.phase),
-            Style::default().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::GOLD)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
             format!("Found {}", receipt.findings),
@@ -125,12 +127,15 @@ pub fn render(app: &App) -> Paragraph<'static> {
             Style::default().fg(theme::TEXT_HINT),
         )));
     }
-    lines.extend([Line::from(""), Line::from(Span::styled(
-        "Capabilities",
-        Style::default()
-            .fg(theme::SEAFOAM)
-            .add_modifier(Modifier::BOLD),
-    ))]);
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            "Capabilities",
+            Style::default()
+                .fg(theme::SEAFOAM)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ]);
     append_nodes(&app.skills, "", &mut lines);
     Paragraph::new(lines).block(
         Block::default()

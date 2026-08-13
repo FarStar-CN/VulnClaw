@@ -8,6 +8,14 @@ use ratatui::{
 use crate::app::App;
 use crate::theme;
 
+const DEPENDENCY_PREVIEW_CHARS: usize = 10;
+
+/// Shorten a finding dependency for the compact DAG view without splitting a
+/// UTF-8 code point.
+pub fn dependency_preview(id: &str) -> String {
+    id.chars().take(DEPENDENCY_PREVIEW_CHARS).collect()
+}
+
 pub fn render(frame: &mut Frame, app: &App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -45,7 +53,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                         finding
                             .chain_depends_on
                             .iter()
-                            .map(|id| &id[..id.len().min(10)])
+                            .map(|id| dependency_preview(id))
                             .collect::<Vec<_>>()
                             .join(", ")
                     )

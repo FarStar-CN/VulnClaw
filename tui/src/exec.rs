@@ -67,10 +67,14 @@ pub fn spawn_backend(sender: Sender<AppEvent>) -> std::io::Result<BackendHandle>
         Command::new(python)
     };
     command.arg("-m").arg("vulnclaw.tui_backend");
-    spawn_backend_process(command, sender)
+    spawn_backend_command(command, sender)
 }
 
-fn spawn_backend_process(
+/// Spawn a backend from a caller-supplied command.
+///
+/// This is the transport injection seam used by embedders and integration
+/// tests; production callers normally use [`spawn_backend`].
+pub fn spawn_backend_command(
     mut command: Command,
     sender: Sender<AppEvent>,
 ) -> std::io::Result<BackendHandle> {
@@ -93,7 +97,7 @@ fn spawn_backend_process(
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             match parse_backend_line(&line) {
                 Ok(event) => {
-                    let _ = output_sender.send(AppEvent::Backend(event));
+                    let _ = output_sender.send(AppEvent::backend(event));
                 }
                 Err(error) => {
                     let _ = output_sender.send(AppEvent::BackendDiagnostic(format!(
@@ -138,104 +142,4 @@ fn spawn_backend_process(
     });
 
     Ok(handle)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::process::Command;
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    use super::spawn_backend_process;
-    use crate::protocol::{AppEvent, BackendEvent, ClientRequest};
-
-    const FAKE_BACKEND: &str = r#"
-import json, os, sys
-constraints = {"allowed_ports": [], "blocked_ports": [], "allowed_hosts": [], "blocked_hosts": [], "allowed_paths": [], "blocked_paths": [], "allowed_actions": [], "blocked_actions": [], "notes": [], "strict_mode": False}
-def state(active=False, task_id=None):
-    return {"target": "target.test", "phase": "idle", "task_constraints": constraints, "task": {"active": active, "task_id": task_id}, "last_run": None, "findings": [], "evidence": [], "constraint_violations": []}
-for line in sys.stdin:
-    msg = json.loads(line)
-    base = {"protocol_version": 1}
-    if msg["type"] == "initialize":
-        print(json.dumps(base | {"type": "ready", "request_id": msg["request_id"], "backend": {"pid": os.getpid(), "version": "test", "protocol_version": 1}, "capabilities": {"commands": ["run"], "control_operations": ["example.inspect"], "cancellation": True, "authoritative_state": True}, "runtime": {"config_ready": True, "provider": "test", "model": "test", "mcp_started": 0, "skills": []}, "state": state()}), flush=True)
-    elif msg["type"] == "control":
-        print(json.dumps(base | {"type": "control_result", "request_id": msg["request_id"], "operation": msg["payload"]["operation"], "result": {"backend_pid": os.getpid()}}), flush=True)
-    elif msg["type"] == "start_task":
-        task_id = msg["task_id"]
-        print(json.dumps(base | {"type": "task_started", "request_id": msg["request_id"], "task_id": task_id, "task": msg["payload"]["task"], "state": state(True, task_id)}), flush=True)
-        print(json.dumps(base | {"type": "task_completed", "request_id": msg["request_id"], "task_id": task_id, "result": {"summary": {"backend_pid": os.getpid()}}, "findings": [], "state": state()}), flush=True)
-    elif msg["type"] == "shutdown":
-        print(json.dumps(base | {"type": "shutdown_complete", "request_id": msg["request_id"]}), flush=True)
-        break
-"#;
-
-    #[test]
-    fn one_transport_process_serves_two_sequential_tasks() {
-        let python = if std::path::Path::new("../.venv/bin/python").exists() {
-            "../.venv/bin/python"
-        } else {
-            "python"
-        };
-        let mut command = Command::new(python);
-        command.arg("-u").arg("-c").arg(FAKE_BACKEND);
-        let (sender, receiver) = mpsc::channel();
-        let backend = spawn_backend_process(command, sender).unwrap();
-
-        backend
-            .send(&ClientRequest::initialize("r-init".into(), serde_json::json!({})))
-            .unwrap();
-        let ready_pid = loop {
-            match receiver.recv_timeout(Duration::from_secs(3)).unwrap() {
-                AppEvent::Backend(BackendEvent::Ready { backend, .. }) => break backend.pid,
-                _ => continue,
-            }
-        };
-
-        backend
-            .send(&ClientRequest::control(
-                "r-control".into(),
-                "example.inspect",
-                serde_json::json!({}),
-            ))
-            .unwrap();
-        loop {
-            match receiver.recv_timeout(Duration::from_secs(3)).unwrap() {
-                AppEvent::Backend(BackendEvent::ControlResult { result, .. }) => {
-                    assert_eq!(result["backend_pid"], ready_pid);
-                    break;
-                }
-                _ => continue,
-            }
-        }
-
-        for index in 1..=2 {
-            backend
-                .send(&ClientRequest::start_task(
-                    format!("r-{index}"),
-                    format!("t-{index}"),
-                    serde_json::json!({
-                        "command": "run",
-                        "target": format!("target-{index}.test")
-                    }),
-                ))
-                .unwrap();
-            loop {
-                match receiver.recv_timeout(Duration::from_secs(3)).unwrap() {
-                    AppEvent::Backend(BackendEvent::TaskCompleted {
-                        task_id, result, ..
-                    }) if task_id == format!("t-{index}") => {
-                        assert_eq!(result["summary"]["backend_pid"], ready_pid);
-                        break;
-                    }
-                    _ => continue,
-                }
-            }
-        }
-
-        backend
-            .send(&ClientRequest::shutdown("r-shutdown".into()))
-            .unwrap();
-        backend.wait_or_kill(Duration::from_secs(2));
-    }
 }
