@@ -12,7 +12,7 @@ from vulnclaw.config.domain_models import TaskConstraints, validate_action_const
 from vulnclaw.config.schema import resolve_engine
 from vulnclaw.orchestrator import OrchestratorRunResult, run_agent_task
 
-TaskCommand = Literal["run", "recon", "scan", "exploit", "persistent"]
+TaskCommand = Literal["run", "recon", "scan", "exploit", "persistent", "codescan"]
 TASK_COMMANDS = frozenset(get_args(TaskCommand))
 SCOPE_FIELDS = frozenset(
     {
@@ -130,6 +130,7 @@ class TaskCreateRequest(BaseModel):
             "exploit": {"cve", "cmd"},
             "persistent": {"rounds_per_cycle", "max_cycles", "auto_report"},
             "recon": set(),
+            "codescan": set(),
         }
         common = set(SCOPE_FIELDS)
         supplied = {
@@ -227,6 +228,8 @@ def build_task_prompt(request: TaskCreateRequest, constraints: TaskConstraints) 
         )
     elif request.command == "persistent":
         prompt = f"Continuously perform an authorized pentest against {request.target} until stopped."
+    elif request.command == "codescan":
+        prompt = f"Perform a local static source-code security scan of {request.target}."
     else:
         prompt = (
             f"Perform an authorized {options.scope or 'full'} pentest against {request.target}. "
@@ -234,6 +237,75 @@ def build_task_prompt(request: TaskCreateRequest, constraints: TaskConstraints) 
         )
     block = constraints.to_prompt_block()
     return f"{prompt}\n\n{block}" if block else prompt
+
+
+async def _run_codescan(task: PreparedTask, *, stream_sink: Any = None) -> dict[str, Any]:
+    """Run a local static code scan without the agent loop.
+
+    Local source scanning is deterministic and needs no LLM, so it bypasses
+    the agent/orchestrator entirely. Findings are returned in the shared
+    dict shape so the TUI backend emits ``finding`` + ``task_completed``
+    protocol events exactly like network tasks.
+    """
+
+    import asyncio
+
+    from vulnclaw.codescan.report import _finding_to_vuln_dict
+    from vulnclaw.codescan.scanner import scan_code
+
+    # Fields the TUI protocol schema (protocol/tui-v1.schema.json, $defs.finding)
+    # allows. ``additionalProperties`` is false, so anything extra is rejected
+    # by the strict Python-side validator.
+    _FINDING_FIELDS = (
+        "id",
+        "severity",
+        "title",
+        "target",
+        "vuln_type",
+        "description",
+        "impact",
+        "evidence",
+        "cve",
+        "cvss",
+        "cwe",
+        "remediation",
+        "endpoint",
+        "method",
+        "line",
+        "code_location",
+        "evidence_refs",
+        "skill_provenance",
+        "subagent_provenance",
+        "poc_script",
+        "evidence_level",
+        "lifecycle_status",
+        "verified",
+        "verification_status",
+        "verified_at",
+        "verification_note",
+        "chain_depends_on",
+    )
+
+    def _clean(item: dict[str, Any]) -> dict[str, Any]:
+        return {k: item[k] for k in _FINDING_FIELDS if k in item}
+
+    target = task.request.target
+    if stream_sink is not None and hasattr(stream_sink, "on_status"):
+        stream_sink.on_status(f"Code scanning {target}...")
+
+    def _run() -> list[dict[str, Any]]:
+        result = scan_code(target, layers=("L1", "L2"))
+        findings = []
+        for f in result.findings:
+            item = _finding_to_vuln_dict(f)
+            item["id"] = item.get("finding_id") or f"{f.rule_id}:{f.file}:{f.line}"
+            findings.append(_clean(item))
+        return findings
+
+    findings = await asyncio.to_thread(_run)
+    if stream_sink is not None and hasattr(stream_sink, "on_stream_end"):
+        stream_sink.on_stream_end()
+    return {"command": "codescan", "target": target, "findings": findings}
 
 
 async def run_task_action(
@@ -250,6 +322,8 @@ async def run_task_action(
 
     request = task.request
     options = request.options
+    if request.command == "codescan":
+        return await _run_codescan(task, stream_sink=stream_sink)
     if request.command == "run":
         engine = resolve_engine(agent.config, options.engine)
         if engine == "solve":
@@ -338,6 +412,26 @@ async def execute_task(
 
     request = task.request
     action_result: Any = None
+
+    if request.command == "codescan":
+        # Local static scanning is deterministic and needs no agent loop,
+        # session restore, run directory, or LLM. Short-circuit so the
+        # backend stays fully usable without a live agent.
+        from vulnclaw.orchestrator import OrchestratorRunResult
+        from vulnclaw.target_state.store import SessionRestoreResult
+
+        action_result = await _run_codescan(task, stream_sink=stream_sink)
+        run = OrchestratorRunResult(
+            restore_result=SessionRestoreResult(restored=False, target=request.target),
+            summary={
+                "command": "codescan",
+                "target": request.target,
+                "findings": action_result["findings"],
+            },
+            status="completed",
+            exit_code=1 if action_result["findings"] else 0,
+        )
+        return TaskExecution(run, action_result)
 
     async def runner(shared_agent: Any) -> Any:
         nonlocal action_result
