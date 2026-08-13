@@ -575,7 +575,14 @@ async def _run_task(
     )
     result = execution.run
     run_context = result.run_context
+    action_result = execution.action_result
+    if isinstance(action_result, dict) and isinstance(action_result.get("findings"), list):
+        findings = action_result["findings"]
+    else:
+        findings = _runtime_findings(runtime)
     return {
+        "command": task.request.command,
+        "target": task.request.target,
         "status": result.status,
         "exit_code": result.exit_code,
         "summary": _json_safe(result.summary),
@@ -588,7 +595,7 @@ async def _run_task(
             if run_context is not None
             else None
         ),
-        "findings": _runtime_findings(runtime),
+        "findings": findings,
     }
 
 

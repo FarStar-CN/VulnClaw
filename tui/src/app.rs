@@ -1247,9 +1247,7 @@ impl App {
         }
         let arguments = arguments.trim();
         if arguments.is_empty() {
-            self.error(format!(
-                "/{command} requires a target: /{command} <target> [--only-port N] [--only-host H] [--blocked-host H]"
-            ));
+            self.error(format!("/{command} requires a target: /{command} <target>"));
             return;
         }
         let target = arguments.split_whitespace().next().unwrap_or(arguments);

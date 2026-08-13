@@ -103,6 +103,31 @@ fn task_dispatch_uses_backend_advertised_commands() {
 }
 
 #[test]
+fn codescan_dispatches_when_advertised_by_backend() {
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.backend_commands = vec!["codescan".into()];
+    app.insert_text("/codescan demo/unsafe-ai-sample.ts");
+    app.submit();
+
+    assert_eq!(
+        app.pending_task.as_deref(),
+        Some("/codescan demo/unsafe-ai-sample.ts")
+    );
+
+    // Not advertised -> rejected as unknown.
+    app.dismiss_task();
+    app.insert_text("/codescan src/main.rs");
+    app.backend_commands = Vec::new();
+    app.submit();
+    assert!(app.pending_task.is_none());
+    assert!(app
+        .transcript
+        .iter()
+        .any(|item| item.text.contains("Unknown command: /codescan")));
+}
+
+#[test]
 fn scope_command_routes_to_capability_gated_control() {
     let (sender, _) = mpsc::channel();
     let mut app = App::new_disconnected(sender);
