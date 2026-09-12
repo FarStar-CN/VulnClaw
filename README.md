@@ -283,6 +283,15 @@ vulnclaw tui --target https://target.example --mode quick --only-port 443
 vulnclaw tui --dry-run --target https://target.example --mode deep --only-path /admin
 ```
 
+Rust TUI 工作台支持可配置容器布局：左侧默认显示状态，右侧同时显示发现与子代理；中间显示代理输出，底部为输入框。子代理视图目前显示无数据提示。
+
+- 拖动视图标题，可在两个侧栏之间移动，或在栏内重新排序；插入线表示落点。点击标题左侧 `v` / `>` 折叠或展开。
+- 拖动容器或视图之间的分隔条调整尺寸；折叠视图需展开后再调高。拖动中按 Esc 取消。
+- 滚轮滚动鼠标下方的视图内容；点击聚焦后可用方向键滚动，`Ctrl+←/→` 切换视图，`Ctrl+Y` 复制当前视图。
+- 布局自动保存到本地 `VULNCLAW_HOME/tui/layout.json`（默认 `~/.vulnclaw/tui/layout.json`），下次启动恢复。底栏随命令面板自动增高；终端过小时提示所需尺寸，放大后恢复布局。
+
+鼠标捕获开启时，终端原生文字选择取决于终端提供的修饰键；复制单个视图可使用 `Ctrl+Y`。布局设计与验收见[实施计划](tui/LAYOUT_PLAN.md)。
+
 常用菜单：
 - **菜单 3** — 设置测试范围（主机/端口/路径/允许动作/禁止动作）
 - **菜单 7** — 环境诊断入口（完整详情运行 `vulnclaw doctor`）

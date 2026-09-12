@@ -2,11 +2,11 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
     Frame,
 };
 
-use crate::app::{ActivePane, App, TranscriptKind};
+use crate::app::{App, TranscriptKind};
 use crate::theme;
 
 /// Build the rendered transcript lines, honouring the `show_reasoning` filter.
@@ -36,31 +36,14 @@ pub fn build_lines(app: &App) -> Vec<Line<'static>> {
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let lines = build_lines(app);
-    let focused = app.active_pane == ActivePane::Transcript;
-    let mut title_spans = vec![Span::styled(
-        if focused {
-            "Session transcript *"
-        } else {
-            "Session transcript"
-        },
-        Style::default().fg(theme::TEXT_SOFT),
-    )];
-    // Live stream indicator — a gold dot that breathes while output is flowing,
-    // so you can see the transcript is being written to in real time.
-    if app.worker_active && theme::blink_on() {
-        title_spans.push(Span::styled(" ●", Style::default().fg(theme::GOLD)));
-    }
     frame.render_widget(
         Paragraph::new(lines)
-            .scroll((app.transcript_scroll, 0))
+            .scroll((app.layout.output.scroll, 0))
             .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(theme::pulse_border(focused && app.worker_active))
-                    .style(Style::default().bg(theme::PANEL))
-                    .title(Line::from(title_spans)),
-            ),
+            .block(crate::ui::layout::view_block(
+                app,
+                crate::workbench::ViewId::Output,
+            )),
         area,
     );
 }

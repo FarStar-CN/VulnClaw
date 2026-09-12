@@ -1,8 +1,9 @@
 use std::sync::mpsc;
+use vulnclaw_tui::workbench::ViewId;
 
 use crate::support::AppHarness;
 use vulnclaw_tui::app::{
-    parse_scope_payload, parse_task_payload, strip_prompt_prefix, ActivePane, App, ExecutionMode,
+    parse_scope_payload, parse_task_payload, strip_prompt_prefix, App, ExecutionMode,
     PermissionMode, TranscriptItem, TranscriptKind,
 };
 
@@ -173,6 +174,23 @@ fn ready_event_hydrates_backend_capabilities() {
     );
     assert!(harness.app.backend_supports_cancellation);
     assert!(harness.app.backend_ready);
+}
+
+#[test]
+fn ready_event_captures_the_provider_and_model() {
+    let harness = AppHarness::connected();
+
+    assert_eq!(harness.app.provider.as_deref(), Some("test"));
+    assert_eq!(harness.app.model.as_deref(), Some("test"));
+}
+
+#[test]
+fn provider_and_model_are_unknown_until_the_backend_reports() {
+    let (sender, _) = mpsc::channel();
+    let app = App::new_disconnected(sender);
+
+    assert!(app.provider.is_none());
+    assert!(app.model.is_none());
 }
 #[test]
 fn authoritative_state_replaces_and_clears_every_business_field() {
@@ -474,19 +492,19 @@ fn streamed_events_update_and_finalize_the_work_receipt() {
     );
 }
 #[test]
-fn active_pane_rect_partitions_the_workbench_without_overlap() {
+fn active_view_rect_partitions_the_workbench_without_overlap() {
     let (sender, _) = mpsc::channel();
     let mut app = App::new_disconnected(sender);
     app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 28);
 
-    app.active_pane = ActivePane::Workspace;
-    let workspace = app.active_pane_rect(app.terminal_size);
-    app.active_pane = ActivePane::Transcript;
-    let transcript = app.active_pane_rect(app.terminal_size);
-    app.active_pane = ActivePane::Findings;
-    let findings = app.active_pane_rect(app.terminal_size);
+    app.layout.focus = ViewId::Status;
+    let workspace = app.active_view_rect(app.terminal_size);
+    app.layout.focus = ViewId::Output;
+    let transcript = app.active_view_rect(app.terminal_size);
+    app.layout.focus = ViewId::Findings;
+    let findings = app.active_view_rect(app.terminal_size);
 
-    // The three panes are laid out left-to-right and must not overlap.
+    // Independent view regions must not overlap.
     assert_eq!(workspace.x, 0);
     assert!(
         workspace.right() <= transcript.x,
@@ -504,51 +522,60 @@ fn active_pane_rect_partitions_the_workbench_without_overlap() {
 }
 
 #[test]
-fn copy_active_pane_renders_only_the_focused_region() {
+fn copy_active_view_renders_only_the_focused_region() {
+    use vulnclaw_tui::workbench::{resize, ContainerId, SashId};
     let (sender, _) = mpsc::channel();
     let mut app = App::new_disconnected(sender);
     app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 28);
-    app.active_pane = ActivePane::Transcript;
+    let geometry = app.geometry(app.terminal_size);
+    let primary = geometry.container(ContainerId::Primary);
+    let target = geometry
+        .drop_target(ratatui::layout::Position::new(primary.x, primary.y))
+        .unwrap();
+    app.layout.move_view(ViewId::Findings, target, &geometry);
+    let geometry = app.geometry(app.terminal_size);
+    resize(&mut app.layout, &geometry, SashId::Primary, 5, 0);
 
-    // Drive the same offscreen render path the real copy uses, then pull the
-    // transcript region and confirm it contains transcript content but not
-    // the findings title (proving the copy is pane-scoped, not whole-screen).
-    let rect = app.active_pane_rect(app.terminal_size);
     let backend = ratatui::backend::TestBackend::new(120, 28);
     let mut term = ratatui::Terminal::new(backend).unwrap();
     term.draw(|f| vulnclaw_tui::ui::draw(f, &app)).unwrap();
-    let text = extract_rect_text(term.backend().buffer(), rect);
-
-    assert!(text.contains("Session transcript"));
-    assert!(
-        !text.contains("Findings inspector"),
-        "transcript copy must not bleed into the findings pane"
-    );
+    for (id, included, excluded) in [
+        (ViewId::Output, "Session transcript", "Findings inspector"),
+        (ViewId::Findings, "Findings inspector", "Workspace"),
+    ] {
+        app.layout.focus = id;
+        let rect = app.active_view_rect(app.terminal_size);
+        let text = extract_rect_text(term.backend().buffer(), rect);
+        assert!(text.contains(included));
+        assert!(
+            !text.contains(excluded),
+            "copied view includes neighboring content"
+        );
+    }
 }
 
 #[test]
 fn transcript_autoscroll_pins_to_bottom_and_tracks_growth() {
     let (sender, _) = mpsc::channel();
     let mut app = App::new_disconnected(sender);
-    // 120x30 -> transcript panel height 26, visible inner rows = 24.
     app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
-    app.active_pane = ActivePane::Transcript;
+    app.layout.focus = ViewId::Output;
 
     // Short lines never wrap at the ~50-col inner width, so the pin point is
     // purely a function of content length.
     for i in 0..5 {
         push_log(&mut app, format!("line {i}"));
     }
-    app.autoscroll_transcript();
-    let small = app.transcript_scroll as usize;
-    assert!(app.transcript_follow);
+    app.refresh_view_scrolls();
+    let small = app.layout.output.scroll as usize;
+    assert!(app.layout.output.follow);
 
     for i in 5..45 {
         push_log(&mut app, format!("line {i}"));
     }
-    app.autoscroll_transcript();
-    let large = app.transcript_scroll as usize;
-    assert!(app.transcript_follow);
+    app.refresh_view_scrolls();
+    let large = app.layout.output.scroll as usize;
+    assert!(app.layout.output.follow);
     // More content => larger bottom offset => the view followed the growth.
     assert!(large > small);
 }
@@ -558,11 +585,11 @@ fn transcript_short_content_has_zero_scroll() {
     let (sender, _) = mpsc::channel();
     let mut app = App::new_disconnected(sender);
     app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
-    app.active_pane = ActivePane::Transcript;
-    app.autoscroll_transcript();
+    app.layout.focus = ViewId::Output;
+    app.refresh_view_scrolls();
     // Only the two welcome lines — they fit, so no scrolling is needed.
-    assert_eq!(app.transcript_scroll, 0);
-    assert!(app.transcript_follow);
+    assert_eq!(app.layout.output.scroll, 0);
+    assert!(app.layout.output.follow);
 }
 
 #[test]
@@ -570,27 +597,27 @@ fn scrolling_up_pauses_follow_and_bottom_resumes_it() {
     let (sender, _) = mpsc::channel();
     let mut app = App::new_disconnected(sender);
     app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
-    app.active_pane = ActivePane::Transcript;
+    app.layout.focus = ViewId::Output;
     for i in 0..45 {
         push_log(&mut app, format!("line {i}"));
     }
-    app.autoscroll_transcript();
-    let max = app.transcript_scroll;
+    app.refresh_view_scrolls();
+    let max = app.layout.output.scroll;
     assert!(max > 0);
-    assert_eq!(app.transcript_scroll, max);
-    assert!(app.transcript_follow);
+    assert_eq!(app.layout.output.scroll, max);
+    assert!(app.layout.output.follow);
 
     // Scroll up once to read history: follow must switch off.
-    app.scroll_active_pane(false);
-    assert!(!app.transcript_follow);
-    assert_eq!(app.transcript_scroll, max - 1);
+    app.scroll_active_view(false);
+    assert!(!app.layout.output.follow);
+    assert_eq!(app.layout.output.scroll, max - 1);
 
     // Scroll back down to the bottom: follow must switch back on.
     for _ in 0..(max as usize + 2) {
-        app.scroll_active_pane(true);
+        app.scroll_active_view(true);
     }
-    assert!(app.transcript_follow);
-    assert_eq!(app.transcript_scroll, max);
+    assert!(app.layout.output.follow);
+    assert_eq!(app.layout.output.scroll, max);
 }
 
 #[test]

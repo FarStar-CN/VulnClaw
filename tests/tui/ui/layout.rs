@@ -50,10 +50,119 @@ fn renders_a_composer_centered_security_workbench() {
         .collect::<String>();
     assert!(rendered.contains("Session transcript"));
     assert!(rendered.contains("Findings inspector (0)"));
+    assert!(rendered.contains("Status"));
+    assert!(rendered.contains("Subagents"));
     assert!(rendered.contains("Type / for commands"));
     assert!(rendered.contains("Tab mode"));
     assert!(rendered.contains("ready"));
     assert!(!rendered.contains("[Skills] [Findings] [Output]"));
+}
+
+fn app_with_provider(provider: Option<&str>, model: Option<&str>, config_ready: bool) -> App {
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.config_ready = Some(config_ready);
+    app.provider = provider.map(str::to_owned);
+    app.model = model.map(str::to_owned);
+    app
+}
+
+fn row_text(terminal: &Terminal<TestBackend>, y: u16) -> String {
+    let buffer = terminal.backend().buffer();
+    (0..buffer.area.width)
+        .map(|x| buffer[(x, y)].symbol())
+        .collect()
+}
+
+#[test]
+fn header_row_carries_only_brand_state_and_provider() {
+    let app = app_with_provider(Some("DeepSeek"), Some("deepseek-chat"), true);
+    let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+
+    let header = row_text(&terminal, 0);
+    assert!(header.contains("VulnClaw"));
+    assert!(header.contains("idle"));
+    assert!(header.contains("provider: DeepSeek"));
+    // Mode, guard and model moved down to the composer status line.
+    assert!(!header.contains("Agent"), "mode must leave the header");
+    assert!(!header.contains("Ask"), "guard must leave the header");
+    assert!(
+        !header.contains("deepseek-chat"),
+        "model must leave the header"
+    );
+}
+
+#[test]
+fn composer_is_framed_and_followed_by_the_mode_guard_model_line() {
+    let app = app_with_provider(Some("DeepSeek"), Some("deepseek-chat"), true);
+    let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+
+    let buffer = terminal.backend().buffer();
+    let input_row = (1..buffer.area.height)
+        .find(|&y| row_text(&terminal, y).contains("Type / for commands"))
+        .expect("composer placeholder must render");
+
+    assert!(
+        row_text(&terminal, input_row - 1).contains('─'),
+        "the input must be framed above"
+    );
+    assert!(
+        row_text(&terminal, input_row + 1).contains('─'),
+        "the input must be framed below"
+    );
+    let status = row_text(&terminal, input_row + 2);
+    assert!(status.contains("Agent"), "mode belongs under the frame");
+    assert!(status.contains("Ask"), "guard belongs under the frame");
+    // The marker is an ambiguous-width glyph, so the rendered row may pad it by
+    // a cell; assert on order rather than on an exact adjacency.
+    let marker = status.find('◈').expect("the model marker must render");
+    let name = status.find("deepseek-chat").expect("the model must render");
+    assert!(marker < name, "the marker precedes the model name");
+    assert!(
+        status.trim_end().ends_with("deepseek-chat"),
+        "the model is right-aligned"
+    );
+}
+
+#[test]
+fn header_badge_falls_back_to_a_placeholder_without_credentials() {
+    let app = app_with_provider(Some("DeepSeek"), Some("deepseek-chat"), false);
+    let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+
+    let rendered = rendered_text(&terminal);
+    assert!(rendered.contains("provider: not configured"));
+    assert!(!rendered.contains("deepseek-chat"));
+}
+
+#[test]
+fn header_badge_is_absent_before_the_backend_reports() {
+    let app = app_with_provider(None, None, true);
+    let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+
+    let rendered = rendered_text(&terminal);
+    assert!(!rendered.contains("provider:"));
+    assert!(rendered.contains("VulnClaw"));
+}
+
+#[test]
+fn header_drops_the_badge_before_truncating_the_left_cluster() {
+    let app = app_with_provider(Some("DeepSeek"), Some("deepseek-chat"), true);
+    // Wide enough for the left cluster plus the badge minimum, but not both.
+    let mut terminal = Terminal::new(TestBackend::new(40, 28)).unwrap();
+
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+
+    let rendered = rendered_text(&terminal);
+    assert!(!rendered.contains("provider:"));
+    assert!(rendered.contains("VulnClaw"));
 }
 
 #[test]

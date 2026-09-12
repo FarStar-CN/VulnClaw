@@ -1,45 +1,39 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
-use crate::app::{ActivePane, App};
+use crate::app::{App, COMPOSER_FRAME_ROWS, COMPOSER_STATUS_ROWS, PALETTE_ROWS};
 use crate::theme;
 use crate::views::skills_manager;
+use crate::workbench::{ContainerId, Gesture, LayoutGeometry, ViewId};
 
 pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(
         Block::default().style(Style::default().bg(theme::BG)),
         frame.area(),
     );
-    // Compact single-line composer (CodeWhale Compact density): one input row,
-    // no bordered title box that reads as a second line. The command palette and
-    // the task-confirmation prompt get their own taller regions when active.
-    let composer_height = if app.pending_task.is_some() {
-        3
-    } else if app.palette_visible() {
-        7
+    let geometry = app.geometry(frame.area());
+    render_header(frame, app, geometry.header);
+    render_phase_strip(frame, app, geometry.phase);
+    if geometry.too_small {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "Terminal too small. Need at least {} columns x {} rows.",
+                geometry.minimum_size.0, geometry.minimum_size.1
+            ))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(theme::GOLD)),
+            geometry.workbench,
+        );
     } else {
-        1
-    };
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(6),
-            Constraint::Length(composer_height),
-            Constraint::Length(1),
-        ])
-        .split(frame.area());
-    render_header(frame, app, rows[0]);
-    render_phase_strip(frame, app, rows[1]);
-    render_workbench(frame, app, rows[2]);
-    render_composer(frame, app, rows[3]);
-    render_hotbar(frame, app, rows[4]);
+        render_workbench(frame, app, &geometry);
+        render_composer(frame, app, geometry.container(ContainerId::Bottom));
+    }
+    render_hotbar(frame, app, geometry.hotbar);
 
     if let Some(pending) = &app.pending_execution {
         render_approval_modal(frame, pending, frame.area());
@@ -185,6 +179,12 @@ fn approval_body_lines(pending: &crate::app::PendingExecution) -> Vec<Line<'stat
     lines
 }
 
+pub(crate) fn approval_body_area(area: Rect) -> Rect {
+    let modal = approval_modal_area(area);
+    let inner = Block::default().borders(Borders::ALL).inner(modal);
+    Rect::new(inner.x, inner.y, inner.width, approval_body_height(area))
+}
+
 pub(crate) fn approval_body_height(area: Rect) -> u16 {
     let inner_height = approval_modal_area(area).height.saturating_sub(2);
     inner_height.saturating_sub(inner_height.min(3))
@@ -203,25 +203,35 @@ pub(crate) fn approval_max_scroll(pending: &crate::app::PendingExecution, area: 
         .saturating_sub(usize::from(body_height))
 }
 
+/// Width reserved for the left cluster before the provider badge is dropped, so
+/// a narrow terminal truncates the badge rather than the brand, mode and
+/// permission indicators.
+const HEADER_LEFT_MIN_WIDTH: u16 = 24;
+
+/// Right-aligned provider badge text, or `None` before the backend reports one.
+///
+/// Only the provider stays in the header — the model name moved down to the
+/// composer status line. The backend sends the provider it loaded at startup, so
+/// a later switch shows up only after the TUI restarts.
+fn provider_badge(app: &App) -> Option<String> {
+    if app.config_ready == Some(false) {
+        return Some("provider: not configured".to_owned());
+    }
+    Some(format!("provider: {}", app.provider.as_deref()?))
+}
+
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
+    // Brand and live worker state only. Mode, guard and model moved down to the
+    // composer status line; the provider badge owns the right edge.
     let mut spans = vec![
         Span::styled(
             " VulnClaw ",
             Style::default()
-                .fg(theme::ACTION)
+                .fg(theme::BG)
+                .bg(theme::ACTION)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" {} ", app.mode.label()),
-            Style::default()
-                .fg(theme::mode_color(app.mode.label()))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("| {} ", app.permission.label()),
-            Style::default().fg(theme::permission_color(app.permission.label())),
-        ),
-        Span::raw("| "),
+        Span::raw(" "),
     ];
     if app.worker_active {
         // Live "working" cluster: spinning glyph, bouncing equalizer, and a
@@ -244,9 +254,49 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         spans.push(Span::styled("idle", Style::default().fg(theme::TEXT_HINT)));
     }
+    // The badge is a fixed-width right cluster; measure it in display cells, not
+    // bytes, because provider and model names can contain full-width glyphs.
+    let badge = provider_badge(app);
+    let badge_width = badge
+        .as_deref()
+        .map(|text| u16::try_from(Line::from(text).width()).unwrap_or(u16::MAX) + 4)
+        .unwrap_or(0);
+    let header_bg = Style::default().bg(theme::CHROME);
+    if badge_width == 0 || area.width < badge_width + HEADER_LEFT_MIN_WIDTH {
+        // No badge, or too narrow to show both: the left cluster keeps the row.
+        frame.render_widget(Paragraph::new(Line::from(spans)).style(header_bg), area);
+        return;
+    }
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(badge_width)])
+        .split(area);
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(header_bg), panes[0]);
+    let Some(text) = badge else {
+        return;
+    };
+    // A missing or unusable provider reads as a faint placeholder rather than a
+    // confident value.
+    let placeholder = app.config_ready == Some(false);
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::CHROME)),
-        area,
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {text} "),
+            Style::default().fg(if placeholder {
+                theme::TEXT_HINT
+            } else {
+                theme::TEXT_SOFT
+            }),
+        )))
+        // The header is a single row tall, so a full box would render only its
+        // top edge and swallow the text. Side rails give the badge a real
+        // border at this height.
+        .block(
+            Block::default()
+                .borders(Borders::LEFT | Borders::RIGHT)
+                .border_style(Style::default().fg(theme::BORDER))
+                .style(Style::default().bg(theme::CHROME)),
+        ),
+        panes[1],
     );
 }
 
@@ -303,32 +353,139 @@ fn render_phase_strip(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_workbench(frame: &mut Frame, app: &App, area: Rect) {
-    let panels = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(28),
-            Constraint::Min(36),
-            Constraint::Length(40),
-        ])
-        .split(area);
-    let sidebar = skills_manager::render(app).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::BORDER)
-            .style(Style::default().bg(theme::PANEL))
-            .title(if app.active_pane == ActivePane::Workspace {
-                "Workspace *"
+pub(crate) fn view_block(app: &App, id: ViewId) -> Block<'static> {
+    let instance = app.layout.view(id);
+    let marker = if id.movable() {
+        if instance.collapsed {
+            "> "
+        } else {
+            "v "
+        }
+    } else {
+        ""
+    };
+    let count = if id == ViewId::Findings {
+        format!(" ({})", app.findings.len())
+    } else {
+        String::new()
+    };
+    let focused = app.layout.focus == id;
+    let focus = if focused { " *" } else { "" };
+    let activity = if id == ViewId::Output && app.worker_active && theme::blink_on() {
+        " ●"
+    } else {
+        ""
+    };
+    Block::default()
+        .borders(if instance.collapsed {
+            Borders::TOP | Borders::LEFT | Borders::RIGHT
+        } else {
+            Borders::ALL
+        })
+        .border_type(if focused {
+            BorderType::Thick
+        } else {
+            BorderType::Plain
+        })
+        .border_style(if focused {
+            if app.worker_active {
+                theme::pulse_border(true)
             } else {
-                "Workspace"
+                theme::ACTION
+            }
+        } else {
+            theme::BORDER
+        })
+        .style(Style::default().bg(theme::PANEL))
+        .title(Span::styled(
+            format!("{marker}{}{count}{focus}{activity}", id.label()),
+            Style::default().fg(if focused {
+                theme::ACTION
+            } else {
+                theme::BORDER
             }),
-    );
-    frame.render_widget(sidebar, panels[0]);
-    crate::ui::transcript::render(frame, app, panels[1]);
-    crate::ui::findings::render(frame, app, panels[2]);
+        ))
+}
+
+fn render_workbench(frame: &mut Frame, app: &App, geometry: &LayoutGeometry) {
+    for container in [ContainerId::Primary, ContainerId::Secondary] {
+        if app.layout.views(container).is_empty() {
+            frame.render_widget(
+                Paragraph::new("Drop a view here")
+                    .style(Style::default().fg(theme::TEXT_HINT).bg(theme::PANEL)),
+                geometry.container(container),
+            );
+        }
+    }
+    for region in &geometry.views {
+        let id = region.id;
+        if id == ViewId::Input {
+            continue;
+        }
+        if app.layout.view(id).collapsed {
+            frame.render_widget(view_block(app, id), region.rect);
+            continue;
+        }
+        match id {
+            ViewId::Status => frame.render_widget(
+                skills_manager::render(app).block(view_block(app, id)),
+                region.rect,
+            ),
+            ViewId::Output => crate::ui::transcript::render(frame, app, region.rect),
+            ViewId::Findings => crate::ui::findings::render(frame, app, region.rect),
+            ViewId::Subagents => frame.render_widget(
+                Paragraph::new("Subagent data unavailable")
+                    .style(Style::default().fg(theme::TEXT_HINT))
+                    .block(view_block(app, id)),
+                region.rect,
+            ),
+            ViewId::Input => {}
+        }
+    }
+    if let Some(Gesture::Move {
+        dragging: true,
+        target: Some(target),
+        ..
+    }) = &app.layout_gesture
+    {
+        frame.render_widget(
+            Paragraph::new("━".repeat(usize::from(target.indicator.width)))
+                .style(Style::default().fg(theme::ACTION)),
+            target.indicator,
+        );
+    }
 }
 
 fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme::PLATE)),
+        area,
+    );
+    let height = app.required_input_height().min(area.height);
+    let area = Rect::new(
+        area.x,
+        area.bottom().saturating_sub(height),
+        area.width,
+        height,
+    );
+    if area.height == 0 {
+        return;
+    }
+    // The mode / guard / model line sits under the composer in every state, so
+    // reserve it before laying out whatever sits above.
+    let status_height = COMPOSER_STATUS_ROWS.min(area.height);
+    let body = Rect::new(
+        area.x,
+        area.y,
+        area.width,
+        area.height.saturating_sub(status_height),
+    );
+    let status = Rect::new(
+        area.x,
+        area.y.saturating_add(body.height),
+        area.width,
+        status_height,
+    );
     if app.pending_task.is_some() {
         frame.render_widget(
             Paragraph::new("TUI confirmation is required. Press Y to start, or Esc to cancel.")
@@ -339,22 +496,85 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
                         .border_style(theme::CORAL)
                         .title("Task confirmation required"),
                 ),
-            area,
+            body,
         );
+        render_composer_status(frame, app, status);
         return;
     }
 
     if app.palette_visible() {
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(6), Constraint::Length(1)])
-            .split(area);
+            .constraints([
+                Constraint::Length(PALETTE_ROWS),
+                Constraint::Length(COMPOSER_FRAME_ROWS),
+            ])
+            .split(body);
         render_command_palette(frame, app, rows[0]);
         render_composer_input(frame, app, rows[1]);
     } else {
-        render_composer_input(frame, app, area);
+        render_composer_input(frame, app, body);
     }
+    render_composer_status(frame, app, status);
 }
+
+/// Mode, execution guard and model — the indicators that used to sit in the
+/// header. They live beneath the composer frame now, so the header carries only
+/// brand, live worker state and the provider badge.
+fn render_composer_status(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let background = Style::default().bg(theme::PLATE);
+    // A model name is meaningless while no provider is configured.
+    let model = match app.config_ready {
+        Some(false) => None,
+        _ => app.model.as_deref().filter(|model| !model.is_empty()),
+    };
+    let separator = Style::default().fg(theme::TEXT_HINT);
+    let indicators = Line::from(vec![
+        Span::styled(
+            format!(" {} ", app.mode.label()),
+            Style::default()
+                .fg(theme::mode_color(app.mode.label()))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("· ", separator),
+        Span::styled(
+            format!("{} ", app.permission.label()),
+            Style::default().fg(theme::permission_color(app.permission.label())),
+        ),
+    ]);
+    let indicators_width = u16::try_from(indicators.width()).unwrap_or(u16::MAX);
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(indicators_width), Constraint::Min(0)])
+        .split(area);
+    frame.render_widget(Paragraph::new(indicators).style(background), panes[0]);
+    let Some(model) = model else {
+        return;
+    };
+    // Right-aligned by the renderer rather than by a width this module
+    // computes: the model marker is an ambiguous-width glyph, so measuring it
+    // here and rendering it there can disagree by a cell.
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{MODEL_MARKER}{model} "),
+            Style::default().fg(theme::TEXT_SOFT),
+        )))
+        .alignment(Alignment::Right)
+        .style(background),
+        panes[1],
+    );
+}
+
+/// Leading prompt marker and its display width, kept together so the cursor
+/// offset stays correct if the marker is ever changed.
+const PROMPT_MARKER: &str = " > ";
+
+/// Marks the model name on the right of the composer status line.
+const MODEL_MARKER: &str = "◈ ";
+const PROMPT_MARKER_WIDTH: u16 = PROMPT_MARKER.len() as u16;
 
 fn render_composer_input(frame: &mut Frame, app: &App, composer_area: Rect) {
     let content = if app.input.is_empty() {
@@ -367,29 +587,35 @@ fn render_composer_input(frame: &mut Frame, app: &App, composer_area: Rect) {
     } else {
         Style::default().fg(theme::TEXT_BODY)
     };
-    // Single-line prompt — no bordered title box (which read as a second line).
-    // The leading marker + text + cursor all live on this one row.
+    // Rules above and below the prompt separate it from the transcript above and
+    // the mode/guard line below; the marker, text and cursor share one row.
+    let block = Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_style(Style::default().fg(theme::BORDER))
+        .style(Style::default().bg(theme::PLATE));
+    let inner = block.inner(composer_area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                " > ",
+                PROMPT_MARKER,
                 Style::default()
                     .fg(theme::ACTION)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(content, style),
         ]))
-        .style(Style::default().bg(theme::PLATE)),
+        .block(block),
         composer_area,
     );
-    if !app.input.is_empty() {
-        let cursor_x = composer_area
-            .x
-            .saturating_add(3)
-            .saturating_add(input_cursor_offset(&app.input, app.input_cursor))
-            .min(composer_area.right().saturating_sub(1));
-        frame.set_cursor_position((cursor_x, composer_area.y));
+    if app.input.is_empty() || inner.height == 0 || inner.width == 0 {
+        return;
     }
+    let cursor_x = inner
+        .x
+        .saturating_add(PROMPT_MARKER_WIDTH)
+        .saturating_add(input_cursor_offset(&app.input, app.input_cursor))
+        .min(inner.right().saturating_sub(1));
+    frame.set_cursor_position((cursor_x, inner.y));
 }
 
 /// Distance in display cells from the start of the prompt text to the cursor.
@@ -421,8 +647,8 @@ fn render_command_palette(frame: &mut Frame, app: &App, area: Rect) {
         List::new(items)
             .highlight_style(
                 Style::default()
-                    .fg(theme::TEXT_BODY)
-                    .bg(theme::PLATE)
+                    .fg(theme::BG)
+                    .bg(theme::ACTION)
                     .add_modifier(Modifier::BOLD),
             )
             .block(
@@ -451,12 +677,12 @@ fn render_hotbar(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.worker_active {
         (
-            " Running — Ctrl+C abort | Tab mode | ↑/↓ scroll | Ctrl+Y copy pane",
+            " Running — Ctrl+C abort | Tab mode | ↑/↓ scroll | Ctrl+Y copy view",
             Style::default().fg(theme::TEXT_HINT),
         )
     } else {
         (
-            " Tab mode | Shift+Tab safeguard | Ctrl+P/N history | Ctrl+←/→ panel | ↑/↓ scroll | Ctrl+T thinking | F5 chain | Ctrl+S save | Ctrl+R restore | Ctrl+Y copy pane | Ctrl+C exit",
+            " Tab mode | Shift+Tab safeguard | Ctrl+P/N history | Ctrl+←/→ view | ↑/↓ scroll | Ctrl+T thinking | F5 chain | Ctrl+S save | Ctrl+R restore | Ctrl+Y copy view | Ctrl+C exit",
             Style::default().fg(theme::TEXT_HINT),
         )
     };

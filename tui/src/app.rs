@@ -9,12 +9,13 @@ use crate::prompts::text;
 use crate::protocol::{AppEvent, BackendEvent, ClientRequest, Finding, StateSnapshot};
 use crate::sessions::{self, SessionState};
 use crate::skills::catalog::{skill_tree, SkillNode};
+use crate::workbench::{Gesture, LayoutGeometry, LayoutState, ViewId};
 
 use ratatui::{
     backend::TestBackend,
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    layout::Rect,
+    widgets::{Paragraph, Wrap},
     Terminal,
 };
 
@@ -198,31 +199,6 @@ impl PendingExecution {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ActivePane {
-    Workspace,
-    Transcript,
-    Findings,
-}
-
-impl ActivePane {
-    pub fn next(self) -> Self {
-        match self {
-            Self::Workspace => Self::Transcript,
-            Self::Transcript => Self::Findings,
-            Self::Findings => Self::Workspace,
-        }
-    }
-
-    pub fn previous(self) -> Self {
-        match self {
-            Self::Workspace => Self::Findings,
-            Self::Transcript => Self::Workspace,
-            Self::Findings => Self::Transcript,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum TranscriptKind {
     User,
@@ -268,6 +244,17 @@ const LOCAL_SLASH_COMMANDS: &[(&str, &str)] = &[
 
 const MAX_COMMAND_HISTORY: usize = 50;
 
+/// Rows the composer frame occupies: top rule, input row, bottom rule.
+pub const COMPOSER_FRAME_ROWS: u16 = 3;
+/// Rows for the mode / guard / model line beneath the composer frame. These
+/// indicators used to live in the header; they moved down so the header carries
+/// only brand, live worker state and the provider badge.
+pub const COMPOSER_STATUS_ROWS: u16 = 1;
+/// Rows the command palette occupies above the composer.
+pub const PALETTE_ROWS: u16 = 6;
+/// Rows the blocking task-confirmation box occupies.
+pub const CONFIRM_BOX_ROWS: u16 = 3;
+
 #[derive(Clone, Debug)]
 pub struct OperationReceipt {
     pub command: String,
@@ -289,7 +276,9 @@ enum PendingRequest {
 pub struct App {
     pub mode: ExecutionMode,
     pub permission: PermissionMode,
-    pub active_pane: ActivePane,
+    pub layout: LayoutState,
+    pub layout_gesture: Option<Gesture>,
+    pub layout_path: Option<std::path::PathBuf>,
     pub input: String,
     pub input_cursor: usize,
     /// Outstanding ExecutionGate request rendered as a blocking modal.
@@ -301,13 +290,6 @@ pub struct App {
     history_draft: String,
     pub transcript: Vec<TranscriptItem>,
     pub findings: Vec<Finding>,
-    pub findings_scroll: u16,
-    pub transcript_scroll: u16,
-    /// When true the Session transcript tracks new output automatically,
-    /// pinning the view to the bottom as lines arrive. Set false the moment the
-    /// user scrolls up to read history; re-enabled once they scroll back to the
-    /// bottom. See `autoscroll_transcript`.
-    pub transcript_follow: bool,
     pub palette_selection: usize,
     pub show_reasoning: bool,
     pub running: bool,
@@ -317,6 +299,11 @@ pub struct App {
     pub backend_ready: bool,
     pub backend_pid: Option<u32>,
     pub config_ready: Option<bool>,
+    /// LLM provider and model reported by the backend in `ready.runtime`.
+    /// Captured once when the backend starts; it loads config a single time, so
+    /// switching provider elsewhere shows up only after the TUI is restarted.
+    pub provider: Option<String>,
+    pub model: Option<String>,
     /// Task verbs advertised by the backend in `ready.capabilities.commands`.
     /// Local presentation commands such as `/help` are deliberately separate.
     pub backend_commands: Vec<String>,
@@ -366,7 +353,9 @@ impl App {
         Self {
             mode: ExecutionMode::Agent,
             permission: PermissionMode::Ask,
-            active_pane: ActivePane::Transcript,
+            layout: LayoutState::default(),
+            layout_gesture: None,
+            layout_path: None,
             input: String::new(),
             input_cursor: 0,
             pending_execution: None,
@@ -384,9 +373,6 @@ impl App {
                 },
             ],
             findings: Vec::new(),
-            findings_scroll: 0,
-            transcript_scroll: 0,
-            transcript_follow: true,
             palette_selection: 0,
             show_reasoning: true,
             running: true,
@@ -395,6 +381,8 @@ impl App {
             backend_ready: false,
             backend_pid: None,
             config_ready: None,
+            provider: None,
+            model: None,
             backend_commands: Vec::new(),
             backend_control_operations: Vec::new(),
             backend_supports_cancellation: false,
@@ -488,8 +476,8 @@ impl App {
             ));
         } else if command == "/clear" {
             self.transcript.clear();
-            self.transcript_scroll = 0;
-            self.transcript_follow = true;
+            self.layout.output.scroll = 0;
+            self.layout.output.follow = true;
             self.status("Transcript cleared. Findings remain available in the inspector.");
         } else if command == "/report" {
             self.status(
@@ -558,136 +546,126 @@ impl App {
         }
     }
 
-    pub fn cycle_active_pane(&mut self, backwards: bool) {
-        self.active_pane = if backwards {
-            self.active_pane.previous()
+    pub fn required_input_height(&self) -> u16 {
+        if self.pending_task.is_some() {
+            // The confirmation box replaces the framed input but still carries
+            // the mode/guard line beneath it.
+            CONFIRM_BOX_ROWS + COMPOSER_STATUS_ROWS
         } else {
-            self.active_pane.next()
-        };
-    }
-
-    pub fn scroll_active_pane(&mut self, down: bool) {
-        match self.active_pane {
-            // Findings keeps the original unbounded behaviour so a lone Down press
-            // still increments even when the list is short (preserves existing tests).
-            ActivePane::Findings => {
-                if down {
-                    self.findings_scroll = self.findings_scroll.saturating_add(1);
-                } else {
-                    self.findings_scroll = self.findings_scroll.saturating_sub(1);
-                }
-            }
-            ActivePane::Workspace | ActivePane::Transcript => {
-                let max = self.transcript_max_scroll();
-                if down {
-                    self.transcript_scroll = self.transcript_scroll.saturating_add(1);
-                } else {
-                    self.transcript_scroll = self.transcript_scroll.saturating_sub(1);
-                }
-                let max_u16 = u16::try_from(max).unwrap_or(u16::MAX);
-                if self.transcript_scroll > max_u16 {
-                    self.transcript_scroll = max_u16;
-                }
-                // Reaching the bottom resumes auto-follow; leaving it disables it.
-                self.transcript_follow = (self.transcript_scroll as usize) >= max;
-            }
+            let palette = if self.palette_visible() {
+                PALETTE_ROWS
+            } else {
+                0
+            };
+            palette + COMPOSER_FRAME_ROWS + COMPOSER_STATUS_ROWS
         }
     }
 
-    /// Rectangle of the Session transcript panel (the wide centre pane), computed
-    /// from the same split used by `ui::layout::render_workbench`. Independent of
-    /// which pane is currently focused so auto-follow always anchors the
-    /// transcript view, not the narrow Workspace sidebar.
-    fn transcript_panel_rect(&self) -> Rect {
-        let area = self.terminal_size;
-        let composer_height: u16 = if self.pending_task.is_some() {
-            3
-        } else if self.palette_visible() {
-            7
-        } else {
-            1
-        };
-        let workbench = Rect {
-            x: area.x,
-            y: area.y.saturating_add(2),
-            width: area.width,
-            height: area.height.saturating_sub(2 + composer_height + 1),
-        };
-        let panels = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(28),
-                Constraint::Min(36),
-                Constraint::Length(40),
-            ])
-            .split(workbench);
-        panels[1]
+    pub fn geometry(&self, area: Rect) -> LayoutGeometry {
+        LayoutGeometry::compute(area, &self.layout, self.required_input_height())
     }
 
-    /// Maximum vertical scroll offset for the transcript: total wrapped rows
-    /// minus the visible rows. Uses ratatui's own `Paragraph::line_count` so the
-    /// wrap accounting (CJK widths, word breaks) matches the real render exactly.
-    fn transcript_max_scroll(&self) -> usize {
-        let rect = self.transcript_panel_rect();
-        if rect.width < 3 || rect.height < 3 {
+    pub fn cycle_active_view(&mut self, backwards: bool) {
+        self.layout.cycle_focus(backwards);
+    }
+
+    pub fn scroll_active_view(&mut self, down: bool) {
+        self.scroll_view(self.layout.focus, down);
+    }
+
+    pub fn scroll_view(&mut self, id: ViewId, down: bool) {
+        if id == ViewId::Input || self.layout.view(id).collapsed {
+            return;
+        }
+        let geometry = self.geometry(self.terminal_size);
+        if geometry.too_small {
+            return;
+        }
+        let max = self.view_max_scroll(id, &geometry);
+        let view = self.layout.view_mut(id);
+        let current = view.scroll.min(max);
+        view.scroll = if down {
+            current.saturating_add(1).min(max)
+        } else {
+            current.saturating_sub(1)
+        };
+        if id == ViewId::Output {
+            view.follow = view.scroll == max;
+        }
+    }
+
+    fn view_max_scroll(&self, id: ViewId, geometry: &LayoutGeometry) -> u16 {
+        let Some(region) = geometry.view(id) else {
+            return 0;
+        };
+        if region.content.width == 0 || region.content.height == 0 {
             return 0;
         }
-        let inner_width = rect.width.saturating_sub(2);
-        let lines = crate::ui::transcript::build_lines(self);
-        let paragraph = Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL));
-        let total_rows = paragraph.line_count(inner_width);
-        total_rows.saturating_sub(rect.height as usize)
+        let total = match id {
+            ViewId::Output => Paragraph::new(crate::ui::transcript::build_lines(self))
+                .wrap(Wrap { trim: false })
+                .line_count(region.content.width),
+            ViewId::Status => Paragraph::new(crate::views::skills_manager::build_lines(self))
+                .wrap(Wrap { trim: false })
+                .line_count(region.content.width),
+            ViewId::Findings => self.findings.len(),
+            ViewId::Subagents => 1,
+            ViewId::Input => 0,
+        };
+        u16::try_from(total.saturating_sub(usize::from(region.content.height))).unwrap_or(u16::MAX)
     }
 
-    /// Keep the transcript pinned to the newest output. Called once per frame
-    /// (before drawing) while `transcript_follow` is set; a manual scroll-up
-    /// clears the flag so we stop yanking the view away from the user.
-    pub fn autoscroll_transcript(&mut self) {
-        if self.transcript_follow {
-            self.transcript_scroll =
-                u16::try_from(self.transcript_max_scroll()).unwrap_or(u16::MAX);
+    pub fn refresh_view_scrolls(&mut self) {
+        let geometry = self.geometry(self.terminal_size);
+        if geometry.too_small {
+            return;
+        }
+        for region in &geometry.views {
+            if region.content.height == 0 {
+                continue;
+            }
+            let max = self.view_max_scroll(region.id, &geometry);
+            let view = self.layout.view_mut(region.id);
+            if region.id == ViewId::Output && view.follow {
+                view.scroll = max;
+            } else {
+                view.scroll = view.scroll.min(max);
+            }
         }
     }
 
-    pub fn active_pane_label(&self) -> &'static str {
-        match self.active_pane {
-            ActivePane::Workspace => "Workspace",
-            ActivePane::Transcript => "Session transcript",
-            ActivePane::Findings => "Findings inspector",
+    pub fn active_view_rect(&self, area: Rect) -> Rect {
+        self.geometry(area)
+            .view(self.layout.focus)
+            .map_or(Rect::default(), |view| view.rect)
+    }
+
+    pub fn load_layout(&mut self, path: std::path::PathBuf) {
+        match crate::preferences::load(&path) {
+            Ok(layout) => self.layout = layout,
+            Err(error) => {
+                self.layout = LayoutState::default();
+                self.toast = format!("Layout load failed: {error}; using defaults");
+            }
+        }
+        self.layout_path = Some(path);
+    }
+
+    pub fn save_layout(&mut self) {
+        if let Some(path) = &self.layout_path {
+            if let Err(error) = crate::preferences::save(path, &self.layout) {
+                self.toast = format!("Layout save failed: {error}");
+            }
         }
     }
 
-    /// Screen rectangle occupied by the currently focused workbench pane.
-    /// Mirrors the split used by `ui::layout::render_workbench` so the copied
-    /// region never bleeds into neighbouring panes.
-    pub fn active_pane_rect(&self, area: Rect) -> Rect {
-        let composer_height: u16 = if self.pending_task.is_some() {
-            3
-        } else if self.palette_visible() {
-            7
-        } else {
-            1
-        };
-        let workbench = Rect {
-            x: area.x,
-            y: area.y.saturating_add(2),
-            width: area.width,
-            height: area.height.saturating_sub(2 + composer_height + 1),
-        };
-        let panels = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(28),
-                Constraint::Min(36),
-                Constraint::Length(40),
-            ])
-            .split(workbench);
-        match self.active_pane {
-            ActivePane::Workspace => panels[0],
-            ActivePane::Transcript => panels[1],
-            ActivePane::Findings => panels[2],
+    pub fn cancel_layout_gesture(&mut self) {
+        if let Some(Gesture::Resize { original, .. }) = self.layout_gesture.take() {
+            self.layout.primary_width = original.primary_width;
+            self.layout.secondary_width = original.secondary_width;
+            for id in [ViewId::Status, ViewId::Findings, ViewId::Subagents] {
+                self.layout.view_mut(id).expanded_height = original.view(id).expanded_height;
+            }
         }
     }
 
@@ -696,7 +674,7 @@ impl App {
     /// terminal's own drag-select is a whole-screen block selection that cannot
     /// be confined to a single logical pane, so this is the reliable per-pane
     /// copy path.
-    pub fn copy_active_pane(&mut self) {
+    pub fn copy_active_view(&mut self) {
         let area = self.terminal_size;
         if area.width == 0 || area.height == 0 {
             self.toast = "Copy unavailable: terminal size unknown".into();
@@ -716,9 +694,9 @@ impl App {
             return;
         }
         let buffer = term.backend().buffer();
-        let rect = self.active_pane_rect(area);
+        let rect = self.active_view_rect(area);
         let text = extract_rect_text(buffer, rect);
-        let label = self.active_pane_label();
+        let label = self.layout.focus.label();
         if copy_to_clipboard(&text) {
             self.toast = format!(
                 "Copied {} to clipboard ({} chars)",
@@ -909,6 +887,8 @@ impl App {
                     self.backend_ready = true;
                     self.backend_pid = Some(backend.pid);
                     self.config_ready = Some(runtime.config_ready);
+                    self.provider = Some(runtime.provider.clone());
+                    self.model = Some(runtime.model.clone());
                     self.backend_commands = capabilities
                         .commands
                         .into_iter()

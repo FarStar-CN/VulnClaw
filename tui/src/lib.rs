@@ -17,3 +17,6 @@ pub mod views;
 
 pub use app::App;
 pub use protocol::AppEvent;
+
+pub mod preferences;
+pub mod workbench;

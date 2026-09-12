@@ -1,14 +1,14 @@
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use crate::app::App;
 use crate::skills::catalog::SkillNode;
 use crate::theme;
 
-pub fn render(app: &App) -> Paragraph<'static> {
+pub fn build_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(Span::styled(
             "Workspace",
@@ -137,12 +137,19 @@ pub fn render(app: &App) -> Paragraph<'static> {
         )),
     ]);
     append_nodes(&app.skills, "", &mut lines);
-    Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::BORDER)
-            .style(Style::default().bg(theme::PANEL)),
-    )
+    lines
+}
+
+pub fn render(app: &App) -> Paragraph<'static> {
+    Paragraph::new(build_lines(app))
+        .wrap(Wrap { trim: false })
+        .scroll((app.layout.view(crate::workbench::ViewId::Status).scroll, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::BORDER)
+                .style(Style::default().bg(theme::PANEL)),
+        )
 }
 
 fn json_array_len(value: &serde_json::Value, key: &str) -> usize {

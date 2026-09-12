@@ -15,3 +15,4 @@ mod ui_findings;
 mod ui_layout;
 #[path = "views/skills_manager.rs"]
 mod views_skills_manager;
+mod workbench;
