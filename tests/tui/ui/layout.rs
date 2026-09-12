@@ -150,6 +150,33 @@ fn slash_input_renders_the_command_palette() {
 }
 
 #[test]
+fn composer_cursor_advances_by_display_cells_not_characters() {
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+
+    app.insert_text("ab");
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let ascii = terminal.get_cursor_position().unwrap();
+
+    // A CJK glyph is one character but two terminal cells. Counting characters
+    // would advance the caret by one and leave it trailing the text.
+    app.insert_text("中");
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let wide = terminal.get_cursor_position().unwrap();
+    assert_eq!(
+        wide.x - ascii.x,
+        2,
+        "one CJK glyph must advance the caret by two cells"
+    );
+
+    app.insert_text("文");
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let wider = terminal.get_cursor_position().unwrap();
+    assert_eq!(wider.x - ascii.x, 4, "two CJK glyphs advance four cells");
+}
+
+#[test]
 fn composer_placeholder_renders_on_a_single_row() {
     let (sender, _) = mpsc::channel();
     let app = App::new_disconnected(sender); // empty input -> placeholder path
