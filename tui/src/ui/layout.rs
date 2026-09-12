@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::app::{App, COMPOSER_FRAME_ROWS, COMPOSER_STATUS_ROWS, PALETTE_ROWS};
 use crate::theme;
-use crate::views::skills_manager;
+use crate::views::status;
 use crate::workbench::{ContainerId, Gesture, LayoutGeometry, ViewId};
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -18,7 +18,6 @@ pub fn render(frame: &mut Frame, app: &App) {
     );
     let geometry = app.geometry(frame.area());
     render_header(frame, app, geometry.header);
-    render_phase_strip(frame, app, geometry.phase);
     if geometry.too_small {
         frame.render_widget(
             Paragraph::new(format!(
@@ -220,64 +219,92 @@ fn provider_badge(app: &App) -> Option<String> {
     Some(format!("provider: {}", app.provider.as_deref()?))
 }
 
-fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-    // Brand and live worker state only. Mode, guard and model moved down to the
-    // composer status line; the provider badge owns the right edge.
-    let mut spans = vec![
+/// Spinner, equalizer and elapsed readout for a running task, or `None` when
+/// idle so the header stays a quiet title bar.
+fn worker_cluster(app: &App) -> Option<Line<'static>> {
+    if !app.worker_active {
+        return None;
+    }
+    Some(Line::from(vec![
         Span::styled(
-            " VulnClaw ",
-            Style::default()
-                .fg(theme::BG)
-                .bg(theme::ACTION)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-    ];
-    if app.worker_active {
-        // Live "working" cluster: spinning glyph, bouncing equalizer, and a
-        // running elapsed-time readout — all animate off the wall clock so the
-        // surface feels alive without any extra state.
-        spans.push(Span::styled(
             format!("{} running", theme::spinner_frame(true)),
             Style::default().fg(theme::GOLD),
-        ));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
+        ),
+        Span::raw(" "),
+        Span::styled(
             theme::equalizer_frame(),
             Style::default().fg(theme::SEAFOAM),
-        ));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
+        ),
+        Span::raw(" "),
+        Span::styled(
             theme::elapsed_label(app.worker_started_at),
             Style::default().fg(theme::TEXT_SOFT),
-        ));
-    } else {
-        spans.push(Span::styled("idle", Style::default().fg(theme::TEXT_HINT)));
+        ),
+    ]))
+}
+
+fn render_header(frame: &mut Frame, app: &App, area: Rect) {
+    // A title bar: brand left, live worker cluster centred, provider badge
+    // right. There is no `idle` text -- an idle header simply carries no
+    // cluster, because the Status view already reports the worker state.
+    if area.width == 0 || area.height == 0 {
+        return;
     }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::BORDER))
+        .style(Style::default().bg(theme::CHROME));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let header_bg = Style::default().bg(theme::CHROME);
+    let brand = Line::from(Span::styled(
+        " VulnClaw ",
+        Style::default()
+            .fg(theme::BG)
+            .bg(theme::ACTION)
+            .add_modifier(Modifier::BOLD),
+    ));
+    let brand_width = u16::try_from(brand.width()).unwrap_or(u16::MAX);
     // The badge is a fixed-width right cluster; measure it in display cells, not
-    // bytes, because provider and model names can contain full-width glyphs.
+    // bytes, because provider names can contain full-width glyphs. One extra
+    // column keeps the badge rail off the header's own right border.
     let badge = provider_badge(app);
     let badge_width = badge
         .as_deref()
-        .map(|text| u16::try_from(Line::from(text).width()).unwrap_or(u16::MAX) + 4)
+        .map(|text| u16::try_from(Line::from(text).width()).unwrap_or(u16::MAX) + 5)
         .unwrap_or(0);
-    let header_bg = Style::default().bg(theme::CHROME);
-    if badge_width == 0 || area.width < badge_width + HEADER_LEFT_MIN_WIDTH {
-        // No badge, or too narrow to show both: the left cluster keeps the row.
-        frame.render_widget(Paragraph::new(Line::from(spans)).style(header_bg), area);
-        return;
-    }
+    let show_badge = badge_width > 0 && inner.width >= badge_width + HEADER_LEFT_MIN_WIDTH;
+    let cluster = worker_cluster(app);
     let panes = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(badge_width)])
-        .split(area);
-    frame.render_widget(Paragraph::new(Line::from(spans)).style(header_bg), panes[0]);
-    let Some(text) = badge else {
+        .constraints([
+            Constraint::Length(brand_width),
+            Constraint::Min(0),
+            Constraint::Length(if show_badge { badge_width } else { 0 }),
+        ])
+        .split(inner);
+    frame.render_widget(Paragraph::new(brand).style(header_bg), panes[0]);
+    if let Some(cluster) = cluster {
+        frame.render_widget(
+            Paragraph::new(cluster)
+                .alignment(Alignment::Center)
+                .style(header_bg),
+            panes[1],
+        );
+    }
+    let Some(text) = badge.filter(|_| show_badge) else {
         return;
     };
     // A missing or unusable provider reads as a faint placeholder rather than a
     // confident value.
     let placeholder = app.config_ready == Some(false);
+    let badge_area = Rect {
+        width: panes[2].width.saturating_sub(1),
+        ..panes[2]
+    };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(" {text} "),
@@ -287,69 +314,13 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
                 theme::TEXT_SOFT
             }),
         )))
-        // The header is a single row tall, so a full box would render only its
-        // top edge and swallow the text. Side rails give the badge a real
-        // border at this height.
         .block(
             Block::default()
                 .borders(Borders::LEFT | Borders::RIGHT)
                 .border_style(Style::default().fg(theme::BORDER))
-                .style(Style::default().bg(theme::CHROME)),
+                .style(header_bg),
         ),
-        panes[1],
-    );
-}
-
-/// Live progress bar — mirrors CodeWhale's phase strip so a running scan shows
-/// its current phase and finding count instead of a frozen transcript.
-fn render_phase_strip(frame: &mut Frame, app: &App, area: Rect) {
-    let line = if app.worker_active {
-        if let Some(receipt) = app.active_receipt.as_ref() {
-            let mut spans = vec![Span::styled(
-                format!(" {} {}  ·  ", theme::spinner_frame(true), receipt.phase),
-                Style::default().fg(theme::SEAFOAM),
-            )];
-            // The finding count pulses gold while a run is live and has already
-            // surfaced something, so a fresh hit reads as a heartbeat.
-            let fc_style = if receipt.findings > 0 && theme::blink_on() {
-                Style::default()
-                    .fg(theme::GOLD)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme::SEAFOAM)
-            };
-            spans.push(Span::styled(
-                format!("{} finding(s)", receipt.findings),
-                fc_style,
-            ));
-            spans.push(Span::styled(
-                format!("  ·  {}", receipt.command),
-                Style::default().fg(theme::SEAFOAM),
-            ));
-            Line::from(spans)
-        } else {
-            Line::from(Span::styled(
-                format!(" {} working", theme::spinner_frame(true)),
-                Style::default().fg(theme::SEAFOAM),
-            ))
-        }
-    } else if let Some(receipt) = app.last_receipt.as_ref() {
-        Line::from(Span::styled(
-            format!(
-                " {}  ·  {} finding(s)  ·  {}",
-                receipt.phase, receipt.findings, receipt.command
-            ),
-            Style::default().fg(theme::TEXT_HINT),
-        ))
-    } else {
-        Line::from(Span::styled(
-            " ready",
-            Style::default().fg(theme::TEXT_HINT),
-        ))
-    };
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(theme::CHROME)),
-        area,
+        badge_area,
     );
 }
 
@@ -357,9 +328,11 @@ pub(crate) fn view_block(app: &App, id: ViewId) -> Block<'static> {
     let instance = app.layout.view(id);
     let marker = if id.movable() {
         if instance.collapsed {
-            "> "
+            // A collapsed view is a bare rule with its title set into it, so the
+            // leading corner is part of the title rather than a box corner.
+            "─▶ "
         } else {
-            "v "
+            "▼ "
         }
     } else {
         ""
@@ -378,7 +351,7 @@ pub(crate) fn view_block(app: &App, id: ViewId) -> Block<'static> {
     };
     Block::default()
         .borders(if instance.collapsed {
-            Borders::TOP | Borders::LEFT | Borders::RIGHT
+            Borders::TOP
         } else {
             Borders::ALL
         })
@@ -408,15 +381,6 @@ pub(crate) fn view_block(app: &App, id: ViewId) -> Block<'static> {
 }
 
 fn render_workbench(frame: &mut Frame, app: &App, geometry: &LayoutGeometry) {
-    for container in [ContainerId::Primary, ContainerId::Secondary] {
-        if app.layout.views(container).is_empty() {
-            frame.render_widget(
-                Paragraph::new("Drop a view here")
-                    .style(Style::default().fg(theme::TEXT_HINT).bg(theme::PANEL)),
-                geometry.container(container),
-            );
-        }
-    }
     for region in &geometry.views {
         let id = region.id;
         if id == ViewId::Input {
@@ -427,10 +391,10 @@ fn render_workbench(frame: &mut Frame, app: &App, geometry: &LayoutGeometry) {
             continue;
         }
         match id {
-            ViewId::Status => frame.render_widget(
-                skills_manager::render(app).block(view_block(app, id)),
-                region.rect,
-            ),
+            ViewId::Status => {
+                frame.render_widget(status::render(app).block(view_block(app, id)), region.rect)
+            }
+            ViewId::Capabilities => crate::views::capabilities::render(frame, app, region.rect),
             ViewId::Output => crate::ui::transcript::render(frame, app, region.rect),
             ViewId::Findings => crate::ui::findings::render(frame, app, region.rect),
             ViewId::Subagents => frame.render_widget(
@@ -443,16 +407,36 @@ fn render_workbench(frame: &mut Frame, app: &App, geometry: &LayoutGeometry) {
         }
     }
     if let Some(Gesture::Move {
+        id,
         dragging: true,
-        target: Some(target),
+        target,
         ..
     }) = &app.layout_gesture
     {
-        frame.render_widget(
-            Paragraph::new("━".repeat(usize::from(target.indicator.width)))
-                .style(Style::default().fg(theme::ACTION)),
-            target.indicator,
-        );
+        if let Some(target) = target {
+            frame.render_widget(
+                Block::default()
+                    .borders(if app.layout.view(*id).collapsed {
+                        Borders::TOP
+                    } else {
+                        Borders::ALL
+                    })
+                    .border_type(BorderType::Thick)
+                    .border_style(theme::ACTION)
+                    .style(Style::default().bg(theme::DOCK_PREVIEW))
+                    .title(format!(" {} ", id.label())),
+                target.indicator,
+            );
+        } else if app.layout.can_move_view(*id, ContainerId::Secondary) {
+            if let Some(dock) = geometry.secondary_dock {
+                frame.render_widget(
+                    Block::default()
+                        .borders(Borders::RIGHT)
+                        .border_style(theme::ACTION),
+                    Rect::new(dock.right() - 1, dock.y, 1, dock.height),
+                );
+            }
+        }
     }
 }
 
@@ -663,7 +647,30 @@ fn render_command_palette(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_hotbar(frame: &mut Frame, app: &App, area: Rect) {
-    let (text, style) = if !app.toast.is_empty() {
+    let (text, style) = if let Some(Gesture::Move {
+        id,
+        dragging: true,
+        target,
+        ..
+    }) = &app.layout_gesture
+    {
+        let text = if !app.layout.can_move_view(*id, ContainerId::Secondary) {
+            " Primary sidebar must keep one view | Esc cancel"
+        } else if app.layout.secondary.is_empty() {
+            if target.is_some_and(|target| target.container == ContainerId::Secondary) {
+                " Release to open secondary sidebar | Esc cancel"
+            } else if app.terminal_size.width
+                < crate::workbench::SIDE_MIN * 2 + crate::workbench::OUTPUT_MIN
+            {
+                " Not enough width to open secondary sidebar | Esc cancel"
+            } else {
+                " Drag to right edge to open secondary sidebar | Esc cancel"
+            }
+        } else {
+            " Drag title to move view | Release to dock | Esc cancel"
+        };
+        (text, Style::default().fg(theme::ACTION))
+    } else if !app.toast.is_empty() {
         (
             app.toast.as_str(),
             Style::default()

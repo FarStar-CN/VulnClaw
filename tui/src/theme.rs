@@ -9,6 +9,7 @@ pub const BG: Color = Color::Rgb(28, 28, 28); // #1C1C1C
 pub const CHROME: Color = Color::Rgb(32, 32, 32); // #202020
 pub const PANEL: Color = Color::Rgb(32, 32, 32); // #202020
 pub const PLATE: Color = Color::Rgb(43, 41, 39); // #2B2927
+pub const DOCK_PREVIEW: Color = Color::Rgb(72, 72, 72); // #484848
 pub const BORDER: Color = Color::Rgb(156, 107, 67); // #9C6B43
 
 pub const TEXT_BODY: Color = Color::Rgb(230, 233, 239); // #E6E9EF

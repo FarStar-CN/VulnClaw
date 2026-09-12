@@ -5,7 +5,6 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::skills::catalog::SkillNode;
 use crate::theme;
 
 pub fn build_lines(app: &App) -> Vec<Line<'static>> {
@@ -26,19 +25,6 @@ pub fn build_lines(app: &App) -> Vec<Line<'static>> {
         )),
         Line::from(Span::styled(
             format!(
-                "Backend     {}",
-                app.backend_pid
-                    .map(|pid| format!("pid {pid}"))
-                    .unwrap_or_else(|| "disconnected".into())
-            ),
-            Style::default().fg(if app.backend_ready {
-                theme::SUCCESS
-            } else {
-                theme::CORAL
-            }),
-        )),
-        Line::from(Span::styled(
-            format!(
                 "Target      {}",
                 if app.target.is_empty() {
                     "not selected"
@@ -53,18 +39,6 @@ pub fn build_lines(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(theme::TEXT_MUTED),
         )),
         Line::from(Span::styled(
-            if app.worker_active {
-                "Activity    running"
-            } else {
-                "Activity    idle"
-            },
-            Style::default().fg(if app.worker_active {
-                theme::GOLD
-            } else {
-                theme::TEXT_HINT
-            }),
-        )),
-        Line::from(Span::styled(
             format!(
                 "Scope       H{} P{} A{}",
                 json_array_len(&app.task_constraints, "allowed_hosts"),
@@ -74,11 +48,7 @@ pub fn build_lines(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(theme::TEXT_MUTED),
         )),
         Line::from(Span::styled(
-            format!(
-                "Evidence    {}  Violations {}",
-                app.evidence.len(),
-                app.constraint_violations.len()
-            ),
+            format!("Violations  {}", app.constraint_violations.len()),
             Style::default().fg(if app.constraint_violations.is_empty() {
                 theme::TEXT_MUTED
             } else {
@@ -127,16 +97,6 @@ pub fn build_lines(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(theme::TEXT_HINT),
         )));
     }
-    lines.extend([
-        Line::from(""),
-        Line::from(Span::styled(
-            "Capabilities",
-            Style::default()
-                .fg(theme::SEAFOAM)
-                .add_modifier(Modifier::BOLD),
-        )),
-    ]);
-    append_nodes(&app.skills, "", &mut lines);
     lines
 }
 
@@ -179,37 +139,5 @@ fn truncate(text: &str, max_chars: usize) -> String {
         format!("{preview}...")
     } else {
         preview
-    }
-}
-
-fn append_nodes(nodes: &[SkillNode], prefix: &str, lines: &mut Vec<Line<'static>>) {
-    for (index, node) in nodes.iter().enumerate() {
-        let is_last = index + 1 == nodes.len();
-        let branch = if prefix.is_empty() {
-            ""
-        } else if is_last {
-            "`-- "
-        } else {
-            "|-- "
-        };
-        let label = format!("{prefix}{branch}{}", node.name);
-        let style = if node.children.is_empty() {
-            Style::default().fg(theme::TEXT_SOFT)
-        } else {
-            Style::default()
-                .fg(theme::TEXT_BODY)
-                .add_modifier(Modifier::BOLD)
-        };
-        lines.push(Line::from(Span::styled(label, style)));
-        if !node.children.is_empty() {
-            let next_prefix = if prefix.is_empty() {
-                "  ".to_owned()
-            } else if is_last {
-                format!("{prefix}    ")
-            } else {
-                format!("{prefix}|   ")
-            };
-            append_nodes(&node.children, &next_prefix, lines);
-        }
     }
 }

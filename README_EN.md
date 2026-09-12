@@ -290,9 +290,10 @@ vulnclaw tui --dry-run --target https://target.example --mode deep --only-path /
 
 The Rust workbench has configurable containers: Status on the left, Findings and Subagents stacked on the right, agent output in the center, and an input area below. Subagent data is currently unavailable.
 
-- Drag a view title between sidebars or to reorder it. The insertion line marks the destination; click `v` / `>` to collapse or expand.
+- Drag a view title between sidebars or to reorder it. An orange preview shows the module's position and size after release; click `v` / `>` to collapse or expand.
 - Drag a separator to resize neighboring containers or expanded views. Press Esc during a drag to cancel.
 - The mouse wheel scrolls the view under the pointer. Click to focus, use arrow keys to scroll, `Ctrl+Left/Right` to cycle views, and `Ctrl+Y` to copy the focused view.
+- An empty secondary sidebar collapses automatically. Drag a view to the workbench's right edge for an orange docking preview, then release to reopen it. The primary sidebar always keeps at least one view.
 - Layout changes save automatically to `VULNCLAW_HOME/tui/layout.json` (default `~/.vulnclaw/tui/layout.json`). The command palette grows the input area automatically. Small terminals show the required dimensions and restore the layout when enlarged.
 
 Native text selection while mouse capture is active depends on your terminal's modifier keys; `Ctrl+Y` copies an individual view.

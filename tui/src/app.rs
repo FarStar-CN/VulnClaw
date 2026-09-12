@@ -605,7 +605,10 @@ impl App {
             ViewId::Output => Paragraph::new(crate::ui::transcript::build_lines(self))
                 .wrap(Wrap { trim: false })
                 .line_count(region.content.width),
-            ViewId::Status => Paragraph::new(crate::views::skills_manager::build_lines(self))
+            ViewId::Status => Paragraph::new(crate::views::status::build_lines(self))
+                .wrap(Wrap { trim: false })
+                .line_count(region.content.width),
+            ViewId::Capabilities => Paragraph::new(crate::views::capabilities::build_lines(self))
                 .wrap(Wrap { trim: false })
                 .line_count(region.content.width),
             ViewId::Findings => self.findings.len(),

@@ -20,7 +20,7 @@ fn geometry(state: &LayoutState) -> LayoutGeometry {
 fn geometry_restores_preferences_after_temporary_terminal_compression() {
     let state = LayoutState::default();
     let original = geometry(&state);
-    let narrow = LayoutGeometry::compute(Rect::new(0, 0, 56, 13), &state, COMPOSER_ROWS);
+    let narrow = LayoutGeometry::compute(Rect::new(0, 0, 56, 14), &state, COMPOSER_ROWS);
     assert!(!narrow.too_small);
     assert_eq!(narrow.container(ContainerId::Primary).width, 16);
     assert_eq!(narrow.container(ContainerId::Center).width, 24);
@@ -137,7 +137,13 @@ fn move_and_reorder_preserve_the_instance_and_offer_empty_container_targets() {
         .drop_target(Position::new(secondary.x, secondary.y))
         .unwrap();
     assert!(state.move_view(ViewId::Status, target, &before));
-    assert!(state.primary.is_empty());
+    assert_eq!(
+        state.primary.iter().map(|v| v.id).collect::<Vec<_>>(),
+        [ViewId::Capabilities],
+        "the primary container keeps its other view"
+    );
+    assert!(!state.move_view(ViewId::Capabilities, target, &before));
+    assert_eq!(state.primary[0].id, ViewId::Capabilities);
     assert_eq!(state.secondary[0].id, ViewId::Status);
     assert_eq!(state.focus, ViewId::Status);
     assert_eq!(state.view(ViewId::Status).scroll, 4);
@@ -155,13 +161,62 @@ fn move_and_reorder_preserve_the_instance_and_offer_empty_container_targets() {
         .unwrap();
     assert_eq!(empty.index, 0);
     assert!(state.move_view(ViewId::Status, empty, &reordered));
-    assert_eq!(state.primary.len(), 1);
+    assert_eq!(
+        state.primary.iter().map(|v| v.id).collect::<Vec<_>>(),
+        [ViewId::Status, ViewId::Capabilities]
+    );
     for container in [ContainerId::Center, ContainerId::Bottom] {
         let rect = reordered.container(container);
         assert!(reordered
             .drop_target(Position::new(rect.x, rect.y))
             .is_none());
     }
+}
+
+#[test]
+fn empty_secondary_collapses_and_redocking_restores_its_width() {
+    let mut state = LayoutState {
+        secondary_width: 32,
+        ..Default::default()
+    };
+    while let Some(id) = state.secondary.first().map(|view| view.id) {
+        let before = geometry(&state);
+        let primary = before.container(ContainerId::Primary);
+        let target = before
+            .drop_target(Position::new(primary.x + 3, primary.y))
+            .unwrap();
+        assert!(state.move_view(id, target, &before));
+    }
+    let closed = geometry(&state);
+    assert_eq!(closed.container(ContainerId::Secondary).width, 0);
+    assert_eq!(closed.container(ContainerId::Center).right(), 120);
+    assert_eq!(
+        closed.container(ContainerId::Center).width,
+        120 - state.primary_width
+    );
+    resize(&mut state, &closed, SashId::Primary, 4, 0);
+    assert_eq!(state.secondary_width, 32);
+    let closed = geometry(&state);
+    let target = closed.drop_target(Position::new(119, 10)).unwrap();
+    assert_eq!(target.container, ContainerId::Secondary);
+    assert_eq!(target.indicator.width, 32);
+    assert_eq!(
+        target.indicator.height,
+        closed.container(ContainerId::Center).height
+    );
+    assert!(state.move_view(ViewId::Findings, target, &closed));
+    assert_eq!(
+        geometry(&state).container(ContainerId::Secondary),
+        target.indicator
+    );
+    assert_eq!(state.focus, ViewId::Findings);
+
+    state.primary.append(&mut state.secondary);
+    let narrow = LayoutGeometry::compute(Rect::new(0, 0, 40, 30), &state, COMPOSER_ROWS);
+    assert!(!narrow.too_small);
+    assert_eq!(narrow.container(ContainerId::Primary).width, 16);
+    assert_eq!(narrow.container(ContainerId::Center).width, 24);
+    assert!(narrow.drop_target(Position::new(39, 10)).is_none());
 }
 
 #[test]
@@ -244,9 +299,27 @@ fn preferences_round_trip_and_recover_layout_data_independently_of_sessions() {
     assert_eq!(recovered.primary_width, 16);
     assert_eq!(
         recovered.primary.iter().map(|v| v.id).collect::<Vec<_>>(),
-        [ViewId::Findings, ViewId::Status]
+        [ViewId::Findings, ViewId::Status, ViewId::Capabilities]
     );
     assert_eq!(recovered.secondary[0].id, ViewId::Subagents);
+
+    let mut all_right = LayoutState::default();
+    all_right.secondary.append(&mut all_right.primary);
+    all_right.secondary[0].collapsed = true;
+    all_right.secondary[0].expanded_height = 8;
+    preferences::save(&path, &all_right).unwrap();
+    let recovered = preferences::load(&path).unwrap();
+    assert_eq!(recovered.primary[0].id, ViewId::Findings);
+    assert!(recovered.primary[0].collapsed);
+    assert_eq!(recovered.primary[0].expanded_height, 8);
+    assert_eq!(recovered.secondary.len(), 3);
+
+    let mut closed = recovered;
+    closed.primary.append(&mut closed.secondary);
+    preferences::save(&path, &closed).unwrap();
+    let loaded = preferences::load(&path).unwrap();
+    assert_eq!(loaded.primary.len(), 4);
+    assert_eq!(geometry(&loaded).container(ContainerId::Secondary).width, 0);
 
     fs::write(&path, b"invalid json").unwrap();
     app.load_layout(path.clone());

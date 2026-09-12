@@ -112,7 +112,15 @@ fn dragging_commits_on_release_and_escape_restores_sash_sizes() {
         target.x + 3,
         target.y,
     );
-    assert!(app.layout.primary.is_empty());
+    assert_eq!(
+        app.layout
+            .primary
+            .iter()
+            .map(|view| view.id)
+            .collect::<Vec<_>>(),
+        [ViewId::Capabilities],
+        "the primary container keeps its other view"
+    );
     assert_eq!(app.layout.secondary[0].id, ViewId::Status);
     assert_eq!(app.layout.focus, ViewId::Status);
     assert!(app.layout_gesture.is_none());
@@ -124,6 +132,32 @@ fn dragging_commits_on_release_and_escape_restores_sash_sizes() {
         .find(|sash| sash.id == SashId::Primary)
         .unwrap()
         .rect;
+    let last_title = geometry.view(ViewId::Capabilities).unwrap().title;
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        last_title.x + 3,
+        last_title.y,
+    );
+    mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        target.x + 3,
+        target.y,
+    );
+    assert!(matches!(
+        app.layout_gesture,
+        Some(Gesture::Move { target: None, .. })
+    ));
+    mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        target.x + 3,
+        target.y,
+    );
+    assert_eq!(app.layout.primary[0].id, ViewId::Capabilities);
+    assert_eq!(app.layout.secondary[0].id, ViewId::Status);
+
     let width = app.layout.primary_width;
     mouse(
         &mut app,

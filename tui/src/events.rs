@@ -212,7 +212,26 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 } => {
                     *dragging |= point != *origin;
                     *target = if *dragging {
-                        geometry.drop_target(point)
+                        (*target)
+                            .filter(|target| {
+                                (release
+                                    || (target.container == workbench::ContainerId::Secondary
+                                        && app.layout.secondary.is_empty()))
+                                    && target.indicator.contains(point)
+                            })
+                            .or_else(|| geometry.drop_target(point))
+                            .filter(|target| app.layout.can_move_view(*id, target.container))
+                            .and_then(|mut target| {
+                                let mut preview = app.layout.clone();
+                                preview.move_view(*id, target, &geometry);
+                                let preview = workbench::LayoutGeometry::compute(
+                                    app.terminal_size,
+                                    &preview,
+                                    app.required_input_height(),
+                                );
+                                target.indicator = preview.view(*id)?.rect;
+                                Some(target)
+                            })
                     } else {
                         None
                     };

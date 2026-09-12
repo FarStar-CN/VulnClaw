@@ -1,1 +1,2 @@
-pub mod skills_manager;
+pub mod capabilities;
+pub mod status;

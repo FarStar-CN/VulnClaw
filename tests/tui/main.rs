@@ -13,6 +13,8 @@ mod ui_attack_chain;
 mod ui_findings;
 #[path = "ui/layout.rs"]
 mod ui_layout;
+#[path = "views/capabilities.rs"]
+mod views_capabilities;
 #[path = "views/skills_manager.rs"]
 mod views_skills_manager;
 mod workbench;

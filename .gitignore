@@ -78,6 +78,7 @@ pnpm-debug.log*
 .claude/
 skills-lock.json
 CLAUDE.md
+AGENTS.md
 
 # Local docs / local-only artifacts
 docs/

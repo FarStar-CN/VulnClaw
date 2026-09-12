@@ -19,6 +19,7 @@ pub enum ContainerId {
 #[serde(rename_all = "snake_case")]
 pub enum ViewId {
     Status,
+    Capabilities,
     Output,
     Findings,
     Subagents,
@@ -29,6 +30,7 @@ impl ViewId {
     pub fn label(self) -> &'static str {
         match self {
             Self::Status => "Status",
+            Self::Capabilities => "Capabilities",
             Self::Output => "Session transcript",
             Self::Findings => "Findings inspector",
             Self::Subagents => "Subagents",
@@ -37,7 +39,10 @@ impl ViewId {
     }
 
     pub fn movable(self) -> bool {
-        matches!(self, Self::Status | Self::Findings | Self::Subagents)
+        matches!(
+            self,
+            Self::Status | Self::Capabilities | Self::Findings | Self::Subagents
+        )
     }
 }
 
@@ -156,9 +161,14 @@ impl LayoutState {
                 }
             }
         }
-        for id in [ViewId::Status, ViewId::Findings, ViewId::Subagents] {
+        for id in [
+            ViewId::Status,
+            ViewId::Capabilities,
+            ViewId::Findings,
+            ViewId::Subagents,
+        ] {
             if !seen.contains(&id) {
-                let target = if id == ViewId::Status {
+                let target = if matches!(id, ViewId::Status | ViewId::Capabilities) {
                     &mut self.primary
                 } else {
                     &mut self.secondary
@@ -166,6 +176,17 @@ impl LayoutState {
                 target.push(ViewInstance::new(id));
             }
         }
+        if self.primary.is_empty() {
+            self.primary.push(self.secondary.remove(0));
+        }
+    }
+
+    pub fn can_move_view(&self, id: ViewId, target: ContainerId) -> bool {
+        id.movable()
+            && matches!(target, ContainerId::Primary | ContainerId::Secondary)
+            && !(target == ContainerId::Secondary
+                && self.primary.len() == 1
+                && self.primary[0].id == id)
     }
 
     pub fn cycle_focus(&mut self, backwards: bool) {
@@ -183,12 +204,7 @@ impl LayoutState {
     }
 
     pub fn move_view(&mut self, id: ViewId, target: DropTarget, geometry: &LayoutGeometry) -> bool {
-        if !id.movable()
-            || !matches!(
-                target.container,
-                ContainerId::Primary | ContainerId::Secondary
-            )
-        {
+        if !self.can_move_view(id, target.container) {
             return false;
         }
         let source = if self.primary.iter().any(|view| view.id == id) {
@@ -266,15 +282,18 @@ pub struct DropTarget {
     pub indicator: Rect,
 }
 
+/// Rows the boxed header occupies: top border, content, bottom border.
+pub const HEADER_ROWS: u16 = 3;
+
 #[derive(Clone, Debug)]
 pub struct LayoutGeometry {
     pub header: Rect,
-    pub phase: Rect,
     pub hotbar: Rect,
     pub workbench: Rect,
     pub containers: [(ContainerId, Rect); 4],
     pub views: Vec<ViewGeometry>,
     pub sashes: Vec<SashGeometry>,
+    pub secondary_dock: Option<Rect>,
     pub minimum_size: (u16, u16),
     pub too_small: bool,
 }
@@ -284,16 +303,18 @@ impl LayoutGeometry {
         let upper_min = stack_min(&state.primary)
             .max(stack_min(&state.secondary))
             .max(6);
-        let minimum_size = (SIDE_MIN * 2 + OUTPUT_MIN, upper_min + required_input + 3);
+        let right_min = if state.secondary.is_empty() {
+            0
+        } else {
+            SIDE_MIN
+        };
+        let minimum_size = (
+            SIDE_MIN + OUTPUT_MIN + right_min,
+            upper_min + required_input + HEADER_ROWS + 1,
+        );
         let empty = Rect::default();
         let mut geometry = Self {
-            header: Rect::new(area.x, area.y, area.width, area.height.min(1)),
-            phase: Rect::new(
-                area.x,
-                area.y.saturating_add(1),
-                area.width,
-                u16::from(area.height > 1),
-            ),
+            header: Rect::new(area.x, area.y, area.width, area.height.min(HEADER_ROWS)),
             hotbar: Rect::new(
                 area.x,
                 area.bottom().saturating_sub(1),
@@ -302,9 +323,9 @@ impl LayoutGeometry {
             ),
             workbench: Rect::new(
                 area.x,
-                area.y.saturating_add(2),
+                area.y.saturating_add(HEADER_ROWS),
                 area.width,
-                area.height.saturating_sub(3),
+                area.height.saturating_sub(HEADER_ROWS + 1),
             ),
             containers: [
                 (ContainerId::Primary, empty),
@@ -314,6 +335,7 @@ impl LayoutGeometry {
             ],
             views: Vec::new(),
             sashes: Vec::new(),
+            secondary_dock: None,
             minimum_size,
             too_small: area.width < minimum_size.0 || area.height < minimum_size.1,
         };
@@ -324,19 +346,23 @@ impl LayoutGeometry {
         // no user-adjustable bottom height, so the work area gets everything the
         // fixed chrome does not claim.
         let bottom_height = required_input;
-        let upper_height = area.height.saturating_sub(3 + bottom_height);
+        let upper_height = area.height.saturating_sub(HEADER_ROWS + 1 + bottom_height);
         let available_width = area.width;
         let mut left = u32::from(state.primary_width.max(SIDE_MIN));
-        let mut right = u32::from(state.secondary_width.max(SIDE_MIN));
+        let mut right = if state.secondary.is_empty() {
+            0
+        } else {
+            u32::from(state.secondary_width.max(SIDE_MIN))
+        };
         let shortage =
             (left + right + u32::from(OUTPUT_MIN)).saturating_sub(u32::from(available_width));
-        let right_shrink = shortage.min(right - u32::from(SIDE_MIN));
+        let right_shrink = shortage.min(right - u32::from(right_min));
         right -= right_shrink;
         left -= (shortage - right_shrink).min(left - u32::from(SIDE_MIN));
         let left = left as u16;
         let right = right as u16;
         let center = available_width - left - right;
-        let y = area.y + 2;
+        let y = area.y + HEADER_ROWS;
         let primary = Rect::new(area.x, y, left, upper_height);
         let output = Rect::new(primary.right(), y, center, upper_height);
         let secondary = Rect::new(output.right(), y, right, upper_height);
@@ -347,21 +373,28 @@ impl LayoutGeometry {
             (ContainerId::Secondary, secondary),
             (ContainerId::Bottom, bottom),
         ];
-        for (id, rect) in [
-            (
-                SashId::Primary,
-                Rect::new(primary.right() - 1, y, 2, upper_height),
-            ),
-            (
-                SashId::Secondary,
-                Rect::new(output.right() - 1, y, 2, upper_height),
-            ),
-        ] {
+        geometry.sashes.push(SashGeometry {
+            id: SashId::Primary,
+            rect: Rect::new(primary.right() - 1, y, 2, upper_height),
+            enabled: true,
+        });
+        if right > 0 {
             geometry.sashes.push(SashGeometry {
-                id,
-                rect,
+                id: SashId::Secondary,
+                rect: Rect::new(output.right() - 1, y, 2, upper_height),
                 enabled: true,
             });
+        } else if area.width >= SIDE_MIN * 2 + OUTPUT_MIN {
+            let dock_width = state
+                .secondary_width
+                .max(SIDE_MIN)
+                .min(output.width.saturating_sub(OUTPUT_MIN).max(SIDE_MIN));
+            geometry.secondary_dock = Some(Rect::new(
+                area.right() - dock_width,
+                y,
+                dock_width,
+                upper_height,
+            ));
         }
         geometry.add_stack(ContainerId::Primary, primary, &state.primary);
         geometry.add_view(ContainerId::Center, output, &state.output);
@@ -391,6 +424,19 @@ impl LayoutGeometry {
     pub fn drop_target(&self, point: Position) -> Option<DropTarget> {
         if self.too_small {
             return None;
+        }
+        if let Some(indicator) = self.secondary_dock {
+            if point.x >= indicator.right().saturating_sub(3)
+                && point.x < indicator.right()
+                && point.y >= indicator.y
+                && point.y < indicator.bottom()
+            {
+                return Some(DropTarget {
+                    container: ContainerId::Secondary,
+                    index: 0,
+                    indicator,
+                });
+            }
         }
         for container in [ContainerId::Primary, ContainerId::Secondary] {
             let rect = self.container(container);
@@ -524,7 +570,9 @@ pub fn resize(state: &mut LayoutState, geometry: &LayoutGeometry, sash: SashId, 
             let right = geometry.container(ContainerId::Secondary).width;
             let center = geometry.container(ContainerId::Center).width;
             state.primary_width = left;
-            state.secondary_width = right;
+            if right > 0 {
+                state.secondary_width = right;
+            }
             if sash == SashId::Primary {
                 state.primary_width = (i32::from(left) + dx)
                     .clamp(i32::from(SIDE_MIN), i32::from(left + center - OUTPUT_MIN))
