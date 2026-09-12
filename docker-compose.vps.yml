@@ -1,0 +1,49 @@
+services:
+  vulnclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vulnclaw:latest
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Caddy terminates TLS. The app still requires its token on every API call.
+      VULNCLAW_WEB_COOKIE_SECURE: "true"
+      VULNCLAW_WEB_PUBLIC_URL: https://${VULNCLAW_DOMAIN:?Set VULNCLAW_DOMAIN in .env}
+    volumes:
+      - vulnclaw-data:/data
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+  caddy:
+    image: caddy:2.8.4-alpine
+    environment:
+      VULNCLAW_DOMAIN: ${VULNCLAW_DOMAIN:?Set VULNCLAW_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - public
+      - backend
+
+networks:
+  public:
+  backend:
+    internal: true
+
+volumes:
+  vulnclaw-data:
+  caddy-data:
+  caddy-config:

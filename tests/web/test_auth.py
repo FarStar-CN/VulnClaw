@@ -131,3 +131,20 @@ class TestSessionCookie:
         assert f"{auth.SESSION_COOKIE}={token}" in header
         assert "HttpOnly" in header
         assert "samesite=strict" in header.lower()
+
+    def test_attach_session_cookie_can_require_https(self, monkeypatch, tmp_path):
+        import vulnclaw.web.app as web_app
+
+        if not web_app.FASTAPI_AVAILABLE:
+            import pytest
+
+            pytest.skip("FastAPI is not installed in this environment")
+
+        from starlette.responses import Response
+
+        _redirect_token_dir(monkeypatch, tmp_path)
+        monkeypatch.setenv("VULNCLAW_WEB_COOKIE_SECURE", "true")
+        response = Response()
+        auth.attach_session_cookie(response, auth.generate_token())
+
+        assert "secure" in response.headers["set-cookie"].lower()

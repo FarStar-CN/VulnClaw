@@ -2877,7 +2877,7 @@ body {
     width: 100%;
     height: auto;
     grid-template-columns: auto minmax(0, 1fr);
-    padding: 10px 12px;
+    padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 10px max(12px, env(safe-area-inset-left));
     z-index: 10;
   }
 
@@ -2901,12 +2901,16 @@ body {
     gap: 8px;
     overflow-x: auto;
     justify-items: start;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
   }
 
   .nav-item {
     flex: 0 0 48px;
     width: 48px;
     height: 48px;
+    scroll-snap-align: start;
   }
 
   .nav-icon {
@@ -2921,7 +2925,7 @@ body {
   }
 
   .workspace {
-    padding: 12px;
+    padding: 12px max(12px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
   }
 
   .topbar {
@@ -2966,5 +2970,18 @@ body {
 
   .goby-scan-summary strong {
     justify-self: start;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    min-height: 44px;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px;
   }
 }
