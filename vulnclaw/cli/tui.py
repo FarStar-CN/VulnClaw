@@ -876,6 +876,9 @@ def _build_slash_commands() -> dict[str, str]:
         "config": _("tui.slash_config"),
         "language": _("tui.slash_lang"),
         "wizard": _("tui.slash_wizard"),
+        # /experience, /learn and /feedback are classic-REPL only: they live in
+        # REPL_COMMANDS, not here, because _dispatch_slash has no handlers for
+        # them and would answer "Unknown command".
         "quit": _("tui.slash_quit"),
     }
 
@@ -893,13 +896,20 @@ def _build_repl_commands() -> dict[str, str]:
         "config": _("tui.slash_config"),
         "language": _("tui.slash_lang"),
         "wizard": _("tui.slash_wizard"),
+        "experience": _("tui.slash_experience"),
+        "learn": _("tui.slash_learn"),
+        "feedback": _("tui.slash_feedback"),
     }
 
 
 REPL_COMMANDS: dict[str, str] = _build_repl_commands()
 
 # Short aliases → canonical classic-REPL command name.
-_REPL_COMMAND_ALIASES: dict[str, str] = {"cfg": "config", "lang": "language"}
+_REPL_COMMAND_ALIASES: dict[str, str] = {
+    "cfg": "config",
+    "lang": "language",
+    "exp": "experience",
+}
 
 
 def _resolve_repl_command(name: str) -> str:
