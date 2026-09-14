@@ -61,22 +61,27 @@ def test_usage_budget_records_actual_overshoot_and_blocks_later_calls() -> None:
 
 
 @pytest.mark.asyncio
-async def test_main_and_group_leader_run_asynchronously_and_notify_once() -> None:
+@pytest.mark.parametrize("agent_type", ["group-leader", "general"])
+async def test_background_agent_runs_asynchronously_and_notifies_once(agent_type) -> None:
     started = asyncio.Event()
     release = asyncio.Event()
+    events = []
 
     async def execute(_definition, _spec, _session, _context):
         started.set()
         await release.wait()
         return AgentResult(summary="group done")
 
-    service = TaskService(runner=AgentRunner(execute))
+    service = TaskService(
+        runner=AgentRunner(execute),
+        event_sink=lambda kind, payload: events.append((kind, payload)),
+    )
     main = service.main_context()
     handle = await service.spawn_background(
         AgentSpec(
             description="auth group",
             prompt="investigate authentication",
-            agent_type="group-leader",
+            agent_type=agent_type,
             name="auth",
         ),
         main,
@@ -84,6 +89,12 @@ async def test_main_and_group_leader_run_asynchronously_and_notify_once() -> Non
 
     await asyncio.wait_for(started.wait(), timeout=1)
     assert (await service.collect(handle.task_id)).status is TaskStatus.RUNNING
+    lifecycle = [payload for kind, payload in events if kind == "subagent"]
+    assert [event["status"] for event in lifecycle] == ["pending", "running"]
+    assert all(event["parent_id"] == main.task_id for event in lifecycle)
+    assert all(event["agent_type"] == agent_type for event in lifecycle)
+    expected_group = handle.task_id if agent_type == "group-leader" else ""
+    assert all(event["group_id"] == expected_group for event in lifecycle)
 
     release.set()
     await _wait_for_background(service, handle.task_id)
@@ -92,6 +103,8 @@ async def test_main_and_group_leader_run_asynchronously_and_notify_once() -> Non
     assert notification.status is TaskStatus.COMPLETED
     assert (await service.collect(handle.task_id)).result.summary == "group done"
     assert service.drain_notifications() == []
+    lifecycle = [payload for kind, payload in events if kind == "subagent"]
+    assert [event["status"] for event in lifecycle] == ["pending", "running", "completed"]
 
     await service.shutdown()
 
@@ -913,6 +926,13 @@ async def test_real_agent_adapter_runs_leader_with_parallel_leaf_wave(monkeypatc
 
     async def fake_solve(child, **_kwargs):
         nonlocal leaf_active, leaf_peak
+        sink = _kwargs["stream_sink"]
+        sink.on_thinking_token("inspect ")
+        sink.on_thinking_token(child.active_role)
+        sink.on_tool_call("probe", "{}")
+        sink.on_tool_result("live tool result")
+        sink.on_content_token("working")
+        sink.on_stream_end()
         kind = child.context.state.session_kind
         if kind == "group_leader":
             results = await asyncio.gather(
@@ -968,6 +988,8 @@ async def test_real_agent_adapter_runs_leader_with_parallel_leaf_wave(monkeypatc
 
     monkeypatch.setattr("vulnclaw.agent.solver.solve", fake_solve)
     root = FakeAgent()
+    live_events = []
+    root._subagent_ctx.event_sink = lambda kind, payload: live_events.append((kind, payload))
     for index in range(5):
         root.context.state.agent_state.remember_tool_result(
             tool="main",
@@ -989,6 +1011,20 @@ async def test_real_agent_adapter_runs_leader_with_parallel_leaf_wave(monkeypatc
 
     await asyncio.wait_for(leaf_wave_started.wait(), timeout=1)
     assert leaf_peak == 2
+    # Observe all three agents while the two leaf solves are still blocked.
+    streams = [payload for kind, payload in live_events if kind == "subagent_stream"]
+    assert len({event["agent_id"] for event in streams}) == 3
+    for agent_id in {event["agent_id"] for event in streams}:
+        agent_stream = [event for event in streams if event["agent_id"] == agent_id]
+        assert [event["type"] for event in agent_stream] == [
+            "reasoning", "reasoning", "tool_call", "tool_result", "log",
+        ]
+        assert agent_stream[0]["append"] is False
+        assert agent_stream[1]["append"] is True
+    lifecycle = [payload for kind, payload in live_events if kind == "subagent"]
+    assert {event["agent_id"] for event in lifecycle} == {event["agent_id"] for event in streams}
+    assert all(event["status"] in {"pending", "running"} for event in lifecycle)
+    assert not any(event["event"] == "subagent_stream" for event in root.context.state.subagent_events)
     for index in range(14):
         root.context.state.agent_state.remember_tool_result(
             tool="main",

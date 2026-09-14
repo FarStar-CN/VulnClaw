@@ -5,6 +5,7 @@ mod protocol;
 mod sessions;
 #[path = "skills/catalog.rs"]
 mod skills_catalog;
+mod subagents;
 mod support;
 mod theme;
 #[path = "ui/attack_chain.rs"]

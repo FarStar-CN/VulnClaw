@@ -1,6 +1,7 @@
 pub mod attack_chain;
 pub mod findings;
 pub mod layout;
+pub mod subagents;
 pub mod transcript;
 
 use ratatui::Frame;

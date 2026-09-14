@@ -178,25 +178,44 @@ pub enum BackendEvent {
         task: Value,
         state: StateSnapshot,
     },
+    Subagent {
+        task_id: String,
+        #[serde(flatten)]
+        agent: SubagentInfo,
+    },
     Status {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         status: String,
     },
     Reasoning {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         text: String,
+        #[serde(default)]
+        append: bool,
     },
     Log {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         message: String,
+        #[serde(default)]
+        append: bool,
     },
     ToolCall {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         tool: String,
         arguments: String,
     },
     ToolResult {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         result: String,
     },
     Finding {
@@ -259,6 +278,16 @@ pub enum BackendEvent {
     ShutdownComplete {
         request_id: String,
     },
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SubagentInfo {
+    pub agent_id: String,
+    pub parent_id: String,
+    pub group_id: String,
+    pub name: String,
+    pub agent_type: String,
+    pub status: String,
 }
 
 /// A typed pointer into the per-run evidence tree. The protocol carries

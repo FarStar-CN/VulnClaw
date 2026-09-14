@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from vulnclaw.agent.agent_state import AgentState, clip_text, one_line
 from vulnclaw.agent.roles import get_role, roles_for_task_kind
+from vulnclaw.agent.streaming import TranscriptStreamSink
 from vulnclaw.agent.subagent.budget import UsageBudget
 from vulnclaw.agent.subagent.merge import EvidenceCommitter
 from vulnclaw.agent.subagent.models import (
@@ -278,6 +279,9 @@ class VulnClawTaskRuntime:
             state._notify_checkpoint("subagent_event")
         except Exception:
             logger.warning("failed to checkpoint sub-agent event", exc_info=True)
+        self._forward_ui_event(kind, payload)
+
+    def _forward_ui_event(self, kind: str, payload: dict[str, object]) -> None:
         if callable(self._ui_event_sink):
             try:
                 self._ui_event_sink(kind, payload)
@@ -359,6 +363,14 @@ class VulnClawTaskRuntime:
                 agent_type=definition.name,
             )
         )
+
+        def emit_stream(event_type: str, **fields: Any) -> None:
+            self._forward_ui_event(
+                "subagent_stream",
+                {"agent_id": context.task_id, "type": event_type, **fields},
+            )
+
+        stream_sink = TranscriptStreamSink(emit_stream) if callable(self._ui_event_sink) else None
         child.context.add_user_message(prompt)
         child_state = child.context.state
         child_state.resume_summary = (
@@ -380,7 +392,7 @@ class VulnClawTaskRuntime:
                     goal=spec.prompt,
                     max_steps=max_steps,
                     max_tool_rounds=int(cfg.leaf_max_tool_rounds),
-                    stream_sink=None,
+                    stream_sink=stream_sink,
                     on_event=None,
                 )
                 reason = one_line(result.reason, 240)

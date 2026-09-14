@@ -77,6 +77,60 @@ def protocol_validator() -> Draft202012Validator:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("show_thinking", [True, False])
+async def test_subagent_streams_are_forwarded_live_with_the_main_vocabulary(
+    monkeypatch, show_thinking,
+) -> None:
+    from types import SimpleNamespace
+
+    from vulnclaw.agent.exec_gate import reset_execution_gate
+    from vulnclaw.agent.streaming import TranscriptStreamSink
+    from vulnclaw.tui_backend import BackendStreamSink, _run_task
+
+    reset_execution_gate()
+    stream = io.StringIO()
+    sink = BackendStreamSink(JsonlWriter(stream), "t1", show_thinking=show_thinking)
+
+    async def execute(_agent, _task, *, stream_sink, on_event):
+        on_event("subagent", {
+            "agent_id": "a1", "parent_id": "main", "group_id": "",
+            "name": "probe", "agent_type": "general", "status": "running",
+        })
+        child = TranscriptStreamSink(lambda kind, **fields: on_event(
+            "subagent_stream", {"agent_id": "a1", "type": kind, **fields},
+        ))
+        for target in (stream_sink, child):
+            target.on_thinking_token("inspect ")
+            target.on_thinking_token("headers")
+            target.on_content_token("live ")
+            # Nothing has finished or flushed: text is already on the wire.
+            assert events(stream)[-1]["message"] == "live "
+            target.on_content_token("answer")
+            target.on_tool_call("fetch", "{}")
+            target.on_tool_result("200 OK")
+            target.on_stream_end()
+            target.on_content_token("next turn")
+            assert events(stream)[-1]["append"] is False
+        return SimpleNamespace(
+            run=SimpleNamespace(run_context=None, status="completed", exit_code=0, summary={}),
+            action_result={"findings": []},
+        )
+
+    monkeypatch.setattr("vulnclaw.tui_backend.execute_task", execute)
+    task = prepare_task(TaskCreateRequest(command="run", target="example.test"))
+    await _run_task(SimpleNamespace(agent=object()), task, sink)
+    emitted = events(stream)
+    main = [event for event in emitted if "agent_id" not in event]
+    child = [
+        {key: value for key, value in event.items() if key != "agent_id"}
+        for event in emitted if event.get("agent_id") == "a1" and event["type"] != "subagent"
+    ]
+    assert main == child
+    assert any(event["type"] == "reasoning" for event in child) is show_thinking
+    assert [event["append"] for event in child if event["type"] == "log"] == [False, True, False]
+
+
+@pytest.mark.asyncio
 async def test_initialize_and_two_tasks_share_one_session_backend_pid() -> None:
     from vulnclaw.agent.exec_gate import reset_execution_gate
 

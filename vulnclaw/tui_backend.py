@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TextIO
 
+from vulnclaw.agent.streaming import TranscriptStreamSink
 from vulnclaw.config.domain_models import validate_action_constraints
 from vulnclaw.task_service import (
     SCOPE_FIELDS,
@@ -73,60 +74,16 @@ RuntimeFactory = Callable[[], Any | Awaitable[Any]]
 TaskRunner = Callable[[Any, PreparedTask, "BackendStreamSink"], Awaitable[dict[str, Any]]]
 
 
-class BackendStreamSink:
+class BackendStreamSink(TranscriptStreamSink):
     """Adapt AgentCore streaming callbacks to protocol-v1 task events."""
 
     def __init__(self, writer: JsonlWriter, task_id: str, *, show_thinking: bool) -> None:
         self._writer = writer
         self._task_id = task_id
-        self._show_thinking = show_thinking
-        self._thinking_buffer = ""
-        self._content_buffer = ""
+        super().__init__(self._event, show_thinking=show_thinking)
 
     def _event(self, event_type: str, **fields: Any) -> None:
         self._writer.event(event_type, task_id=self._task_id, **fields)
-
-    def _flush_thinking(self) -> None:
-        if self._thinking_buffer and self._show_thinking:
-            self._event("reasoning", text=self._thinking_buffer)
-        self._thinking_buffer = ""
-
-    def _flush_content(self) -> None:
-        if self._content_buffer:
-            self._event("log", message=self._content_buffer)
-        self._content_buffer = ""
-
-    def _flush_all(self) -> None:
-        self._flush_thinking()
-        self._flush_content()
-
-    def on_status(self, message: str) -> None:
-        self._flush_all()
-        self._event("status", status=str(message or ""))
-
-    def on_thinking_token(self, token: str) -> None:
-        if not token:
-            return
-        self._flush_content()
-        if self._show_thinking:
-            self._thinking_buffer += str(token)
-
-    def on_content_token(self, token: str) -> None:
-        if not token:
-            return
-        self._flush_thinking()
-        self._content_buffer += str(token)
-
-    def on_tool_call(self, tool_name: str, args: str) -> None:
-        self._flush_all()
-        self._event("tool_call", tool=str(tool_name), arguments=str(args or ""))
-
-    def on_tool_result(self, result_summary: str) -> None:
-        self._flush_all()
-        self._event("tool_result", result=str(result_summary or ""))
-
-    def on_stream_end(self) -> None:
-        self._flush_all()
 
 
 class BackendSession:
@@ -631,7 +588,14 @@ async def _run_task(
     runtime: BackendRuntime, task: PreparedTask, sink: BackendStreamSink
 ) -> dict[str, Any]:
     def on_event(kind: str, payload: dict[str, Any]) -> None:
-        if kind == "agent_step":
+        if kind == "subagent":
+            sink._event("subagent", **payload)
+        elif kind == "subagent_stream":
+            event = dict(payload)
+            event_type = event.pop("type")
+            if event_type != "reasoning" or sink._show_thinking:
+                sink._event(event_type, **event)
+        elif kind == "agent_step":
             sink._event("log", message=f"turn {payload.get('step', '?')}")
         elif kind == "error":
             sink._event("log", message=f"error: {payload.get('error', '')}")

@@ -333,6 +333,18 @@ def test_on_disk_schema_covers_every_v1_message_shape() -> None:
         },
     ]
 
+    messages.append({
+        "protocol_version": 1,
+        "type": "subagent",
+        "task_id": "t1",
+        "agent_id": "a-0001",
+        "parent_id": "main",
+        "group_id": "a-0001",
+        "name": "auth team",
+        "agent_type": "group-leader",
+        "status": "running",
+    })
+
     for message in messages:
         validator.validate(message)
 

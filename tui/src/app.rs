@@ -199,7 +199,7 @@ impl PendingExecution {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum TranscriptKind {
     User,
     System,
@@ -289,6 +289,7 @@ pub struct App {
     history_index: Option<usize>,
     history_draft: String,
     pub transcript: Vec<TranscriptItem>,
+    pub subagents: crate::subagents::Subagents,
     pub findings: Vec<Finding>,
     /// Finding whose evidence references are expanded. At most one at a time,
     /// so the list does not grow without bound while comparing findings.
@@ -377,6 +378,7 @@ impl App {
                     text: text::READY.to_owned(),
                 },
             ],
+            subagents: crate::subagents::Subagents::default(),
             findings: Vec::new(),
             expanded_finding: None,
             findings_selection: 0,
@@ -619,7 +621,7 @@ impl App {
                 .wrap(Wrap { trim: false })
                 .line_count(region.content.width),
             ViewId::Findings => self.finding_rows(),
-            ViewId::Subagents => 1,
+            ViewId::Subagents => self.subagents.rows().len(),
             ViewId::Input => 0,
         };
         u16::try_from(total.saturating_sub(usize::from(region.content.height))).unwrap_or(u16::MAX)
@@ -984,6 +986,10 @@ impl App {
                     if self.active_task_id.as_deref() != Some(task_id.as_str()) {
                         return;
                     }
+                    self.subagents.selection = None;
+                    self.open_selected_subagent();
+                    self.subagents = crate::subagents::Subagents::default();
+                    self.layout.view_mut(ViewId::Subagents).scroll = 0;
                     self.worker_active = true;
                     self.worker_started_at = Some(Instant::now());
                     self.apply_backend_state(state);
@@ -992,15 +998,23 @@ impl App {
                         receipt.phase = format!("{command} running");
                     }
                 }
+                BackendEvent::Subagent { task_id, agent } => {
+                    if self.is_current_task(&task_id) {
+                        self.subagents.upsert(agent);
+                    }
+                }
                 BackendEvent::Status {
                     task_id,
+                    agent_id,
                     status: message,
                 } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.update_receipt(&message);
-                    self.status(message);
+                    if agent_id.is_none() {
+                        self.update_receipt(&message);
+                    }
+                    self.push_stream(agent_id, TranscriptKind::Status, message, false);
                 }
                 BackendEvent::Finding { task_id, finding } => {
                     if !self.is_current_task(&task_id) {
@@ -1010,46 +1024,67 @@ impl App {
                 }
                 BackendEvent::Reasoning {
                     task_id,
+                    agent_id,
+                    append,
                     text: chunk,
                 } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.update_receipt("Thinking");
-                    self.push(TranscriptKind::Reasoning, chunk);
+                    if agent_id.is_none() {
+                        self.update_receipt("Thinking");
+                    }
+                    self.push_stream(agent_id, TranscriptKind::Reasoning, chunk, append);
                 }
                 BackendEvent::Log {
                     task_id,
+                    agent_id,
+                    append,
                     message: line,
                 } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.update_receipt("Running");
-                    self.push(TranscriptKind::Log, line);
+                    if agent_id.is_none() {
+                        self.update_receipt("Running");
+                    }
+                    self.push_stream(agent_id, TranscriptKind::Log, line, append);
                 }
                 BackendEvent::ToolCall {
                     task_id,
+                    agent_id,
                     tool,
                     arguments,
                 } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.update_receipt("Using tool");
-                    self.push(
+                    if agent_id.is_none() {
+                        self.update_receipt("Using tool");
+                    }
+                    self.push_stream(
+                        agent_id,
                         TranscriptKind::Log,
                         format!("→ tool: {tool} {}", truncate_text(&arguments, 160)),
+                        false,
                     );
                 }
-                BackendEvent::ToolResult { task_id, result } => {
+                BackendEvent::ToolResult {
+                    task_id,
+                    agent_id,
+                    result,
+                } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.update_receipt("Running");
-                    self.push(
+                    if agent_id.is_none() {
+                        self.update_receipt("Running");
+                    }
+                    self.push_stream(
+                        agent_id,
                         TranscriptKind::Log,
                         format!("→ result: {}", truncate_text(&result, 240)),
+                        false,
                     );
                 }
                 BackendEvent::ApprovalRequired {
@@ -1721,6 +1756,35 @@ impl App {
         self.backend_commands.clear();
         self.backend_control_operations.clear();
         self.backend_supports_cancellation = false;
+    }
+
+    fn push_stream(
+        &mut self,
+        agent_id: Option<String>,
+        kind: TranscriptKind,
+        text: String,
+        append: bool,
+    ) {
+        let transcript = if let Some(id) = agent_id {
+            let Some(agent) = self
+                .subagents
+                .agents
+                .iter_mut()
+                .find(|a| a.info.agent_id == id)
+            else {
+                return;
+            };
+            &mut agent.transcript
+        } else {
+            &mut self.transcript
+        };
+        if append {
+            if let Some(last) = transcript.last_mut().filter(|item| item.kind == kind) {
+                last.text.push_str(&text);
+                return;
+            }
+        }
+        transcript.push(TranscriptItem { kind, text });
     }
 
     fn push(&mut self, kind: TranscriptKind, text: impl Into<String>) {

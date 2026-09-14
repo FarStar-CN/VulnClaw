@@ -11,6 +11,7 @@ pub mod prompts;
 pub mod protocol;
 pub mod sessions;
 pub mod skills;
+pub mod subagents;
 pub mod theme;
 pub mod ui;
 pub mod views;

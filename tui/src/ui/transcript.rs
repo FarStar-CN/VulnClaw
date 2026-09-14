@@ -13,7 +13,7 @@ use crate::theme;
 /// Shared by [`render`] and the auto-follow scroll logic in `app.rs` so both
 /// compute the exact same wrapped line count.
 pub fn build_lines(app: &App) -> Vec<Line<'static>> {
-    app.transcript
+    app.visible_transcript()
         .iter()
         .filter(|item| app.show_reasoning || !matches!(item.kind, TranscriptKind::Reasoning))
         .map(|item| {

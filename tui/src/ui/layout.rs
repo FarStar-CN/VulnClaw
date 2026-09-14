@@ -342,6 +342,22 @@ pub(crate) fn view_block(app: &App, id: ViewId) -> Block<'static> {
     } else {
         String::new()
     };
+    let source = if id == ViewId::Output {
+        app.subagents
+            .viewing
+            .as_ref()
+            .and_then(|agent_id| {
+                app.subagents
+                    .agents
+                    .iter()
+                    .find(|a| &a.info.agent_id == agent_id)
+            })
+            .map_or(String::new(), |a| {
+                format!(" · {} [{}]", a.info.name, a.info.agent_id)
+            })
+    } else {
+        String::new()
+    };
     let focused = app.layout.focus == id;
     let focus = if focused { " *" } else { "" };
     let activity = if id == ViewId::Output && app.worker_active && theme::blink_on() {
@@ -371,7 +387,7 @@ pub(crate) fn view_block(app: &App, id: ViewId) -> Block<'static> {
         })
         .style(Style::default().bg(theme::PANEL))
         .title(Span::styled(
-            format!("{marker}{}{count}{focus}{activity}", id.label()),
+            format!("{marker}{}{count}{source}{focus}{activity}", id.label()),
             Style::default().fg(if focused {
                 theme::ACTION
             } else {
@@ -397,12 +413,7 @@ fn render_workbench(frame: &mut Frame, app: &App, geometry: &LayoutGeometry) {
             ViewId::Capabilities => crate::views::capabilities::render(frame, app, region.rect),
             ViewId::Output => crate::ui::transcript::render(frame, app, region.rect),
             ViewId::Findings => crate::ui::findings::render(frame, app, region.rect),
-            ViewId::Subagents => frame.render_widget(
-                Paragraph::new("Subagent data unavailable")
-                    .style(Style::default().fg(theme::TEXT_HINT))
-                    .block(view_block(app, id)),
-                region.rect,
-            ),
+            ViewId::Subagents => crate::ui::subagents::render(frame, app, region.rect),
             ViewId::Input => {}
         }
     }
@@ -680,6 +691,11 @@ fn render_hotbar(frame: &mut Frame, app: &App, area: Rect) {
     } else if app.pending_task.is_some() {
         (
             " Y confirm | Esc cancel",
+            Style::default().fg(theme::TEXT_HINT),
+        )
+    } else if app.layout.focus == ViewId::Subagents {
+        (
+            " ↑/↓ select agent | Enter view transcript | main returns to main | Ctrl+←/→ view",
             Style::default().fg(theme::TEXT_HINT),
         )
     } else if app.worker_active {

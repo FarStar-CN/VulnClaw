@@ -102,6 +102,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::F(5), _) => app.show_attack_chain = !app.show_attack_chain,
         (KeyCode::Tab, _) => app.cycle_mode(),
         (KeyCode::BackTab, _) => app.cycle_permission(),
+        (KeyCode::Up, _) if app.layout.focus == ViewId::Subagents => {
+            app.move_subagent_selection(false)
+        }
+        (KeyCode::Down, _) if app.layout.focus == ViewId::Subagents => {
+            app.move_subagent_selection(true)
+        }
+        (KeyCode::Enter, _) if app.layout.focus == ViewId::Subagents => {
+            app.open_selected_subagent()
+        }
         (KeyCode::Up, _) if app.palette_visible() => app.select_next_command(false),
         (KeyCode::Down, _) if app.palette_visible() => app.select_next_command(true),
         // The Findings view owns the arrow keys while it is focused: they move
