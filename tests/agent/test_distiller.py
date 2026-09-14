@@ -3,11 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from vulnclaw.agent.distiller import (
     _LESSON_SCHEMA,
     DEFAULT_MERGE_THRESHOLD,
     MERGE_THRESHOLD_ENV,
+    OpenAIStructuredDistiller,
     RunArtifacts,
+    _extract_candidates,
     default_merge_threshold,
     distill_run,
     persist_distilled_lessons,
@@ -306,3 +310,88 @@ def test_openai_strict_schema_requires_every_object_property():
     assert set(candidate["properties"]["evidence_refs"]["properties"]) == set(
         candidate["properties"]["evidence_refs"]["required"]
     )
+
+
+class _FakeCompletions:
+    """Records every request and can reject specific response_format types."""
+
+    def __init__(self, reject: set[str], content: str, fatal: str | None = None) -> None:
+        self.reject = reject
+        self.content = content
+        self.fatal = fatal
+        self.attempts: list[dict] = []
+
+    def create(self, **kwargs):
+        if self.fatal is not None:
+            self.attempts.append(kwargs)
+            raise RuntimeError(self.fatal)
+        format_type = (kwargs.get("response_format") or {}).get("type")
+        self.attempts.append(kwargs)
+        if format_type in self.reject:
+            # Verbatim shape of the DeepSeek rejection.
+            raise RuntimeError(
+                "Error code: 400 - {'error': {'message': "
+                "'This response_format type is unavailable now', "
+                "'type': 'invalid_request_error'}}"
+            )
+        message = SimpleNamespace(content=self.content)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def _distiller(reject: set[str], content: str = '{"lessons": []}', provider: str = "deepseek"):
+    completions = _FakeCompletions(reject, content)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    llm_config = SimpleNamespace(provider=provider, model="deepseek-chat")
+    return OpenAIStructuredDistiller(client, llm_config), completions
+
+
+def test_non_openai_providers_are_never_sent_a_json_schema_request():
+    distiller, completions = _distiller(reject=set())
+
+    distiller.distill({"run_id": "run-1"})
+
+    assert [attempt.get("response_format") for attempt in completions.attempts] == [
+        {"type": "json_object"}
+    ]
+
+
+def test_openai_still_receives_the_strict_schema():
+    distiller, completions = _distiller(reject=set(), provider="openai")
+
+    distiller.distill({"run_id": "run-1"})
+
+    format_spec = completions.attempts[0]["response_format"]
+    assert format_spec["type"] == "json_schema"
+    assert format_spec["json_schema"]["strict"] is True
+
+
+def test_a_provider_rejecting_json_object_falls_back_to_no_constraint():
+    distiller, completions = _distiller(reject={"json_object"})
+
+    distiller.distill({"run_id": "run-1"})
+
+    assert len(completions.attempts) == 2
+    assert "response_format" not in completions.attempts[1]
+
+
+def test_an_unrelated_failure_is_not_retried():
+    completions = _FakeCompletions(set(), "{}", fatal="Error code: 401 - invalid api key")
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    distiller = OpenAIStructuredDistiller(
+        client, SimpleNamespace(provider="deepseek", model="deepseek-chat")
+    )
+
+    with pytest.raises(RuntimeError, match="invalid api key"):
+        distiller.distill({"run_id": "run-1"})
+    assert len(completions.attempts) == 1
+
+
+def test_a_degraded_response_wrapped_in_a_fence_is_still_parsed():
+    fenced = '```json\n{"lessons": [{"scope": "sqli"}]}\n```'
+
+    assert _extract_candidates(fenced) == [{"scope": "sqli"}]
+    assert _extract_candidates('prose before {"lessons": []} prose after') == []
+
+
+def test_an_unparseable_degraded_response_yields_no_candidates():
+    assert _extract_candidates("no json at all") == []
