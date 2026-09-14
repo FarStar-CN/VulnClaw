@@ -1,7 +1,7 @@
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::app::App;
@@ -104,12 +104,6 @@ pub fn render(app: &App) -> Paragraph<'static> {
     Paragraph::new(build_lines(app))
         .wrap(Wrap { trim: false })
         .scroll((app.layout.view(crate::workbench::ViewId::Status).scroll, 0))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(theme::BORDER)
-                .style(Style::default().bg(theme::PANEL)),
-        )
 }
 
 fn json_array_len(value: &serde_json::Value, key: &str) -> usize {
@@ -120,15 +114,12 @@ fn json_array_len(value: &serde_json::Value, key: &str) -> usize {
 }
 
 fn last_run_label(value: Option<&serde_json::Value>) -> &str {
-    value
-        .and_then(|run| run.get("run"))
-        .and_then(|run| run.get("name"))
-        .and_then(serde_json::Value::as_str)
-        .or_else(|| {
-            value
-                .and_then(|run| run.get("status"))
-                .and_then(serde_json::Value::as_str)
-        })
+    let Some(run) = value else {
+        return "none";
+    };
+    ["/run/name", "/status"]
+        .iter()
+        .find_map(|pointer| run.pointer(pointer).and_then(serde_json::Value::as_str))
         .unwrap_or("none")
 }
 

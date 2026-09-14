@@ -16,6 +16,6 @@ mod ui_findings;
 mod ui_layout;
 #[path = "views/capabilities.rs"]
 mod views_capabilities;
-#[path = "views/skills_manager.rs"]
-mod views_skills_manager;
+#[path = "views/status.rs"]
+mod views_status;
 mod workbench;

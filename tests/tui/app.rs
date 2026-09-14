@@ -521,6 +521,39 @@ fn active_view_rect_partitions_the_workbench_without_overlap() {
     assert!(findings.width < 120);
 }
 
+/// The composer is chrome, not a view: focus must never park on something that
+/// draws no focus marker and cannot be scrolled.
+#[test]
+fn focus_cycling_visits_every_rendered_view_and_nothing_else() {
+    use std::collections::HashSet;
+
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 28);
+    let views = app.layout.primary.len() + app.layout.secondary.len() + 1;
+    let start = app.layout.focus;
+
+    let mut visited = Vec::new();
+    for _ in 0..views {
+        app.cycle_active_view(false);
+        assert!(
+            app.geometry(app.terminal_size)
+                .view(app.layout.focus)
+                .is_some(),
+            "{:?} is not rendered, so focusing it is invisible",
+            app.layout.focus
+        );
+        visited.push(app.layout.focus);
+    }
+
+    assert_eq!(app.layout.focus, start, "the cycle closes over every view");
+    assert_eq!(
+        visited.iter().collect::<HashSet<_>>().len(),
+        views,
+        "each view is visited exactly once: {visited:?}"
+    );
+}
+
 #[test]
 fn copy_active_view_renders_only_the_focused_region() {
     use vulnclaw_tui::workbench::{resize, ContainerId, SashId};

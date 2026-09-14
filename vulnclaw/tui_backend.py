@@ -593,7 +593,7 @@ async def _run_task(
         elif kind == "subagent_stream":
             event = dict(payload)
             event_type = event.pop("type")
-            if event_type != "reasoning" or sink._show_thinking:
+            if sink.accepts(event_type):
                 sink._event(event_type, **event)
         elif kind == "agent_step":
             sink._event("log", message=f"turn {payload.get('step', '?')}")

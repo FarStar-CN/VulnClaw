@@ -9,12 +9,21 @@ class TranscriptStreamSink:
         self._show_thinking = show_thinking
         self._segment = ""
 
+    def accepts(self, event_type: str) -> bool:
+        """Whether this sink's policy lets an externally built event through.
+
+        Tokens reach the sink through the ``on_*`` callbacks below; events built
+        by another producer (a sub-agent stream) arrive already typed, and this
+        keeps the filtering decision in one place.
+        """
+        return event_type != "reasoning" or self._show_thinking
+
     def on_status(self, message: str) -> None:
         self._segment = ""
         self._emit("status", status=str(message or ""))
 
     def on_thinking_token(self, token: str) -> None:
-        if token and self._show_thinking:
+        if token and self.accepts("reasoning"):
             self._emit("reasoning", text=str(token), append=self._segment == "reasoning")
             self._segment = "reasoning"
 

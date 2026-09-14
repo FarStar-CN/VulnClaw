@@ -47,12 +47,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     }
 
     if app.layout_gesture.is_some() {
+        // Esc abandons a captured pointer gesture; any other key completes it
+        // before applying the keyboard action.
+        app.cancel_layout_gesture();
         if key.code == KeyCode::Esc {
-            app.cancel_layout_gesture();
             return;
         }
-        // Complete a captured pointer gesture before applying keyboard actions.
-        app.cancel_layout_gesture();
     }
     if app.show_attack_chain {
         match (key.code, key.modifiers) {
@@ -229,10 +229,10 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                     _ => point.y == origin.y,
                 };
                 if unchanged {
-                    let continued = if release { None } else { Some(gesture.clone()) };
-                    app.layout_gesture = Some(gesture);
-                    app.cancel_layout_gesture();
-                    app.layout_gesture = continued;
+                    app.restore_layout(&gesture);
+                    if !release {
+                        app.layout_gesture = Some(gesture);
+                    }
                     return;
                 }
             }
@@ -307,7 +307,7 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             if let Some(region) = geometry
                 .views
                 .iter()
-                .find(|view| view.id != ViewId::Input && view.content.contains(point))
+                .find(|view| view.content.contains(point))
             {
                 app.scroll_view(region.id, mouse.kind == MouseEventKind::ScrollDown);
             }
@@ -317,11 +317,10 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
 }
 
 pub fn handle_paste(app: &mut App, text: &str) {
+    app.cancel_layout_gesture();
     if app.pending_execution.is_some() || app.pending_task.is_some() || app.show_attack_chain {
-        app.cancel_layout_gesture();
         return;
     }
-    app.cancel_layout_gesture();
     if !app.geometry(app.terminal_size).too_small {
         app.insert_text(text);
     }

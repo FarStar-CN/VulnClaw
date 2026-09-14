@@ -345,13 +345,8 @@ pub(crate) fn view_block(app: &App, id: ViewId) -> Block<'static> {
     let source = if id == ViewId::Output {
         app.subagents
             .viewing
-            .as_ref()
-            .and_then(|agent_id| {
-                app.subagents
-                    .agents
-                    .iter()
-                    .find(|a| &a.info.agent_id == agent_id)
-            })
+            .as_deref()
+            .and_then(|agent_id| app.subagents.agent(agent_id))
             .map_or(String::new(), |a| {
                 format!(" · {} [{}]", a.info.name, a.info.agent_id)
             })
@@ -399,9 +394,6 @@ pub(crate) fn view_block(app: &App, id: ViewId) -> Block<'static> {
 fn render_workbench(frame: &mut Frame, app: &App, geometry: &LayoutGeometry) {
     for region in &geometry.views {
         let id = region.id;
-        if id == ViewId::Input {
-            continue;
-        }
         if app.layout.view(id).collapsed {
             frame.render_widget(view_block(app, id), region.rect);
             continue;
@@ -414,7 +406,6 @@ fn render_workbench(frame: &mut Frame, app: &App, geometry: &LayoutGeometry) {
             ViewId::Output => crate::ui::transcript::render(frame, app, region.rect),
             ViewId::Findings => crate::ui::findings::render(frame, app, region.rect),
             ViewId::Subagents => crate::ui::subagents::render(frame, app, region.rect),
-            ViewId::Input => {}
         }
     }
     if let Some(Gesture::Move {

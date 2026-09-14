@@ -78,6 +78,51 @@ fn wheel_routes_to_hovered_content_and_preserves_other_view_scrolls_and_focus() 
 }
 
 #[test]
+fn escape_restores_every_view_the_resize_moved() {
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
+    let geometry = app.geometry(app.terminal_size);
+    let upper = geometry.view(ViewId::Status).unwrap().rect;
+    let lower = geometry.view(ViewId::Capabilities).unwrap().rect;
+    assert_eq!(upper.bottom(), lower.y);
+
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        upper.x + 3,
+        upper.bottom() - 1,
+    );
+    mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        upper.x + 3,
+        upper.bottom() + 4,
+    );
+    let dragged = app.geometry(app.terminal_size);
+    assert_eq!(
+        dragged.view(ViewId::Status).unwrap().rect.height,
+        upper.height + 5
+    );
+    assert_eq!(
+        dragged.view(ViewId::Capabilities).unwrap().rect.height,
+        lower.height - 5
+    );
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let restored = app.geometry(app.terminal_size);
+    assert_eq!(
+        restored.view(ViewId::Status).unwrap().rect.height,
+        upper.height
+    );
+    assert_eq!(
+        restored.view(ViewId::Capabilities).unwrap().rect.height,
+        lower.height
+    );
+    assert!(app.layout_gesture.is_none());
+}
+
+#[test]
 fn dragging_commits_on_release_and_escape_restores_sash_sizes() {
     use vulnclaw_tui::workbench::{ContainerId, Gesture, SashId};
     let (sender, _) = mpsc::channel();

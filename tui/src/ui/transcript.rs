@@ -17,17 +17,23 @@ pub fn build_lines(app: &App) -> Vec<Line<'static>> {
         .iter()
         .filter(|item| app.show_reasoning || !matches!(item.kind, TranscriptKind::Reasoning))
         .map(|item| {
-            let (prefix, style) = match item.kind {
-                TranscriptKind::User => ("You  ", Style::default().add_modifier(Modifier::BOLD)),
-                TranscriptKind::System => ("VulnClaw  ", theme::transcript_style(&item.kind)),
-                TranscriptKind::Status => ("Status  ", theme::transcript_style(&item.kind)),
-                TranscriptKind::Log => ("Log  ", theme::transcript_style(&item.kind)),
-                TranscriptKind::Reasoning => ("Thinking  ", theme::transcript_style(&item.kind)),
-                TranscriptKind::Error => ("Error  ", theme::transcript_style(&item.kind)),
-                TranscriptKind::Finding => ("Finding  ", theme::transcript_style(&item.kind)),
+            let label = match item.kind {
+                TranscriptKind::User => "You  ",
+                TranscriptKind::System => "VulnClaw  ",
+                TranscriptKind::Status => "Status  ",
+                TranscriptKind::Log => "Log  ",
+                TranscriptKind::Reasoning => "Thinking  ",
+                TranscriptKind::Error => "Error  ",
+                TranscriptKind::Finding => "Finding  ",
+            };
+            // The user's own turns carry no kind colour, so they read as plain text.
+            let style = if matches!(item.kind, TranscriptKind::User) {
+                Style::default()
+            } else {
+                theme::transcript_style(&item.kind)
             };
             Line::from(vec![
-                Span::styled(prefix, style.add_modifier(Modifier::BOLD)),
+                Span::styled(label, style.add_modifier(Modifier::BOLD)),
                 Span::styled(item.text.clone(), style),
             ])
         })

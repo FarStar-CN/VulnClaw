@@ -23,7 +23,6 @@ pub enum ViewId {
     Output,
     Findings,
     Subagents,
-    Input,
 }
 
 impl ViewId {
@@ -34,7 +33,6 @@ impl ViewId {
             Self::Output => "Session transcript",
             Self::Findings => "Findings inspector",
             Self::Subagents => "Subagents",
-            Self::Input => "Input",
         }
     }
 
@@ -76,6 +74,22 @@ impl ViewInstance {
     }
 }
 
+/// Scroll a view the least amount that brings `row` into a `height`-row viewport.
+pub fn scroll_to_row(view: &mut ViewInstance, row: usize, height: usize) {
+    if height == 0 {
+        return;
+    }
+    let top = usize::from(view.scroll);
+    let next = if row < top {
+        row
+    } else if row >= top + height {
+        row + 1 - height
+    } else {
+        top
+    };
+    view.scroll = u16::try_from(next).unwrap_or(u16::MAX);
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LayoutState {
@@ -85,8 +99,6 @@ pub struct LayoutState {
     pub secondary: Vec<ViewInstance>,
     #[serde(skip)]
     pub output: ViewInstance,
-    #[serde(skip)]
-    pub input: ViewInstance,
     #[serde(skip)]
     pub focus: ViewId,
 }
@@ -102,7 +114,6 @@ impl Default for LayoutState {
                 ViewInstance::new(ViewId::Subagents),
             ],
             output: ViewInstance::new(ViewId::Output),
-            input: ViewInstance::new(ViewId::Input),
             focus: ViewId::Output,
         };
         // Normalize here so a first run, a UI preview and a loaded file all
@@ -114,12 +125,14 @@ impl Default for LayoutState {
 }
 
 impl LayoutState {
+    /// The views a container holds. `Bottom` is the composer's chrome, not a
+    /// view container, so it has none.
     pub fn views(&self, container: ContainerId) -> &[ViewInstance] {
         match container {
             ContainerId::Primary => &self.primary,
             ContainerId::Secondary => &self.secondary,
             ContainerId::Center => std::slice::from_ref(&self.output),
-            ContainerId::Bottom => std::slice::from_ref(&self.input),
+            ContainerId::Bottom => &[],
         }
     }
 
@@ -135,7 +148,7 @@ impl LayoutState {
         self.primary
             .iter()
             .chain(&self.secondary)
-            .chain([&self.output, &self.input])
+            .chain([&self.output])
             .find(|view| view.id == id)
             .expect("every view has one instance")
     }
@@ -144,7 +157,7 @@ impl LayoutState {
         self.primary
             .iter_mut()
             .chain(&mut self.secondary)
-            .chain([&mut self.output, &mut self.input])
+            .chain([&mut self.output])
             .find(|view| view.id == id)
             .expect("every view has one instance")
     }
@@ -195,7 +208,6 @@ impl LayoutState {
             .iter()
             .chain([&self.output])
             .chain(&self.secondary)
-            .chain([&self.input])
             .map(|view| view.id)
             .collect();
         let current = order.iter().position(|id| *id == self.focus).unwrap_or(0);
@@ -399,13 +411,6 @@ impl LayoutGeometry {
         geometry.add_stack(ContainerId::Primary, primary, &state.primary);
         geometry.add_view(ContainerId::Center, output, &state.output);
         geometry.add_stack(ContainerId::Secondary, secondary, &state.secondary);
-        geometry.views.push(ViewGeometry {
-            id: ViewId::Input,
-            container: ContainerId::Bottom,
-            rect: bottom,
-            title: Rect::default(),
-            content: bottom,
-        });
         geometry
     }
 
@@ -514,10 +519,9 @@ fn stack_min(views: &[ViewInstance]) -> u16 {
 }
 
 fn stack_heights(views: &[ViewInstance], height: u16) -> Vec<u16> {
-    let available = height;
     let expanded = views.iter().filter(|view| !view.collapsed).count() as u16;
     let collapsed = views.len() as u16 - expanded;
-    let share = available.saturating_sub(collapsed) / expanded.max(1);
+    let share = height.saturating_sub(collapsed) / expanded.max(1);
     let mut heights: Vec<_> = views
         .iter()
         .map(|view| {
@@ -530,18 +534,18 @@ fn stack_heights(views: &[ViewInstance], height: u16) -> Vec<u16> {
             }
         })
         .collect();
-    let total: u32 = heights.iter().map(|height| u32::from(*height)).sum();
-    let mut shortage = total.saturating_sub(u32::from(available));
-    for (view, height) in views.iter().zip(&mut heights).rev() {
+    let total: u32 = heights.iter().map(|value| u32::from(*value)).sum();
+    let mut shortage = total.saturating_sub(u32::from(height));
+    for (view, view_height) in views.iter().zip(&mut heights).rev() {
         if !view.collapsed {
-            let reduction = shortage.min(u32::from(*height - VIEW_MIN));
-            *height -= reduction as u16;
+            let reduction = shortage.min(u32::from(*view_height - VIEW_MIN));
+            *view_height -= reduction as u16;
             shortage -= reduction;
         }
     }
-    if total < u32::from(available) {
+    if total < u32::from(height) {
         if let Some(index) = views.iter().rposition(|view| !view.collapsed) {
-            heights[index] += (u32::from(available) - total) as u16;
+            heights[index] += (u32::from(height) - total) as u16;
         }
     }
     heights

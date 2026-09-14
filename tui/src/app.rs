@@ -583,7 +583,7 @@ impl App {
     }
 
     pub fn scroll_view(&mut self, id: ViewId, down: bool) {
-        if id == ViewId::Input || self.layout.view(id).collapsed {
+        if self.layout.view(id).collapsed {
             return;
         }
         let geometry = self.geometry(self.terminal_size);
@@ -622,7 +622,6 @@ impl App {
                 .line_count(region.content.width),
             ViewId::Findings => self.finding_rows(),
             ViewId::Subagents => self.subagents.rows().len(),
-            ViewId::Input => 0,
         };
         u16::try_from(total.saturating_sub(usize::from(region.content.height))).unwrap_or(u16::MAX)
     }
@@ -672,12 +671,27 @@ impl App {
     }
 
     pub fn cancel_layout_gesture(&mut self) {
-        if let Some(Gesture::Resize { original, .. }) = self.layout_gesture.take() {
-            self.layout.primary_width = original.primary_width;
-            self.layout.secondary_width = original.secondary_width;
-            for id in [ViewId::Status, ViewId::Findings, ViewId::Subagents] {
-                self.layout.view_mut(id).expanded_height = original.view(id).expanded_height;
-            }
+        if let Some(gesture) = self.layout_gesture.take() {
+            self.restore_layout(&gesture);
+        }
+    }
+
+    /// Put back the geometry a resize gesture changed, leaving scroll and focus
+    /// alone. Every view in a free container is restored, not a fixed list:
+    /// `workbench::resize` materializes the height of each of them.
+    pub fn restore_layout(&mut self, gesture: &Gesture) {
+        let Gesture::Resize { original, .. } = gesture else {
+            return;
+        };
+        self.layout.primary_width = original.primary_width;
+        self.layout.secondary_width = original.secondary_width;
+        for view in self
+            .layout
+            .primary
+            .iter_mut()
+            .chain(&mut self.layout.secondary)
+        {
+            view.expanded_height = original.view(view.id).expanded_height;
         }
     }
 
@@ -1427,20 +1441,12 @@ impl App {
         let Some(region) = geometry.view(ViewId::Findings) else {
             return;
         };
-        let height = usize::from(region.content.height);
-        if height == 0 {
-            return;
-        }
         let row = self.selected_finding_row();
-        let current = usize::from(self.layout.view(ViewId::Findings).scroll);
-        let next = if row < current {
-            row
-        } else if row >= current + height {
-            row + 1 - height
-        } else {
-            current
-        };
-        self.layout.view_mut(ViewId::Findings).scroll = u16::try_from(next).unwrap_or(u16::MAX);
+        crate::workbench::scroll_to_row(
+            self.layout.view_mut(ViewId::Findings),
+            row,
+            usize::from(region.content.height),
+        );
     }
 
     pub fn move_findings_selection(&mut self, down: bool) {
@@ -1766,12 +1772,7 @@ impl App {
         append: bool,
     ) {
         let transcript = if let Some(id) = agent_id {
-            let Some(agent) = self
-                .subagents
-                .agents
-                .iter_mut()
-                .find(|a| a.info.agent_id == id)
-            else {
+            let Some(agent) = self.subagents.agent_mut(&id) else {
                 return;
             };
             &mut agent.transcript

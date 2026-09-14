@@ -25,12 +25,16 @@ pub struct AgentRow {
 }
 
 impl Subagents {
+    pub fn agent(&self, agent_id: &str) -> Option<&AgentTranscript> {
+        self.agents.iter().find(|a| a.info.agent_id == agent_id)
+    }
+
+    pub fn agent_mut(&mut self, agent_id: &str) -> Option<&mut AgentTranscript> {
+        self.agents.iter_mut().find(|a| a.info.agent_id == agent_id)
+    }
+
     pub fn upsert(&mut self, info: SubagentInfo) {
-        if let Some(agent) = self
-            .agents
-            .iter_mut()
-            .find(|a| a.info.agent_id == info.agent_id)
-        {
+        if let Some(agent) = self.agent_mut(&info.agent_id) {
             agent.info = info;
         } else {
             self.agents.push(AgentTranscript {
@@ -49,11 +53,7 @@ impl Subagents {
         }];
         for agent in &self.agents {
             // Members render beneath their leader, even when other agents arrive in between.
-            if self
-                .agents
-                .iter()
-                .any(|a| a.info.agent_id == agent.info.parent_id)
-            {
+            if self.agent(&agent.info.parent_id).is_some() {
                 continue;
             }
             if agent.info.agent_type == "group-leader" {
@@ -111,13 +111,8 @@ impl App {
     pub fn visible_transcript(&self) -> &[TranscriptItem] {
         self.subagents
             .viewing
-            .as_ref()
-            .and_then(|id| {
-                self.subagents
-                    .agents
-                    .iter()
-                    .find(|a| &a.info.agent_id == id)
-            })
+            .as_deref()
+            .and_then(|id| self.subagents.agent(id))
             .map_or(&self.transcript, |agent| &agent.transcript)
     }
 
@@ -140,51 +135,35 @@ impl App {
             .unwrap_or(0);
         let geometry = self.geometry(self.terminal_size);
         if let Some(region) = geometry.view(ViewId::Subagents) {
-            let height = usize::from(region.content.height);
-            if height > 0 {
-                let view = self.layout.view_mut(ViewId::Subagents);
-                let top = usize::from(view.scroll);
-                view.scroll = if row < top {
-                    row
-                } else if row >= top + height {
-                    row + 1 - height
-                } else {
-                    top
-                }
-                .min(u16::MAX as usize) as u16;
-            }
+            crate::workbench::scroll_to_row(
+                self.layout.view_mut(ViewId::Subagents),
+                row,
+                usize::from(region.content.height),
+            );
         }
     }
 
+    /// Show the selected agent's transcript in the main panel, parking the
+    /// scroll position of whichever transcript was on screen.
     pub fn open_selected_subagent(&mut self) {
         if self.subagents.viewing == self.subagents.selection {
             return;
         }
         let scroll = (self.layout.output.scroll, self.layout.output.follow);
-        if let Some(id) = &self.subagents.viewing {
-            if let Some(agent) = self
-                .subagents
-                .agents
-                .iter_mut()
-                .find(|a| &a.info.agent_id == id)
-            {
-                agent.scroll = Some(scroll);
+        match self.subagents.viewing.take() {
+            Some(id) => {
+                if let Some(agent) = self.subagents.agent_mut(&id) {
+                    agent.scroll = Some(scroll);
+                }
             }
-        } else {
-            self.subagents.main_scroll = Some(scroll);
+            None => self.subagents.main_scroll = Some(scroll),
         }
         self.subagents.viewing = self.subagents.selection.clone();
-        let (scroll, follow) = if let Some(id) = &self.subagents.viewing {
-            self.subagents
-                .agents
-                .iter()
-                .find(|a| &a.info.agent_id == id)
-                .and_then(|a| a.scroll)
-        } else {
-            self.subagents.main_scroll
+        let restored = match self.subagents.viewing.as_deref() {
+            Some(id) => self.subagents.agent(id).and_then(|agent| agent.scroll),
+            None => self.subagents.main_scroll,
         }
         .unwrap_or((0, true));
-        self.layout.output.scroll = scroll;
-        self.layout.output.follow = follow;
+        (self.layout.output.scroll, self.layout.output.follow) = restored;
     }
 }
