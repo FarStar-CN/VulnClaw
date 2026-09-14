@@ -104,11 +104,26 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::BackTab, _) => app.cycle_permission(),
         (KeyCode::Up, _) if app.palette_visible() => app.select_next_command(false),
         (KeyCode::Down, _) if app.palette_visible() => app.select_next_command(true),
+        // The Findings view owns the arrow keys while it is focused: they move
+        // the row selection and the view follows, instead of scrolling raw.
+        (KeyCode::Up, _) if app.layout.focus == workbench::ViewId::Findings => {
+            app.move_findings_selection(false);
+            app.reveal_selected_finding();
+        }
+        (KeyCode::Down, _) if app.layout.focus == workbench::ViewId::Findings => {
+            app.move_findings_selection(true);
+            app.reveal_selected_finding();
+        }
         (KeyCode::Up, _) => app.scroll_active_view(false),
         (KeyCode::Down, _) => app.scroll_active_view(true),
         (KeyCode::PageUp, _) => app.scroll_active_view(false),
         (KeyCode::PageDown, _) => app.scroll_active_view(true),
         (KeyCode::Esc, _) => app.clear_composer(),
+        (KeyCode::Enter, _)
+            if app.layout.focus == workbench::ViewId::Findings && app.input.is_empty() =>
+        {
+            app.toggle_selected_finding();
+        }
         (KeyCode::Enter, _) if app.palette_visible() && app.should_complete_selected_command() => {
             app.accept_selected_command();
         }
@@ -168,6 +183,15 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
             }
             if let Some(region) = geometry.views.iter().find(|view| view.rect.contains(point)) {
                 app.layout.focus = region.id;
+                if region.id == workbench::ViewId::Findings && region.content.contains(point) {
+                    let scroll = usize::from(app.layout.view(region.id).scroll);
+                    let row = usize::from(point.y.saturating_sub(region.content.y)) + scroll;
+                    if let Some(index) = crate::ui::findings::finding_at_row(app, row) {
+                        app.select_finding(index);
+                        app.toggle_selected_finding();
+                        return;
+                    }
+                }
                 if region.id.movable() && region.title.contains(point) {
                     if point.x == region.title.x + 1 {
                         app.layout.toggle_collapsed(region.id, &geometry);

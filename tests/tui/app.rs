@@ -719,3 +719,52 @@ fn backend_exit_clears_transport_state_and_closes_the_active_receipt() {
         "Backend disconnected"
     );
 }
+
+#[test]
+fn the_palette_lists_each_backend_verb_once() {
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.backend_commands = vec!["run".into(), "recon".into(), "scan".into()];
+    app.insert_text("/r");
+
+    let commands: Vec<_> = app
+        .suggested_commands()
+        .into_iter()
+        .map(|item| item.command)
+        .collect();
+
+    let mut unique = commands.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        commands.len(),
+        unique.len(),
+        "the local fallback must not repeat a verb the backend advertises: {commands:?}"
+    );
+    // The backend's verbs still lead, followed by local-only helpers. `/run`
+    // and `/recon` live in both lists and must appear once each.
+    assert_eq!(
+        commands,
+        ["/run ", "/recon ", "/report"],
+        "got {commands:?}"
+    );
+}
+
+#[test]
+fn the_palette_falls_back_to_local_verbs_before_the_handshake() {
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.insert_text("/run");
+
+    let commands: Vec<_> = app
+        .suggested_commands()
+        .into_iter()
+        .map(|item| item.command)
+        .collect();
+
+    assert_eq!(
+        commands,
+        ["/run "],
+        "the local list keeps task verbs discoverable while the backend is silent"
+    );
+}

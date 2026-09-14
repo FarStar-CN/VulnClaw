@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
@@ -290,6 +290,11 @@ pub struct App {
     history_draft: String,
     pub transcript: Vec<TranscriptItem>,
     pub findings: Vec<Finding>,
+    /// Finding whose evidence references are expanded. At most one at a time,
+    /// so the list does not grow without bound while comparing findings.
+    pub expanded_finding: Option<String>,
+    /// Row the Findings view has selected, as an index into `findings`.
+    pub findings_selection: usize,
     pub palette_selection: usize,
     pub show_reasoning: bool,
     pub running: bool,
@@ -373,6 +378,8 @@ impl App {
                 },
             ],
             findings: Vec::new(),
+            expanded_finding: None,
+            findings_selection: 0,
             palette_selection: 0,
             show_reasoning: true,
             running: true,
@@ -611,7 +618,7 @@ impl App {
             ViewId::Capabilities => Paragraph::new(crate::views::capabilities::build_lines(self))
                 .wrap(Wrap { trim: false })
                 .line_count(region.content.width),
-            ViewId::Findings => self.findings.len(),
+            ViewId::Findings => self.finding_rows(),
             ViewId::Subagents => 1,
             ViewId::Input => 0,
         };
@@ -820,9 +827,15 @@ impl App {
                 command: (*command).to_owned(),
                 description,
             });
+        // `LOCAL_SLASH_COMMANDS` repeats the backend's task verbs so the
+        // palette is never empty before the capability handshake lands. Once
+        // the backend reports them the same verb would appear twice, so keep
+        // the first (authoritative) occurrence and drop the local fallback.
+        let mut seen = HashSet::new();
         backend
             .chain(local)
             .filter(|item| item.command.starts_with(&query))
+            .filter(|item| seen.insert(item.command.clone()))
             .collect()
     }
 
@@ -1343,6 +1356,94 @@ impl App {
         if let Some(receipt) = self.active_receipt.as_mut() {
             receipt.findings = self.findings.len();
         }
+    }
+
+    /// Findings view row count, including the evidence rows of the expanded
+    /// finding. Kept here so scroll clamping and rendering agree.
+    pub fn finding_rows(&self) -> usize {
+        self.findings.len()
+            + self
+                .expanded_finding
+                .as_ref()
+                .and_then(|id| self.findings.iter().find(|finding| &finding.id == id))
+                .map_or(0, |finding| finding.evidence_refs.len())
+    }
+
+    /// Row offset of the selected finding within the Findings view. Differs from
+    /// `findings_selection` whenever an earlier finding is expanded.
+    pub fn selected_finding_row(&self) -> usize {
+        let expanded = self.expanded_finding.as_deref();
+        self.findings
+            .iter()
+            .take(self.findings_selection)
+            .map(|finding| {
+                1 + if Some(finding.id.as_str()) == expanded {
+                    finding.evidence_refs.len()
+                } else {
+                    0
+                }
+            })
+            .sum()
+    }
+
+    /// Scroll the Findings view just enough to keep the selected row visible.
+    pub fn reveal_selected_finding(&mut self) {
+        let geometry = self.geometry(self.terminal_size);
+        let Some(region) = geometry.view(ViewId::Findings) else {
+            return;
+        };
+        let height = usize::from(region.content.height);
+        if height == 0 {
+            return;
+        }
+        let row = self.selected_finding_row();
+        let current = usize::from(self.layout.view(ViewId::Findings).scroll);
+        let next = if row < current {
+            row
+        } else if row >= current + height {
+            row + 1 - height
+        } else {
+            current
+        };
+        self.layout.view_mut(ViewId::Findings).scroll = u16::try_from(next).unwrap_or(u16::MAX);
+    }
+
+    pub fn move_findings_selection(&mut self, down: bool) {
+        if self.findings.is_empty() {
+            self.findings_selection = 0;
+            return;
+        }
+        let last = self.findings.len() - 1;
+        self.findings_selection = if down {
+            (self.findings_selection + 1).min(last)
+        } else {
+            self.findings_selection.saturating_sub(1)
+        };
+    }
+
+    pub fn select_finding(&mut self, index: usize) {
+        if self.findings.is_empty() {
+            self.findings_selection = 0;
+            return;
+        }
+        self.findings_selection = index.min(self.findings.len() - 1);
+    }
+
+    /// Expand the selected finding, collapsing whatever was open before.
+    pub fn toggle_selected_finding(&mut self) -> bool {
+        let Some(finding) = self.findings.get(self.findings_selection) else {
+            return false;
+        };
+        if finding.evidence_refs.is_empty() {
+            return false;
+        }
+        let id = finding.id.clone();
+        self.expanded_finding = if self.expanded_finding.as_deref() == Some(id.as_str()) {
+            None
+        } else {
+            Some(id)
+        };
+        true
     }
 
     fn upsert_finding(&mut self, finding: Finding) {

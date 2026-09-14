@@ -333,7 +333,7 @@ fn modal_and_attack_chain_capture_workbench_mouse_and_paste_events() {
 }
 
 #[test]
-fn arrows_scroll_the_selected_inspector() {
+fn arrows_move_the_findings_selection_and_leave_other_views_alone() {
     let (sender, _) = mpsc::channel();
     let mut app = App::new_disconnected(sender);
     app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 28);
@@ -344,7 +344,17 @@ fn arrows_scroll_the_selected_inspector() {
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
-    assert_eq!(app.layout.view(ViewId::Findings).scroll, 1);
+    assert_eq!(app.findings_selection, 1);
+    // The row is already on screen, so nothing scrolls yet.
+    assert_eq!(app.layout.view(ViewId::Findings).scroll, 0);
+    assert_eq!(app.layout.output.scroll, 0);
+
+    // Walking past the last visible row scrolls the view to follow.
+    for _ in 0..40 {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    assert_eq!(app.findings_selection, 29, "clamped to the last finding");
+    assert!(app.layout.view(ViewId::Findings).scroll > 0);
     assert_eq!(app.layout.output.scroll, 0);
 }
 

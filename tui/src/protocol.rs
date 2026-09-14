@@ -261,6 +261,34 @@ pub enum BackendEvent {
     },
 }
 
+/// A typed pointer into the per-run evidence tree. The protocol carries
+/// references, not evidence bodies, so the TUI can only list them.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct EvidenceRef {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+impl EvidenceRef {
+    /// Human-readable one-liner: `kind path (request_id)`.
+    pub fn label(&self) -> String {
+        let mut label = String::new();
+        if !self.kind.is_empty() {
+            label.push_str(&self.kind);
+            label.push(' ');
+        }
+        label.push_str(&self.path);
+        if let Some(request_id) = self.request_id.as_deref().filter(|id| !id.is_empty()) {
+            label.push_str(&format!(" ({request_id})"));
+        }
+        label
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Finding {
     pub id: String,
@@ -271,6 +299,10 @@ pub struct Finding {
     pub code_location: Option<String>,
     #[serde(default)]
     pub chain_depends_on: Vec<String>,
+    /// Evidence the backend attached to this finding. The schema already
+    /// carried these; the client simply was not reading them.
+    #[serde(default)]
+    pub evidence_refs: Vec<EvidenceRef>,
 }
 
 impl Finding {
