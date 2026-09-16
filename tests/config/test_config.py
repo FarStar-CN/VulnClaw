@@ -252,8 +252,9 @@ class TestVulnClawConfig:
     def test_builtin_mcp_server_count(self):
         from vulnclaw.config.schema import BUILTIN_MCP_SERVERS
 
-        # Should have 4 builtin servers (fetch, memory, chrome-devtools, burp)
-        assert len(BUILTIN_MCP_SERVERS) == 4
+        # Should have 5 builtin servers (fetch, memory, chrome-devtools, burp,
+        # scanmalware)
+        assert len(BUILTIN_MCP_SERVERS) == 5
 
     def test_burp_uses_sse_transport(self):
         from vulnclaw.config.schema import BUILTIN_MCP_SERVERS
@@ -261,6 +262,16 @@ class TestVulnClawConfig:
         transport = BUILTIN_MCP_SERVERS["burp"]["transport"]
         assert transport["type"] == "sse"
         assert transport["url"] == "http://127.0.0.1:9876"
+
+    def test_scanmalware_uses_streamable_http_transport(self):
+        from vulnclaw.config.schema import BUILTIN_MCP_SERVERS
+
+        server = BUILTIN_MCP_SERVERS["scanmalware"]
+        transport = server["transport"]
+        assert transport["type"] == "streamable-http"
+        assert transport["url"] == "https://mcp.scanmalware.com/mcp"
+        # Remote third-party service: must not auto-start.
+        assert server["enabled"] is False
 
     def test_provider_presets(self):
         from vulnclaw.config.schema import PROVIDER_PRESETS

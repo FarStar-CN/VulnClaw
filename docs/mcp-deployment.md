@@ -2,7 +2,7 @@
 
 ## 概览
 
-VulnClaw 保留 4 个 MCP 服务，其中 2 个本地实现开箱即用，2 个需部署外部服务。
+VulnClaw 保留 5 个 MCP 服务，其中 2 个本地实现开箱即用，2 个需部署外部服务，1 个为远程托管服务。
 
 | 服务 | 模式 | 状态 | 用途 |
 |---|---|---|---|
@@ -10,6 +10,7 @@ VulnClaw 保留 4 个 MCP 服务，其中 2 个本地实现开箱即用，2 个�
 | memory | 本地 (JSON) | 开箱即用 | 跨会话记忆持久化 |
 | chrome-devtools | stdio MCP | 需部署 | 浏览器自动化/JS 执行/截图 |
 | burp | stdio MCP | 需部署 | 抓包/重放/HTTP 拦截（替代 Yakit） |
+| scanmalware | 远程 streamable-http | 开箱即用（默认关闭） | URL/域名威胁情报、沙箱扫描结论、CT/DNS 与基础设施关联 |
 
 `fetch` 是内置本地工具，无需启动外部 MCP 服务。默认行为是直接发送 `GET` 请求并返回完整响应 body；模型可按需指定 `method`、`headers`、`params`、`cookies`、`body`、`data`、`form`、`json`、`timeout`、`follow_redirects`、`verify_tls` 和 `max_body_chars`。`max_body_chars` 省略或设为 `0` 表示不裁剪，只有正整数才限制响应 body 长度。为适配 CTF/靶场中的自签 HTTPS，`verify_tls` 默认关闭；需要严格证书校验时显式设为 `true`。
 
@@ -170,6 +171,63 @@ VulnClaw 直接连接 Burp 扩展暴露的 SSE 服务，不再通过 `java -jar`
 
 ---
 
+## 3. ScanMalware MCP（远程托管，URL/域名威胁情报）
+
+### 仓库
+
+- MCP 服务端点: <https://mcp.scanmalware.com/mcp>
+- 开源实现: <https://github.com/scanmalware/mcp-server>（Apache-2.0）
+- API 文档: <https://scanmalware.com/api-docs>
+
+### 前置条件
+
+无需安装、无需启动本地进程、无需 API Key。这是一个由第三方（Triop AB）托管的远程服务，
+VulnClaw 通过 streamable-http 直接连接。
+
+> ⚠️ **隐私提示**：启用后，你查询的域名与 URL 会发送到 scanmalware.com。
+> 因此该服务在 `BUILTIN_MCP_SERVERS` 中默认 `enabled: false`，需要显式开启。
+
+### VulnClaw 配置
+
+默认已内置，只需启用：
+
+```bash
+vulnclaw config set mcp.servers.scanmalware.enabled true
+```
+
+或编辑 `~/.vulnclaw/config.yaml`：
+
+```yaml
+mcp:
+  servers:
+    scanmalware:
+      enabled: true
+      transport:
+        type: streamable-http
+        url: https://mcp.scanmalware.com/mcp
+```
+
+匿名调用限速为 600 次/分钟。如需更高配额，可在 `transport.env` 中加入 HTTP 头
+（streamable-http 下 `env` 即为请求头）。
+
+### 提供的能力（128 个工具）
+
+- **扫描**: 提交 URL 在沙箱浏览器中渲染，获取结论、截图、网络请求
+- **威胁判定**: `security_verdict`（risk_level / confidence / risk_factors）、YARA 匹配、IDS 告警
+- **基础设施关联**: 域名 ↔ IP ↔ ASN、JARM、TLS/RDAP、证书透明度（CT）记录与相似域名
+- **指纹关联**: favicon mmh3、截图哈希、TLSH/ssdeep 模糊哈希、JavaScript 指纹
+- **内容检索**: OCR 文本、页面技术栈、剪贴板劫持（pastejacking）事件
+- **SMQL**: 120+ 过滤条件的扫描归档检索
+
+### 渗透测试场景
+
+- 判断目标域名是否已被他人扫描过，以及历史结论
+- 通过 favicon / JARM / 截图哈希发现同一攻击者的其他基础设施
+- 用 CT 记录枚举子域名与相似的钓鱼域名
+- 在钓鱼研判中查看页面被渲染后的真实跳转链与 JS 行为
+
+---
+
 ## 快速验证
 
 ### 验证 Chrome DevTools MCP
@@ -192,6 +250,19 @@ vulnclaw chat
 
 # 3. 输入测试命令
 > 查看 Burp 抓包历史
+```
+
+### 验证 ScanMalware MCP
+
+```bash
+# 1. 启用（无需部署任何服务）
+vulnclaw config set mcp.servers.scanmalware.enabled true
+
+# 2. 启动 VulnClaw
+vulnclaw chat
+
+# 3. 输入测试命令
+> 查一下 example.com 在 ScanMalware 上的扫描结论
 ```
 
 ---
