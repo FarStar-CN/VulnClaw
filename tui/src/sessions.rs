@@ -54,21 +54,28 @@ impl SessionState {
         );
         app.command_history = self.history;
         app.clear_composer();
-        app.findings_scroll = 0;
-        app.transcript_scroll = 0;
+        app.layout
+            .view_mut(crate::workbench::ViewId::Findings)
+            .scroll = 0;
+        app.layout.output.scroll = 0;
     }
 }
 
+pub fn client_dir() -> PathBuf {
+    expand_home(
+        std::env::var_os("VULNCLAW_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("~").join(".vulnclaw"))
+            .join("tui"),
+    )
+}
+
 pub fn session_path() -> PathBuf {
-    std::env::var_os("VULNCLAW_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~").join(".vulnclaw"))
-        .join("tui")
-        .join("session.json")
+    client_dir().join("session.json")
 }
 
 pub fn save(state: &SessionState) -> io::Result<PathBuf> {
-    let path = expand_home(session_path());
+    let path = session_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -80,7 +87,7 @@ pub fn save(state: &SessionState) -> io::Result<PathBuf> {
 }
 
 pub fn load() -> io::Result<SessionState> {
-    let path = expand_home(session_path());
+    let path = session_path();
     serde_json::from_slice(&fs::read(path)?).map_err(io::Error::other)
 }
 

@@ -248,6 +248,7 @@ class TaskService:
                 member=record,
                 member_event="created",
             )
+        self._emit_agent(record)
         return record
 
     def _admit_leaf(self, parent: TaskContext, spec: AgentSpec) -> None:
@@ -303,6 +304,7 @@ class TaskService:
                 record.status = TaskStatus.RUNNING
                 record.started_at = time.monotonic()
                 record.revision += 1
+                self._emit_agent(record)
                 if record.definition.session_kind == "group_leader":
                     self._emit_group(
                         record,
@@ -474,6 +476,7 @@ class TaskService:
         record.result = result
         record.error = str(error or "")
         record.revision += 1
+        self._emit_agent(record)
         if record.definition.session_kind == "group_leader":
             kind = {
                 TaskStatus.COMPLETED: "group_finished",
@@ -495,6 +498,24 @@ class TaskService:
                 member=record,
                 member_event="terminal",
             )
+
+    def _emit_agent(self, record: TaskRecord) -> None:
+        if self._event_sink is None:
+            return
+        try:
+            self._event_sink(
+                "subagent",
+                {
+                    "agent_id": record.task_id,
+                    "parent_id": record.parent_id,
+                    "group_id": record.context.group_id if record.context else "",
+                    "name": record.name,
+                    "agent_type": record.definition.name,
+                    "status": record.status.value,
+                },
+            )
+        except Exception:
+            return
 
     def _emit_group_progress(
         self,

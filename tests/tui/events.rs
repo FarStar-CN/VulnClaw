@@ -1,10 +1,11 @@
 use std::sync::mpsc;
+use vulnclaw_tui::workbench::ViewId;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use vulnclaw_tui::{
-    app::{ActivePane, App, ExecutionMode, PermissionMode},
-    events::handle_key,
+    app::{App, ExecutionMode, PermissionMode},
+    events::{handle_key, handle_mouse},
 };
 
 #[test]
@@ -24,16 +25,382 @@ fn tab_cycles_execution_mode_and_shift_tab_cycles_permission() {
     assert_eq!(app.permission, PermissionMode::Ask);
 }
 
+fn mouse(app: &mut App, kind: MouseEventKind, x: u16, y: u16) {
+    handle_mouse(
+        app,
+        MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+}
+
 #[test]
-fn arrows_scroll_the_selected_inspector() {
+fn wheel_routes_to_hovered_content_and_preserves_other_view_scrolls_and_focus() {
     let (sender, _) = mpsc::channel();
     let mut app = App::new_disconnected(sender);
-    app.active_pane = ActivePane::Findings;
+    app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
+    app.findings = (0..30)
+        .map(|_| vulnclaw_tui::protocol::Finding::default())
+        .collect();
+    app.layout.primary.push(app.layout.secondary.remove(0));
+    app.layout.focus = ViewId::Output;
+    app.layout.output.scroll = 2;
+    app.layout.output.follow = false;
+    let geometry = app.geometry(app.terminal_size);
+    let findings = geometry.view(ViewId::Findings).unwrap();
+    let status = geometry.view(ViewId::Status).unwrap();
+    mouse(
+        &mut app,
+        MouseEventKind::ScrollDown,
+        findings.content.x,
+        findings.content.y,
+    );
+    assert_eq!(app.layout.view(ViewId::Findings).scroll, 1);
+    assert_eq!(app.layout.view(ViewId::Status).scroll, 0);
+    assert_eq!(app.layout.output.scroll, 2);
+    assert_eq!(app.layout.focus, ViewId::Output);
+    mouse(
+        &mut app,
+        MouseEventKind::ScrollDown,
+        status.content.x,
+        status.content.y,
+    );
+    assert_eq!(app.layout.view(ViewId::Status).scroll, 1);
+    assert_eq!(app.layout.view(ViewId::Findings).scroll, 1);
+    for rect in [findings.title, geometry.header, geometry.sashes[0].rect] {
+        mouse(&mut app, MouseEventKind::ScrollDown, rect.x, rect.y);
+    }
+    assert_eq!(app.layout.view(ViewId::Findings).scroll, 1);
+    assert_eq!(app.layout.output.scroll, 2);
+}
+
+#[test]
+fn escape_restores_every_view_the_resize_moved() {
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
+    let geometry = app.geometry(app.terminal_size);
+    let upper = geometry.view(ViewId::Status).unwrap().rect;
+    let lower = geometry.view(ViewId::Capabilities).unwrap().rect;
+    assert_eq!(upper.bottom(), lower.y);
+
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        upper.x + 3,
+        upper.bottom() - 1,
+    );
+    mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        upper.x + 3,
+        upper.bottom() + 4,
+    );
+    let dragged = app.geometry(app.terminal_size);
+    assert_eq!(
+        dragged.view(ViewId::Status).unwrap().rect.height,
+        upper.height + 5
+    );
+    assert_eq!(
+        dragged.view(ViewId::Capabilities).unwrap().rect.height,
+        lower.height - 5
+    );
+
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let restored = app.geometry(app.terminal_size);
+    assert_eq!(
+        restored.view(ViewId::Status).unwrap().rect.height,
+        upper.height
+    );
+    assert_eq!(
+        restored.view(ViewId::Capabilities).unwrap().rect.height,
+        lower.height
+    );
+    assert!(app.layout_gesture.is_none());
+}
+
+#[test]
+fn dragging_commits_on_release_and_escape_restores_sash_sizes() {
+    use vulnclaw_tui::workbench::{ContainerId, Gesture, SashId};
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
+    let geometry = app.geometry(app.terminal_size);
+    let title = geometry.view(ViewId::Status).unwrap().title;
+    let target = geometry.container(ContainerId::Secondary);
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        title.x + 3,
+        title.y,
+    );
+    mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        target.x + 3,
+        target.y,
+    );
+    assert_eq!(app.layout.primary[0].id, ViewId::Status);
+    assert!(matches!(
+        app.layout_gesture,
+        Some(Gesture::Move {
+            target: Some(_),
+            ..
+        })
+    ));
+    mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        target.x + 3,
+        target.y,
+    );
+    assert_eq!(
+        app.layout
+            .primary
+            .iter()
+            .map(|view| view.id)
+            .collect::<Vec<_>>(),
+        [ViewId::Capabilities],
+        "the primary container keeps its other view"
+    );
+    assert_eq!(app.layout.secondary[0].id, ViewId::Status);
+    assert_eq!(app.layout.focus, ViewId::Status);
+    assert!(app.layout_gesture.is_none());
+
+    let geometry = app.geometry(app.terminal_size);
+    let sash = geometry
+        .sashes
+        .iter()
+        .find(|sash| sash.id == SashId::Primary)
+        .unwrap()
+        .rect;
+    let last_title = geometry.view(ViewId::Capabilities).unwrap().title;
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        last_title.x + 3,
+        last_title.y,
+    );
+    mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        target.x + 3,
+        target.y,
+    );
+    assert!(matches!(
+        app.layout_gesture,
+        Some(Gesture::Move { target: None, .. })
+    ));
+    mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        target.x + 3,
+        target.y,
+    );
+    assert_eq!(app.layout.primary[0].id, ViewId::Capabilities);
+    assert_eq!(app.layout.secondary[0].id, ViewId::Status);
+
+    let width = app.layout.primary_width;
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        sash.x,
+        sash.y,
+    );
+    mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        sash.x + 4,
+        sash.y,
+    );
+    assert_eq!(app.layout.primary_width, width + 4);
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.layout.primary_width, width);
+    assert!(app.layout_gesture.is_none());
+
+    // Resize at the upper view's bottom edge, then reorder using the next title.
+    let geometry = app.geometry(app.terminal_size);
+    let upper = geometry.view(ViewId::Status).unwrap().rect;
+    let lower = geometry.view(ViewId::Findings).unwrap().rect;
+    assert_eq!(upper.bottom(), lower.y);
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        upper.x + 3,
+        upper.bottom() - 1,
+    );
+    assert!(matches!(
+        app.layout_gesture,
+        Some(Gesture::Resize {
+            sash: SashId::Views(ContainerId::Secondary, 0),
+            ..
+        })
+    ));
+    mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        upper.x + 3,
+        upper.bottom(),
+    );
+    mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        upper.x + 3,
+        upper.bottom(),
+    );
+    let geometry = app.geometry(app.terminal_size);
+    assert_eq!(
+        geometry.view(ViewId::Status).unwrap().rect.height,
+        upper.height + 1
+    );
+    assert_eq!(
+        geometry.view(ViewId::Findings).unwrap().rect.height,
+        lower.height - 1
+    );
+    let title = geometry.view(ViewId::Findings).unwrap().title;
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        title.x + 3,
+        title.y,
+    );
+    assert!(matches!(
+        app.layout_gesture,
+        Some(Gesture::Move {
+            id: ViewId::Findings,
+            ..
+        })
+    ));
+    mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        upper.x + 3,
+        upper.y,
+    );
+    mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        upper.x + 3,
+        upper.y,
+    );
+    assert_eq!(app.layout.secondary[0].id, ViewId::Findings);
+
+    // A collapsed title remains both clickable and draggable next to a resize edge.
+    let geometry = app.geometry(app.terminal_size);
+    let title = geometry.view(ViewId::Status).unwrap().title;
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        title.x + 1,
+        title.y,
+    );
+    mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        title.x + 1,
+        title.y,
+    );
+    assert!(app.layout.view(ViewId::Status).collapsed);
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        title.x + 3,
+        title.y,
+    );
+    assert!(matches!(
+        app.layout_gesture,
+        Some(Gesture::Move {
+            id: ViewId::Status,
+            ..
+        })
+    ));
+    let target = app
+        .geometry(app.terminal_size)
+        .container(ContainerId::Primary);
+    mouse(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        target.x + 3,
+        target.y,
+    );
+    mouse(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        target.x + 3,
+        target.y,
+    );
+    assert_eq!(app.layout.primary[0].id, ViewId::Status);
+    assert!(app.layout.primary[0].collapsed);
+    assert_eq!(app.layout.focus, ViewId::Status);
+}
+
+#[test]
+fn modal_and_attack_chain_capture_workbench_mouse_and_paste_events() {
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 30);
+    app.findings = (0..30)
+        .map(|_| vulnclaw_tui::protocol::Finding::default())
+        .collect();
+    let content = app
+        .geometry(app.terminal_size)
+        .view(ViewId::Findings)
+        .unwrap()
+        .content;
+    app.pending_task = Some("/run target.test".into());
+    mouse(&mut app, MouseEventKind::ScrollDown, content.x, content.y);
+    assert_eq!(app.layout.view(ViewId::Findings).scroll, 0);
+    app.pending_task = None;
+    app.show_attack_chain = true;
+    mouse(&mut app, MouseEventKind::ScrollDown, content.x, content.y);
+    assert_eq!(app.layout.view(ViewId::Findings).scroll, 0);
+    app.show_attack_chain = false;
+    app.active_task_id = Some("task-1".into());
+    app.apply_event(approval_event("task-1", "whoami"));
+    mouse(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        content.x,
+        content.y,
+    );
+    mouse(&mut app, MouseEventKind::ScrollDown, content.x, content.y);
+    assert_eq!(app.layout.view(ViewId::Findings).scroll, 0);
+    assert_eq!(app.layout.focus, ViewId::Output);
+    assert!(app.pending_execution.is_some());
+    vulnclaw_tui::events::handle_paste(&mut app, "/run pasted.example");
+    assert!(app.input.is_empty());
+    app.pending_execution = None;
+    vulnclaw_tui::events::handle_paste(&mut app, "/help");
+    assert_eq!(app.input, "/help");
+}
+
+#[test]
+fn arrows_move_the_findings_selection_and_leave_other_views_alone() {
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.terminal_size = ratatui::layout::Rect::new(0, 0, 120, 28);
+    app.findings = (0..30)
+        .map(|_| vulnclaw_tui::protocol::Finding::default())
+        .collect();
+    app.layout.focus = ViewId::Findings;
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
-    assert_eq!(app.findings_scroll, 1);
-    assert_eq!(app.transcript_scroll, 0);
+    assert_eq!(app.findings_selection, 1);
+    // The row is already on screen, so nothing scrolls yet.
+    assert_eq!(app.layout.view(ViewId::Findings).scroll, 0);
+    assert_eq!(app.layout.output.scroll, 0);
+
+    // Walking past the last visible row scrolls the view to follow.
+    for _ in 0..40 {
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    assert_eq!(app.findings_selection, 29, "clamped to the last finding");
+    assert!(app.layout.view(ViewId::Findings).scroll > 0);
+    assert_eq!(app.layout.output.scroll, 0);
 }
 
 #[test]

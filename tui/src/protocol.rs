@@ -178,25 +178,44 @@ pub enum BackendEvent {
         task: Value,
         state: StateSnapshot,
     },
+    Subagent {
+        task_id: String,
+        #[serde(flatten)]
+        agent: SubagentInfo,
+    },
     Status {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         status: String,
     },
     Reasoning {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         text: String,
+        #[serde(default)]
+        append: bool,
     },
     Log {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         message: String,
+        #[serde(default)]
+        append: bool,
     },
     ToolCall {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         tool: String,
         arguments: String,
     },
     ToolResult {
         task_id: String,
+        #[serde(default)]
+        agent_id: Option<String>,
         result: String,
     },
     Finding {
@@ -261,6 +280,44 @@ pub enum BackendEvent {
     },
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct SubagentInfo {
+    pub agent_id: String,
+    pub parent_id: String,
+    pub group_id: String,
+    pub name: String,
+    pub agent_type: String,
+    pub status: String,
+}
+
+/// A typed pointer into the per-run evidence tree. The protocol carries
+/// references, not evidence bodies, so the TUI can only list them.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct EvidenceRef {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+impl EvidenceRef {
+    /// Human-readable one-liner: `kind path (request_id)`.
+    pub fn label(&self) -> String {
+        let mut label = String::new();
+        if !self.kind.is_empty() {
+            label.push_str(&self.kind);
+            label.push(' ');
+        }
+        label.push_str(&self.path);
+        if let Some(request_id) = self.request_id.as_deref().filter(|id| !id.is_empty()) {
+            label.push_str(&format!(" ({request_id})"));
+        }
+        label
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Finding {
     pub id: String,
@@ -271,6 +328,10 @@ pub struct Finding {
     pub code_location: Option<String>,
     #[serde(default)]
     pub chain_depends_on: Vec<String>,
+    /// Evidence the backend attached to this finding. The schema already
+    /// carried these; the client simply was not reading them.
+    #[serde(default)]
+    pub evidence_refs: Vec<EvidenceRef>,
 }
 
 impl Finding {

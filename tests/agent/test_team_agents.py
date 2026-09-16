@@ -394,3 +394,76 @@ async def test_team_run_does_not_start_more_workers_than_remaining_step_budget()
     )
 
     assert FakeAgent.solve_order == ["researcher"]
+
+
+@pytest.mark.asyncio
+async def test_each_dispatched_step_is_recorded_under_the_leader_node():
+    from vulnclaw.agent.team import LEADER_ROLE, TeamPlan, TeamStep, run_team_pentest
+
+    root = FakeAgent()
+    roles = ["researcher", "executor", "developer"]
+    plan = TeamPlan(
+        steps=[
+            TeamStep(role=role, objective=f"{role} work", done_when=f"{role} done")
+            for role in roles
+        ]
+    )
+    result = await run_team_pentest(
+        root,
+        user_input="Capture the flag",
+        target="https://example.com",
+        planner=lambda agent, origin, goal, facts: plan,
+        adviser=lambda agent, origin, goal, step, step_result: {"action": "continue"},
+        agent_factory=lambda: FakeAgent(),
+        max_steps=8,
+    )
+
+    graph = root.agent_graph
+    snapshot = graph.view_graph()
+    assert snapshot.root_id is not None
+
+    nodes = {node.id: node for node in snapshot.nodes}
+    leader = nodes[snapshot.root_id]
+    assert leader.role == LEADER_ROLE
+    assert leader.parent_id is None
+    assert leader.status.value == "done"
+    assert leader.outcome.value == "finished"
+
+    # Every planned step became a finished child of the leader.
+    assert [step.role for step in result.plan.steps] == roles
+    children = [node for node in snapshot.nodes if node.parent_id == snapshot.root_id]
+    assert sorted(child.role for child in children) == sorted(roles)
+    assert all(child.status.value == "done" for child in children)
+    assert len(snapshot.nodes) == len(roles) + 1, "leader plus one node per step"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_step_is_recorded_as_failed_rather_than_dropped():
+    from vulnclaw.agent.team import run_team_pentest
+
+    class ExplodingAgent(FakeAgent):
+        async def solve(self, prompt, **kwargs):
+            raise RuntimeError("worker exploded")
+
+    root = FakeAgent()
+
+    await run_team_pentest(
+        root,
+        user_input="Capture the flag",
+        target="https://example.com",
+        # An empty plan takes the documented single-executor fallback.
+        planner=lambda agent, origin, goal, facts: {"steps": []},
+        adviser=lambda agent, origin, goal, step, step_result: {"action": "continue"},
+        agent_factory=ExplodingAgent,
+        max_steps=4,
+    )
+
+    children = [
+        node
+        for node in root.agent_graph.view_graph().nodes
+        if node.parent_id == root.agent_graph.root_id
+    ]
+    assert len(children) == 1
+    assert children[0].status.value == "done"
+    assert children[0].outcome.value == "failed"
+    assert "worker exploded" in (children[0].error or "")

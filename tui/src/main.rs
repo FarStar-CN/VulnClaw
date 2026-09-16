@@ -3,7 +3,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, Event, MouseEventKind},
+    cursor::Show,
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -18,46 +19,50 @@ use vulnclaw_tui::{events, ui, App, AppEvent};
 
 fn main() -> io::Result<()> {
     enable_raw_mode()?;
-    let mut terminal_stdout = stdout();
-    execute!(terminal_stdout, EnterAlternateScreen)?;
+    let result = (|| {
+        let mut terminal_stdout = stdout();
+        execute!(terminal_stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        #[cfg(unix)]
+        execute!(terminal_stdout, EnableBracketedPaste)?;
+        let backend = CrosstermBackend::new(terminal_stdout);
+        let mut terminal = Terminal::new(backend)?;
+        run(&mut terminal)
+    })();
+    let raw_result = disable_raw_mode();
+    let screen_result = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen, Show);
     #[cfg(unix)]
-    execute!(terminal_stdout, EnableBracketedPaste)?;
-    let backend = CrosstermBackend::new(terminal_stdout);
-    let mut terminal = Terminal::new(backend)?;
-    let result = run(&mut terminal);
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    #[cfg(unix)]
-    execute!(terminal.backend_mut(), DisableBracketedPaste)?;
-    terminal.show_cursor()?;
-    result
+    let result = result.and(execute!(stdout(), DisableBracketedPaste));
+    result.and(raw_result).and(screen_result)
 }
 
 fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> io::Result<()> {
     let (sender, receiver) = mpsc::channel::<AppEvent>();
     let mut app = App::new(sender);
+    app.load_layout(vulnclaw_tui::sessions::client_dir().join("layout.json"));
     while app.running {
-        let mut drawn_area = Rect::default();
-        // Pin the Session transcript to the newest output before each paint,
-        // unless the user has scrolled up to read history (which clears follow).
-        app.autoscroll_transcript();
-        terminal.draw(|frame| {
-            drawn_area = frame.area();
-            ui::draw(frame, &app);
-        })?;
-        app.terminal_size = drawn_area;
         while let Ok(event) = receiver.try_recv() {
             app.apply_event(event);
         }
+        let size = terminal.size()?;
+        let area = Rect::new(0, 0, size.width, size.height);
+        if area != app.terminal_size
+            || app.pending_execution.is_some()
+            || app.pending_task.is_some()
+        {
+            app.cancel_layout_gesture();
+        }
+        app.terminal_size = area;
+        app.refresh_view_scrolls();
+        terminal.draw(|frame| ui::draw(frame, &app))?;
         if event::poll(Duration::from_millis(75))? {
             match event::read()? {
                 Event::Key(key) => events::handle_key(&mut app, key),
-                Event::Paste(text) => app.insert_text(&text),
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => app.scroll_active_pane(false),
-                    MouseEventKind::ScrollDown => app.scroll_active_pane(true),
-                    _ => {}
-                },
+                Event::Paste(text) => events::handle_paste(&mut app, &text),
+                Event::Mouse(mouse) => events::handle_mouse(&mut app, mouse),
+                Event::Resize(width, height) => {
+                    app.cancel_layout_gesture();
+                    app.terminal_size = Rect::new(0, 0, width, height);
+                }
                 _ => {}
             }
         }

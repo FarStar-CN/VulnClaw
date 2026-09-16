@@ -210,15 +210,59 @@ class OpenAIStructuredDistiller:
         kwargs = build_chat_completion_kwargs(
             self._llm_config, messages, max_tokens=1200, temperature=0.0
         )
-        kwargs["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": "lesson_candidates", "strict": True, "schema": _LESSON_SCHEMA},
-        }
-        response = self._client.chat.completions.create(**kwargs)
+        response = None
+        last_error: Exception | None = None
+        for response_format in _response_format_attempts(self._llm_config):
+            attempt = dict(kwargs)
+            if response_format is not None:
+                attempt["response_format"] = response_format
+            try:
+                response = self._client.chat.completions.create(**attempt)
+                break
+            except Exception as exc:
+                if not _rejects_response_format(exc):
+                    raise
+                last_error = exc
+        if response is None:
+            raise last_error if last_error is not None else RuntimeError("distiller request failed")
         choices = getattr(response, "choices", []) or []
         if not choices:
             return []
         return getattr(getattr(choices[0], "message", None), "content", "") or ""
+
+
+def _response_format_attempts(llm_config: Any) -> list[dict[str, Any] | None]:
+    """Ordered `response_format` values to try, richest first.
+
+    `json_schema` is an OpenAI-only structured-output mode; DeepSeek and most
+    other OpenAI-compatible providers reject it outright with a 400. Fall back to
+    `json_object`, and finally to no constraint at all -- the system prompt still
+    demands schema-shaped JSON and the parser tolerates fences.
+    """
+
+    attempts: list[dict[str, Any] | None] = []
+    provider = str(getattr(llm_config, "provider", "") or "").lower()
+    if provider in {"openai", "azure", "azure_openai"}:
+        attempts.append(
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "lesson_candidates",
+                    "strict": True,
+                    "schema": _LESSON_SCHEMA,
+                },
+            }
+        )
+    attempts.append({"type": "json_object"})
+    attempts.append(None)
+    return attempts
+
+
+def _rejects_response_format(exc: Exception) -> bool:
+    """True when the provider refused the structured-output mode itself, which is
+    the only failure worth retrying without it."""
+
+    return "response_format" in str(exc).lower()
 
 
 def configured_distiller(config: Any) -> OpenAIStructuredDistiller:
@@ -335,10 +379,17 @@ def _invoke_llm(llm: Any, payload: dict[str, Any]) -> Any:
 
 def _extract_candidates(raw: Any) -> list[Any]:
     if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except json.JSONDecodeError:
-            return []
+        from vulnclaw.agent.solver import extract_json
+
+        # A provider that refused a structured-output mode may wrap the payload
+        # in think tags, prose or code fences.
+        payload = extract_json(raw)
+        if payload is None:
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+        raw = payload
     if isinstance(raw, Mapping):
         raw = raw.get("lessons", raw.get("candidates", []))
     return raw if isinstance(raw, list) else []

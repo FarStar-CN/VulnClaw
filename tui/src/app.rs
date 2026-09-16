@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
@@ -9,12 +9,13 @@ use crate::prompts::text;
 use crate::protocol::{AppEvent, BackendEvent, ClientRequest, Finding, StateSnapshot};
 use crate::sessions::{self, SessionState};
 use crate::skills::catalog::{skill_tree, SkillNode};
+use crate::workbench::{Gesture, LayoutGeometry, LayoutState, ViewId};
 
 use ratatui::{
     backend::TestBackend,
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    layout::Rect,
+    widgets::{Paragraph, Wrap},
     Terminal,
 };
 
@@ -198,32 +199,7 @@ impl PendingExecution {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ActivePane {
-    Workspace,
-    Transcript,
-    Findings,
-}
-
-impl ActivePane {
-    pub fn next(self) -> Self {
-        match self {
-            Self::Workspace => Self::Transcript,
-            Self::Transcript => Self::Findings,
-            Self::Findings => Self::Workspace,
-        }
-    }
-
-    pub fn previous(self) -> Self {
-        match self {
-            Self::Workspace => Self::Findings,
-            Self::Transcript => Self::Workspace,
-            Self::Findings => Self::Transcript,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum TranscriptKind {
     User,
     System,
@@ -268,6 +244,17 @@ const LOCAL_SLASH_COMMANDS: &[(&str, &str)] = &[
 
 const MAX_COMMAND_HISTORY: usize = 50;
 
+/// Rows the composer frame occupies: top rule, input row, bottom rule.
+pub const COMPOSER_FRAME_ROWS: u16 = 3;
+/// Rows for the mode / guard / model line beneath the composer frame. These
+/// indicators used to live in the header; they moved down so the header carries
+/// only brand, live worker state and the provider badge.
+pub const COMPOSER_STATUS_ROWS: u16 = 1;
+/// Rows the command palette occupies above the composer.
+pub const PALETTE_ROWS: u16 = 6;
+/// Rows the blocking task-confirmation box occupies.
+pub const CONFIRM_BOX_ROWS: u16 = 3;
+
 #[derive(Clone, Debug)]
 pub struct OperationReceipt {
     pub command: String,
@@ -289,7 +276,9 @@ enum PendingRequest {
 pub struct App {
     pub mode: ExecutionMode,
     pub permission: PermissionMode,
-    pub active_pane: ActivePane,
+    pub layout: LayoutState,
+    pub layout_gesture: Option<Gesture>,
+    pub layout_path: Option<std::path::PathBuf>,
     pub input: String,
     pub input_cursor: usize,
     /// Outstanding ExecutionGate request rendered as a blocking modal.
@@ -300,14 +289,13 @@ pub struct App {
     history_index: Option<usize>,
     history_draft: String,
     pub transcript: Vec<TranscriptItem>,
+    pub subagents: crate::subagents::Subagents,
     pub findings: Vec<Finding>,
-    pub findings_scroll: u16,
-    pub transcript_scroll: u16,
-    /// When true the Session transcript tracks new output automatically,
-    /// pinning the view to the bottom as lines arrive. Set false the moment the
-    /// user scrolls up to read history; re-enabled once they scroll back to the
-    /// bottom. See `autoscroll_transcript`.
-    pub transcript_follow: bool,
+    /// Finding whose evidence references are expanded. At most one at a time,
+    /// so the list does not grow without bound while comparing findings.
+    pub expanded_finding: Option<String>,
+    /// Row the Findings view has selected, as an index into `findings`.
+    pub findings_selection: usize,
     pub palette_selection: usize,
     pub show_reasoning: bool,
     pub running: bool,
@@ -317,6 +305,11 @@ pub struct App {
     pub backend_ready: bool,
     pub backend_pid: Option<u32>,
     pub config_ready: Option<bool>,
+    /// LLM provider and model reported by the backend in `ready.runtime`.
+    /// Captured once when the backend starts; it loads config a single time, so
+    /// switching provider elsewhere shows up only after the TUI is restarted.
+    pub provider: Option<String>,
+    pub model: Option<String>,
     /// Task verbs advertised by the backend in `ready.capabilities.commands`.
     /// Local presentation commands such as `/help` are deliberately separate.
     pub backend_commands: Vec<String>,
@@ -366,7 +359,9 @@ impl App {
         Self {
             mode: ExecutionMode::Agent,
             permission: PermissionMode::Ask,
-            active_pane: ActivePane::Transcript,
+            layout: LayoutState::default(),
+            layout_gesture: None,
+            layout_path: None,
             input: String::new(),
             input_cursor: 0,
             pending_execution: None,
@@ -383,10 +378,10 @@ impl App {
                     text: text::READY.to_owned(),
                 },
             ],
+            subagents: crate::subagents::Subagents::default(),
             findings: Vec::new(),
-            findings_scroll: 0,
-            transcript_scroll: 0,
-            transcript_follow: true,
+            expanded_finding: None,
+            findings_selection: 0,
             palette_selection: 0,
             show_reasoning: true,
             running: true,
@@ -395,6 +390,8 @@ impl App {
             backend_ready: false,
             backend_pid: None,
             config_ready: None,
+            provider: None,
+            model: None,
             backend_commands: Vec::new(),
             backend_control_operations: Vec::new(),
             backend_supports_cancellation: false,
@@ -488,8 +485,8 @@ impl App {
             ));
         } else if command == "/clear" {
             self.transcript.clear();
-            self.transcript_scroll = 0;
-            self.transcript_follow = true;
+            self.layout.output.scroll = 0;
+            self.layout.output.follow = true;
             self.status("Transcript cleared. Findings remain available in the inspector.");
         } else if command == "/report" {
             self.status(
@@ -558,136 +555,143 @@ impl App {
         }
     }
 
-    pub fn cycle_active_pane(&mut self, backwards: bool) {
-        self.active_pane = if backwards {
-            self.active_pane.previous()
+    pub fn required_input_height(&self) -> u16 {
+        if self.pending_task.is_some() {
+            // The confirmation box replaces the framed input but still carries
+            // the mode/guard line beneath it.
+            CONFIRM_BOX_ROWS + COMPOSER_STATUS_ROWS
         } else {
-            self.active_pane.next()
-        };
-    }
-
-    pub fn scroll_active_pane(&mut self, down: bool) {
-        match self.active_pane {
-            // Findings keeps the original unbounded behaviour so a lone Down press
-            // still increments even when the list is short (preserves existing tests).
-            ActivePane::Findings => {
-                if down {
-                    self.findings_scroll = self.findings_scroll.saturating_add(1);
-                } else {
-                    self.findings_scroll = self.findings_scroll.saturating_sub(1);
-                }
-            }
-            ActivePane::Workspace | ActivePane::Transcript => {
-                let max = self.transcript_max_scroll();
-                if down {
-                    self.transcript_scroll = self.transcript_scroll.saturating_add(1);
-                } else {
-                    self.transcript_scroll = self.transcript_scroll.saturating_sub(1);
-                }
-                let max_u16 = u16::try_from(max).unwrap_or(u16::MAX);
-                if self.transcript_scroll > max_u16 {
-                    self.transcript_scroll = max_u16;
-                }
-                // Reaching the bottom resumes auto-follow; leaving it disables it.
-                self.transcript_follow = (self.transcript_scroll as usize) >= max;
-            }
+            let palette = if self.palette_visible() {
+                PALETTE_ROWS
+            } else {
+                0
+            };
+            palette + COMPOSER_FRAME_ROWS + COMPOSER_STATUS_ROWS
         }
     }
 
-    /// Rectangle of the Session transcript panel (the wide centre pane), computed
-    /// from the same split used by `ui::layout::render_workbench`. Independent of
-    /// which pane is currently focused so auto-follow always anchors the
-    /// transcript view, not the narrow Workspace sidebar.
-    fn transcript_panel_rect(&self) -> Rect {
-        let area = self.terminal_size;
-        let composer_height: u16 = if self.pending_task.is_some() {
-            3
-        } else if self.palette_visible() {
-            7
-        } else {
-            1
-        };
-        let workbench = Rect {
-            x: area.x,
-            y: area.y.saturating_add(2),
-            width: area.width,
-            height: area.height.saturating_sub(2 + composer_height + 1),
-        };
-        let panels = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(28),
-                Constraint::Min(36),
-                Constraint::Length(40),
-            ])
-            .split(workbench);
-        panels[1]
+    pub fn geometry(&self, area: Rect) -> LayoutGeometry {
+        LayoutGeometry::compute(area, &self.layout, self.required_input_height())
     }
 
-    /// Maximum vertical scroll offset for the transcript: total wrapped rows
-    /// minus the visible rows. Uses ratatui's own `Paragraph::line_count` so the
-    /// wrap accounting (CJK widths, word breaks) matches the real render exactly.
-    fn transcript_max_scroll(&self) -> usize {
-        let rect = self.transcript_panel_rect();
-        if rect.width < 3 || rect.height < 3 {
+    pub fn cycle_active_view(&mut self, backwards: bool) {
+        self.layout.cycle_focus(backwards);
+    }
+
+    pub fn scroll_active_view(&mut self, down: bool) {
+        self.scroll_view(self.layout.focus, down);
+    }
+
+    pub fn scroll_view(&mut self, id: ViewId, down: bool) {
+        if self.layout.view(id).collapsed {
+            return;
+        }
+        let geometry = self.geometry(self.terminal_size);
+        if geometry.too_small {
+            return;
+        }
+        let max = self.view_max_scroll(id, &geometry);
+        let view = self.layout.view_mut(id);
+        let current = view.scroll.min(max);
+        view.scroll = if down {
+            current.saturating_add(1).min(max)
+        } else {
+            current.saturating_sub(1)
+        };
+        if id == ViewId::Output {
+            view.follow = view.scroll == max;
+        }
+    }
+
+    fn view_max_scroll(&self, id: ViewId, geometry: &LayoutGeometry) -> u16 {
+        let Some(region) = geometry.view(id) else {
+            return 0;
+        };
+        if region.content.width == 0 || region.content.height == 0 {
             return 0;
         }
-        let inner_width = rect.width.saturating_sub(2);
-        let lines = crate::ui::transcript::build_lines(self);
-        let paragraph = Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL));
-        let total_rows = paragraph.line_count(inner_width);
-        total_rows.saturating_sub(rect.height as usize)
+        let total = match id {
+            ViewId::Output => Paragraph::new(crate::ui::transcript::build_lines(self))
+                .wrap(Wrap { trim: false })
+                .line_count(region.content.width),
+            ViewId::Status => Paragraph::new(crate::views::status::build_lines(self))
+                .wrap(Wrap { trim: false })
+                .line_count(region.content.width),
+            ViewId::Capabilities => Paragraph::new(crate::views::capabilities::build_lines(self))
+                .wrap(Wrap { trim: false })
+                .line_count(region.content.width),
+            ViewId::Findings => self.finding_rows(),
+            ViewId::Subagents => self.subagents.rows().len(),
+        };
+        u16::try_from(total.saturating_sub(usize::from(region.content.height))).unwrap_or(u16::MAX)
     }
 
-    /// Keep the transcript pinned to the newest output. Called once per frame
-    /// (before drawing) while `transcript_follow` is set; a manual scroll-up
-    /// clears the flag so we stop yanking the view away from the user.
-    pub fn autoscroll_transcript(&mut self) {
-        if self.transcript_follow {
-            self.transcript_scroll =
-                u16::try_from(self.transcript_max_scroll()).unwrap_or(u16::MAX);
+    pub fn refresh_view_scrolls(&mut self) {
+        let geometry = self.geometry(self.terminal_size);
+        if geometry.too_small {
+            return;
+        }
+        for region in &geometry.views {
+            if region.content.height == 0 {
+                continue;
+            }
+            let max = self.view_max_scroll(region.id, &geometry);
+            let view = self.layout.view_mut(region.id);
+            if region.id == ViewId::Output && view.follow {
+                view.scroll = max;
+            } else {
+                view.scroll = view.scroll.min(max);
+            }
         }
     }
 
-    pub fn active_pane_label(&self) -> &'static str {
-        match self.active_pane {
-            ActivePane::Workspace => "Workspace",
-            ActivePane::Transcript => "Session transcript",
-            ActivePane::Findings => "Findings inspector",
+    pub fn active_view_rect(&self, area: Rect) -> Rect {
+        self.geometry(area)
+            .view(self.layout.focus)
+            .map_or(Rect::default(), |view| view.rect)
+    }
+
+    pub fn load_layout(&mut self, path: std::path::PathBuf) {
+        match crate::preferences::load(&path) {
+            Ok(layout) => self.layout = layout,
+            Err(error) => {
+                self.layout = LayoutState::default();
+                self.toast = format!("Layout load failed: {error}; using defaults");
+            }
+        }
+        self.layout_path = Some(path);
+    }
+
+    pub fn save_layout(&mut self) {
+        if let Some(path) = &self.layout_path {
+            if let Err(error) = crate::preferences::save(path, &self.layout) {
+                self.toast = format!("Layout save failed: {error}");
+            }
         }
     }
 
-    /// Screen rectangle occupied by the currently focused workbench pane.
-    /// Mirrors the split used by `ui::layout::render_workbench` so the copied
-    /// region never bleeds into neighbouring panes.
-    pub fn active_pane_rect(&self, area: Rect) -> Rect {
-        let composer_height: u16 = if self.pending_task.is_some() {
-            3
-        } else if self.palette_visible() {
-            7
-        } else {
-            1
+    pub fn cancel_layout_gesture(&mut self) {
+        if let Some(gesture) = self.layout_gesture.take() {
+            self.restore_layout(&gesture);
+        }
+    }
+
+    /// Put back the geometry a resize gesture changed, leaving scroll and focus
+    /// alone. Every view in a free container is restored, not a fixed list:
+    /// `workbench::resize` materializes the height of each of them.
+    pub fn restore_layout(&mut self, gesture: &Gesture) {
+        let Gesture::Resize { original, .. } = gesture else {
+            return;
         };
-        let workbench = Rect {
-            x: area.x,
-            y: area.y.saturating_add(2),
-            width: area.width,
-            height: area.height.saturating_sub(2 + composer_height + 1),
-        };
-        let panels = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(28),
-                Constraint::Min(36),
-                Constraint::Length(40),
-            ])
-            .split(workbench);
-        match self.active_pane {
-            ActivePane::Workspace => panels[0],
-            ActivePane::Transcript => panels[1],
-            ActivePane::Findings => panels[2],
+        self.layout.primary_width = original.primary_width;
+        self.layout.secondary_width = original.secondary_width;
+        for view in self
+            .layout
+            .primary
+            .iter_mut()
+            .chain(&mut self.layout.secondary)
+        {
+            view.expanded_height = original.view(view.id).expanded_height;
         }
     }
 
@@ -696,7 +700,7 @@ impl App {
     /// terminal's own drag-select is a whole-screen block selection that cannot
     /// be confined to a single logical pane, so this is the reliable per-pane
     /// copy path.
-    pub fn copy_active_pane(&mut self) {
+    pub fn copy_active_view(&mut self) {
         let area = self.terminal_size;
         if area.width == 0 || area.height == 0 {
             self.toast = "Copy unavailable: terminal size unknown".into();
@@ -716,9 +720,9 @@ impl App {
             return;
         }
         let buffer = term.backend().buffer();
-        let rect = self.active_pane_rect(area);
+        let rect = self.active_view_rect(area);
         let text = extract_rect_text(buffer, rect);
-        let label = self.active_pane_label();
+        let label = self.layout.focus.label();
         if copy_to_clipboard(&text) {
             self.toast = format!(
                 "Copied {} to clipboard ({} chars)",
@@ -839,9 +843,15 @@ impl App {
                 command: (*command).to_owned(),
                 description,
             });
+        // `LOCAL_SLASH_COMMANDS` repeats the backend's task verbs so the
+        // palette is never empty before the capability handshake lands. Once
+        // the backend reports them the same verb would appear twice, so keep
+        // the first (authoritative) occurrence and drop the local fallback.
+        let mut seen = HashSet::new();
         backend
             .chain(local)
             .filter(|item| item.command.starts_with(&query))
+            .filter(|item| seen.insert(item.command.clone()))
             .collect()
     }
 
@@ -909,6 +919,8 @@ impl App {
                     self.backend_ready = true;
                     self.backend_pid = Some(backend.pid);
                     self.config_ready = Some(runtime.config_ready);
+                    self.provider = Some(runtime.provider.clone());
+                    self.model = Some(runtime.model.clone());
                     self.backend_commands = capabilities
                         .commands
                         .into_iter()
@@ -988,6 +1000,10 @@ impl App {
                     if self.active_task_id.as_deref() != Some(task_id.as_str()) {
                         return;
                     }
+                    self.subagents.selection = None;
+                    self.open_selected_subagent();
+                    self.subagents = crate::subagents::Subagents::default();
+                    self.layout.view_mut(ViewId::Subagents).scroll = 0;
                     self.worker_active = true;
                     self.worker_started_at = Some(Instant::now());
                     self.apply_backend_state(state);
@@ -996,15 +1012,23 @@ impl App {
                         receipt.phase = format!("{command} running");
                     }
                 }
+                BackendEvent::Subagent { task_id, agent } => {
+                    if self.is_current_task(&task_id) {
+                        self.subagents.upsert(agent);
+                    }
+                }
                 BackendEvent::Status {
                     task_id,
+                    agent_id,
                     status: message,
                 } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.update_receipt(&message);
-                    self.status(message);
+                    if agent_id.is_none() {
+                        self.update_receipt(&message);
+                    }
+                    self.push_stream(agent_id, TranscriptKind::Status, message, false);
                 }
                 BackendEvent::Finding { task_id, finding } => {
                     if !self.is_current_task(&task_id) {
@@ -1014,46 +1038,67 @@ impl App {
                 }
                 BackendEvent::Reasoning {
                     task_id,
+                    agent_id,
+                    append,
                     text: chunk,
                 } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.update_receipt("Thinking");
-                    self.push(TranscriptKind::Reasoning, chunk);
+                    if agent_id.is_none() {
+                        self.update_receipt("Thinking");
+                    }
+                    self.push_stream(agent_id, TranscriptKind::Reasoning, chunk, append);
                 }
                 BackendEvent::Log {
                     task_id,
+                    agent_id,
+                    append,
                     message: line,
                 } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.update_receipt("Running");
-                    self.push(TranscriptKind::Log, line);
+                    if agent_id.is_none() {
+                        self.update_receipt("Running");
+                    }
+                    self.push_stream(agent_id, TranscriptKind::Log, line, append);
                 }
                 BackendEvent::ToolCall {
                     task_id,
+                    agent_id,
                     tool,
                     arguments,
                 } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.update_receipt("Using tool");
-                    self.push(
+                    if agent_id.is_none() {
+                        self.update_receipt("Using tool");
+                    }
+                    self.push_stream(
+                        agent_id,
                         TranscriptKind::Log,
                         format!("→ tool: {tool} {}", truncate_text(&arguments, 160)),
+                        false,
                     );
                 }
-                BackendEvent::ToolResult { task_id, result } => {
+                BackendEvent::ToolResult {
+                    task_id,
+                    agent_id,
+                    result,
+                } => {
                     if !self.is_current_task(&task_id) {
                         return;
                     }
-                    self.update_receipt("Running");
-                    self.push(
+                    if agent_id.is_none() {
+                        self.update_receipt("Running");
+                    }
+                    self.push_stream(
+                        agent_id,
                         TranscriptKind::Log,
                         format!("→ result: {}", truncate_text(&result, 240)),
+                        false,
                     );
                 }
                 BackendEvent::ApprovalRequired {
@@ -1362,6 +1407,86 @@ impl App {
         }
     }
 
+    /// Findings view row count, including the evidence rows of the expanded
+    /// finding. Kept here so scroll clamping and rendering agree.
+    pub fn finding_rows(&self) -> usize {
+        self.findings.len()
+            + self
+                .expanded_finding
+                .as_ref()
+                .and_then(|id| self.findings.iter().find(|finding| &finding.id == id))
+                .map_or(0, |finding| finding.evidence_refs.len())
+    }
+
+    /// Row offset of the selected finding within the Findings view. Differs from
+    /// `findings_selection` whenever an earlier finding is expanded.
+    pub fn selected_finding_row(&self) -> usize {
+        let expanded = self.expanded_finding.as_deref();
+        self.findings
+            .iter()
+            .take(self.findings_selection)
+            .map(|finding| {
+                1 + if Some(finding.id.as_str()) == expanded {
+                    finding.evidence_refs.len()
+                } else {
+                    0
+                }
+            })
+            .sum()
+    }
+
+    /// Scroll the Findings view just enough to keep the selected row visible.
+    pub fn reveal_selected_finding(&mut self) {
+        let geometry = self.geometry(self.terminal_size);
+        let Some(region) = geometry.view(ViewId::Findings) else {
+            return;
+        };
+        let row = self.selected_finding_row();
+        crate::workbench::scroll_to_row(
+            self.layout.view_mut(ViewId::Findings),
+            row,
+            usize::from(region.content.height),
+        );
+    }
+
+    pub fn move_findings_selection(&mut self, down: bool) {
+        if self.findings.is_empty() {
+            self.findings_selection = 0;
+            return;
+        }
+        let last = self.findings.len() - 1;
+        self.findings_selection = if down {
+            (self.findings_selection + 1).min(last)
+        } else {
+            self.findings_selection.saturating_sub(1)
+        };
+    }
+
+    pub fn select_finding(&mut self, index: usize) {
+        if self.findings.is_empty() {
+            self.findings_selection = 0;
+            return;
+        }
+        self.findings_selection = index.min(self.findings.len() - 1);
+    }
+
+    /// Expand the selected finding, collapsing whatever was open before.
+    pub fn toggle_selected_finding(&mut self) -> bool {
+        let Some(finding) = self.findings.get(self.findings_selection) else {
+            return false;
+        };
+        if finding.evidence_refs.is_empty() {
+            return false;
+        }
+        let id = finding.id.clone();
+        self.expanded_finding = if self.expanded_finding.as_deref() == Some(id.as_str()) {
+            None
+        } else {
+            Some(id)
+        };
+        true
+    }
+
     fn upsert_finding(&mut self, finding: Finding) {
         let summary = finding.summary();
         if let Some(existing) = self
@@ -1637,6 +1762,30 @@ impl App {
         self.backend_commands.clear();
         self.backend_control_operations.clear();
         self.backend_supports_cancellation = false;
+    }
+
+    fn push_stream(
+        &mut self,
+        agent_id: Option<String>,
+        kind: TranscriptKind,
+        text: String,
+        append: bool,
+    ) {
+        let transcript = if let Some(id) = agent_id {
+            let Some(agent) = self.subagents.agent_mut(&id) else {
+                return;
+            };
+            &mut agent.transcript
+        } else {
+            &mut self.transcript
+        };
+        if append {
+            if let Some(last) = transcript.last_mut().filter(|item| item.kind == kind) {
+                last.text.push_str(&text);
+                return;
+            }
+        }
+        transcript.push(TranscriptItem { kind, text });
     }
 
     fn push(&mut self, kind: TranscriptKind, text: impl Into<String>) {

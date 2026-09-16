@@ -1,14 +1,13 @@
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::app::App;
-use crate::skills::catalog::SkillNode;
 use crate::theme;
 
-pub fn render(app: &App) -> Paragraph<'static> {
+pub fn build_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(Span::styled(
             "Workspace",
@@ -26,19 +25,6 @@ pub fn render(app: &App) -> Paragraph<'static> {
         )),
         Line::from(Span::styled(
             format!(
-                "Backend     {}",
-                app.backend_pid
-                    .map(|pid| format!("pid {pid}"))
-                    .unwrap_or_else(|| "disconnected".into())
-            ),
-            Style::default().fg(if app.backend_ready {
-                theme::SUCCESS
-            } else {
-                theme::CORAL
-            }),
-        )),
-        Line::from(Span::styled(
-            format!(
                 "Target      {}",
                 if app.target.is_empty() {
                     "not selected"
@@ -53,18 +39,6 @@ pub fn render(app: &App) -> Paragraph<'static> {
             Style::default().fg(theme::TEXT_MUTED),
         )),
         Line::from(Span::styled(
-            if app.worker_active {
-                "Activity    running"
-            } else {
-                "Activity    idle"
-            },
-            Style::default().fg(if app.worker_active {
-                theme::GOLD
-            } else {
-                theme::TEXT_HINT
-            }),
-        )),
-        Line::from(Span::styled(
             format!(
                 "Scope       H{} P{} A{}",
                 json_array_len(&app.task_constraints, "allowed_hosts"),
@@ -74,11 +48,7 @@ pub fn render(app: &App) -> Paragraph<'static> {
             Style::default().fg(theme::TEXT_MUTED),
         )),
         Line::from(Span::styled(
-            format!(
-                "Evidence    {}  Violations {}",
-                app.evidence.len(),
-                app.constraint_violations.len()
-            ),
+            format!("Violations  {}", app.constraint_violations.len()),
             Style::default().fg(if app.constraint_violations.is_empty() {
                 theme::TEXT_MUTED
             } else {
@@ -127,22 +97,13 @@ pub fn render(app: &App) -> Paragraph<'static> {
             Style::default().fg(theme::TEXT_HINT),
         )));
     }
-    lines.extend([
-        Line::from(""),
-        Line::from(Span::styled(
-            "Capabilities",
-            Style::default()
-                .fg(theme::SEAFOAM)
-                .add_modifier(Modifier::BOLD),
-        )),
-    ]);
-    append_nodes(&app.skills, "", &mut lines);
-    Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(theme::BORDER)
-            .style(Style::default().bg(theme::PANEL)),
-    )
+    lines
+}
+
+pub fn render(app: &App) -> Paragraph<'static> {
+    Paragraph::new(build_lines(app))
+        .wrap(Wrap { trim: false })
+        .scroll((app.layout.view(crate::workbench::ViewId::Status).scroll, 0))
 }
 
 fn json_array_len(value: &serde_json::Value, key: &str) -> usize {
@@ -153,15 +114,12 @@ fn json_array_len(value: &serde_json::Value, key: &str) -> usize {
 }
 
 fn last_run_label(value: Option<&serde_json::Value>) -> &str {
-    value
-        .and_then(|run| run.get("run"))
-        .and_then(|run| run.get("name"))
-        .and_then(serde_json::Value::as_str)
-        .or_else(|| {
-            value
-                .and_then(|run| run.get("status"))
-                .and_then(serde_json::Value::as_str)
-        })
+    let Some(run) = value else {
+        return "none";
+    };
+    ["/run/name", "/status"]
+        .iter()
+        .find_map(|pointer| run.pointer(pointer).and_then(serde_json::Value::as_str))
         .unwrap_or("none")
 }
 
@@ -172,37 +130,5 @@ fn truncate(text: &str, max_chars: usize) -> String {
         format!("{preview}...")
     } else {
         preview
-    }
-}
-
-fn append_nodes(nodes: &[SkillNode], prefix: &str, lines: &mut Vec<Line<'static>>) {
-    for (index, node) in nodes.iter().enumerate() {
-        let is_last = index + 1 == nodes.len();
-        let branch = if prefix.is_empty() {
-            ""
-        } else if is_last {
-            "`-- "
-        } else {
-            "|-- "
-        };
-        let label = format!("{prefix}{branch}{}", node.name);
-        let style = if node.children.is_empty() {
-            Style::default().fg(theme::TEXT_SOFT)
-        } else {
-            Style::default()
-                .fg(theme::TEXT_BODY)
-                .add_modifier(Modifier::BOLD)
-        };
-        lines.push(Line::from(Span::styled(label, style)));
-        if !node.children.is_empty() {
-            let next_prefix = if prefix.is_empty() {
-                "  ".to_owned()
-            } else if is_last {
-                format!("{prefix}    ")
-            } else {
-                format!("{prefix}|   ")
-            };
-            append_nodes(&node.children, &next_prefix, lines);
-        }
     }
 }

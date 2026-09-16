@@ -1,6 +1,7 @@
 pub mod attack_chain;
 pub mod findings;
 pub mod layout;
+pub mod subagents;
 pub mod transcript;
 
 use ratatui::Frame;
@@ -8,7 +9,7 @@ use ratatui::Frame;
 use crate::app::App;
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    if app.show_attack_chain {
+    if app.show_attack_chain && app.pending_execution.is_none() {
         attack_chain::render(frame, app);
     } else {
         layout::render(frame, app);

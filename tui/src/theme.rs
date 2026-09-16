@@ -4,39 +4,34 @@ use ratatui::style::{Color, Style};
 
 use crate::app::TranscriptKind;
 
-/// VulnClaw "claw ember" dark palette — ported from the DeepSec TUI
-/// (CodeWhale "whale deep" grammar) and re-tinted for VulnClaw's
-/// orange-on-black penetration-workbench identity. Interaction is owned by
-/// `ACTION` (bright ember orange); danger and high-severity findings speak in
-/// `ROSE`/`RED` so the surface reads unmistakably as a security tool.
-pub const BG: Color = Color::Rgb(8, 6, 4); // #080604 near-black warm field
-pub const CHROME: Color = Color::Rgb(18, 13, 9); // #120D09 ink / chrome
-pub const PANEL: Color = Color::Rgb(28, 18, 12); // #1C120C panel surface
-pub const PLATE: Color = Color::Rgb(40, 26, 16); // #281A10 composer plate
-pub const BORDER: Color = Color::Rgb(84, 54, 30); // #54361E ember @ 25%
+/// Charcoal surfaces with copper outlines and orange interaction accents.
+pub const BG: Color = Color::Rgb(28, 28, 28); // #1C1C1C
+pub const CHROME: Color = Color::Rgb(32, 32, 32); // #202020
+pub const PANEL: Color = Color::Rgb(32, 32, 32); // #202020
+pub const PLATE: Color = Color::Rgb(43, 41, 39); // #2B2927
+pub const DOCK_PREVIEW: Color = Color::Rgb(72, 72, 72); // #484848
+pub const BORDER: Color = Color::Rgb(156, 107, 67); // #9C6B43
 
-pub const TEXT_BODY: Color = Color::Rgb(245, 236, 225); // #F5ECE1 warm ivory
-pub const TEXT_SOFT: Color = Color::Rgb(214, 190, 170); // #D6BEAA
-pub const TEXT_MUTED: Color = Color::Rgb(168, 142, 120); // #A88E78
-pub const TEXT_HINT: Color = Color::Rgb(150, 125, 105); // #967D69
+pub const TEXT_BODY: Color = Color::Rgb(230, 233, 239); // #E6E9EF
+pub const TEXT_SOFT: Color = Color::Rgb(194, 200, 210); // #C2C8D2
+pub const TEXT_MUTED: Color = Color::Rgb(160, 168, 181); // #A0A8B5
+pub const TEXT_HINT: Color = Color::Rgb(124, 133, 147); // #7C8593
 
-pub const ACTION: Color = Color::Rgb(255, 138, 51); // #FF8A33 ember orange — owns interaction
+pub const ACTION: Color = Color::Rgb(255, 158, 85); // #FF9E55
 pub const SEAFOAM: Color = Color::Rgb(255, 176, 92); // #FFB05C warm amber accent secondary
 pub const GOLD: Color = Color::Rgb(255, 199, 89); // #FFC759 signal gold
 pub const ROSE: Color = Color::Rgb(255, 82, 82); // #FF5252 danger red
 pub const CORAL: Color = Color::Rgb(255, 108, 66); // #FF6C42 warning coral
 pub const SUCCESS: Color = Color::Rgb(120, 211, 130); // #78D382 diff added / success
 pub const MODE_AGENT: Color = Color::Rgb(255, 158, 76); // #FF9E4C
-pub const REASONING: Color = Color::Rgb(255, 170, 90); // #FFAA5A thinking ember
 
-/// Transcript line styling — semantic colors re-tinted for the ember theme.
+/// Neutral transcript text with semantic accents for errors and findings.
 pub fn transcript_style(kind: &TranscriptKind) -> Style {
     match kind {
         TranscriptKind::User => Style::default().fg(TEXT_BODY),
-        TranscriptKind::System => Style::default().fg(ACTION),
-        TranscriptKind::Status => Style::default().fg(SEAFOAM),
-        TranscriptKind::Log => Style::default().fg(TEXT_MUTED),
-        TranscriptKind::Reasoning => Style::default().fg(REASONING),
+        TranscriptKind::System => Style::default().fg(TEXT_SOFT),
+        TranscriptKind::Status | TranscriptKind::Log => Style::default().fg(TEXT_MUTED),
+        TranscriptKind::Reasoning => Style::default().fg(TEXT_HINT),
         TranscriptKind::Error => Style::default()
             .fg(ROSE)
             .add_modifier(ratatui::style::Modifier::BOLD),

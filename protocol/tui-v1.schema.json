@@ -466,6 +466,7 @@
         {
           "required": ["status"],
           "properties": {
+            "agent_id": { "$ref": "#/$defs/identifier" },
             "type": { "const": "status" },
             "status": { "type": "string" }
           }
@@ -478,7 +479,9 @@
         {
           "required": ["text"],
           "properties": {
+            "agent_id": { "$ref": "#/$defs/identifier" },
             "type": { "const": "reasoning" },
+            "append": { "type": "boolean", "default": false },
             "text": { "type": "string" }
           }
         }
@@ -490,7 +493,9 @@
         {
           "required": ["message"],
           "properties": {
+            "agent_id": { "$ref": "#/$defs/identifier" },
             "type": { "const": "log" },
+            "append": { "type": "boolean", "default": false },
             "message": { "type": "string" }
           }
         }
@@ -502,6 +507,7 @@
         {
           "required": ["tool", "arguments"],
           "properties": {
+            "agent_id": { "$ref": "#/$defs/identifier" },
             "type": { "const": "tool_call" },
             "tool": { "type": "string" },
             "arguments": { "type": "string" }
@@ -515,8 +521,26 @@
         {
           "required": ["result"],
           "properties": {
+            "agent_id": { "$ref": "#/$defs/identifier" },
             "type": { "const": "tool_result" },
             "result": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "subagentEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/taskEventEnvelope" },
+        {
+          "required": ["agent_id", "parent_id", "group_id", "name", "agent_type", "status"],
+          "properties": {
+            "type": { "const": "subagent" },
+            "agent_id": { "$ref": "#/$defs/identifier" },
+            "parent_id": { "type": "string" },
+            "group_id": { "type": "string" },
+            "name": { "type": "string" },
+            "agent_type": { "type": "string" },
+            "status": { "enum": ["pending", "running", "completed", "failed", "killed"] }
           }
         }
       ]
@@ -648,6 +672,7 @@
         { "$ref": "#/$defs/readyEvent" },
         { "$ref": "#/$defs/stateEvent" },
         { "$ref": "#/$defs/taskStartedEvent" },
+        { "$ref": "#/$defs/subagentEvent" },
         { "$ref": "#/$defs/statusEvent" },
         { "$ref": "#/$defs/reasoningEvent" },
         { "$ref": "#/$defs/logEvent" },

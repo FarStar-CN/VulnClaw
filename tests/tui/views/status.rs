@@ -2,7 +2,7 @@ use std::sync::mpsc;
 
 use ratatui::{backend::TestBackend, Terminal};
 
-use vulnclaw_tui::{app::App, views::skills_manager::render};
+use vulnclaw_tui::{app::App, views::status::render};
 
 #[test]
 fn renders_authoritative_backend_and_scope_state() {
@@ -34,11 +34,9 @@ fn renders_authoritative_backend_and_scope_state() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains("Backend     pid 42"));
     assert!(rendered.contains("Target      app.test"));
     assert!(rendered.contains("Phase       executing"));
-    assert!(rendered.contains("Activity    running"));
     assert!(rendered.contains("Scope       H1 P2 A1"));
-    assert!(rendered.contains("Evidence    1  Violations 1"));
+    assert!(rendered.contains("Violations  1"));
     assert!(rendered.contains("Last run    audit-1"));
 }

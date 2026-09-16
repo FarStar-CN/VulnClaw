@@ -8,10 +8,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
+from vulnclaw.agent.agent_graph import AgentGraph, AgentOutcome, FanOutCaps
 from vulnclaw.agent.parallel_agents import merge_session_state
 from vulnclaw.agent.roles import ROLE_REGISTRY, get_role, tool_allowed_for_role
 
 logger = logging.getLogger(__name__)
+
+#: Role recorded on the graph root so the client can label the team leader.
+LEADER_ROLE = "leader"
 
 TeamRole = Literal["adviser", "researcher", "developer", "executor"]
 TeamDecisionAction = Literal["continue", "replan", "stop"]
@@ -188,6 +192,13 @@ async def run_team_pentest(
     remaining_steps = max(1, max_steps)
     max_parallel = max(1, max_parallel or len(plan.steps) or 1)
     previous_root_role = getattr(root_agent, "active_role", None)
+    _start_team_graph(
+        root_agent,
+        goal=goal,
+        max_parallel=max_parallel,
+        max_steps=max_steps,
+        max_replans=max_replans,
+    )
 
     try:
         root_agent.active_role = None
@@ -264,6 +275,7 @@ async def run_team_pentest(
             continue
     finally:
         root_agent.active_role = previous_root_role
+        _finish_team_graph(root_agent)
 
     return result
 
@@ -294,6 +306,84 @@ def _default_agent_factory(root_agent: Any) -> AgentFactory:
     return factory
 
 
+def _start_team_graph(
+    root_agent: Any,
+    *,
+    goal: str,
+    max_parallel: int,
+    max_steps: int,
+    max_replans: int,
+) -> None:
+    """Attach this run's agent graph to the root agent.
+
+    In-memory only: persisting to ``<run_dir>/agents`` would mean threading the
+    run directory through four call layers, and the client reads the live graph
+    rather than the snapshot.
+
+    The caps are widened so they never bind. The graph *observes* team execution
+    instead of driving it, so a node queued behind ``max_concurrent`` would sit
+    at ``pending`` forever -- a status the user would read as the truth.
+    """
+
+    caps = FanOutCaps(
+        max_concurrent=max(1, max_parallel),
+        max_total=(max_replans + 1) * max(1, max_steps) + 1,
+        max_depth=1,
+    )
+    try:
+        graph = AgentGraph(caps=caps)
+        graph.create_root(role=LEADER_ROLE, task_summary=goal)
+    except Exception:  # noqa: BLE001 - the graph is observability, never a gate
+        logger.debug("team graph unavailable", exc_info=True)
+        return
+    root_agent.agent_graph = graph
+
+
+def _graph_begin_step(root_agent: Any, step: TeamStep) -> str | None:
+    """Record a dispatched step as a child of the leader. Returns its node id."""
+
+    graph = getattr(root_agent, "agent_graph", None)
+    root_id = getattr(graph, "root_id", None)
+    if graph is None or root_id is None:
+        return None
+    try:
+        created = graph.create_agent(
+            root_id, role=step.role, task_summary=step.objective
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("could not record team agent", exc_info=True)
+        return None
+    return created.node.id if created.node is not None else None
+
+
+def _graph_finish_step(root_agent: Any, node_id: str | None, *, error: str | None) -> None:
+    graph = getattr(root_agent, "agent_graph", None)
+    if graph is None or node_id is None:
+        return
+    try:
+        graph.child_finish(
+            node_id,
+            outcome=AgentOutcome.FAILED if error else AgentOutcome.FINISHED,
+            error=error,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("could not finish team agent", exc_info=True)
+
+
+def _finish_team_graph(root_agent: Any) -> None:
+    """Close the leader node. ``root_finish`` rejects (rather than raises) while
+    any child is still live, which is exactly the state a cancelled run leaves
+    behind -- the node then honestly stays ``running``."""
+
+    graph = getattr(root_agent, "agent_graph", None)
+    if graph is None:
+        return
+    try:
+        graph.root_finish()
+    except Exception:  # noqa: BLE001
+        logger.debug("could not finish team root", exc_info=True)
+
+
 async def _run_team_step(
     root_agent: Any,
     step: TeamStep,
@@ -309,6 +399,9 @@ async def _run_team_step(
     _seed_child_session(child, root_agent, step)
     previous_role = getattr(child, "active_role", None)
     child.active_role = step.role
+    # Record the dispatch so the run's agent graph shows who is working on what.
+    node_id = _graph_begin_step(root_agent, step)
+    failure: str | None = None
     try:
         result = await child.solve(
             _step_prompt(step),
@@ -319,8 +412,12 @@ async def _run_team_step(
             stream_sink=stream_sink,
             on_event=on_event,
         )
+    except BaseException as exc:
+        failure = str(exc) or type(exc).__name__
+        raise
     finally:
         child.active_role = previous_role
+        _graph_finish_step(root_agent, node_id, error=failure)
     merge_session_state(root_agent.session_state, child.session_state)
     _preserve_distinct_team_findings(root_agent.session_state, child.session_state)
     _merge_agent_state(root_agent.session_state.agent_state, child.session_state.agent_state)
