@@ -25,8 +25,6 @@
 <br>
 Official Website: https://unclecheng-li.github.io/vulnclaw.com/
 <br>
-💬 **Community**: [Join our Discord](https://discord.gg/q5nrZpe6S)
-<br>
 
 Built on LLM Agent + MCP Toolchain + optional Skill reference material,
 compatible with OpenAI / Anthropic / MiniMax / DeepSeek and similar models.
@@ -54,7 +52,7 @@ VulnClaw executes:
 
 <img width="1148" height="642" alt="image" src="https://github.com/user-attachments/assets/576e1cf6-25da-4969-864b-40e77d020dbf" />
 
-<img width="2530" height="1153" alt="image" src="https://github.com/user-attachments/assets/8825f92f-eb70-433d-89e4-eec313b6ec0c" />
+<img width="2521" height="1300" alt="image" src="https://github.com/user-attachments/assets/6a56867b-11b2-44d2-b32e-e576be2261d3" />
 
 Suitable for authorized pentests, CTF competitions, security training, and red team operations.
 
