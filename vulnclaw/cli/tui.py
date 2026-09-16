@@ -2615,20 +2615,17 @@ def _read_system_clipboard() -> str | None:
     """Read the OS clipboard without a third-party dependency.
 
     Returns ``None`` when the clipboard cannot be read, or an empty string when
-    it is readable but empty. Windows goes through a temp UTF-8 file so the
-    console codepage cannot mangle non-ASCII; Unix tries the usual helpers.
+    it is readable but empty. Windows pipes a base64-encoded copy through
+    stdout (pure ASCII, immune to console codepages, never touches disk);
+    Unix tries the usual helpers.
     """
-    import tempfile
-
     if sys.platform == "win32":
-        tmp = Path(tempfile.gettempdir()) / f"vulnclaw-paste-{os.getpid()}.txt"
-        # Single-quoted PowerShell path; escape any embedded single quotes.
-        ps_path = str(tmp).replace("'", "''")
+        # Base64 keeps the payload ASCII-safe regardless of console codepage,
+        # so pasted API keys never land in a temp file on disk.
         ps = (
             "$text = Get-Clipboard -Raw; if ($null -eq $text) { $text = '' }; "
-            f"Set-Content -LiteralPath '{ps_path}' -Value $text -Encoding utf8 -NoNewline"
+            "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))"
         )
-        raw: bytes | None = None
         try:
             completed = subprocess.run(
                 [
@@ -2644,22 +2641,15 @@ def _read_system_clipboard() -> str | None:
                 capture_output=True,
                 timeout=5,
             )
-            if completed.returncode == 0:
-                raw = tmp.read_bytes()
         except (OSError, subprocess.SubprocessError):
-            raw = None
-        finally:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-        if raw is None:
             return None
-        if raw.startswith(b"\xef\xbb\xbf"):
-            raw = raw[3:]
+        if completed.returncode != 0:
+            return None
+        import base64
+
         try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError:
+            return base64.b64decode(completed.stdout.strip()).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
             return None
 
     for command in (
