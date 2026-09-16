@@ -631,5 +631,6 @@
   "tui.config_panel.fetch_idle": "按 Fetch 加载模型",
   "tui.config_panel.fetch_loading": "正在加载模型…",
   "tui.config_panel.saved": "配置已保存。",
-  "tui.config_panel.discarded": "已放弃修改。"
+  "tui.config_panel.discarded": "已放弃修改。",
+  "cli.last_reply": "  模型上一轮返回: "
 }
