@@ -64,6 +64,7 @@ from vulnclaw.cli._helpers import (
     _run_cli_orchestrated_task,
     console,
     err_console,
+    format_llm_user_error,
 )
 from vulnclaw.cli.manual import available_topics, render_manual
 from vulnclaw.config.schema import ENGINE_CHOICES
@@ -806,7 +807,7 @@ def _run_repl() -> None:
                 # Escape Rich markup chars in exception message to prevent MarkupError
                 from rich.markup import escape as rich_escape
 
-                console.print(_("cli.error", msg=rich_escape(str(e))))
+                console.print(_("cli.error", msg=rich_escape(format_llm_user_error(e))))
 
         except KeyboardInterrupt:
             now = time.monotonic()
