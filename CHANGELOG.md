@@ -2,8 +2,29 @@
 
 ---
 
-<details>
-<summary><strong>Unreleased</strong> — 语言支持（bilingual UI）</summary>
+<details open>
+<summary><strong>v0.4.0</strong> — 安全审批三档模式 + 双语 UI + TUI 容器布局 + 知识库 BM25</summary>
+
+- **新增执行审批三档模式** — `safety.permission_mode` 支持 `ask`（默认，每条命令 y/N 确认）、`auto_review`（只读命令白名单免确认、高风险命令仍需确认）、`full_access`（全部免确认）；TUI 内置同步的阻塞式执行审批弹窗与倒计时；模型执行前先做风险自评；执行门禁与子进程 spawn 全面加固。可通过 `vulnclaw config set safety.permission_mode <mode>`、REPL `/mode` 命令或 `VULNCLAW_SAFETY_PERMISSION_MODE` 环境变量切换。
+- **修复经典 REPL `/mode` 死命令** — `mode` 此前已注册 handler 但未加入命令表，导致 `/mode` 报 `Unknown skill: /mode`；现已注册进 REPL 命令表并补齐中英文帮助文案。
+- **修复 solve 工具空转** — 模型不再输出工具调用时不再无限循环，改为展示模型最后一次回复并优雅收敛。
+- **新增 ScanMalware 内置远程 MCP** — 预置 ScanMalware 云查杀 MCP 服务器，`vulnclaw mcp` 中一键启用。
+- **`vulnclaw doctor` 探测真实工具调用能力** — doctor 现在会用真实请求探测当前 LLM 端点是否支持工具调用，而非仅检查配置格式。
+- **修复 Windows 剪贴板读取落盘** — TUI 配置面板粘贴 API key 时，Windows 分支不再把剪贴板内容写临时文件再读回，改为子进程 stdout 输出 base64 由父进程解码，零磁盘产物。
+- **新增 TUI 可拖拽容器布局** — capabilities、status、findings 视图独立成窗，容器布局支持拖拽重排；发现结果可展开查看对应证据；子代理转录实时流入主面板。
+- **新增知识库中文 BM25 检索与重排** — 知识库新增 bigram 分词、中文感知 BM25 排序与 cross-encoder 重排器，中文查询命中率显著提升。
+- **新增 HTTPS VPS 部署 compose profile** — Web UI 支持 HTTPS 上 VPS 的一键 compose 部署配置。
+- **新增首次运行设置向导** — CLI 首次运行引导选择语言与基础配置。
+- **新增 OpenRouter provider 预设** — 保存 API key 时自动绑定对应 provider，避免 key 存错段。
+- **双语 UI（随 v0.3.9 发布）** — 默认语言改为英文（无法识别环境信号时不再落到中文），支持中英双语界面；CLI/REPL 工具调用行、状态横幅、solve 报告标题、知识库状态、上下文截断提示、LLM 重试/恢复提示与推理状态块均随当前语言输出；切换方式：REPL `/language`、`VULNCLAW_LANG=zh|en` 环境变量、`session.language` 配置。Agent 英文关键词支持：finding parser、阶段检测、CTF 判定等识别表补充英文等价信号词，英文提示下子 agent 行为与中文模式一致。
+- **其他修复** — 修复 auto-review 分类器绕过漏洞；修复 MCP streamable-http 工具数为 0 的问题（pin `mcp>=1.0,<2.0`）；修复流式事件循环在慢 CI 上的阈值；修复 i18n `host_no_set` 缺失英文翻译、HackerOne scope 截断返回、密钥泄露与 MCP 服务器名点号注入等多个安全与体验问题。
+
+</details>
+
+---
+
+<details open>
+<summary><strong>v0.3.9</strong> — bilingual UI</summary>
 
 - **新增英文 / 中文双语界面** — 默认语言改为英文（无法识别环境信号时不再落到中文）。CLI/REPL 工具调用行、状态横幅、solve 报告标题、知识库状态、上下文截断提示、LLM 重试/恢复提示与推理状态块均随当前语言输出；zh 模式下输出保持逐字节不变。切换方式：REPL `/language` 命令、`VULNCLAW_LANG=zh|en` 环境变量、`session.language` 配置。
 - **修复 `/language` 命令输出** — 移除确认文本前的多余 ASCII 字母 `f`。
@@ -11,6 +32,8 @@
 - **知识库状态本地化** — KB 初始化/降级/禁用详情随当前语言输出。
 
 </details>
+
+---
 
 <details open>
 <summary><strong>v0.3.8</strong> — sub-agent fan-out + cold/hot memory + context budget</summary>
@@ -61,7 +84,7 @@
 ---
 
 <details>
-<summary><strong>v0.4.1</strong> — 并行探索 + 记忆引擎 + 信息收集工具链 + MCP streamable-http</summary>
+<summary><strong>v0.4.1</strong>（早期内部编号，特性实际随 0.3.x 线发布） — 并行探索 + 记忆引擎 + 信息收集工具链 + MCP streamable-http</summary>
 
 - **多方向并行探索** — solve 引擎支持同时探索多个方向（默认 max_parallel=3），单个方向异常不影响其他，每个方向有独立的证据缓冲区和工具调用记录。
 - **agent 记忆引擎** — 共享研究状态新增工具调用日志（跨方向可见），reason 阶段显式列出已放弃方向并禁止重复提出，explore 上下文带"已执行工具"摘要；checkpoint 机制在图状态没变时跳过 reason 避免空转；已放弃方向做 Jaccard 去重兜底。
@@ -79,7 +102,7 @@
 </details>
 
 <details>
-<summary><strong>v0.4.0</strong> — 核心：自主引擎从「固定轮数工作流」重构为「目标驱动求解」</summary>
+<summary><strong>v0.4.0</strong>（早期内部编号，特性实际随 0.3.x 线发布；勿与 2026-09 的 v0.4.0 正式版混淆） — 核心：自主引擎从「固定轮数工作流」重构为「目标驱动求解」</summary>
 
 - **新增目标驱动求解引擎（默认）** — 基于已验证事实、研究方向与证据记录的计划/行动循环，以「目标达成 / 研究方向耗尽 / 安全预算」为终止条件，结构上杜绝"原地打转"；新增 `vulnclaw solve` 命令，`run`/REPL 自主模式默认改走该引擎（`session.engine=rounds` 可回退旧逻辑）。
 - **新增证据级反幻觉闸门** — 录制所有真实工具输出作为唯一可信证据；声称的 flag/完成必须在真实输出里逐字符出现才被采信，否则判定幻觉并继续探索；拿到验证过的 flag 即时收敛。
