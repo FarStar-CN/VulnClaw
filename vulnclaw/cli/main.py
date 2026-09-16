@@ -980,6 +980,7 @@ def _print_help() -> None:
   {_("help.report")}
   {_("help.think")}
   {_("help.think_on_off")}
+  {_("help.mode")}
   {_("help.persistent")}
   {_("help.persistent_host")}
   {_("help.clear")}

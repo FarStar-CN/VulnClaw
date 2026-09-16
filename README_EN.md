@@ -269,6 +269,7 @@ No-args startup opens the 🦞 interactive shell for natural-language use:
 | `status` | View current state |
 | `tools` | List available MCP tools |
 | `think on/off` | Toggle thinking process display |
+| `mode [mode]` | Show or switch the execution approval mode (ask / auto_review / full_access) |
 | `persistent` | Start persistent pentesting |
 | `clear` | Clear current session |
 | `help` | Show help |
@@ -588,6 +589,29 @@ vulnclaw config set session.max_rounds 30     # set max rounds (default 15)
 vulnclaw config set session.show_thinking false  # hide thinking process
 ```
 
+### Execution Approvals (unattended execution)
+
+Dangerous tools (shell / python / PoC) prompt `Approve this execution? [y/N]` before every run by default. Three ways to change that:
+
+```bash
+# 1. Persist to config (recommended)
+vulnclaw config set safety.permission_mode full_access
+
+# 2. Current REPL session only (falls back to the config file after restart)
+mode full_access          # switch; without an argument, show the current mode
+
+# 3. Single run
+VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
+```
+
+| Mode | Behavior |
+|------|----------|
+| `ask` (default) | Every execution prompts y/N; unanswered prompts auto-deny after 300 s (`safety.approval_timeout_seconds`) |
+| `auto_review` | Read-only allowlist commands (ls / cat / nmap scans, etc.) run unattended, everything else still prompts; extend via `safety.trusted_commands` prefixes |
+| `full_access` | Everything runs unattended, no prompts |
+
+> ⚠️ Under `full_access`, target responses, page content and reports are untrusted input — prompt injection can drive unconfirmed arbitrary command execution. Reserve it for isolated labs, CTFs and throwaway VMs; for real engagements prefer `auto_review` plus your own trusted prefixes.
+
 ### Configurable Options
 
 | Option | Default | Description |
@@ -638,6 +662,13 @@ vulnclaw config set session.show_thinking false  # hide thinking process
 | `session.persistent_max_cycles` | 10 | Max cycles (0=unlimited) |
 | `session.persistent_auto_report` | true | Auto-report after each cycle |
 | `session.stale_rounds_threshold` | 5 | Dead-loop detection threshold |
+| `safety.permission_mode` | ask | Execution approval policy for dangerous tools: `ask` (default, y/N per request), `auto_review` (read-only allowlist runs unattended, rest still prompt), `full_access` (everything runs, no prompts) |
+| `safety.approval_timeout_seconds` | 300 | How long an unanswered execution approval waits before auto-denying |
+| `safety.trusted_commands` | empty | auto_review prefixes that skip per-request approval (e.g. `nmap`, `git diff`); entries starting with a banned name are refused |
+| `safety.enable_python_execute` | true | Enable the python_execute built-in tool (disable for safer runs) |
+| `safety.python_execute_max_lines` | 50 | Max lines of code allowed per python_execute call |
+| `safety.python_execute_show_warning` | true | Show a security warning before each python_execute invocation |
+| `safety.python_execute_audit_enabled` | true | Write python_execute audit records to the local config directory |
 
 ### Environment Variables
 
@@ -657,6 +688,9 @@ vulnclaw config set session.show_thinking false  # hide thinking process
 | `VULNCLAW_SESSION_ESCALATION_MAX_LEVEL` | Payload escalation cap (0-4) |
 | `VULNCLAW_SESSION_PLUGIN_RUNTIME_ENABLED` | Plugin runtime toggle |
 | `VULNCLAW_SESSION_PLUGIN_MAX_REQUESTS_PER_TARGET` | Per-target plugin request budget |
+| `VULNCLAW_SAFETY_PERMISSION_MODE` | Execution approval mode (ask / auto_review / full_access) |
+| `VULNCLAW_SAFETY_APPROVAL_TIMEOUT_SECONDS` | Execution approval wait seconds |
+| `VULNCLAW_SAFETY_TRUSTED_COMMANDS` | auto_review trusted command prefixes (comma-separated) |
 | `VULNCLAW_SUBAGENT_ENABLED` | Sub-agent fan-out toggle |
 | `VULNCLAW_SUBAGENT_MAX_BACKGROUND_GROUPS` | Max concurrent sub-agent groups per solve turn |
 | `VULNCLAW_SUBAGENT_MAX_CONCURRENT_LEAF_TOTAL` | Max concurrent leaf agents across all groups |
