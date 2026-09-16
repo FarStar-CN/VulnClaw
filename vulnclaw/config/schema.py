@@ -675,4 +675,16 @@ BUILTIN_MCP_SERVERS: dict[str, dict[str, Any]] = {
             "url": "http://127.0.0.1:9876",
         },
     },
+    # Remote, hosted by a third party, so disabled by default: enabling it sends
+    # the domains/URLs you look up to scanmalware.com. No key or account needed.
+    "scanmalware": {
+        "name": "scanmalware",
+        "enabled": False,
+        "priority": 2,
+        "description": "URL/domain threat intel: sandboxed scan verdicts, CT/DNS and infra pivots",
+        "transport": {
+            "type": "streamable-http",
+            "url": "https://mcp.scanmalware.com/mcp",
+        },
+    },
 }
