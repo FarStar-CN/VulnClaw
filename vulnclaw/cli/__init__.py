@@ -163,6 +163,9 @@ def _make_solve_event_printer(target_console: Console) -> Any:
             _print_styled_plain(target_console, _("cli.complete_rejected"), str(payload.get("reason", ""))[:90], style="red")
         elif kind == "ask_user":
             _print_styled_plain(target_console, _("cli.ask_user"), str(payload.get("question", ""))[:160], style="yellow")
+            last_reply = (payload.get("last_reply") or "").strip()
+            if last_reply:
+                _print_styled_plain(target_console, _("cli.last_reply"), last_reply[:200], style="dim")
         elif kind == "no_path":
             _print_styled_plain(target_console, _("cli.no_path"), str(payload.get("reason", ""))[:160], style="yellow")
         elif kind == "error":

@@ -369,7 +369,11 @@ class TestCallLlmStream:
 
         await asyncio.sleep(0.02)
 
-        assert loop.time() - started < 0.12
+        # If create() blocked the loop, this code could only run after the
+        # full 0.2s sleep inside slow_create. A generous threshold (< 0.19)
+        # keeps the blocking/unblocked distinction while tolerating slow CI
+        # runners where to_thread dispatch alone can cost 0.1s+.
+        assert loop.time() - started < 0.19
         assert not task.done()
         assert await task == ""
 
@@ -396,7 +400,10 @@ class TestCallLlmStream:
         task = asyncio.create_task(anext(stream, None))
         try:
             await asyncio.sleep(0.02)
-            assert loop.time() - started < 0.12
+            # Same rationale as test_sync_stream_creation_does_not_block_event_loop:
+            # a blocking __next__ would delay this past the 0.2s release.wait,
+            # so < 0.19 keeps the distinction while tolerating CI jitter.
+            assert loop.time() - started < 0.19
             assert not task.done()
             assert await task is None
         finally:

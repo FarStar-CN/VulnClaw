@@ -654,5 +654,6 @@
   "tui.config_panel.fetch_idle": "Press Fetch to load models",
   "tui.config_panel.fetch_loading": "Loading models…",
   "tui.config_panel.saved": "Config saved.",
-  "tui.config_panel.discarded": "Discarded changes."
+  "tui.config_panel.discarded": "Discarded changes.",
+  "cli.last_reply": "  Last model reply: "
 }

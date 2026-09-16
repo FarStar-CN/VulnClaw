@@ -604,6 +604,7 @@ async def _solve_impl(
 
     repeated_errors = 0
     observation_only_streak = 0
+    no_tool_call_streak = 0
     needs_user = False
     reason = "runaway safety budget reached"
 
@@ -663,6 +664,45 @@ async def _solve_impl(
 
         stall_guard_message = ""
         stop_for_stall = False
+
+        # Detect a modelled spin: the model keeps producing text but no actual tool call.
+        # Unlike repeated evidence_view, this is a hard stop because the solve loop cannot
+        # make progress on its own.
+        if not tools_used:
+            no_tool_call_streak += 1
+            if no_tool_call_streak >= 2:
+                # Show the model its own last reply so it can notice an empty/degenerate
+                # output loop (e.g. a mock endpoint that never emits tool calls).
+                hint = (
+                    f"Stall guard: {no_tool_call_streak} consecutive turns produced no tool "
+                    f"call. Your last reply was: {one_line(cleaned, 200) or '(empty)'}. "
+                    "Either call a tool, ask the user, or finish with FINAL when proven."
+                )
+                state.add_correction_hint(hint)
+                stall_guard_message = f"[stall guard] {hint}"
+            if no_tool_call_streak >= 3:
+                last_reply_preview = one_line(cleaned, 300) or "(empty)"
+                question = (
+                    "The agent stopped issuing tool calls and is only reasoning. "
+                    f"Last model reply: {last_reply_preview}. "
+                    "Please provide the next action, a tighter scope, or confirm whether to stop."
+                )
+                state.ask_user(question)
+                needs_user = True
+                reason = "stopped after repeated turns without tool calls"
+                emit(
+                    "ask_user",
+                    {
+                        "question": question,
+                        "reason": reason,
+                        "last_reply": one_line(cleaned, 400) or "(empty)",
+                        "consecutive_no_tool_turns": no_tool_call_streak,
+                    },
+                )
+                stop_for_stall = True
+        else:
+            no_tool_call_streak = 0
+
         if _is_observation_only_turn(tools_used, new_evidence_count):
             observation_only_streak += 1
             if observation_only_streak == 2:

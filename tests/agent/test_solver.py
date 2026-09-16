@@ -409,3 +409,92 @@ async def test_solve_keeps_rejecting_external_writeup_asks_near_parser_filter(mo
     assert result.completed is True
     assert sum(1 for kind, _ in events if kind == "ask_user_rejected") == 2
     assert not agent.context.state.agent_state.pending_questions
+
+
+@pytest.mark.asyncio
+async def test_solve_stops_repeated_tool_less_turns(monkeypatch):
+    """Model keeps producing text but no tool calls should trigger the spin guard."""
+    agent = _Agent()
+    calls = {"n": 0}
+    events: list[tuple[str, dict]] = []
+
+    async def fake_call_llm_auto(agent_arg, *args, **kwargs):
+        calls["n"] += 1
+        return "Let me think about the next step carefully."
+
+    monkeypatch.setattr("vulnclaw.agent.solver.call_llm_auto", fake_call_llm_auto)
+
+    result = await solve(
+        agent,
+        origin="http://t",
+        goal="capture flag",
+        max_steps=20,
+        on_event=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert result.needs_user is True
+    assert result.completed is False
+    assert result.reason == "stopped after repeated turns without tool calls"
+    assert calls["n"] == 3
+    assert any(kind == "ask_user" for kind, _ in events)
+    assert any(kind == "agent_observation" for kind, _ in events)
+    assert "stopped issuing tool calls" in agent.context.state.agent_state.pending_questions[0]
+
+
+@pytest.mark.asyncio
+async def test_solve_spin_guard_surfaces_last_reply_and_hints_model(monkeypatch):
+    """The spin guard must show the model's own last reply in the event and
+    inject a correction hint from the second tool-less turn onward."""
+    agent = _Agent()
+    calls = {"n": 0}
+    events: list[tuple[str, dict]] = []
+    replies = ["thinking about payload choice", "still reasoning quietly", "nearly decided"]
+
+    async def fake_call_llm_auto(agent_arg, *args, **kwargs):
+        calls["n"] += 1
+        return replies[calls["n"] - 1]
+
+    monkeypatch.setattr("vulnclaw.agent.solver.call_llm_auto", fake_call_llm_auto)
+
+    result = await solve(
+        agent,
+        origin="http://t",
+        goal="capture flag",
+        max_steps=20,
+        on_event=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert result.reason == "stopped after repeated turns without tool calls"
+    ask_events = [payload for kind, payload in events if kind == "ask_user"]
+    assert ask_events
+    assert ask_events[0]["last_reply"] == "nearly decided"
+    assert ask_events[0]["consecutive_no_tool_turns"] == 3
+    hints = agent.context.state.agent_state.correction_hints
+    assert any("consecutive turns produced no tool call" in hint for hint in hints)
+    assert any("still reasoning quietly" in hint for hint in hints)
+
+
+@pytest.mark.asyncio
+async def test_solve_spin_guard_handles_empty_model_reply(monkeypatch):
+    """A mock endpoint that returns empty completions should still trip the
+    guard with an explicit '(empty)' marker instead of a blank question."""
+    agent = _Agent()
+    events: list[tuple[str, dict]] = []
+
+    async def fake_call_llm_auto(agent_arg, *args, **kwargs):
+        return ""
+
+    monkeypatch.setattr("vulnclaw.agent.solver.call_llm_auto", fake_call_llm_auto)
+
+    result = await solve(
+        agent,
+        origin="http://t",
+        goal="capture flag",
+        max_steps=20,
+        on_event=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert result.needs_user is True
+    assert "(empty)" in agent.context.state.agent_state.pending_questions[0]
+    ask_events = [payload for kind, payload in events if kind == "ask_user"]
+    assert ask_events and ask_events[0]["last_reply"] == "(empty)"

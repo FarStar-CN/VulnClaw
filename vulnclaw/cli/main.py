@@ -2706,7 +2706,13 @@ def logout() -> None:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    probe_llm: bool = typer.Option(
+        False,
+        "--probe-llm",
+        help="Send a minimal tool-call request to the configured LLM endpoint and report the result.",
+    ),
+) -> None:
     """Inspect the VulnClaw runtime environment."""
     import shutil
 
@@ -2768,6 +2774,39 @@ def doctor() -> None:
     )
     console.print(f"  Base URL: [dim]{config.llm.base_url}[/]")
     console.print(f"  Model: [dim]{config.llm.model}[/]")
+
+    if probe_llm:
+        from vulnclaw.config.llm_probe import probe_llm_endpoint
+
+        console.print()
+        if not has_key:
+            console.print("[yellow]LLM Probe: skipped — no credentials configured[/]")
+        else:
+            console.print("[bold]LLM Probe[/]: sending one tool-call test request...")
+            try:
+                probe = probe_llm_endpoint(config.llm)
+            except Exception as exc:  # defensive: probe should classify, never raise
+                probe = None
+                console.print(f"  LLM Probe: [red]unexpected failure[/]: {exc}")
+            if probe is not None:
+                if probe.ok:
+                    console.print(f"  LLM Probe: [green]{probe.category}[/] — {probe.detail}")
+                elif probe.category == "no_tool_call":
+                    console.print(
+                        f"  LLM Probe: [red]{probe.category}[/] — {probe.detail}"
+                    )
+                    console.print(
+                        "[yellow]The endpoint answered but never emitted a tool call. It cannot drive "
+                        "autonomous agent mode; fix llm.base_url / llm.model before starting a task.[/]"
+                    )
+                elif probe.category == "unreachable":
+                    console.print(f"  LLM Probe: [red]{probe.category}[/] — {probe.detail}")
+                    console.print(
+                        "[yellow]The endpoint could not be reached. Check llm.base_url and your "
+                        "network/proxy settings.[/]"
+                    )
+                else:
+                    console.print(f"  LLM Probe: [red]{probe.category}[/] — {probe.detail}")
 
     # Check MCP servers
     console.print()
