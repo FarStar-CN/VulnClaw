@@ -99,10 +99,10 @@ ALLOWED_SPAWN_SITES: dict[str, str] = {
     "vulnclaw/cli/tui.py:1744:subprocess.run": (
         "operator control plane: fixed version diagnostic"
     ),
-    "vulnclaw/cli/tui.py:2633:subprocess.run": (
+    "vulnclaw/cli/tui.py:2630:subprocess.run": (
         "operator control plane: Windows Get-Clipboard via powershell for /config paste"
     ),
-    "vulnclaw/cli/tui.py:2672:subprocess.run": (
+    "vulnclaw/cli/tui.py:2662:subprocess.run": (
         "operator control plane: Unix pbpaste/wl-paste/xclip/xsel for /config paste"
     ),
     "vulnclaw/cli/main.py:2736:subprocess.run": (
