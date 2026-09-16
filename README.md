@@ -25,8 +25,6 @@
 <br>
 项目官网：https://unclecheng-li.github.io/vulnclaw.com/
 <br>
-💬 **社区**: [加入我们的 Discord](https://discord.gg/q5nrZpe6S)
-<br>
 
 基于 LLM Agent + MCP 工具链 + 可选 Skill 参考资料，
 配合 OpenAI / Anthropic / MiniMax / DeepSeek 等兼容模型，
@@ -54,7 +52,7 @@ VulnClaw 自动执行：
 
 <img width="1148" height="642" alt="image" src="https://github.com/user-attachments/assets/576e1cf6-25da-4969-864b-40e77d020dbf" />
 
-<img width="2530" height="1153" alt="image" src="https://github.com/user-attachments/assets/9be44035-2f9f-4760-8884-38c59caab3da" />
+<img width="2521" height="1300" alt="image" src="https://github.com/user-attachments/assets/9f8d62c1-8e19-4b25-a2c9-651338329e88" />
 
 适用于已授权的渗透测试、CTF 竞赛、安全教学、红队演练等场景。
 
