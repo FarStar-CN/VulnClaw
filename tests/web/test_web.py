@@ -1431,6 +1431,28 @@ class TestWebApp:
         assert result.exit_code == 0
         assert "0.0.0.0" in result.output
 
+    def test_cli_web_uses_valid_https_public_url(self, monkeypatch):
+        from vulnclaw.cli.main import _web_public_url
+
+        monkeypatch.setenv("VULNCLAW_WEB_PUBLIC_URL", "https://vulnclaw.example.com/")
+        assert _web_public_url() == "https://vulnclaw.example.com"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "http://vulnclaw.example.com",
+            "https://user@vulnclaw.example.com",
+            "https://vulnclaw.example.com/path",
+            "https://vulnclaw.example.com/?token=bad",
+            "https://vulnclaw.example.com/#fragment",
+        ],
+    )
+    def test_cli_web_rejects_unsafe_public_url(self, monkeypatch, value):
+        from vulnclaw.cli.main import _web_public_url
+
+        monkeypatch.setenv("VULNCLAW_WEB_PUBLIC_URL", value)
+        assert _web_public_url() is None
+
     def test_web_target_preview_and_diff_endpoints(self, monkeypatch):
         import vulnclaw.web.app as web_app
         import vulnclaw.web.auth as web_auth

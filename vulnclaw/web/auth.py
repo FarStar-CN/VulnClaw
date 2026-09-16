@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import os
 import secrets
 from pathlib import Path
 
@@ -77,13 +78,28 @@ def verify_token(token: str) -> bool:
     return hmac.compare_digest(stored, token)
 
 
-def attach_session_cookie(response, token: str) -> None:  # type: ignore[no-untyped-def]
+def web_cookie_secure() -> bool:
+    """Whether browser sessions must be limited to HTTPS connections.
+
+    The local UI intentionally supports plain HTTP.  A reverse-proxied VPS
+    deployment sets ``VULNCLAW_WEB_COOKIE_SECURE=true`` so a copied session
+    cookie cannot be replayed over HTTP.
+    """
+    return os.environ.get("VULNCLAW_WEB_COOKIE_SECURE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def attach_session_cookie(response, token: str, *, secure: bool | None = None) -> None:  # type: ignore[no-untyped-def]
     """Store *token* on the browser as an HttpOnly session cookie.
 
-    ``secure`` is deliberately left off: the UI is served over plain HTTP on
-    localhost and inside Docker, where a Secure cookie would never be sent
-    back. ``SameSite=Strict`` keeps the cookie off cross-site requests, which
-    is what guards the state-changing ``/api/`` routes against CSRF.
+    ``secure`` defaults from ``VULNCLAW_WEB_COOKIE_SECURE``.  Local HTTP keeps
+    working by default; the VPS Compose profile enables it after TLS is
+    terminated by Caddy. ``SameSite=Strict`` keeps the cookie off cross-site
+    requests, guarding state-changing ``/api/`` routes against CSRF.
     """
     response.set_cookie(
         SESSION_COOKIE,
@@ -91,6 +107,7 @@ def attach_session_cookie(response, token: str) -> None:  # type: ignore[no-unty
         httponly=True,
         samesite="strict",
         path="/",
+        secure=web_cookie_secure() if secure is None else secure,
     )
 
 

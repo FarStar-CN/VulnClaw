@@ -3713,11 +3713,13 @@ def web(
         # container through Docker's port NAT) must authenticate. The UI cannot
         # send a bearer header, so opening this URL once swaps the token for a
         # session cookie; the browser carries it from then on.
+        public_url = _web_public_url()
         browser_host = "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
+        browser_url = public_url or f"http://{browser_host}:{port}"
         console.print(
             Panel(
                 f"Open this URL once to sign the browser in:\n"
-                f"[bold]http://{browser_host}:{port}/?token={token}[/]\n\n"
+                f"[bold]{browser_url}/?token={token}[/]\n\n"
                 f"Token: [bold]{token}[/]\n"
                 f"[dim]For API clients: Authorization: Bearer {token}[/]",
                 title="Web UI Auth Token",
@@ -3739,6 +3741,30 @@ def _is_loopback_bind_host(host: str) -> bool:
         return ipaddress.ip_address(normalized).is_loopback
     except ValueError:
         return False
+
+
+def _web_public_url() -> str | None:
+    """Return a safe operator-facing HTTPS URL configured for a reverse proxy."""
+    from urllib.parse import urlsplit
+
+    value = os.environ.get("VULNCLAW_WEB_PUBLIC_URL", "").strip().rstrip("/")
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        err_console.print(
+            "[yellow]Ignoring invalid VULNCLAW_WEB_PUBLIC_URL; expected an HTTPS origin.[/]"
+        )
+        return None
+    return value
 
 
 if __name__ == "__main__":

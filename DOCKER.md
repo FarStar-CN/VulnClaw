@@ -15,6 +15,31 @@ Then open <http://127.0.0.1:7788>.
 
 State persists in the `vulnclaw-data` named volume across restarts.
 
+## VPS deployment (HTTPS + mobile browser)
+
+Use the VPS Compose file rather than publishing port 7788 directly. It keeps
+VulnClaw on an internal Docker network, puts Caddy in front of it for automatic
+HTTPS, and marks the browser session cookie `Secure`.
+
+1. Create an A/AAAA DNS record for a domain pointing to the VPS, and allow TCP
+   ports 80 and 443 through the VPS firewall/security group.
+2. Copy `.env.example` to `.env`, add the LLM credentials, and set
+   `VULNCLAW_DOMAIN` to that domain.
+3. Start the stack:
+
+   ```bash
+   docker compose -f docker-compose.vps.yml up -d --build
+   docker compose -f docker-compose.vps.yml logs -f vulnclaw
+   ```
+
+   The logs print a one-time `https://<domain>/?token=...` sign-in URL. Open it
+   on the mobile browser once; it immediately removes the token from the URL
+   and stores an HttpOnly, SameSite=Strict, Secure session cookie.
+
+Only Caddy exposes ports 80/443; do not add a public `7788` mapping. Keep the
+printed token private, and rotate it by replacing `/data/.vulnclaw/web_token`
+inside the persistent volume if it is exposed.
+
 ## Quick start (plain docker)
 
 ```bash

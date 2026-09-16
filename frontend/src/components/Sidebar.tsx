@@ -47,6 +47,7 @@ export function Sidebar<T extends string>({ activeView, activeNavView = activeVi
             className={`nav-item ${activeNavView === item.key ? "active" : ""}`}
             onClick={() => onSelectView(item.key)}
             title={item.label}
+            aria-label={item.label}
           >
             <span className="nav-icon" aria-hidden="true">
               <img src={item.icon} alt="" />
