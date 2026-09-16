@@ -134,6 +134,69 @@ class TestCLI:
         assert "Registered:" in result.output
         assert "Tools:" in result.output
 
+    def test_cli_doctor_probe_llm_reports_no_tool_call_endpoint(self, runner, monkeypatch):
+        from types import SimpleNamespace
+
+        import vulnclaw.cli.main as cli_main
+        from vulnclaw.cli.main import app
+        from vulnclaw.config import llm_probe
+        from vulnclaw.config.schema import VulnClawConfig
+
+        config = VulnClawConfig()
+        config.llm.api_key = "test-key"
+        monkeypatch.setattr(cli_main, "load_config", lambda: config)
+
+        message = SimpleNamespace(content="plain prose only", tool_calls=[])
+        response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        class _Completions:
+            def create(self, **kwargs):
+                return response
+
+        class _Client:
+            chat = SimpleNamespace(completions=_Completions())
+
+        monkeypatch.setattr(
+            llm_probe, "make_openai_client", lambda *a, **k: _Client()
+        )
+
+        result = runner.invoke(app, ["doctor", "--probe-llm"])
+
+        assert result.exit_code == 0
+        assert "LLM Probe" in result.output
+        assert "no_tool_call" in result.output
+
+    def test_cli_doctor_probe_llm_ok(self, runner, monkeypatch):
+        from types import SimpleNamespace
+
+        import vulnclaw.cli.main as cli_main
+        from vulnclaw.cli.main import app
+        from vulnclaw.config import llm_probe
+        from vulnclaw.config.schema import VulnClawConfig
+
+        config = VulnClawConfig()
+        config.llm.api_key = "test-key"
+        monkeypatch.setattr(cli_main, "load_config", lambda: config)
+
+        message = SimpleNamespace(content=None, tool_calls=[SimpleNamespace(id="1")])
+        response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        class _Completions:
+            def create(self, **kwargs):
+                return response
+
+        class _Client:
+            chat = SimpleNamespace(completions=_Completions())
+
+        monkeypatch.setattr(
+            llm_probe, "make_openai_client", lambda *a, **k: _Client()
+        )
+
+        result = runner.invoke(app, ["doctor", "--probe-llm"])
+
+        assert result.exit_code == 0
+        assert "LLM Probe" in result.output
+
     def test_recon_resumes_target_state(self, runner, monkeypatch, tmp_path):
         import vulnclaw.orchestrator as orchestrator_mod
         import vulnclaw.target_state.store as store_mod
