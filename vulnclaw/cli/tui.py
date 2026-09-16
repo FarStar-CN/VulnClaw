@@ -896,6 +896,10 @@ def _build_repl_commands() -> dict[str, str]:
         "config": _("tui.slash_config"),
         "language": _("tui.slash_lang"),
         "wizard": _("tui.slash_wizard"),
+        # Permission-mode switcher for the execution gate (handler lives in
+        # main._run_repl_command). Distinct from the Textual-TUI /mode check
+        # depth (quick/standard/deep/continuous), hence its own label.
+        "mode": _("tui.slash_permission_mode"),
         "experience": _("tui.slash_experience"),
         "learn": _("tui.slash_learn"),
         "feedback": _("tui.slash_feedback"),

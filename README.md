@@ -264,6 +264,7 @@ vulnclaw
 | `status` | 查看当前状态 |
 | `tools` | 列出当前可用 MCP 工具 |
 | `think on/off` | 切换推理过程显示 |
+| `mode [模式]` | 查看或切换执行审批模式（ask / auto_review / full_access） |
 | `persistent` | 启动持续性渗透测试 |
 | `clear` | 清空当前会话 |
 | `help` | 显示帮助信息 |
@@ -579,6 +580,29 @@ vulnclaw config set session.max_rounds 30     # 设置最大轮数（默认 15�
 vulnclaw config set session.show_thinking false # 隐藏推理过程
 ```
 
+### 执行审批（免确认执行）
+
+危险工具（shell / python / PoC）每次执行前默认会弹出 `Approve this execution? [y/N]` 确认。三种调整方式：
+
+```bash
+# ① 永久写入配置（推荐）
+vulnclaw config set safety.permission_mode full_access
+
+# ② 仅当前 REPL 会话生效（重启后回到配置文件的模式）
+mode full_access          # 切换；不带参数则查看当前模式
+
+# ③ 单次运行生效
+VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
+```
+
+| 模式 | 行为 |
+|------|------|
+| `ask`（默认） | 每次执行都询问 y/N，未响应 300 秒（`safety.approval_timeout_seconds`）自动拒绝 |
+| `auto_review` | 只读命令白名单（ls / cat / nmap 扫描类等）直接执行，其余仍询问；可用 `safety.trusted_commands` 扩充前缀 |
+| `full_access` | 全部直接执行，不再询问 |
+
+> ⚠️ `full_access` 下，渗透目标返回的页面、响应体、报告内容都属于不可信输入，提示注入可能驱动无确认的任意命令执行。仅建议在隔离靶场、CTF 或一次性虚拟机中使用；真实环境推荐 `auto_review` + 自定义信任前缀。
+
 ### 可配置项
 
 | 配置项 | 默认值 | 说明 |
@@ -614,6 +638,13 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程
 | `session.persistent_max_cycles` | 10 | 持续性渗透最大周期数（0=无限） |
 | `session.persistent_auto_report` | true | 持续性渗透每周期自动生成报告 |
 | `session.stale_rounds_threshold` | 5 | 死循环检测阈值 |
+| `safety.permission_mode` | ask | 危险工具执行审批策略：`ask`（默认，每次执行需 y/N 确认）/ `auto_review`（只读命令白名单免确认，其余仍询问）/ `full_access`（全部直接执行，无确认） |
+| `safety.approval_timeout_seconds` | 300 | 未响应的执行审批等待多少秒后自动拒绝 |
+| `safety.trusted_commands` | 空 | `auto_review` 模式下的免审批命令前缀（如 `nmap`、`git diff`）；以禁用名开头的条目会被拒绝 |
+| `safety.enable_python_execute` | true | 启用 python_execute 内置工具（关闭更安全） |
+| `safety.python_execute_max_lines` | 50 | 单次 python_execute 允许的最大代码行数 |
+| `safety.python_execute_show_warning` | true | 每次 python_execute 前显示安全警告 |
+| `safety.python_execute_audit_enabled` | true | 将 python_execute 审计记录写入本地配置目录 |
 
 ### 环境变量
 
@@ -633,6 +664,9 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程
 | `VULNCLAW_SESSION_ESCALATION_MAX_LEVEL` | Payload 升级上限（0-4） |
 | `VULNCLAW_SESSION_PLUGIN_RUNTIME_ENABLED` | 插件运行时开关 |
 | `VULNCLAW_SESSION_PLUGIN_MAX_REQUESTS_PER_TARGET` | 单目标插件请求预算 |
+| `VULNCLAW_SAFETY_PERMISSION_MODE` | 执行审批模式（ask / auto_review / full_access） |
+| `VULNCLAW_SAFETY_APPROVAL_TIMEOUT_SECONDS` | 执行审批等待秒数 |
+| `VULNCLAW_SAFETY_TRUSTED_COMMANDS` | auto_review 免审批命令前缀（逗号分隔） |
 
 优先级：**环境变量 > 配置文件 > 内置默认值**
 
