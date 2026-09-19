@@ -39,7 +39,7 @@ for line in sys.stdin:
             "backend": {"pid": os.getpid(), "version": "test", "protocol_version": 1},
             "capabilities": {
                 "commands": ["scan", "run", "recon"],
-                "control_operations": ["config.models", "config.preset", "config.read", "config.write", "example.inspect", "session.permission.set", "session.scope.reset", "session.scope.update"],
+                "control_operations": ["config.effort", "config.models", "config.preset", "config.read", "config.write", "example.inspect", "session.permission.set", "session.scope.reset", "session.scope.update"],
                 "cancellation": True,
                 "authoritative_state": True,
             },
@@ -47,6 +47,7 @@ for line in sys.stdin:
                 "config_ready": True,
                 "provider": "test",
                 "model": "test",
+                "reasoning_effort": "xhigh",
                 "mcp_started": 0,
                 "skills": [],
             },
@@ -117,6 +118,12 @@ for line in sys.stdin:
                 else {"provider": "deepseek", "website_url": "https://www.deepseek.com/",
                       "base_url": "https://api.deepseek.com", "model": "deepseek-v4-pro"}
             )
+            control_state = state()
+        elif operation == "config.effort":
+            result = {
+                "message": "Reasoning effort set to " + arguments["effort"] + ".",
+                "reasoning_effort": arguments["effort"],
+            }
             control_state = state()
         elif operation == "config.models":
             result = {

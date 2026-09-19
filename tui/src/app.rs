@@ -615,6 +615,7 @@ pub struct SlashCommand {
 const LOCAL_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/scope ", "update session scope defaults"),
     ("/report", "show report export guidance"),
+    ("/effort ", "show or set the reasoning effort"),
     ("/config", "configure the LLM provider"),
     ("/clear", "clear the transcript"),
     ("/help", "list available commands"),
@@ -694,6 +695,8 @@ pub struct App {
     /// switching provider elsewhere shows up only after the TUI is restarted.
     pub provider: Option<String>,
     pub model: Option<String>,
+    /// Reasoning effort, refreshed by `/effort`. Shown beside the model name.
+    pub reasoning_effort: Option<String>,
     /// Task verbs advertised by the backend in `ready.capabilities.commands`.
     /// Local presentation commands such as `/help` are deliberately separate.
     pub backend_commands: Vec<String>,
@@ -779,6 +782,7 @@ impl App {
             config_ready: None,
             provider: None,
             model: None,
+            reasoning_effort: None,
             backend_commands: Vec::new(),
             backend_control_operations: Vec::new(),
             backend_supports_cancellation: false,
@@ -885,6 +889,8 @@ impl App {
         } else if let Some((verb, arguments)) = split_slash_command(&command) {
             if verb == "scope" {
                 self.request_scope_control(arguments);
+            } else if verb == "effort" {
+                self.request_effort(arguments);
             } else if is_task_verb(verb) {
                 self.request_task(verb, arguments);
             } else {
@@ -1309,6 +1315,9 @@ impl App {
                     self.config_ready = Some(runtime.config_ready);
                     self.provider = Some(runtime.provider.clone());
                     self.model = Some(runtime.model.clone());
+                    // Absent on backends that predate the setting.
+                    self.reasoning_effort =
+                        Some(runtime.reasoning_effort.clone()).filter(|effort| !effort.is_empty());
                     self.backend_commands = capabilities
                         .commands
                         .into_iter()
@@ -1671,6 +1680,10 @@ impl App {
                         }
                         "config.write" => {
                             self.apply_config_write(&result);
+                            return;
+                        }
+                        "config.effort" => {
+                            self.apply_config_effort(&result);
                             return;
                         }
                         _ => {}
@@ -2391,6 +2404,39 @@ impl App {
         self.llm_settings = None;
         self.status(if message.is_empty() {
             "Configuration saved.".to_owned()
+        } else {
+            message
+        });
+    }
+
+    /// `/effort` alone reports the level; `/effort <level>` persists a new one.
+    ///
+    /// The ladder lives in the backend so both ends cannot drift apart; an
+    /// unknown level comes back as a protocol error rather than a silent write.
+    fn request_effort(&mut self, arguments: &str) {
+        let effort = arguments.trim();
+        if effort.is_empty() {
+            self.status(match self.reasoning_effort.as_deref() {
+                Some(current) if !current.is_empty() => {
+                    format!("Reasoning effort: {current}. Usage: /effort <level>.")
+                }
+                _ => "No reasoning effort configured. Usage: /effort <level>.".to_owned(),
+            });
+            return;
+        }
+        if self.request_control("config.effort", serde_json::json!({ "effort": effort })) {
+            self.status(format!("Setting reasoning effort to {effort}…"));
+        }
+    }
+
+    fn apply_config_effort(&mut self, result: &serde_json::Value) {
+        let effort = result_text(result, "reasoning_effort");
+        if !effort.is_empty() {
+            self.reasoning_effort = Some(effort);
+        }
+        let message = result_text(result, "message");
+        self.status(if message.is_empty() {
+            "Reasoning effort updated.".to_owned()
         } else {
             message
         });

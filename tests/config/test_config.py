@@ -536,6 +536,21 @@ class TestSettingsLoad:
                 model="m",
             )
 
+    def test_reasoning_effort_defaults_to_xhigh(self):
+        from vulnclaw.config.schema import (
+            DEFAULT_REASONING_EFFORT,
+            REASONING_EFFORTS,
+            LLMConfig,
+        )
+
+        assert DEFAULT_REASONING_EFFORT == "xhigh"
+        assert DEFAULT_REASONING_EFFORT in REASONING_EFFORTS
+        assert LLMConfig().reasoning_effort == DEFAULT_REASONING_EFFORT
+        # The ladder runs weakest-first, and the default is deliberately one
+        # rung below the top so `max` stays an opt-in.
+        assert REASONING_EFFORTS[-1] == "max"
+        assert REASONING_EFFORTS.index("xhigh") < REASONING_EFFORTS.index("max")
+
     def test_env_var_override(self, monkeypatch):
         """Test that environment variables override config values."""
         from vulnclaw.config.settings import load_config

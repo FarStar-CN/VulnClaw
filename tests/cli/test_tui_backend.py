@@ -76,6 +76,7 @@ def protocol_validator() -> Draft202012Validator:
     return Draft202012Validator(json.loads(schema_path.read_text(encoding="utf-8")))
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("show_thinking", [True, False])
 async def test_subagent_streams_are_forwarded_live_with_the_main_vocabulary(
     monkeypatch, show_thinking,
@@ -188,6 +189,7 @@ async def test_initialize_and_two_tasks_share_one_session_backend_pid() -> None:
     assert ready["backend"]["pid"] == os.getpid()
     assert ready["capabilities"]["permission_mode"] == "ask"
     assert ready["capabilities"]["control_operations"] == [
+        "config.effort",
         "config.models",
         "config.preset",
         "config.read",
@@ -915,3 +917,68 @@ async def test_config_write_is_refused_while_a_task_is_active(monkeypatch) -> No
         )
     assert caught.value.code == "task_busy"
     await session.wait_for_idle()
+
+
+@pytest.mark.asyncio
+async def test_config_effort_persists_and_rebinds_the_agent(monkeypatch) -> None:
+    import vulnclaw.config.settings as settings_mod
+
+    saved: list[Any] = []
+    monkeypatch.setattr(settings_mod, "load_config", _fresh_config)
+    monkeypatch.setattr(settings_mod, "save_config", saved.append)
+
+    stream = io.StringIO()
+    runtime = FakeConfigRuntime()
+    session = BackendSession(JsonlWriter(stream), runtime_factory=lambda: runtime)
+    await session.handle(request("initialize", "r-init"))
+
+    await session.handle(
+        request(
+            "control",
+            "r-effort",
+            payload={"operation": "config.effort", "arguments": {"effort": "xhigh"}},
+        )
+    )
+
+    result = events(stream)[-1]
+    protocol_validator().validate(result)
+    assert result["operation"] == "config.effort"
+    assert result["result"]["reasoning_effort"] == "xhigh"
+    assert saved[0].llm.reasoning_effort == "xhigh"
+    assert runtime.agent.applied[0].llm.reasoning_effort == "xhigh"
+
+
+@pytest.mark.asyncio
+async def test_config_effort_rejects_an_unknown_level(monkeypatch) -> None:
+    import vulnclaw.config.settings as settings_mod
+
+    saved: list[Any] = []
+    monkeypatch.setattr(settings_mod, "load_config", _fresh_config)
+    monkeypatch.setattr(settings_mod, "save_config", saved.append)
+
+    session = _config_session(io.StringIO())
+    await session.handle(request("initialize", "r-init"))
+
+    with pytest.raises(ProtocolError) as caught:
+        await session.handle(
+            request(
+                "control",
+                "r-effort-bad",
+                payload={"operation": "config.effort", "arguments": {"effort": "turbo"}},
+            )
+        )
+    assert caught.value.code == "invalid_control"
+    # Nothing is written when the level is rejected.
+    assert saved == []
+
+
+@pytest.mark.asyncio
+async def test_ready_reports_the_reasoning_effort() -> None:
+    stream = io.StringIO()
+    # A runtime without a custom metadata() hook takes the config-derived path.
+    session = _config_session(stream)
+    await session.handle(request("initialize", "r-init"))
+
+    ready = next(event for event in events(stream) if event["type"] == "ready")
+    protocol_validator().validate(ready)
+    assert ready["runtime"]["reasoning_effort"] == "xhigh"

@@ -166,6 +166,7 @@ fn ready_event_hydrates_backend_capabilities() {
     assert_eq!(
         harness.app.backend_control_operations,
         vec![
+            "config.effort",
             "config.models",
             "config.preset",
             "config.read",
@@ -186,6 +187,48 @@ fn ready_event_captures_the_provider_and_model() {
 
     assert_eq!(harness.app.provider.as_deref(), Some("test"));
     assert_eq!(harness.app.model.as_deref(), Some("test"));
+    assert_eq!(harness.app.reasoning_effort.as_deref(), Some("xhigh"));
+}
+
+#[test]
+fn a_backend_without_the_effort_setting_leaves_it_unset() {
+    let (sender, _) = mpsc::channel();
+    let app = App::new_disconnected(sender);
+
+    assert!(app.reasoning_effort.is_none());
+}
+
+#[test]
+fn the_effort_command_reports_the_current_level_without_a_round_trip() {
+    let mut harness = AppHarness::connected();
+
+    harness.app.insert_text("/effort");
+    harness.app.submit();
+
+    assert!(harness
+        .app
+        .transcript
+        .iter()
+        .any(|item| item.text == "Reasoning effort: xhigh. Usage: /effort <level>."));
+}
+
+#[test]
+fn the_effort_command_persists_a_new_level_and_updates_the_badge() {
+    let mut harness = AppHarness::connected();
+
+    harness.app.insert_text("/effort low");
+    harness.app.submit();
+    assert!(matches!(
+        harness.apply_next(),
+        vulnclaw_tui::protocol::BackendEvent::ControlResult { .. }
+    ));
+
+    assert_eq!(harness.app.reasoning_effort.as_deref(), Some("low"));
+    assert!(harness
+        .app
+        .transcript
+        .iter()
+        .any(|item| item.text == "Reasoning effort set to low."));
 }
 
 #[test]

@@ -113,6 +113,9 @@ pub struct RuntimeInfo {
     pub config_ready: bool,
     pub provider: String,
     pub model: String,
+    /// Optional: backends predating the effort setting omit it entirely.
+    #[serde(default)]
+    pub reasoning_effort: String,
     #[serde(rename = "mcp_started")]
     pub _mcp_started: u64,
     pub skills: Vec<String>,

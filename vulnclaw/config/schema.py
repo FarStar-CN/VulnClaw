@@ -138,6 +138,12 @@ PROVIDER_PRESETS: dict[LLMProvider, dict[str, str]] = {
 }
 
 
+# Reasoning-effort ladder, weakest first. Only reasoning models receive the
+# value (see ``config.llm_utils``), so it is safe to carry for every provider.
+REASONING_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh" , "max")
+DEFAULT_REASONING_EFFORT = "xhigh"
+
+
 class LLMConfig(BaseModel):
     """LLM provider configuration."""
 
@@ -191,7 +197,9 @@ class LLMConfig(BaseModel):
     )
     temperature: float = Field(default=0.1, description="Sampling temperature")
     reasoning_effort: str = Field(
-        default="high", description="Reasoning effort level (OpenAI o-series only)"
+        default=DEFAULT_REASONING_EFFORT,
+        description="Reasoning effort level, sent only to models that accept "
+        f"reasoning parameters. One of: {', '.join(REASONING_EFFORTS)}.",
     )
 
     def key_pool(self) -> list[str]:

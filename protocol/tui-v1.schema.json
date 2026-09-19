@@ -382,6 +382,7 @@
         "config_ready": { "type": "boolean" },
         "provider": { "type": "string" },
         "model": { "type": "string" },
+        "reasoning_effort": { "type": "string" },
         "mcp_started": { "type": "integer", "minimum": 0 },
         "skills": { "type": "array", "items": { "type": "string" } }
       }

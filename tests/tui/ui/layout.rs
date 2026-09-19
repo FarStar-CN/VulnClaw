@@ -800,6 +800,52 @@ fn settings_modal_places_the_caret_on_the_focused_row() {
     );
 }
 
+#[test]
+fn the_status_line_shows_the_model_beside_its_reasoning_effort() {
+    let mut app = app_with_provider(Some("DeepSeek"), Some("deepseek-flash"), true);
+    app.reasoning_effort = Some("xhigh".into());
+    let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+
+    let input_row = (1..28u16)
+        .find(|&y| row_text(&terminal, y).contains("Type / for commands"))
+        .expect("composer placeholder must render");
+    let status = row_text(&terminal, input_row + 2);
+
+    // Marker, model and effort run together on the right. Asserted by order
+    // rather than adjacency: ◈ is an ambiguous-width glyph, so the rendered row
+    // may pad it by a cell.
+    let marker = status.find('◈').expect("the model marker must render");
+    let name = status
+        .find("deepseek-flash")
+        .expect("the model must render");
+    let effort = status.find("xhigh").expect("the effort must render");
+    assert!(
+        marker < name && name < effort,
+        "marker, model and effort run in order: {status:?}"
+    );
+    assert!(
+        status.trim_end().ends_with("xhigh"),
+        "the pair stays right-aligned"
+    );
+}
+
+#[test]
+fn the_effort_is_omitted_from_the_status_line_when_unset() {
+    let app = app_with_provider(Some("DeepSeek"), Some("deepseek-flash"), true);
+    let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+
+    let input_row = (1..28u16)
+        .find(|&y| row_text(&terminal, y).contains("Type / for commands"))
+        .expect("composer placeholder must render");
+    let status = row_text(&terminal, input_row + 2);
+
+    assert!(status.contains('◈'));
+    assert!(!status.contains('∙'), "no separator without an effort");
+    assert!(status.trim_end().ends_with("deepseek-flash"));
+}
+
 /// Draws the settings screen with `count` models and `selected` highlighted.
 fn settings_terminal(count: usize, selected: usize) -> Terminal<TestBackend> {
     use vulnclaw_tui::app::LlmField;

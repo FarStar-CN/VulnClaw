@@ -47,6 +47,7 @@ SUPPORTED_CONTROL_OPERATIONS = frozenset(
         "config.preset",
         "config.models",
         "config.write",
+        "config.effort",
     }
 )
 TASK_ACTIVE_CONTROL_OPERATIONS = frozenset(
@@ -458,6 +459,29 @@ class BackendSession:
             models = await asyncio.to_thread(fetch_provider_models, base_url, api_key)
             return {"models": models, "used_saved_key": used_saved_key}, None
 
+        if operation == "config.effort":
+            from vulnclaw.config.schema import REASONING_EFFORTS
+            from vulnclaw.config.settings import load_config, save_config
+
+            agent = getattr(self.runtime, "agent", None)
+            if agent is None:
+                raise ValueError("config.effort requires an initialised runtime")
+
+            effort = str(arguments.get("effort") or "").strip().lower()
+            if effort not in REASONING_EFFORTS:
+                raise ValueError(f"effort must be one of: {', '.join(REASONING_EFFORTS)}")
+            config = load_config()
+            config.llm.reasoning_effort = effort
+            save_config(config)
+            # Same live rebind as config.write: the next call picks the level up
+            # without restarting the TUI.
+            self.runtime.config = config
+            agent.apply_config(config)
+            return {
+                "message": f"Reasoning effort set to {effort}.",
+                "reasoning_effort": effort,
+            }, None
+
         if operation == "config.write":
             from vulnclaw.config.settings import apply_llm_form, load_config, save_config
 
@@ -818,6 +842,7 @@ def _runtime_metadata(runtime: Any) -> dict[str, Any]:
         "config_ready": configured,
         "provider": str(getattr(llm, "provider", "unknown")),
         "model": str(getattr(llm, "model", "unknown")),
+        "reasoning_effort": str(getattr(llm, "reasoning_effort", "")),
         "mcp_started": int(getattr(runtime, "mcp_started", 0)),
         "skills": skills,
     }

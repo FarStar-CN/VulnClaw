@@ -833,16 +833,28 @@ fn render_composer_status(frame: &mut Frame, app: &App, area: Rect) {
     let Some(model) = model else {
         return;
     };
+    let effort = app
+        .reasoning_effort
+        .as_deref()
+        .filter(|effort| !effort.is_empty());
     // Right-aligned by the renderer rather than by a width this module
     // computes: the model marker is an ambiguous-width glyph, so measuring it
     // here and rendering it there can disagree by a cell.
+    let mut spans = vec![Span::styled(
+        format!("{MODEL_MARKER} {model}"),
+        Style::default().fg(theme::TEXT_SOFT),
+    )];
+    if let Some(effort) = effort {
+        spans.push(Span::styled(
+            format!("{EFFORT_SEPARATOR}{effort}"),
+            Style::default().fg(theme::TEXT_HINT),
+        ));
+    }
+    spans.push(Span::raw(" "));
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!("{MODEL_MARKER}{model} "),
-            Style::default().fg(theme::TEXT_SOFT),
-        )))
-        .alignment(Alignment::Right)
-        .style(background),
+        Paragraph::new(Line::from(spans))
+            .alignment(Alignment::Right)
+            .style(background),
         panes[1],
     );
 }
@@ -852,7 +864,9 @@ fn render_composer_status(frame: &mut Frame, app: &App, area: Rect) {
 const PROMPT_MARKER: &str = " > ";
 
 /// Marks the model name on the right of the composer status line.
-const MODEL_MARKER: &str = "◈ ";
+const MODEL_MARKER: &str = "◈";
+/// Separates the model name from the reasoning effort beside it.
+const EFFORT_SEPARATOR: &str = "∙";
 /// Introduces the "N more" row that closes a list too long for its window.
 const MORE_ROWS_HINT: &str = "… ";
 const PROMPT_MARKER_WIDTH: u16 = PROMPT_MARKER.len() as u16;
