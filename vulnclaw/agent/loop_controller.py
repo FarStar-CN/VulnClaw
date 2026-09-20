@@ -128,9 +128,6 @@ async def auto_pentest(
         try:
             response_text = await call_llm_auto(agent, system_prompt, round_context, stream_sink=stream_sink)
             result.output = response_text
-            agent.context.add_assistant_message(
-                _("agent.loop.round_analysis", round=round_num, response=response_text)
-            )
             agent._finding_parser.parse(response_text)
 
             if agent.runtime.is_recon_phase:

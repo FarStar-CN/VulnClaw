@@ -43,6 +43,7 @@ from vulnclaw.cli.config_panel import (
 from vulnclaw.config.schema import (
     BUILTIN_MCP_SERVERS,
     ENGINE_CHOICES,
+    REASONING_EFFORTS,
     MCPServerConfig,
     MCPTransportConfig,
 )
@@ -53,6 +54,7 @@ from vulnclaw.config.settings import (
     load_config,
     save_config,
 )
+from vulnclaw.config.token_provider import has_llm_credentials
 from vulnclaw.i18n import _, init_i18n
 from vulnclaw.skills.dispatcher import SkillDispatcher
 from vulnclaw.skills.flag_skills import (
@@ -1531,7 +1533,7 @@ def _cmd_config(session: dict[str, Any], args: str) -> None:
         _set_prompt_message(session, _("tui.fetching_models"))
         # Note: 在 prompt_toolkit 同步循环中，消息不会立即渲染
         # 直接同步获取模型列表
-        models = fetch_provider_models(base_url, api_key)
+        models = fetch_provider_models(base_url, api_key, llm_config=config.llm)
         if models:
             _set_prompt_choice(session, _("tui.prompt_select_model", model=config.llm.model), models, _on_model_selected)
         else:
@@ -2096,10 +2098,12 @@ def _prompt_bool_value(screen: Console, label: str, current: bool) -> bool:
     return _config_confirm_ask(screen, label, default=current)
 
 
-def _prompt_int_value(screen: Console, label: str, current: int) -> int:
+def _prompt_int_value(screen: Console, label: str, current: int | None, *, nullable: bool = False) -> int | None:
     """Prompt for an integer value, keeping the current value on blank input."""
     while True:
-        raw = _config_prompt_ask(screen, label, default=str(current))
+        raw = _config_prompt_ask(screen, label, default="null" if current is None else str(current))
+        if nullable and raw.lower() == "null":
+            return None
         if not raw:
             return current
         try:
@@ -2108,10 +2112,12 @@ def _prompt_int_value(screen: Console, label: str, current: int) -> int:
             screen.print(f"[{C_ERROR}]Enter a whole number.[/]")
 
 
-def _prompt_float_value(screen: Console, label: str, current: float) -> float:
+def _prompt_float_value(screen: Console, label: str, current: float | None, *, nullable: bool = False) -> float | None:
     """Prompt for a float value, keeping the current value on blank input."""
     while True:
-        raw = _config_prompt_ask(screen, label, default=str(current))
+        raw = _config_prompt_ask(screen, label, default="null" if current is None else str(current))
+        if nullable and raw.lower() == "null":
+            return None
         if not raw:
             return current
         try:
@@ -2190,9 +2196,9 @@ def _prompt_model_value(screen: Console, config) -> str:
     base_url = config.llm.base_url
     api_key = config.llm.primary_key()
 
-    if base_url and api_key:
+    if base_url and has_llm_credentials(config.llm):
         screen.print(f"[{C_MUTED}]{_('tui.fetching_models')}[/]")
-        models = fetch_provider_models(base_url, api_key)
+        models = fetch_provider_models(base_url, api_key, llm_config=config.llm)
 
     if models:
         _render_model_choices(screen, models, current)
@@ -2206,7 +2212,7 @@ def _prompt_model_value(screen: Console, config) -> str:
             screen.print(f"[{C_WARNING}]Model number out of range; using '{raw}' as a custom model id.[/]")
         return raw
 
-    if base_url and api_key:
+    if base_url and has_llm_credentials(config.llm):
         screen.print(f"[{C_WARNING}]No models returned; enter a model id manually.[/]")
     raw = _config_prompt_ask(screen, f"Model [current: {current}]", default="")
     if raw == "!clear":
@@ -2316,13 +2322,13 @@ def _edit_llm_config(screen: Console, config):
     config.llm.chatgpt_auto_proxy = _prompt_bool_value(
         screen, "ChatGPT auto-proxy", config.llm.chatgpt_auto_proxy
     )
-    config.llm.max_tokens = _prompt_int_value(screen, "Max tokens", config.llm.max_tokens)
+    config.llm.max_tokens = _prompt_int_value(screen, "Max tokens (or null)", config.llm.max_tokens, nullable=True)
     config.llm.max_context_tokens = _prompt_int_value(
         screen, "Max context tokens", config.llm.max_context_tokens
     )
-    config.llm.temperature = _prompt_float_value(screen, "Temperature", config.llm.temperature)
-    config.llm.reasoning_effort = _prompt_text_value(
-        screen, "Reasoning effort", config.llm.reasoning_effort
+    config.llm.temperature = _prompt_float_value(screen, "Temperature (or null)", config.llm.temperature, nullable=True)
+    config.llm.reasoning_effort = _prompt_choice_value(
+        screen, "Reasoning effort", list(REASONING_EFFORTS), config.llm.reasoning_effort
     )
     screen.print(
         f"[{C_MUTED}]OAuth endpoints are managed by `vulnclaw login` and are not edited here.[/]"
@@ -2788,11 +2794,12 @@ def _run_config_panel() -> None:
         generation = model.begin_fetch()
         base_url = model.draft.llm.base_url
         api_key = model._usable_key()
+        llm_snapshot = model.draft.llm.model_copy(deep=True)
         loop = app.loop
 
         def _worker() -> None:
             try:
-                models = fetch_provider_models(base_url, api_key)
+                models = fetch_provider_models(base_url, api_key, llm_config=llm_snapshot)
                 error = None
             except Exception as exc:  # network/provider failure
                 models, error = [], str(exc)

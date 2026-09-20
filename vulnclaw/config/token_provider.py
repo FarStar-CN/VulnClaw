@@ -347,7 +347,7 @@ def _refresh_oauth(llm: Any, refresh_token: str) -> dict[str, Any]:
     return bundle
 
 
-def _resolve_oauth_token(llm: Any) -> str:
+def _resolve_oauth_token(llm: Any, *, force_refresh: bool = False) -> str:
     """Return a valid OAuth access token, refreshing silently if needed."""
     with _OAUTH_LOCK:
         bundle = load_oauth_tokens()
@@ -356,7 +356,7 @@ def _resolve_oauth_token(llm: Any) -> str:
         refresh = str(bundle.get("refresh_token") or "")
 
         valid = access and (expires_at == 0.0 or time.time() < expires_at - _EXPIRY_SKEW_SECONDS)
-        if valid:
+        if valid and not force_refresh:
             return access
         if refresh:
             return str(_refresh_oauth(llm, refresh)["access_token"])
@@ -367,6 +367,11 @@ def _resolve_oauth_token(llm: Any) -> str:
         raise OAuthError(
             "尚未登录或令牌已失效，请运行 `vulnclaw login` / Not signed in — run `vulnclaw login`"
         )
+
+
+def refresh_llm_token(llm: Any) -> str:
+    """Refresh a rejected OAuth token once, keeping the existing storage contract."""
+    return _resolve_oauth_token(llm, force_refresh=True)
 
 
 def resolve_llm_token(llm: Any) -> str:

@@ -124,7 +124,7 @@ def _estimate_chars(value: Any) -> int:
 
 def _content_text(message: dict[str, Any]) -> str:
     """Flatten a message's content to plain text for counting/rendering."""
-    content = message.get("content", "")
+    content = message.get("output", "") if message.get("type") == "function_call_output" else message.get("content", "")
     if isinstance(content, str):
         return content
     parts: list[str] = []
@@ -414,6 +414,15 @@ class VaultManager:
             }
         ]
         lo, hi = min(indexes), max(indexes)
+        # Even a forced archive may not split protocol-linked reasoning/tools.
+        from vulnclaw.agent.token_counter import group_tool_exchanges
+
+        offset = 0
+        for group in group_tool_exchanges(messages):
+            end = offset + len(group) - 1
+            if lo <= end and hi >= offset and (lo > offset or hi < end):
+                return False, "range splits a model/tool exchange; select the complete group", None
+            offset = end + 1
         if not force:
             protected_start, protected_end = _protected_range(
                 messages,

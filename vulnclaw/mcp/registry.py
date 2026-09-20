@@ -202,6 +202,11 @@ class MCPRegistry:
         if not tool_name:
             return
 
+        existing = self._tools.get(tool_name)
+        if existing is not None and existing.server_name != server_name:
+            raise ValueError(
+                f"Duplicate MCP tool {tool_name!r}: {existing.server_name!r} and {server_name!r}"
+            )
         schema = MCPToolSchema(
             name=tool_name,
             description=tool_schema.get("description", ""),

@@ -112,18 +112,28 @@ async def handle_tool_calls_with_results(
     max_calls_per_round = 10
 
     seen: dict[str, dict[str, Any]] = {}
-    # [修改] 2026-06-10 Nyaecho - 修复 tool_calls 属性访问问题，使用 getattr 防止 AttributeError
-    for tool_call in (getattr(message, "tool_calls", None) or []):
+    requested = list(getattr(message, "tool_calls", None) or [])
+    keys: dict[str, str] = {}
+    errors: dict[str, str] = {}
+    agent._llm_tool_results = {}
+    for tool_call in requested:
         func_name = tool_call.function.name
-        func_args = safe_parse_tool_args(tool_call.function.arguments)
+        if tool_call.id in keys or tool_call.id in errors:
+            raise ValueError(f"Duplicate tool call id: {tool_call.id}")
+        try:
+            func_args = json.loads(tool_call.function.arguments)
+            if not isinstance(func_args, dict):
+                raise ValueError("arguments must be a JSON object")
+        except (TypeError, ValueError) as exc:
+            errors[tool_call.id] = f"Tool arguments rejected: {exc}"
+            continue
         args_key = json.dumps(func_args, sort_keys=True, ensure_ascii=False)
         key = f"{func_name}::{args_key}"
+        keys[tool_call.id] = key
         if key not in seen:
             seen[key] = {
-                "index": len(seen),
-                "tool_call": tool_call,
-                "func_name": func_name,
-                "func_args": func_args,
+                "index": len(seen), "tool_call": tool_call,
+                "func_name": func_name, "func_args": func_args,
             }
 
     deduplicated = list(seen.values())
@@ -182,7 +192,21 @@ async def handle_tool_calls_with_results(
         if isinstance(result, dict):
             result.pop("correction_signal", None)
 
-    return results, skipped_info
+    by_id = {r["tool_call_id"]: r for r in results}
+    complete_results = []
+    for call in requested:
+        if call.id in by_id:
+            complete_results.append(by_id[call.id])
+            continue
+        first = seen.get(keys.get(call.id, ""), {}).get("tool_call")
+        original = by_id.get(first.id) if first is not None else None
+        content = errors.get(call.id) or (
+            original["content"] if original is not None
+            else "Tool not executed: batch limit or execution cancelled."
+        )
+        complete_results.append({"tool_call": call, "tool_call_id": call.id,
+                                 "content": content, "duration_ms": 0})
+    return complete_results, skipped_info
 
 
 def _resolve_parallel_settings(agent: AgentContext) -> tuple[bool, int]:
@@ -235,6 +259,14 @@ def _extract_structured_content(tool_result: Any) -> dict[str, Any] | None:
 
 
 async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str, Any] | None:
+    result = await _execute_single_impl(agent, item)
+    completed = getattr(agent, "_llm_tool_results", None)
+    if isinstance(completed, dict) and result is not None:
+        completed[item["tool_call"].id] = result
+    return result
+
+
+async def _execute_single_impl(agent: AgentContext, item: dict[str, Any]) -> dict[str, Any] | None:
     """Execute one tool call with isolated error handling.
 
     Returns one tool response per requested tool call.  Failed tools are returned

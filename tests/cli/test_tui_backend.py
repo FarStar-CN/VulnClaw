@@ -745,7 +745,7 @@ async def test_config_models_falls_back_to_the_saved_key(monkeypatch) -> None:
 
     seen: list[tuple[str, str]] = []
 
-    def fake_fetch(base_url: str, api_key: str, timeout: float = 10.0) -> list[str]:
+    def fake_fetch(base_url: str, api_key: str, timeout: float = 10.0, *, llm_config=None) -> list[str]:
         seen.append((base_url, api_key))
         return ["b-model", "a-model"]
 
@@ -753,6 +753,9 @@ async def test_config_models_falls_back_to_the_saved_key(monkeypatch) -> None:
 
     config = VulnClawConfig()
     config.llm.api_key = "sk-stored"
+    config.llm.provider = "deepseek"
+    config.llm.base_url = "https://api.deepseek.com"
+    monkeypatch.setattr(settings_mod, "load_config", lambda: config)
     stream = io.StringIO()
     session = _config_session(stream, config)
     await session.handle(request("initialize", "r-init"))

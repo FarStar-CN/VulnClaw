@@ -53,7 +53,7 @@ def _content_tokens(content: Any) -> int:
                 if "text" in part and isinstance(part["text"], str):
                     total += _text_tokens(part["text"])
                 # Image parts: fixed approximate cost, don't measure base64 length
-                elif part.get("type") in ("image_url", "image"):
+                elif part.get("type") in ("image_url", "image", "input_image"):
                     total += 256
                 else:
                     total += _text_tokens(json.dumps(part, ensure_ascii=False))
@@ -87,6 +87,12 @@ def estimate_message_tokens(message: dict) -> int:
     if not isinstance(message, dict):
         return _text_tokens(str(message)) + _MESSAGE_OVERHEAD
     total = _MESSAGE_OVERHEAD
+    for key in ("arguments", "output", "summary", "reasoning_content"):
+        total += _content_tokens(message.get(key))
+    # Encrypted reasoning is opaque; retain a conservative reservation, not an
+    # asserted tokenizer count inferred from ciphertext bytes.
+    if message.get("encrypted_content"):
+        total += int(message.get("_reasoning_tokens") or 4096)
     total += _text_tokens(str(message.get("role", "")))
     total += _content_tokens(message.get("content"))
     if "tool_calls" in message:
@@ -134,6 +140,19 @@ def group_tool_exchanges(messages: list[dict]) -> list[list[dict]]:
     while index < len(messages):
         message = messages[index]
         group = [message]
+        if message.get("type") in {"reasoning", "function_call"} or (
+            message.get("role") == "assistant" and message.get("type") == "message"
+        ):
+            cursor = index + 1
+            while cursor < len(messages):
+                candidate = messages[cursor]
+                if candidate.get("role") in {"user", "system", "developer"}:
+                    break
+                group.append(candidate)
+                cursor += 1
+            groups.append(group)
+            index = cursor
+            continue
         tool_calls = message.get("tool_calls") if isinstance(message, dict) else None
         if message.get("role") == "assistant" and isinstance(tool_calls, list) and tool_calls:
             expected_ids = {
@@ -144,9 +163,9 @@ def group_tool_exchanges(messages: list[dict]) -> list[list[dict]]:
             cursor = index + 1
             while cursor < len(messages):
                 candidate = messages[cursor]
-                if candidate.get("role") != "tool":
+                if candidate.get("role") != "tool" and candidate.get("type") != "function_call_output":
                     break
-                if str(candidate.get("tool_call_id") or "") not in expected_ids:
+                if str(candidate.get("tool_call_id") or candidate.get("call_id") or "") not in expected_ids:
                     break
                 group.append(candidate)
                 cursor += 1

@@ -10,12 +10,13 @@ endpoints are caught before a task starts.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
-from vulnclaw.config.llm_utils import build_chat_completion_kwargs
-from vulnclaw.config.settings import make_openai_client
-from vulnclaw.config.token_provider import resolve_llm_token
+from vulnclaw.config.token_provider import TokenResolutionError
+from vulnclaw.llm.capabilities import api_format, endpoint
+from vulnclaw.llm.client import complete, make_client
 
 _PING_TOOL: dict[str, Any] = {
     "type": "function",
@@ -78,53 +79,31 @@ def _classify_status_error(exc: Exception) -> tuple[str, str]:
 
 
 def probe_llm_endpoint(llm_config: Any, *, timeout: float = 20.0) -> LLMProbeResult:
-    """Send one tool-bearing completion and classify the outcome.
-
-    Never raises: every failure mode is mapped onto :class:`LLMProbeResult`
-    so callers can render it directly.
-    """
+    """Check the configured route with a harmless two-request function exchange."""
+    client = None
     try:
-        api_key = resolve_llm_token(llm_config)
-    except Exception as exc:  # OAuth refresh failure, unknown auth mode, ...
-        return LLMProbeResult(False, "auth", f"credential resolution failed: {str(exc)[:200]}")
-
-    try:
-        client = make_openai_client(api_key, llm_config.base_url, timeout=timeout)
-    except Exception as exc:
-        return LLMProbeResult(False, "unknown", f"client construction failed: {str(exc)[:200]}")
-
-    kwargs = build_chat_completion_kwargs(
-        llm_config,
-        _PROBE_MESSAGES,
-        [_PING_TOOL],
-        max_tokens=200,
-        temperature=0.0,
-    )
-    try:
-        response = client.chat.completions.create(**kwargs)
+        client = make_client(llm_config, timeout=timeout)
+        options = {"temperature": None, "reasoning_effort": "low"}
+        # A nullable configured budget is an explicit opt-out, including OAuth.
+        options["max_tokens"] = None if llm_config.max_tokens is None else min(llm_config.max_tokens, 4096)
+        first = complete(llm_config, _PROBE_MESSAGES, [_PING_TOOL], client=client, **options)
+        if not first.tool_calls:
+            return LLMProbeResult(False, "no_tool_call",
+                                  "Endpoint replied; tool calling was not observed in this sample")
+        outputs = []
+        for call in first.tool_calls:
+            if call.function.name != "ping" or json.loads(call.function.arguments) != {"ok": True}:
+                return LLMProbeResult(False, "unknown", "Probe returned an invalid ping call")
+            outputs.append({"type": "function_call_output", "call_id": call.id,
+                            "output": '{"ok": true}'})
+        complete(llm_config, [*_PROBE_MESSAGES, *first.output_items, *outputs], client=client, **options)
+        return LLMProbeResult(True, "ok", f"{api_format(llm_config)} {endpoint(llm_config)}: "
+                              "two-turn ping exchange completed (probe effort=low)", True)
+    except TokenResolutionError as exc:
+        return LLMProbeResult(False, "auth", f"credential resolution failed: {exc}")
     except Exception as exc:
         category, detail = _classify_status_error(exc)
         return LLMProbeResult(False, category, detail)
-
-    try:
-        choice = response.choices[0]
-    except (IndexError, AttributeError, TypeError) as exc:
-        return LLMProbeResult(False, "unknown", f"malformed response: {str(exc)[:200]}")
-
-    tool_calls = list(getattr(choice.message, "tool_calls", None) or [])
-    content = (getattr(choice.message, "content", None) or "").strip()
-    if tool_calls:
-        return LLMProbeResult(
-            True,
-            "ok",
-            "endpoint reachable and emitted a tool call",
-            tool_call_emitted=True,
-        )
-    preview = content[:160] or "(empty completion)"
-    return LLMProbeResult(
-        False,
-        "no_tool_call",
-        "endpoint replied without a tool call; it is not usable for autonomous "
-        f"agent mode (last reply: {preview})",
-        tool_call_emitted=False,
-    )
+    finally:
+        if client is not None:
+            client.close()

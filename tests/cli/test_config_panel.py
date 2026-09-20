@@ -144,14 +144,22 @@ def test_apply_clipboard_routes_text_and_reports_empty_or_unavailable(model):
 
 
 def test_text_edit_cancel_restores_previous_value(model):
-    model.draft.llm.reasoning_effort = "medium"
+    model.draft.llm.base_url = "https://example.test/v1"
+    _focus(model, "llm.base_url")
+
+    model.activate()
+    model.set_edit_text("https://other.test/v1")
+    model.cancel_edit()
+
+    assert model.draft.llm.base_url == "https://example.test/v1"
+
+
+def test_reasoning_effort_offers_only_the_supported_ladder(model):
     _focus(model, "llm.reasoning_effort")
 
     model.activate()
-    model.set_edit_text("high")
-    model.cancel_edit()
 
-    assert model.draft.llm.reasoning_effort == "medium"
+    assert model.dropdown_options == ["low", "medium", "high", "xhigh", "max"]
 
 
 def test_commit_edit_targets_the_originating_field_not_current_focus(model):

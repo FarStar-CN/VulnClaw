@@ -604,6 +604,8 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 
 ### 可配置项
 
+五家主要供应商默认使用 Responses，保留显式 Chat 入口且不自动回退。升级、GLM/订阅预算限制及验证状态见 [LLM 接入说明](LLM_COMPATIBILITY.md)。
+
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `llm.provider` | openai | LLM 提供商 |
@@ -612,8 +614,11 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 | `llm.chatgpt_auto_proxy` | false | 自动启动内置 ChatGPT 后端桥接代理 |
 | `llm.base_url` | 按 provider | API 基础 URL |
 | `llm.model` | 按 provider | 模型名称 |
-| `llm.temperature` | 0.1 | 采样温度 |
-| `llm.max_tokens` | 4096 | 单次最大输出 token |
+| `llm.api_format` | 按 provider | responses / chat_completions |
+| `llm.temperature` | 0.1 | 采样温度；null 不发送 |
+| `llm.top_p` | null | 核采样概率阈值 |
+| `llm.reasoning_effort` | xhigh | 推理强度：low / medium / high / xhigh / max；按模型适配 |
+| `llm.max_tokens` | 4096 | 推理与正文的总输出预算；null 不发送 |
 | `session.engine` | solve | `solve`（模型主导）/ `team`（角色团队）/ `rounds`（旧固定轮数） |
 | `session.solve_max_steps` | 240 | solve 防失控安全预算；不是计划轮数，正常由模型自主完成/询问/判定无路 |
 | `session.solve_max_directions` | 3 | 兼容旧配置；默认模型主导 solve 不再使用研究方向数量 |

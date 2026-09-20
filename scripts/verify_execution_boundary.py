@@ -93,16 +93,16 @@ ALLOWED_SPAWN_SITES: dict[str, str] = {
     "vulnclaw/report/verifier.py:487:subprocess.run": (
         "generated-PoC verification after synchronous ExecutionGate approval"
     ),
-    "vulnclaw/cli/tui.py:499:subprocess.call": (
+    "vulnclaw/cli/tui.py:501:subprocess.call": (
         "operator control plane: native TUI binary launcher"
     ),
-    "vulnclaw/cli/tui.py:1748:subprocess.run": (
+    "vulnclaw/cli/tui.py:1750:subprocess.run": (
         "operator control plane: fixed version diagnostic"
     ),
-    "vulnclaw/cli/tui.py:2634:subprocess.run": (
+    "vulnclaw/cli/tui.py:2640:subprocess.run": (
         "operator control plane: Windows Get-Clipboard via powershell for /config paste"
     ),
-    "vulnclaw/cli/tui.py:2666:subprocess.run": (
+    "vulnclaw/cli/tui.py:2672:subprocess.run": (
         "operator control plane: Unix pbpaste/wl-paste/xclip/xsel for /config paste"
     ),
     "vulnclaw/cli/main.py:2737:subprocess.run": (

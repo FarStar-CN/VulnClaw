@@ -351,8 +351,8 @@ COMMANDS: tuple[ManualTopic, ...] = (
         notes=(
             "A config subcommand is required; running vulnclaw config alone prints usage and exits.",
             "Useful LLM keys: llm.provider, llm.api_key, llm.api_keys, llm.auth_mode, "
-            "llm.chatgpt_auto_proxy, llm.base_url, llm.model, llm.max_tokens, "
-            "llm.max_context_tokens, llm.temperature, llm.reasoning_effort. Use `vulnclaw login` "
+            "llm.chatgpt_auto_proxy, llm.api_format, llm.base_url, llm.model, llm.max_tokens, "
+            "llm.max_context_tokens, llm.temperature, llm.top_p, llm.reasoning_effort. Temperature, top_p and max_tokens accept null; max_tokens limits total reasoning + answer. ChatGPT subscription requires max_tokens=null. Use `vulnclaw login` "
             "instead of llm.api_key for OAuth-based ChatGPT-subscription auth.",
             "Useful session keys: session.output_dir, session.report_format, session.max_rounds, "
             "session.engine (solve|rounds), session.solve_max_steps, session.context_auto_compact, "

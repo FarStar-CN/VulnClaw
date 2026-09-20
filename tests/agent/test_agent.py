@@ -1514,22 +1514,26 @@ class TestAgentCoreLoop:
         return AgentCore(config=config)
 
     def test_llm_client_uses_max_completion_tokens_for_gpt5_models(self):
-        from vulnclaw.agent.llm_client import build_chat_completion_kwargs
+        from vulnclaw.agent.llm_client import build_llm_request
 
         class DummyAgent:
             class _DummyConfig:
                 class _DummyLLM:
+                    api_format = "chat_completions"
+                    base_url = "https://api.openai.com/v1"
                     model = "gpt-5.5"
                     max_tokens = 256
                     temperature = 0.1
                     provider = "openai"
+                    api_format = "chat_completions"
+                    base_url = "https://api.openai.com/v1"
                     reasoning_effort = "high"
 
                 llm = _DummyLLM()
 
             config = _DummyConfig()
 
-        kwargs = build_chat_completion_kwargs(DummyAgent(), [{"role": "user", "content": "hi"}])
+        kwargs = build_llm_request(DummyAgent(), [{"role": "user", "content": "hi"}])
 
         assert kwargs["max_completion_tokens"] == 256
         assert "max_tokens" not in kwargs
@@ -1537,11 +1541,13 @@ class TestAgentCoreLoop:
         assert kwargs["reasoning_effort"] == "high"
 
     def test_llm_client_keeps_max_tokens_for_compatible_providers(self):
-        from vulnclaw.agent.llm_client import build_chat_completion_kwargs
+        from vulnclaw.agent.llm_client import build_llm_request
 
         class DummyAgent:
             class _DummyConfig:
                 class _DummyLLM:
+                    api_format = "chat_completions"
+                    base_url = "https://api.deepseek.com"
                     model = "deepseek-chat"
                     max_tokens = 512
                     temperature = 0.2
@@ -1552,12 +1558,12 @@ class TestAgentCoreLoop:
 
             config = _DummyConfig()
 
-        kwargs = build_chat_completion_kwargs(DummyAgent(), [{"role": "user", "content": "hi"}])
+        kwargs = build_llm_request(DummyAgent(), [{"role": "user", "content": "hi"}])
 
         assert kwargs["max_tokens"] == 512
         assert kwargs["temperature"] == 0.2
         assert "max_completion_tokens" not in kwargs
-        assert "reasoning_effort" not in kwargs
+        assert kwargs["reasoning_effort"] == "high"
 
     @pytest.mark.asyncio
     async def test_generate_attack_summary_uses_gpt5_token_parameter(self):
@@ -1582,7 +1588,7 @@ class TestAgentCoreLoop:
                         class Resp:
                             choices = [Choice()]
 
-                        return Resp()
+                        return _sdk_chat_response(Resp())
 
         class DummyAgent:
             state = SessionState(target="example.com")
@@ -1599,7 +1605,7 @@ class TestAgentCoreLoop:
                             "model": "gpt-5.5",
                             "max_tokens": 4096,
                             "temperature": 0.1,
-                            "provider": "openai",
+                            "provider": "openai", "api_format": "chat_completions", "base_url": "https://api.openai.com/v1",
                             "reasoning_effort": "high",
                         },
                     )()
@@ -1633,7 +1639,7 @@ class TestAgentCoreLoop:
                 class Resp:
                     choices = [Choice()]
 
-                return Resp()
+                return _protocol_result(Resp())
 
         class DummyAgent:
             class _DummyClient:
@@ -1652,6 +1658,8 @@ class TestAgentCoreLoop:
                     max_tokens = 256
                     temperature = 0.1
                     provider = "openai"
+                    api_format = "chat_completions"
+                    base_url = "https://api.openai.com/v1"
                     reasoning_effort = "high"
 
                 llm = _DummyLLM()
@@ -1699,7 +1707,7 @@ class TestAgentCoreLoop:
                 class Resp:
                     choices = [Choice()]
 
-                return Resp()
+                return _protocol_result(Resp())
 
         class DummyAgent:
             class _DummyClient:
@@ -1718,6 +1726,8 @@ class TestAgentCoreLoop:
                     max_tokens = 256
                     temperature = 0.1
                     provider = "openai"
+                    api_format = "chat_completions"
+                    base_url = "https://api.openai.com/v1"
                     reasoning_effort = "high"
 
                 llm = _DummyLLM()
@@ -1789,6 +1799,8 @@ class TestAgentCoreLoop:
                     max_tokens = 256
                     temperature = 0.1
                     provider = "openai"
+                    api_format = "chat_completions"
+                    base_url = "https://api.openai.com/v1"
                     reasoning_effort = "high"
 
                 llm = _DummyLLM()
@@ -1847,7 +1859,7 @@ class TestAgentCoreLoop:
                     class Resp:
                         choices = [Choice()]
 
-                    return Resp()
+                    return _protocol_result(Resp())
                 raise RuntimeError(
                     "bad_request_error: invalid function arguments json string, tool_call_id: call_1"
                 )
@@ -1869,6 +1881,8 @@ class TestAgentCoreLoop:
                     max_tokens = 256
                     temperature = 0.1
                     provider = "openai"
+                    api_format = "chat_completions"
+                    base_url = "https://api.openai.com/v1"
                     reasoning_effort = "high"
 
                 llm = _DummyLLM()
@@ -1890,7 +1904,7 @@ class TestAgentCoreLoop:
                 self.context = self._DummyContext()
 
             def _build_openai_tools(self):
-                return [{"function": {"name": "fetch"}}]
+                return [{"type": "function", "function": {"name": "fetch", "parameters": {"type": "object", "properties": {}}}}]
 
             def _get_client(self):
                 return self._DummyClient()
@@ -1919,7 +1933,7 @@ class TestAgentCoreLoop:
         assert "Status: 200" in result
 
     @pytest.mark.asyncio
-    async def test_llm_client_does_not_persist_tool_summary_as_assistant_history(self, monkeypatch):
+    async def test_llm_client_persists_only_model_final_answer_as_assistant_history(self, monkeypatch):
         from vulnclaw.agent import llm_client
 
         class DummyLoop:
@@ -1959,7 +1973,7 @@ class TestAgentCoreLoop:
                 class completions:
                     @staticmethod
                     def create(**kwargs):
-                        return calls.pop(0)
+                        return _sdk_chat_response(calls.pop(0))
 
         saved_messages: list[str] = []
 
@@ -1980,7 +1994,7 @@ class TestAgentCoreLoop:
                     "model": "test-model",
                     "max_tokens": 1000,
                     "temperature": 0.1,
-                    "provider": "openai",
+                    "provider": "openai", "api_format": "chat_completions", "base_url": "https://api.openai.com/v1",
                     "reasoning_effort": "high",
                 },
             )()
@@ -1995,7 +2009,7 @@ class TestAgentCoreLoop:
 
             @staticmethod
             def _build_openai_tools():
-                return [{"function": {"name": "navigate"}}]
+                return [{"type": "function", "function": {"name": "navigate", "parameters": {"type": "object", "properties": {}}}}]
 
         async def fake_handle_tool_calls_with_results(agent, message):
             return (
@@ -2018,8 +2032,8 @@ class TestAgentCoreLoop:
 
         result = await llm_client.call_llm_auto(DummyAgent(), "sys", "round")
         assert result == "followup ok"
-        # call_llm_auto 不再自己写入上下文，由 caller（loop_controller L55）统一添加
-        assert saved_messages == []
+        # Only the final model answer is stored as assistant prose.
+        assert saved_messages == ["followup ok"]
 
     @pytest.mark.asyncio
     async def test_auto_pentest_stops_on_done_signal(self, monkeypatch):
@@ -2174,3 +2188,18 @@ class TestAgentCoreLoop:
         assert cycle_results[0].cycle_num == 1
         assert cycle_results[-1].cycle_num == 3
         assert all(cr.total_steps >= 0 for cr in cycle_results)
+
+
+def _sdk_chat_response(response):
+    message = response.choices[0].message
+    calls = [{"id": c.id, "type": "function", "function": {
+        "name": c.function.name, "arguments": c.function.arguments,
+    }} for c in getattr(message, "tool_calls", None) or []]
+    return {"choices": [{"finish_reason": "tool_calls" if calls else "stop", "message": {
+        "role": "assistant", "content": message.content, "tool_calls": calls,
+    }}]}
+
+
+def _protocol_result(response):
+    from vulnclaw.llm.chat import parse
+    return parse(_sdk_chat_response(response))

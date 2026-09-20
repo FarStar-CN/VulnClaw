@@ -544,12 +544,12 @@ class TestSettingsLoad:
         )
 
         assert DEFAULT_REASONING_EFFORT == "xhigh"
-        assert DEFAULT_REASONING_EFFORT in REASONING_EFFORTS
+        # Weakest-first, with no "omit" or "disable reasoning" rung.
+        assert REASONING_EFFORTS == ("low", "medium", "high", "xhigh", "max")
         assert LLMConfig().reasoning_effort == DEFAULT_REASONING_EFFORT
-        # The ladder runs weakest-first, and the default is deliberately one
-        # rung below the top so `max` stays an opt-in.
-        assert REASONING_EFFORTS[-1] == "max"
-        assert REASONING_EFFORTS.index("xhigh") < REASONING_EFFORTS.index("max")
+        # The default is deliberately one rung below the top so `max` stays an
+        # opt-in.
+        assert REASONING_EFFORTS.index("xhigh") == REASONING_EFFORTS.index("max") - 1
 
     def test_env_var_override(self, monkeypatch):
         """Test that environment variables override config values."""

@@ -189,7 +189,7 @@ class OpenAIStructuredDistiller:
         self._llm_config = llm_config
 
     def distill(self, payload: dict[str, Any]) -> Any:
-        from vulnclaw.config.llm_utils import build_chat_completion_kwargs
+        from vulnclaw.llm.client import complete
 
         messages = [
             {
@@ -207,75 +207,48 @@ class OpenAIStructuredDistiller:
             },
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
-        kwargs = build_chat_completion_kwargs(
-            self._llm_config, messages, max_tokens=1200, temperature=0.0
-        )
-        response = None
         last_error: Exception | None = None
         for response_format in _response_format_attempts(self._llm_config):
-            attempt = dict(kwargs)
-            if response_format is not None:
-                attempt["response_format"] = response_format
             try:
-                response = self._client.chat.completions.create(**attempt)
-                break
+                response = complete(
+                    self._llm_config, messages, client=self._client,
+                    max_tokens=None if self._llm_config.max_tokens is None
+                    else min(1200, self._llm_config.max_tokens),
+                    temperature=0.0, response_format=response_format,
+                )
+                return response.content
             except Exception as exc:
                 if not _rejects_response_format(exc):
                     raise
                 last_error = exc
-        if response is None:
-            raise last_error if last_error is not None else RuntimeError("distiller request failed")
-        choices = getattr(response, "choices", []) or []
-        if not choices:
-            return []
-        return getattr(getattr(choices[0], "message", None), "content", "") or ""
+        raise last_error if last_error is not None else RuntimeError("distiller request failed")
 
 
 def _response_format_attempts(llm_config: Any) -> list[dict[str, Any] | None]:
-    """Ordered `response_format` values to try, richest first.
+    from vulnclaw.llm.client import format_attempts
 
-    `json_schema` is an OpenAI-only structured-output mode; DeepSeek and most
-    other OpenAI-compatible providers reject it outright with a 400. Fall back to
-    `json_object`, and finally to no constraint at all -- the system prompt still
-    demands schema-shaped JSON and the parser tolerates fences.
-    """
-
-    attempts: list[dict[str, Any] | None] = []
-    provider = str(getattr(llm_config, "provider", "") or "").lower()
-    if provider in {"openai", "azure", "azure_openai"}:
-        attempts.append(
-            {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "lesson_candidates",
-                    "strict": True,
-                    "schema": _LESSON_SCHEMA,
-                },
-            }
-        )
-    attempts.append({"type": "json_object"})
-    attempts.append(None)
-    return attempts
+    return format_attempts(llm_config, {
+        "name": "lesson_candidates", "strict": True, "schema": _LESSON_SCHEMA,
+    })
 
 
 def _rejects_response_format(exc: Exception) -> bool:
     """True when the provider refused the structured-output mode itself, which is
     the only failure worth retrying without it."""
 
-    return "response_format" in str(exc).lower()
+    if getattr(exc, "status_code", None) != 400:
+        return False
+    text = str(exc).lower()
+    return any(key in text for key in ("response_format", "text.format", "json_schema")) and any(
+        term in text for term in ("unsupported", "not supported", "not support", "unavailable")
+    )
 
 
 def configured_distiller(config: Any) -> OpenAIStructuredDistiller:
     """Build a direct distiller client for `vulnclaw learn` and background work."""
 
-    from vulnclaw.config.settings import make_openai_client
-    from vulnclaw.config.token_provider import resolve_llm_token
-
-    client = make_openai_client(
-        api_key=resolve_llm_token(config.llm) or "placeholder",
-        base_url=config.llm.base_url,
-    )
-    return OpenAIStructuredDistiller(client, config.llm)
+    # Resolve short-lived credentials afresh at the shared request boundary.
+    return OpenAIStructuredDistiller(None, config.llm)
 
 
 def schedule_run_distillation(

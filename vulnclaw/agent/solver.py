@@ -21,7 +21,7 @@ from vulnclaw.agent.agent_state import (
 )
 from vulnclaw.agent.llm_client import (
     _fit_context_window,
-    build_chat_completion_kwargs,
+    build_llm_request,
     call_llm_auto,
 )
 from vulnclaw.agent.subagent.solve import (
@@ -261,14 +261,16 @@ def extract_json(text: str) -> dict[str, Any] | None:
 async def structured_call(agent: AgentContext, prompt: str, *, max_tokens: int = 900) -> str:
     """Make a low-temperature tool-free structured call."""
 
-    client = agent._get_client()
     messages = [{"role": "user", "content": prompt}]
     messages = _fit_context_window(agent, messages, [], purpose="structured_call")
-    kwargs = build_chat_completion_kwargs(agent, messages, max_tokens=max_tokens, temperature=0.1)
-    response = client.chat.completions.create(**kwargs)
-    if response and response.choices:
-        return response.choices[0].message.content or ""
-    return ""
+    kwargs = build_llm_request(agent, messages, max_tokens=None if agent.config.llm.max_tokens is None else min(max_tokens, agent.config.llm.max_tokens), temperature=0.1)
+    from vulnclaw.agent.llm_client import _call_with_persistent_retries
+    from vulnclaw.llm.client import create
+
+    response, _ = await _call_with_persistent_retries(
+        agent, lambda: create(agent._get_client(), agent.config.llm, kwargs), "structured_call",
+    )
+    return response.require_complete().content
 
 
 def _cited_evidence_ids(text: str) -> list[str]:
@@ -736,8 +738,7 @@ async def _solve_impl(
         # Keep normal conversational memory. Tool-call transcripts are appended
         # by llm_client as assistant/tool messages when tools run; this records
         # only the final assistant text for the solve turn.
-        if cleaned:
-            agent.context.add_assistant_message(f"[solve step {step}]\n{cleaned}")
+        # Shared LLM loop already committed the raw response.
         if stall_guard_message:
             agent.context.add_user_message(stall_guard_message)
         if hasattr(agent, "_finding_parser"):

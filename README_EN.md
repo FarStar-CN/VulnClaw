@@ -613,6 +613,8 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 
 ### Configurable Options
 
+The five primary providers default to Responses. Chat remains an explicit choice with no automatic fallback. See [LLM compatibility and migration](LLM_COMPATIBILITY.md) for provider and subscription limits and validation status.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `llm.provider` | openai | LLM provider |
@@ -621,8 +623,11 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 | `llm.chatgpt_auto_proxy` | false | Auto-start built-in ChatGPT bridge proxy |
 | `llm.base_url` | per provider | API base URL |
 | `llm.model` | per provider | Model name |
-| `llm.temperature` | 0.1 | Sampling temperature |
-| `llm.max_tokens` | 4096 | Max output tokens |
+| `llm.api_format` | per provider | responses / chat_completions |
+| `llm.temperature` | 0.1 | Sampling temperature; null omits it |
+| `llm.top_p` | null | Nucleus sampling threshold |
+| `llm.reasoning_effort` | xhigh | Reasoning effort: low / medium / high / xhigh / max, adapted per model |
+| `llm.max_tokens` | 4096 | Total reasoning + answer budget; null omits it |
 | `session.engine` | solve | `solve` (model-led) / `team` (role team) / `rounds` (legacy fixed-round) |
 | `session.solve_max_steps` | 240 | Runaway safety budget for solve; not a planned round count |
 | `session.solve_max_directions` | 3 | Deprecated compatibility field; model-led solve no longer uses research direction counts |

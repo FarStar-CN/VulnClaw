@@ -10,11 +10,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import yaml
-from pydantic import ValidationError
+
+from vulnclaw.llm.client import make_openai_client
 
 from .schema import (
     BUILTIN_MCP_SERVERS,
     PROVIDER_PRESETS,
+    LLMConfig,
     LLMProvider,
     MCPServerConfig,
     MCPServersConfig,
@@ -89,19 +91,6 @@ def openai_default_headers() -> dict[str, str]:
     return {"User-Agent": os.environ.get("VULNCLAW_LLM_USER_AGENT", DEFAULT_OPENAI_USER_AGENT)}
 
 
-def make_openai_client(api_key: str, base_url: str, timeout: float | None = None):
-    from openai import OpenAI
-
-    kwargs: dict[str, Any] = {
-        "api_key": api_key,
-        "base_url": base_url,
-        "default_headers": openai_default_headers(),
-    }
-    if timeout is not None:
-        kwargs["timeout"] = timeout
-    return OpenAI(**kwargs)
-
-
 # ── Load / Save ────────────────────────────────────────────────────
 
 
@@ -125,18 +114,20 @@ def load_config() -> VulnClawConfig:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 raw = yaml.safe_load(f) or {}
             config = _merge_config(config, raw)
-        except (yaml.YAMLError, ValidationError) as e:
+        except yaml.YAMLError as e:
             # Log warning but don't crash
             logger.warning("Failed to parse config file %s: %s", CONFIG_FILE, e)
 
     # Overlay from env vars
     config = _overlay_env(config)
+    config.llm = LLMConfig.model_validate(config.llm.model_dump())
 
     return config
 
 
 def save_config(config: VulnClawConfig) -> None:
     """Save configuration to YAML file."""
+    config.llm = LLMConfig.model_validate(config.llm.model_dump())
     ensure_dirs()
     raw = config.model_dump(mode="json")
     # Remove default values to keep config clean
@@ -176,7 +167,12 @@ def set_config_value(key: str, value: str) -> None:
         if field_name in model_fields:
             field_info = model_fields[field_name]
             annotation = field_info.annotation
-            if annotation is int:
+            if key in {"llm.max_tokens", "llm.temperature", "llm.top_p"}:
+                if value.lower() == "null":
+                    value = None
+                else:
+                    value = int(value) if key == "llm.max_tokens" else float(value)
+            elif annotation is int:
                 value = int(value)
             elif annotation is float:
                 value = float(value)
@@ -189,6 +185,7 @@ def set_config_value(key: str, value: str) -> None:
                 else:
                     value = list(value)
         setattr(obj, field_name, value)
+    config.llm = LLMConfig.model_validate(config.llm.model_dump())
     save_config(config)
 
 
@@ -238,11 +235,7 @@ def _merge_config(base: VulnClawConfig, raw: dict[str, Any]) -> VulnClawConfig:
     # Deep merge
     _deep_merge(data, raw)
 
-    try:
-        return VulnClawConfig(**data)
-    except ValidationError:
-        # If merged data is invalid, return base
-        return base
+    return VulnClawConfig(**data)
 
 
 def _deep_merge(base: dict, override: dict) -> None:
@@ -280,15 +273,17 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
         config.llm.model = v
     if v := os.environ.get("VULNCLAW_LLM_PROVIDER"):
         config.llm.provider = v
-    if v := os.environ.get("VULNCLAW_LLM_MAX_TOKENS"):
-        with suppress(ValueError):
-            config.llm.max_tokens = int(v)
-    if v := os.environ.get("VULNCLAW_LLM_MAX_CONTEXT_TOKENS"):
-        with suppress(ValueError):
-            config.llm.max_context_tokens = int(v)
-    if v := os.environ.get("VULNCLAW_LLM_TEMPERATURE"):
-        with suppress(ValueError):
-            config.llm.temperature = float(v)
+    for name, convert in {
+        "max_tokens": int, "max_context_tokens": int,
+        "temperature": float, "top_p": float,
+        "api_format": str, "reasoning_effort": str,
+    }.items():
+        value = os.environ.get(f"VULNCLAW_LLM_{name.upper()}")
+        if value:
+            parsed = None if value.lower() == "null" and name in {
+                "max_tokens", "temperature", "top_p",
+            } else convert(value)
+            setattr(config.llm, name, parsed)
 
     # ── LLM auth mode (static / oauth) ──────────────────────────────────
     if v := os.environ.get("VULNCLAW_LLM_AUTH_MODE"):
@@ -614,20 +609,22 @@ def apply_llm_form(
     return config
 
 
-def fetch_provider_models(base_url: str, api_key: str, timeout: float = 10.0) -> list[str]:
+def fetch_provider_models(base_url: str, api_key: str, timeout: float = 10.0, *, llm_config: Any = None) -> list[str]:
     """Fetch available models from a provider's OpenAI-compatible API.
 
     Uses the OpenAI SDK's ``client.models.list()`` endpoint.
     Returns a sorted list of model ID strings.  Returns an empty list
     on any error (network, auth, timeout, etc.).
     """
-    if not base_url or not api_key:
+    if not base_url or (not api_key and llm_config is None):
         return []
+    from vulnclaw.llm.client import make_client
+
     try:
-        client = make_openai_client(api_key=api_key, base_url=base_url, timeout=timeout)
-        models_page = client.models.list()
-        model_ids = [m.id for m in models_page if m.id]
-        return sorted(model_ids)
+        client = (make_client(llm_config, timeout=timeout) if llm_config is not None
+                  else make_openai_client(api_key=api_key, base_url=base_url, timeout=timeout))
+        with client:
+            return sorted(m.id for m in client.models.list() if m.id)
     except Exception:
         return []
 

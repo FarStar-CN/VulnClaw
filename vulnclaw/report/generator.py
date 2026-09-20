@@ -838,27 +838,16 @@ No findings yet.
 def _generate_attack_summary_from_session(session: SessionState) -> str:
     """Generate a readable attack-path summary using VulnClaw's configured LLM."""
     try:
-        from vulnclaw.config.settings import load_config, make_openai_client
+        from vulnclaw.config.settings import load_config
         from vulnclaw.config.text_utils import strip_think_tags
         from vulnclaw.config.token_provider import (
-            TokenResolutionError,
             has_llm_credentials,
-            resolve_llm_token,
         )
+        from vulnclaw.llm.client import complete
 
         config = load_config()
         if not has_llm_credentials(config.llm):
             return ""
-
-        try:
-            token = resolve_llm_token(config.llm)
-        except TokenResolutionError:
-            return ""
-
-        client = make_openai_client(
-            api_key=token,
-            base_url=config.llm.base_url,
-        )
 
         steps = session.executed_steps[-40:] if session.executed_steps else []
         notes = session.notes[-25:] if session.notes else []
@@ -909,34 +898,16 @@ def _generate_attack_summary_from_session(session: SessionState) -> str:
             purpose="report_summary",
         ).messages
 
-        response = client.chat.completions.create(
-            **_build_report_summary_llm_kwargs(
-                config,
-                messages,
-            )
+        response = complete(
+            config.llm, messages,
+            max_tokens=None if config.llm.max_tokens is None else min(config.llm.max_tokens, 1200),
+            temperature=0.2,
         )
-        if response and response.choices:
-            raw = response.choices[0].message.content or ""
-            return strip_think_tags(raw).strip()
+        return strip_think_tags(response.content).strip()
     except Exception as exc:
         logger.warning("LLM attack summary generation failed: %s", exc)
         return ""
     return ""
-
-
-def _build_report_summary_llm_kwargs(config: Any, messages: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build Chat Completions kwargs for report summary generation."""
-    # 修改者: Nyaecho
-    # 修改时间: 2026-07-08
-    # 修改原因: V2 修复 — 直接使用 config/llm_utils，消除 AgentContext shim。
-    from vulnclaw.config.llm_utils import build_chat_completion_kwargs
-
-    return build_chat_completion_kwargs(
-        config.llm,
-        messages,
-        max_tokens=min(config.llm.max_tokens, 1200),
-        temperature=0.2,
-    )
 
 
 def generate_persistent_cycle_report(

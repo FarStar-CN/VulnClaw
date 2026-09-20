@@ -47,9 +47,10 @@ from vulnclaw.agent.subagent.models import SubagentContext
 from vulnclaw.agent.system_prompt import build_dynamic_system_prompt
 from vulnclaw.agent.tool_call_manager import safe_parse_tool_args
 from vulnclaw.config.schema import VulnClawConfig, resolve_engine
-from vulnclaw.config.settings import make_openai_client
 from vulnclaw.i18n import _
 from vulnclaw.kb.experience import ExperienceStore
+from vulnclaw.llm.capabilities import api_format, endpoint
+from vulnclaw.llm.client import make_client, subscription_enabled
 from vulnclaw.target_state.store import save_target_state
 
 # Optional KB integration — gracefully degrade if KB data is unavailable
@@ -317,29 +318,27 @@ class AgentCore:
         rotated or just-minted access tokens are picked up without rebuilding the
         client; ``client.api_key`` becomes the ``Authorization: Bearer`` value.
         """
-        from vulnclaw.config.token_provider import load_oauth_tokens, resolve_llm_token
+        from vulnclaw.config.token_provider import resolve_llm_token
 
         llm = self.config.llm
 
-        # ── ChatGPT subscription: auto-start the built-in bridge proxy ──
-        # The subscription token only works against the ChatGPT backend, so we
-        # transparently route VulnClaw's chat.completions through an in-process
-        # proxy instead of requiring the user to run one.
-        if (
-            getattr(llm, "chatgpt_auto_proxy", False)
-            and str(getattr(llm, "auth_mode", "") or "").lower() == "oauth"
-            and str(load_oauth_tokens().get("flow") or "") == "chatgpt"
-        ):
-            from vulnclaw.agent.chatgpt_proxy import ensure_proxy_running
-
-            proxy_base = ensure_proxy_running()
+        route = endpoint(llm)
+        if subscription_enabled(llm):
+            route = "chatgpt-subscription:" + route
+        identity = (llm.provider, llm.model, api_format(llm), route)
+        previous = self.context.state.llm_identity
+        if self.context.state.llm_history_version != 2 and self.context.get_messages():
+            raise ValueError("Legacy LLM history cannot be replayed; start a new session")
+        if previous is not None and previous != identity and self.context.get_messages():
+            raise ValueError("LLM protocol/model/endpoint changed; start a new session")
+        if previous != identity and self._client is not None:
+            self._client.close()
+            self._client = None
+        self.context.state.llm_identity = identity
+        self.context.state.llm_history_version = 2
+        if subscription_enabled(llm):
             if self._client is None:
-                try:
-                    self._client = make_openai_client(
-                        api_key="local-proxy", base_url=proxy_base
-                    )
-                except ImportError:
-                    raise RuntimeError("请安装 openai 包: pip install openai")
+                self._client = make_client(llm)
             return self._client
 
         auth_mode = str(getattr(llm, "auth_mode", "") or "static").strip().lower()
@@ -351,10 +350,7 @@ class AgentCore:
             token = resolve_llm_token(llm)
         if self._client is None:
             try:
-                self._client = make_openai_client(
-                    api_key=token or "placeholder",
-                    base_url=llm.base_url,
-                )
+                self._client = make_client(llm, api_key=token or "placeholder")
             except ImportError:
                 raise RuntimeError("请安装 openai 包: pip install openai")
         elif token:
@@ -517,7 +513,7 @@ class AgentCore:
             result.output = response_text
 
             # Add assistant response to context
-            self.context.add_assistant_message(response_text)
+            # Raw model output was committed by the shared LLM loop.
 
             # Parse any structured findings from the response
             self._finding_parser.parse(response_text)

@@ -595,6 +595,10 @@ class SessionState(BaseModel):
         default="parent", description="Session owner kind: parent, group_leader, or leaf"
     )
     run_id: str = Field(default="", description="Owning solve/runtime identifier")
+    llm_history_version: int = 2
+    llm_identity: tuple[str, str, str, str] | None = None
+    llm_history: list[dict[str, Any]] = Field(default_factory=list, repr=False)
+    llm_interruption: dict[str, Any] = Field(default_factory=dict, repr=False)
     parent_session_id: str = Field(
         default="", description="Parent session identifier for sub-agent checkpoints"
     )
@@ -1043,6 +1047,7 @@ class SessionState(BaseModel):
         """
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        data.setdefault("llm_history_version", 0)
 
         # [P18 兼容] 如果只有 executed_steps，转换为 step_records
         if "executed_steps" in data and "step_records" not in data:
@@ -1076,7 +1081,6 @@ class ContextManager:
         self.max_history = max(1, int(max_history))
         self.max_tokens = max(256, int(max_tokens))
         self.search_max_chars = max(256, int(search_max_chars))
-        self.messages: list[dict[str, Any]] = []
         self.state = SessionState()
         self.memory_store = memory_store
         # Context Vault: selective, model-driven archiving layered on top of the
@@ -1084,6 +1088,14 @@ class ContextManager:
         # budget pipeline can attach it without import cycles.
         self.vault: Any = None
         self.vault_output_dir: Path | None = None
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        return self.state.llm_history
+
+    @messages.setter
+    def messages(self, value: list[dict[str, Any]]) -> None:
+        self.state.llm_history = value
 
     def ensure_vault(self) -> Any:
         """Lazily create the vault manager for this session."""
@@ -1116,22 +1128,21 @@ class ContextManager:
         self._trim()
 
     def add_message(self, message: dict[str, Any]) -> None:
-        """Add a raw chat message to context.
+        self.add_messages([message])
 
-        Tool-call transcripts need fields such as ``tool_calls`` and
-        ``tool_call_id``.  Keeping the original Chat Completions message shape
-        lets later model turns see the same cause/effect structure that produced
-        the evidence, instead of only a lossy text summary.
-        """
-        if not isinstance(message, dict):
-            return
-        role = str(message.get("role", "") or "").strip()
-        if not role:
-            return
-        stored_message = copy.deepcopy(message)
-        if role == "tool":
-            stored_message = self._offload_large_tool_message(stored_message)
-        self.messages.append(stored_message)
+    def add_messages(self, messages: list[dict[str, Any]]) -> None:
+        """Commit a whole model/tool exchange before trimming its history."""
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if not message.get("role") and message.get("type") not in {
+                "reasoning", "function_call", "function_call_output",
+            }:
+                continue
+            stored = copy.deepcopy(message)
+            if stored.get("role") == "tool" or stored.get("type") == "function_call_output":
+                stored = self._offload_large_tool_message(stored)
+            self.messages.append(stored)
         self._trim()
 
     def add_system_message(self, content: str) -> None:
@@ -1180,11 +1191,12 @@ class ContextManager:
         record_id = self._archive_messages([message], kind="large_tool_result")
         if not record_id:
             return message
-        content = str(message.get("content", "") or "")
+        field = "output" if message.get("type") == "function_call_output" else "content"
+        content = str(message.get(field, "") or "")
         preview = content[:2000]
         if len(content) > len(preview):
             preview += "..."
-        message["content"] = (
+        message[field] = (
             f"[cold-memory:{record_id}] Large tool result archived. "
             f"Use memory_search with query '{record_id}' for a bounded excerpt.\n{preview}"
         )

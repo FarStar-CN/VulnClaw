@@ -132,7 +132,7 @@ async def test_generate_attack_summary_requests_an_english_narrative(i18n_langua
                 def create(**kwargs):
                     captured.update(kwargs)
                     message = SimpleNamespace(content="English summary")
-                    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+                    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
 
     state = SessionState(target="example.com")
     state.add_step("GET /admin")
@@ -143,6 +143,7 @@ async def test_generate_attack_summary_requests_an_english_narrative(i18n_langua
             max_tokens=1024,
             temperature=0.2,
             provider="openai",
+            api_format="chat_completions", base_url="https://api.openai.com/v1",
             reasoning_effort=None,
         )
     )

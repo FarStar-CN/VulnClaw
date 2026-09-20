@@ -18,6 +18,7 @@ from vulnclaw.agent.distiller import (
     schedule_run_distillation,
 )
 from vulnclaw.agent.reasoning_state import AttackPath, PathStatus, ReasoningState
+from vulnclaw.config.schema import LLMConfig
 from vulnclaw.kb.experience import ExperienceStore, LessonStatus
 
 
@@ -330,23 +331,25 @@ class _FakeCompletions:
         self.attempts.append(kwargs)
         if format_type in self.reject:
             # Verbatim shape of the DeepSeek rejection.
-            raise RuntimeError(
+            error = RuntimeError(
                 "Error code: 400 - {'error': {'message': "
                 "'This response_format type is unavailable now', "
                 "'type': 'invalid_request_error'}}"
             )
+            error.status_code = 400
+            raise error
         message = SimpleNamespace(content=self.content)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
 
 
 def _distiller(reject: set[str], content: str = '{"lessons": []}', provider: str = "deepseek"):
     completions = _FakeCompletions(reject, content)
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    llm_config = SimpleNamespace(provider=provider, model="deepseek-chat")
+    llm_config = LLMConfig(provider=provider, model="deepseek-chat", api_format="chat_completions", base_url="https://api.openai.com/v1" if provider == "openai" else "https://api.deepseek.com")
     return OpenAIStructuredDistiller(client, llm_config), completions
 
 
-def test_non_openai_providers_are_never_sent_a_json_schema_request():
+def test_deepseek_chat_uses_json_object():
     distiller, completions = _distiller(reject=set())
 
     distiller.distill({"run_id": "run-1"})
@@ -379,7 +382,7 @@ def test_an_unrelated_failure_is_not_retried():
     completions = _FakeCompletions(set(), "{}", fatal="Error code: 401 - invalid api key")
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     distiller = OpenAIStructuredDistiller(
-        client, SimpleNamespace(provider="deepseek", model="deepseek-chat")
+        client, LLMConfig(provider="deepseek", model="deepseek-chat", api_format="chat_completions", base_url="https://api.deepseek.com")
     )
 
     with pytest.raises(RuntimeError, match="invalid api key"):

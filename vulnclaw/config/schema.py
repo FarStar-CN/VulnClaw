@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
@@ -61,15 +61,15 @@ PROVIDER_PRESETS: dict[LLMProvider, dict[str, str]] = {
         "website_url": "https://www.deepseek.com/",
     },
     LLMProvider.ZHIPU: {
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "base_url": "https://open.bigmodel.cn/api/v1",
         "default_model": "glm-5.3",
-        "label": "智谱 GLM",
+        "label": "智谱",
         "website_url": "https://open.bigmodel.cn/",
     },
     LLMProvider.MOONSHOT: {
         "base_url": "https://api.moonshot.cn/v1",
         "default_model": "kimi-k3",
-        "label": "Kimi (月之暗面)",
+        "label": "Kimi",
         "website_url": "https://www.moonshot.cn/",
     },
     LLMProvider.QWEN: {
@@ -91,12 +91,12 @@ PROVIDER_PRESETS: dict[LLMProvider, dict[str, str]] = {
     LLMProvider.DOUBAO: {
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "default_model": "doubao-seed-evolving",
-        "label": "豆包 (字节跳动)",
+        "label": "豆包",
         "website_url": "https://www.volcengine.com/product/doubao",
     },
     LLMProvider.STEPFUN: {
         "base_url": "https://api.stepfun.com/v1",
-        "default_model": "step-3.7-flash",
+        "default_model": "step-5-preview",
         "label": "阶跃星辰",
         "website_url": "https://www.stepfun.com/",
     },
@@ -105,7 +105,7 @@ PROVIDER_PRESETS: dict[LLMProvider, dict[str, str]] = {
     LLMProvider.SENSETIME: {
         "base_url": "https://api.sensenova.cn/compatible-mode/v2",
         "default_model": "SenseNova-V6.5-Pro",
-        "label": "商汤 (日日新)",
+        "label": "商汤",
         "website_url": "https://www.sensenova.cn/",
     },
     # Aggregator fronting many vendors behind one OpenAI-compatible endpoint.
@@ -138,9 +138,11 @@ PROVIDER_PRESETS: dict[LLMProvider, dict[str, str]] = {
 }
 
 
-# Reasoning-effort ladder, weakest first. Only reasoning models receive the
-# value (see ``config.llm_utils``), so it is safe to carry for every provider.
-REASONING_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh" , "max")
+# Application reasoning intent; endpoint/model rules live in llm.capabilities.
+# Every rung asks for a concrete effort: there is no "let the provider decide"
+# or "turn reasoning off" rung, so the parameter is always sent when the model
+# accepts one.
+REASONING_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_REASONING_EFFORT = "xhigh"
 
 
@@ -150,6 +152,9 @@ class LLMConfig(BaseModel):
     provider: str = Field(
         default="openai",
         description="LLM provider name (openai/anthropic/minimax/deepseek/zhipu/moonshot/qwen/siliconflow/doubao/stepfun/sensetime/openrouter/ollama/custom)",
+    )
+    api_format: Literal["responses", "chat_completions"] | None = Field(
+        default=None, description="Explicit protocol; omitted uses the provider preset",
     )
     api_key: str = Field(default="", description="Static API key for the chosen provider (auth_mode=static)")
     api_keys: list[str] = Field(
@@ -174,7 +179,7 @@ class LLMConfig(BaseModel):
         default=False,
         description=(
             "When signed in with a ChatGPT subscription, auto-start a built-in "
-            "local proxy that bridges chat.completions to the ChatGPT backend "
+            "local Responses proxy to the ChatGPT backend "
             "(no external proxy needed)."
         ),
     )
@@ -191,12 +196,19 @@ class LLMConfig(BaseModel):
         description="Provider's official site or console, seeded from the provider preset "
         "and editable from the TUI settings screen.",
     )
-    max_tokens: int = Field(default=4096, description="Max tokens per response")
-    max_context_tokens: int = Field(
-        default=128000, description="Total model context window including input and completion tokens"
+    max_tokens: int | None = Field(
+        default=4096, gt=0, strict=True,
+        description="Total reasoning + answer output budget; null omits the limit",
     )
-    temperature: float = Field(default=0.1, description="Sampling temperature")
-    reasoning_effort: str = Field(
+    max_context_tokens: int = Field(
+        default=128000, gt=0, description="Total model context window including input and completion tokens"
+    )
+    temperature: float | None = Field(
+        default=0.1, ge=0, le=2, allow_inf_nan=False, strict=True,
+        description="Sampling temperature; null omits it",
+    )
+    top_p: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False, strict=True)
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = Field(
         default=DEFAULT_REASONING_EFFORT,
         description="Reasoning effort level, sent only to models that accept "
         f"reasoning parameters. One of: {', '.join(REASONING_EFFORTS)}.",

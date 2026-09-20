@@ -179,7 +179,7 @@ class TestTieredDistillation:
     def test_tier1_archive_replaces_range_with_pointer(self):
         vault, messages = self._fresh(160)
         ok, reason, block = vault.archive_range(
-            messages, start="<v#00002>", end="<v#00012>", tier=1, topic="recon"
+            messages, start="<v#00002>", end="<v#00013>", tier=1, topic="recon"
         )
         assert ok is True, reason
         assert block is not None
@@ -193,7 +193,7 @@ class TestTieredDistillation:
         ok, reason, block = vault.archive_range(
             messages,
             start="<v#00002>",
-            end="<v#00012>",
+            end="<v#00013>",
             tier=2,
             topic="login brute",
             summary="admin:/admin login returned 403 on all defaults",
@@ -214,7 +214,7 @@ class TestTieredDistillation:
     def test_tier_defaults_to_1(self):
         vault, messages = self._fresh(160)
         ok, reason, block = vault.archive_range(
-            messages, start="<v#00002>", end="<v#00012>", tier=1, topic="default tier"
+            messages, start="<v#00002>", end="<v#00013>", tier=1, topic="default tier"
         )
         assert ok is True, reason
         assert block is not None and block.tier == 1
@@ -242,11 +242,14 @@ class TestProtectedZone:
             preserve_recent_messages=vault.config.preserve_recent_messages,
             preserve_recent_tokens=vault.config.preserve_recent_tokens,
         )
-        first_ref = ref_id(messages[protected_start].get("_vault_ref", ""))
+        from vulnclaw.agent.token_counter import group_tool_exchanges
+        groups = group_tool_exchanges(messages)
+        selected = next(group for group in groups if messages[protected_start] in group)
+        first_ref = ref_id(selected[0]["_vault_ref"])
         ok, reason, _ = vault.archive_range(
             messages,
             start=f"<v#{first_ref:05d}>",
-            end=f"<v#{first_ref + 5:05d}>",
+            end=messages[-1]["_vault_ref"],
             tier=1,
         )
         assert ok is False
@@ -259,11 +262,14 @@ class TestProtectedZone:
             preserve_recent_messages=vault.config.preserve_recent_messages,
             preserve_recent_tokens=vault.config.preserve_recent_tokens,
         )
-        first_ref = ref_id(messages[protected_start].get("_vault_ref", ""))
+        from vulnclaw.agent.token_counter import group_tool_exchanges
+        groups = group_tool_exchanges(messages)
+        selected = next(group for group in groups if messages[protected_start] in group)
+        first_ref = ref_id(selected[0]["_vault_ref"])
         ok, reason, block = vault.archive_range(
             messages,
             start=f"<v#{first_ref:05d}>",
-            end=f"<v#{first_ref + 5:05d}>",
+            end=messages[-1]["_vault_ref"],
             tier=1,
             force=True,
         )

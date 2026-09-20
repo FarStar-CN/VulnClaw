@@ -157,37 +157,15 @@ def fit_messages(
         changed = False
         for message in fitted[1:]:
             content = message.get("content")
-            if isinstance(content, str) and len(content) > _FIELD_MIN_CHARS:
+            if message.get("role") in {"user", "system"} and isinstance(content, str) and len(content) > _FIELD_MIN_CHARS:
                 message["content"] = _clip_context_field(
                     content,
                     max(_FIELD_MIN_CHARS, len(content) - excess_chars),
                 )
                 changed = True
                 break
-            for tool_call in message.get("tool_calls") or []:
-                if not isinstance(tool_call, dict):
-                    continue
-                function = tool_call.get("function")
-                if not isinstance(function, dict):
-                    continue
-                arguments = function.get("arguments")
-                if (
-                    isinstance(arguments, str)
-                    and len(arguments) > _FIELD_MIN_CHARS
-                ):
-                    function["arguments"] = _clip_context_field(
-                        arguments,
-                        max(
-                            _FIELD_MIN_CHARS,
-                            len(arguments) - excess_chars,
-                        ),
-                    )
-                    changed = True
-                    break
-            if changed:
-                break
         if not changed:
-            break
+            raise ValueError("Context budget cannot fit an indivisible tool/reasoning exchange")
     return fitted
 
 
@@ -203,12 +181,12 @@ def prepare_request(
     configured = int(
         getattr(getattr(agent.config, "llm", None), "max_tokens", 0) or 0
     )
-    requested = max_tokens if max_tokens is not None else configured
+    requested = max_tokens
     bounded = max(1, int(requested)) if requested else None
     estimated_input = estimate_tokens(messages)
     context.next_input_token_estimate = estimated_input
     context.next_model_token_reservation = estimated_input + int(
-        bounded or 0
+        bounded if bounded is not None else configured or 4096
     )
     return bounded
 
@@ -271,19 +249,17 @@ def record_usage(agent: AgentContext, response: Any) -> int:
     context = get_subagent_context(agent)
     assert context is not None
     usage = getattr(response, "usage", None)
-    input_tokens = int(
-        getattr(usage, "prompt_tokens", None)
-        or getattr(usage, "input_tokens", None)
-        or context.next_input_token_estimate
-    )
-    output_tokens = int(
-        getattr(usage, "completion_tokens", None)
-        or getattr(usage, "output_tokens", None)
-        or 0
-    )
-    if output_tokens <= 0:
+    input_tokens = getattr(usage, "input_tokens", None)
+    if input_tokens is None:
+        input_tokens = getattr(usage, "prompt_tokens", None)
+    if input_tokens is None:
+        input_tokens = context.next_input_token_estimate
+    output_tokens = getattr(usage, "output_tokens", None)
+    if output_tokens is None:
+        output_tokens = getattr(usage, "completion_tokens", None)
+    if output_tokens is None:
         choices = getattr(response, "choices", None) or []
-        rendered = " ".join(
+        rendered = getattr(response, "content", "") or " ".join(
             str(
                 getattr(
                     getattr(choice, "message", None), "content", ""
@@ -292,7 +268,8 @@ def record_usage(agent: AgentContext, response: Any) -> int:
             )
             for choice in choices
         )
-        output_tokens = estimate_tokens(rendered)
+        output_tokens = estimate_tokens([{"role": "assistant", "content": rendered}])
     context.input_tokens_used += input_tokens
     context.output_tokens_used += output_tokens
-    return input_tokens + output_tokens
+    total = getattr(usage, "total_tokens", None)
+    return total if isinstance(total, int) else input_tokens + output_tokens

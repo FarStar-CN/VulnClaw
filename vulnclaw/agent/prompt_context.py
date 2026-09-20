@@ -297,23 +297,20 @@ async def generate_attack_summary(agent: AgentContext) -> str:
     try:
         client = agent._get_client()
         messages = [{"role": "user", "content": prompt}]
-        from vulnclaw.agent.llm_client import _fit_context_window, build_chat_completion_kwargs
+        from vulnclaw.agent.llm_client import _fit_context_window
+        from vulnclaw.llm.client import complete
 
         messages = _fit_context_window(agent, messages, [], purpose="persistent_summary")
+        import asyncio
 
-        response = client.chat.completions.create(
-            **build_chat_completion_kwargs(
-                agent,
-                messages,
-                max_tokens=800,
-                temperature=0.3,
-            )
+        response = await asyncio.to_thread(complete,
+            agent.config.llm, messages, client=client,
+            max_tokens=None if agent.config.llm.max_tokens is None else min(800, agent.config.llm.max_tokens),
+            temperature=0.3,
         )
-        if response and response.choices:
-            raw = response.choices[0].message.content or ""
-            from vulnclaw.agent.think_filter import strip_think_tags
+        from vulnclaw.agent.think_filter import strip_think_tags
 
-            return strip_think_tags(raw).strip()
+        return strip_think_tags(response.content).strip()
     except Exception:
         pass
     return ""

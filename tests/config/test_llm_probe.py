@@ -34,6 +34,7 @@ def test_classify_connectivity_errors():
 def _llm_config():
     return SimpleNamespace(
         provider="openai",
+        api_format="chat_completions",
         model="test-model",
         base_url="http://endpoint.test/v1",
         max_tokens=None,
@@ -49,46 +50,29 @@ class _ProbeMonkey:
 
     def __init__(self, monkeypatch, *, response=None, error=None, token_error=None):
         self.calls = {}
-        monkeypatch.setattr(
-            "vulnclaw.config.llm_probe.resolve_llm_token",
-            self._resolve_token(token_error),
-        )
-        monkeypatch.setattr(
-            "vulnclaw.config.llm_probe.make_openai_client",
-            self._make_client(response, error),
-        )
-
-    def _resolve_token(self, token_error):
-        def _resolve(llm):
+        def factory(config, timeout=None):
             if token_error:
-                raise token_error
-            return "test-key"
-
-        return _resolve
-
-    def _make_client(self, response, error):
-        def _factory(api_key, base_url, timeout=None):
-            probe = self
-
-            class _Completions:
-                def create(self, **kwargs):
-                    probe.calls["kwargs"] = kwargs
-                    if error:
-                        raise error
+                from vulnclaw.config.token_provider import TokenResolutionError
+                raise TokenResolutionError(str(token_error))
+            def create(**kwargs):
+                self.calls.setdefault("requests", []).append(kwargs)
+                self.calls.setdefault("kwargs", kwargs)
+                if error:
+                    raise error
+                if len(self.calls["requests"]) == 1:
                     return response
-
-            class _Client:
-                chat = SimpleNamespace(completions=_Completions())
-
-            return _Client()
-
-        return _factory
+                return {"choices": [{"finish_reason": "stop", "message": {
+                    "role": "assistant", "content": "pong",
+                }}]}
+            return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+                                   close=lambda: None)
+        monkeypatch.setattr("vulnclaw.config.llm_probe.make_client", factory)
 
 
 def test_probe_ok_when_tool_call_emitted(monkeypatch):
-    tool_call = SimpleNamespace(id="1", type="function")
+    tool_call = SimpleNamespace(id="1", type="function", function=SimpleNamespace(name="ping", arguments='{"ok": true}'))
     message = SimpleNamespace(content=None, tool_calls=[tool_call])
-    response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    response = SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
     patch = _ProbeMonkey(monkeypatch, response=response)
 
     result = probe_llm_endpoint(_llm_config())
@@ -103,25 +87,25 @@ def test_probe_ok_when_tool_call_emitted(monkeypatch):
 
 def test_probe_flags_prose_only_endpoint(monkeypatch):
     message = SimpleNamespace(content="I would rather chat than call tools.", tool_calls=[])
-    response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    response = SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
     _ProbeMonkey(monkeypatch, response=response)
 
     result = probe_llm_endpoint(_llm_config())
 
     assert result.ok is False
     assert result.category == "no_tool_call"
-    assert "rather chat" in result.detail
+    assert "not observed" in result.detail
 
 
 def test_probe_flags_empty_completion(monkeypatch):
     message = SimpleNamespace(content="", tool_calls=[])
-    response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    response = SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
     _ProbeMonkey(monkeypatch, response=response)
 
     result = probe_llm_endpoint(_llm_config())
 
     assert result.category == "no_tool_call"
-    assert "(empty completion)" in result.detail
+    assert "not observed" in result.detail
 
 
 def test_probe_classifies_transport_error(monkeypatch):

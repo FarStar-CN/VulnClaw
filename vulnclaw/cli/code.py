@@ -158,24 +158,17 @@ def _resolve_llm_client():
         if llm is None:
             raise RuntimeError("no llm config")
         provider = getattr(llm, "provider", None) or "openai"
-        api_key = getattr(llm, "api_key", None) or ""
-        base_url = getattr(llm, "base_url", None) or None
-        model = getattr(llm, "model", None) or "gpt-4o"
-        if not api_key or api_key in ("", "${LLM_API_KEY}"):
-            raise RuntimeError("no api_key configured")
+        model = llm.model
+        from vulnclaw.config.token_provider import has_llm_credentials
+        from vulnclaw.llm.client import complete
 
-        from openai import OpenAI
-
-        client = OpenAI(api_key=api_key, base_url=base_url)
+        if not has_llm_credentials(llm):
+            raise RuntimeError("LLM credentials not configured")
 
         class _SyncLLM:
             def complete(self, prompt: str, *, temperature: float = 0.2) -> str:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=temperature,
-                )
-                return resp.choices[0].message.content or ""
+                return complete(llm, [{"role": "user", "content": prompt}],
+                                temperature=temperature).content
 
         console.print(f"[+] L3 enabled: using provider '{provider}' (model {model})")
         return _SyncLLM()

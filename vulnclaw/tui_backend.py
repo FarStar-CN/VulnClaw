@@ -442,21 +442,33 @@ class BackendSession:
             return provider_form_values(str(arguments.get("provider") or "")), None
 
         if operation == "config.models":
-            from vulnclaw.config.settings import fetch_provider_models, normalize_base_url
+            from vulnclaw.config.settings import (
+                fetch_provider_models,
+                load_config,
+                normalize_base_url,
+            )
+            from vulnclaw.config.token_provider import has_llm_credentials
 
             base_url = normalize_base_url(str(arguments.get("base_url") or ""))
             api_key = str(arguments.get("api_key") or "").strip()
             # The client never receives the stored key back, so a refresh after
             # the first save must be able to reuse it without a retype.
             used_saved_key = False
+            llm_config = None
             if not api_key:
-                api_key = self._saved_api_key()
-                used_saved_key = bool(api_key)
-            if not base_url or not api_key:
+                saved = load_config().llm
+                if base_url and normalize_base_url(saved.base_url) != base_url:
+                    raise ValueError("Save the provider/base URL before reusing saved credentials")
+                llm_config = saved
+                api_key = saved.primary_key()
+                used_saved_key = has_llm_credentials(saved)
+            if not base_url or not (api_key or used_saved_key):
                 raise ValueError("config.models requires a base URL and an API key")
             # Blocking network call: ~3 attempts x 10s worst case, so it must
             # not stall the protocol loop (approvals included).
-            models = await asyncio.to_thread(fetch_provider_models, base_url, api_key)
+            models = await asyncio.to_thread(
+                fetch_provider_models, base_url, api_key, llm_config=llm_config,
+            )
             return {"models": models, "used_saved_key": used_saved_key}, None
 
         if operation == "config.effort":

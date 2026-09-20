@@ -135,8 +135,6 @@ class TestCLI:
         assert "Tools:" in result.output
 
     def test_cli_doctor_probe_llm_reports_no_tool_call_endpoint(self, runner, monkeypatch):
-        from types import SimpleNamespace
-
         import vulnclaw.cli.main as cli_main
         from vulnclaw.cli.main import app
         from vulnclaw.config import llm_probe
@@ -146,19 +144,8 @@ class TestCLI:
         config.llm.api_key = "test-key"
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
 
-        message = SimpleNamespace(content="plain prose only", tool_calls=[])
-        response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
-
-        class _Completions:
-            def create(self, **kwargs):
-                return response
-
-        class _Client:
-            chat = SimpleNamespace(completions=_Completions())
-
-        monkeypatch.setattr(
-            llm_probe, "make_openai_client", lambda *a, **k: _Client()
-        )
+        monkeypatch.setattr(llm_probe, "probe_llm_endpoint", lambda *a, **k:
+                            llm_probe.LLMProbeResult(False, "no_tool_call"))
 
         result = runner.invoke(app, ["doctor", "--probe-llm"])
 
@@ -167,8 +154,6 @@ class TestCLI:
         assert "no_tool_call" in result.output
 
     def test_cli_doctor_probe_llm_ok(self, runner, monkeypatch):
-        from types import SimpleNamespace
-
         import vulnclaw.cli.main as cli_main
         from vulnclaw.cli.main import app
         from vulnclaw.config import llm_probe
@@ -178,19 +163,8 @@ class TestCLI:
         config.llm.api_key = "test-key"
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
 
-        message = SimpleNamespace(content=None, tool_calls=[SimpleNamespace(id="1")])
-        response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
-
-        class _Completions:
-            def create(self, **kwargs):
-                return response
-
-        class _Client:
-            chat = SimpleNamespace(completions=_Completions())
-
-        monkeypatch.setattr(
-            llm_probe, "make_openai_client", lambda *a, **k: _Client()
-        )
+        monkeypatch.setattr(llm_probe, "probe_llm_endpoint", lambda *a, **k:
+                            llm_probe.LLMProbeResult(True, "ok"))
 
         result = runner.invoke(app, ["doctor", "--probe-llm"])
 
@@ -1302,7 +1276,7 @@ class TestCLI:
                 "",
                 "",
                 "",
-                "",
+                "high",
             ]
         )
 
@@ -1322,6 +1296,7 @@ class TestCLI:
         assert updated.llm.base_url == "https://api.deepseek.com/v1"
         assert updated.llm.model == "deepseek-chat"
         assert updated.llm.api_keys == ["sk-test"]
+        assert updated.llm.reasoning_effort == "high"
 
     def test_config_tui_escape_exits_without_saving(self, monkeypatch):
         from rich.console import Console as RichConsole
@@ -1371,7 +1346,7 @@ class TestCLI:
                 "",
                 "",
                 "",
-                "",
+                "medium",
             ]
         )
         fetched = []
@@ -1389,7 +1364,7 @@ class TestCLI:
         monkeypatch.setattr(
             tui_mod,
             "fetch_provider_models",
-            lambda base_url, api_key: fetched.append((base_url, api_key))
+            lambda base_url, api_key, **kwargs: fetched.append((base_url, api_key))
             or ["deepseek-chat", "deepseek-reasoner"],
         )
 

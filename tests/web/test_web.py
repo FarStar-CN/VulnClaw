@@ -123,7 +123,7 @@ class TestWebServices:
 
         captured = {}
 
-        def fake_fetch(base_url, api_key, timeout=10.0):
+        def fake_fetch(base_url, api_key, timeout=10.0, *, llm_config=None):
             captured["base_url"] = base_url
             captured["api_key"] = api_key
             return ["model-b", "model-a"]
@@ -219,7 +219,7 @@ class TestWebServices:
 
         captured = {}
 
-        def fake_fetch(base_url, api_key, timeout=10.0):
+        def fake_fetch(base_url, api_key, timeout=10.0, *, llm_config=None):
             captured.update(base_url=base_url, api_key=api_key)
             return ["custom-model"]
 

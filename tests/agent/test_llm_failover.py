@@ -36,7 +36,7 @@ def _ok_response():
 
 def _full_ok_response():
     message = SimpleNamespace(content="ok", tool_calls=None, reasoning_content=None)
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
 
 
 class TestIsKeyExhaustedError:
@@ -231,6 +231,8 @@ class TestCallLlmUsesRotatedClient:
                     max_tokens = 256
                     temperature = 0.1
                     provider = "openai"
+                    api_format = "chat_completions"
+                    base_url = "https://api.openai.com/v1"
                     reasoning_effort = "high"
 
                 llm = _LLM()
@@ -298,6 +300,8 @@ class TestCallLlmUsesRotatedClient:
                     max_tokens = 256
                     temperature = 0.1
                     provider = "openai"
+                    api_format = "chat_completions"
+                    base_url = "https://api.openai.com/v1"
                     reasoning_effort = "high"
 
                 llm = _LLM()

@@ -345,7 +345,8 @@ def _clip_to_budget(messages: list[dict[str, Any]], target_tokens: int) -> list[
         candidates = [
             (index, message)
             for index, message in enumerate(result)
-            if isinstance(message, dict) and isinstance(message.get("content"), str) and message["content"]
+            if isinstance(message, dict) and message.get("role") in {"user", "system"}
+            and isinstance(message.get("content"), str) and message["content"]
         ]
         if not candidates:
             break
@@ -469,6 +470,8 @@ def prepare_context(
     message_target = max(1, budget.usable_input_tokens - budget.tool_tokens)
     compacted_messages = _clip_to_budget(compacted_messages, message_target)
     after = estimate_tokens(compacted_messages) + budget.tool_tokens
+    if after > budget.usable_input_tokens:
+        raise ValueError("Context budget cannot fit the intact model/tool exchange and tool schemas")
 
     if should_compact:
         _commit_history_compaction(agent, digest_message, recent_groups)

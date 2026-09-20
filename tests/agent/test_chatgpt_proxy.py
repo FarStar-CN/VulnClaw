@@ -4,138 +4,15 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from vulnclaw.agent import chatgpt_proxy as cp
+from vulnclaw.llm import chatgpt_proxy as cp
 
 # ── Pure translation functions ───────────────────────────────────────
-
-
-def test_chat_to_responses_maps_roles_tools_and_params():
-    req = {
-        "model": "gpt-5",
-        "messages": [
-            {"role": "system", "content": "be terse"},
-            {"role": "user", "content": "hello"},
-            {
-                "role": "assistant",
-                "content": "hi",
-                "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
-                ],
-            },
-            {"role": "tool", "tool_call_id": "c1", "content": "result"},
-        ],
-        "tools": [{"type": "function", "function": {"name": "f", "description": "d", "parameters": {}}}],
-        "temperature": 0.3,
-        "max_tokens": 128,
-        "reasoning_effort": "high",
-    }
-    r = cp.chat_to_responses(req)
-    assert r["instructions"] == "be terse"
-    assert [i["type"] for i in r["input"]] == [
-        "message",
-        "message",
-        "function_call",
-        "function_call_output",
-    ]
-    assert r["input"][3]["call_id"] == "c1"
-    assert r["tools"][0] == {"type": "function", "name": "f", "description": "d", "parameters": {}}
-    # The ChatGPT backend rejects sampling/limit params — they must NOT be sent.
-    assert "temperature" not in r
-    assert "max_output_tokens" not in r
-    assert "top_p" not in r
-    # reasoning_effort is mapped onto the accepted `reasoning` object.
-    assert r["reasoning"] == {"effort": "high"}
-    # The ChatGPT backend requires streaming + store=false.
-    assert r["stream"] is True
-    assert r["store"] is False
-
-
-def test_responses_to_chat_content_and_tool_calls():
-    resp = {
-        "id": "resp_1",
-        "output": [
-            {"type": "message", "content": [{"type": "output_text", "text": "hello "}]},
-            {"type": "message", "content": [{"type": "output_text", "text": "world"}]},
-            {"type": "function_call", "call_id": "c9", "name": "do", "arguments": '{"x":1}'},
-        ],
-        "usage": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12},
-    }
-    chat = cp.responses_to_chat(resp, "gpt-5")
-    msg = chat["choices"][0]["message"]
-    assert msg["content"] == "hello world"
-    assert msg["tool_calls"][0]["id"] == "c9"
-    assert msg["tool_calls"][0]["function"] == {"name": "do", "arguments": '{"x":1}'}
-    assert chat["choices"][0]["finish_reason"] == "tool_calls"
-    assert chat["usage"]["total_tokens"] == 12
-
-
-def test_responses_to_chat_output_text_fallback():
-    chat = cp.responses_to_chat({"output": [], "output_text": "flat"}, "m")
-    assert chat["choices"][0]["message"]["content"] == "flat"
-    assert chat["choices"][0]["finish_reason"] == "stop"
-
-
-def test_aggregate_sse_text_and_tool_call():
-    events = [
-        {"type": "response.created", "response": {"id": "r1"}},
-        {"type": "response.output_text.delta", "delta": "Hel"},
-        {"type": "response.output_text.delta", "delta": "lo"},
-        {
-            "type": "response.output_item.done",
-            "item": {"type": "function_call", "call_id": "c7", "name": "go", "arguments": '{"a":1}'},
-        },
-        {
-            "type": "response.completed",
-            "response": {"id": "r1", "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}},
-        },
-    ]
-    raw = [f"data: {json.dumps(e)}\n".encode() for e in events]
-    resp = cp._aggregate_sse(raw)
-    chat = cp.responses_to_chat(resp, "gpt-5.5")
-    msg = chat["choices"][0]["message"]
-    assert msg["content"] == "Hello"
-    assert msg["tool_calls"][0]["id"] == "c7"
-    assert msg["tool_calls"][0]["function"]["name"] == "go"
-    assert chat["usage"]["total_tokens"] == 5
-
-
-def test_aggregate_sse_surfaces_error():
-    raw = [
-        b'data: {"type": "response.failed", "response": {"error": {"message": "boom"}}}\n'
-    ]
-    with pytest.raises(cp._UpstreamError):
-        cp._aggregate_sse(raw)
-
-
-def test_chat_to_stream_chunks():
-    chat = {
-        "id": "x",
-        "model": "gpt-5",
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": "hi",
-                    "tool_calls": [
-                        {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
-                    ],
-                },
-                "finish_reason": "tool_calls",
-            }
-        ],
-    }
-    chunks = cp.chat_to_stream_chunks(chat)
-    assert chunks[0]["choices"][0]["delta"]["content"] == "hi"
-    assert chunks[0]["choices"][0]["delta"]["tool_calls"][0]["index"] == 0
-    assert chunks[1]["choices"][0]["finish_reason"] == "tool_calls"
-
-
-# ── Integration: proxy server ↔ mock ChatGPT backend ─────────────────
 
 
 @pytest.fixture
@@ -166,7 +43,9 @@ def mock_backend(monkeypatch):
                     {
                         "type": "response.completed",
                         "response": {
-                            "id": "resp_x",
+                            "id": "resp_x", "status": "completed",
+                            "output": [{"type": "message", "role": "assistant",
+                                        "content": [{"type": "output_text", "text": "pong"}]}],
                             "usage": {
                                 "input_tokens": 1,
                                 "output_tokens": 1,
@@ -197,18 +76,21 @@ def _post(url, payload):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return r.read().decode()
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.read().decode()
+    except urllib.error.HTTPError as exc:
+        raise AssertionError(exc.read().decode()) from exc
 
 
 def test_proxy_non_stream(mock_backend):
     base = cp.ensure_proxy_running()
     body = _post(
-        base + "/chat/completions",
-        {"model": "gpt-5", "messages": [{"role": "user", "content": "ping"}]},
+        base + "/responses",
+        {"model": "gpt-5", "input": [{"type": "message", "role": "user", "content": "ping"}]},
     )
     chat = json.loads(body)
-    assert chat["choices"][0]["message"]["content"] == "pong"
+    assert chat["output"][0]["content"][0]["text"] == "pong"
     assert mock_backend["auth"] == "Bearer tok-123"
     assert mock_backend["account"] == "acct-9"
     # request was translated into Responses shape (streaming + store=false)
@@ -220,13 +102,15 @@ def test_proxy_non_stream(mock_backend):
 def test_proxy_stream(mock_backend):
     base = cp.ensure_proxy_running()
     body = _post(
-        base + "/chat/completions",
-        {"model": "gpt-5", "messages": [{"role": "user", "content": "ping"}], "stream": True},
+        base + "/responses",
+        {"model": "gpt-5", "input": [{"type": "message", "role": "user", "content": "ping"}], "stream": True},
     )
     assert "data: " in body
-    assert "[DONE]" in body
+    assert "response.completed" in body
     first = json.loads(body.split("data: ", 1)[1].split("\n", 1)[0])
-    assert first["choices"][0]["delta"]["content"] == "pong"
+    assert first["type"] == "response.created"
+    assert '"delta": "po"' in body
+    assert '"delta": "ng"' in body
 
 
 def test_proxy_models_endpoint(mock_backend):

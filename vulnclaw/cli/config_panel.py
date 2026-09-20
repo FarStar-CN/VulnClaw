@@ -13,6 +13,7 @@ from typing import Any
 from vulnclaw.config.schema import (
     BUILTIN_MCP_SERVERS,
     ENGINE_CHOICES,
+    REASONING_EFFORTS,
     MCPServerConfig,
     MCPTransportConfig,
     VulnClawConfig,
@@ -69,7 +70,12 @@ LLM_FIELDS = (
     FieldSpec("llm.max_tokens", "tui.config_panel.llm_max_tokens", INT),
     FieldSpec("llm.max_context_tokens", "tui.config_panel.llm_max_context_tokens", INT),
     FieldSpec("llm.temperature", "tui.config_panel.llm_temperature", FLOAT),
-    FieldSpec("llm.reasoning_effort", "tui.config_panel.llm_reasoning_effort", TEXT),
+    FieldSpec(
+        "llm.reasoning_effort",
+        "tui.config_panel.llm_reasoning_effort",
+        CHOICE,
+        tuple(REASONING_EFFORTS),
+    ),
 )
 
 SESSION_FIELDS = (
@@ -585,6 +591,8 @@ class ConfigPanelModel:
 
     def _set_value(self, row: Row, value: Any) -> None:
         owner, attribute = self._resolve(row.path)
+        if row.path.startswith("llm."):
+            value = getattr(type(owner).model_validate({**owner.model_dump(), attribute: value}), attribute)
         setattr(owner, attribute, value)
 
     def display_value(self, row: Row) -> str:
@@ -605,7 +613,7 @@ class ConfigPanelModel:
                 return ", ".join(f"{k}={v}" for k, v in items)
             # Env values routinely hold tokens/passwords — keep keys, hide values.
             return ", ".join(f"{k}={mask_secret(v)}" for k, v in items)
-        return str(value)
+        return "null" if value is None else str(value)
 
     def _edit_seed(self, row: Row) -> str:
         """Text the editor opens with. Secrets always open empty."""
@@ -707,11 +715,12 @@ class ConfigPanelModel:
         raw = self._edit["text"].strip()
         try:
             value = self._parse(row, raw)
+            if value is not _KEEP:
+                self._set_value(row, value)
         except ValueError as exc:
             self.row_error = str(exc)
             return
         if value is not _KEEP:
-            self._set_value(row, value)
             if row.path in self.STALE_PATHS:
                 self._invalidate_models()
         self._edit = None
@@ -719,6 +728,8 @@ class ConfigPanelModel:
 
     def _parse(self, row: Row, raw: str) -> Any:
         kind = row.value_kind
+        if raw.lower() == "null" and row.path in {"llm.max_tokens", "llm.temperature", "llm.top_p"}:
+            return None
         if raw == "!clear":
             return {
                 SECRET_LIST: [],
@@ -847,7 +858,9 @@ class ConfigPanelModel:
         return self.draft.llm.api_key.strip()
 
     def can_fetch(self) -> bool:
-        return bool(self.draft.llm.base_url.strip() and self._usable_key())
+        from vulnclaw.config.token_provider import has_llm_credentials
+
+        return bool(self.draft.llm.base_url.strip() and has_llm_credentials(self.draft.llm))
 
     def begin_fetch(self) -> int:
         """Mark a fetch in flight and return the generation the worker must echo back."""

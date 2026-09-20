@@ -80,7 +80,9 @@ def fetch_models(request: ProviderModelsRequest) -> ProviderModelsResponse:
     base_url = _resolve_base_url(request, config.llm.base_url)
     api_key = config.llm.primary_key()
 
-    if not api_key:
+    from vulnclaw.config.token_provider import has_llm_credentials
+
+    if not has_llm_credentials(config.llm):
         return ProviderModelsResponse(
             base_url=base_url,
             models=[],
@@ -105,7 +107,7 @@ def fetch_models(request: ProviderModelsRequest) -> ProviderModelsResponse:
             ),
         )
 
-    models = fetch_provider_models(base_url, api_key)
+    models = fetch_provider_models(base_url, api_key, llm_config=config.llm)
     detail = "" if models else "The provider returned no models (check the base URL / key)."
     return ProviderModelsResponse(
         base_url=base_url,
