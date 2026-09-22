@@ -604,7 +604,7 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 
 ### 可配置项
 
-五家主要供应商默认使用 Responses，保留显式 Chat 入口且不自动回退。升级、GLM/订阅预算限制及验证状态见 [LLM 接入说明](LLM_COMPATIBILITY.md)。
+五家主要供应商默认使用 Responses，保留显式 Chat 入口且不自动回退。原生参数、工具、生命周期、供应商预算差异及验证状态见 [LLM 接入说明](LLM_COMPATIBILITY.md)。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|

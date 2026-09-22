@@ -1135,9 +1135,7 @@ class ContextManager:
         for message in messages:
             if not isinstance(message, dict):
                 continue
-            if not message.get("role") and message.get("type") not in {
-                "reasoning", "function_call", "function_call_output",
-            }:
+            if not message.get("role") and not message.get("type"):
                 continue
             stored = copy.deepcopy(message)
             if stored.get("role") == "tool" or stored.get("type") == "function_call_output":
@@ -1186,6 +1184,9 @@ class ContextManager:
     def _offload_large_tool_message(self, message: dict[str, Any]) -> dict[str, Any]:
         from vulnclaw.agent.token_counter import estimate_message_tokens
 
+        field = "output" if message.get("type") == "function_call_output" else "content"
+        if not isinstance(message.get(field, ""), str):
+            return message
         if self.memory_store is None or estimate_message_tokens(message) <= self.max_tokens // 2:
             return message
         record_id = self._archive_messages([message], kind="large_tool_result")

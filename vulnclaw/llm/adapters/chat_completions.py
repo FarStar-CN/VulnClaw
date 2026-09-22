@@ -18,7 +18,7 @@ def messages_for_wire(messages: list[dict]) -> list[dict]:
             result.append(
                 {"role": "tool", "tool_call_id": item["call_id"], "content": item["output"]}
             )
-        elif item.get("type") in {"reasoning", "function_call"}:
+        elif item.get("type") not in {None, "message"}:
             raise ProtocolError(
                 "Cannot replay Responses reasoning/tools through Chat; start a new session"
             )

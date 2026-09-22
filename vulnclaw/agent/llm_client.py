@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -65,7 +66,8 @@ def _fit_context_window(
     purpose: str = "agent",
 ) -> list[dict[str, Any]]:
     """Fit messages to the configured context window via the unified budget."""
-    result = prepare_context(agent, messages, tools, purpose=purpose)
+    native_tools = getattr(agent.config.llm, "responses", {}).get("tools", []) or []
+    result = prepare_context(agent, messages, [*(tools or []), *native_tools], purpose=purpose)
     if result.compacted or result.reason:
         logger.info(
             "Context budget %d -> %d tokens (%s)",
@@ -299,6 +301,8 @@ def build_llm_request(
         agent.config.llm, messages, tools, max_tokens=bounded if _is_subagent(agent) else configured,
         temperature=temperature, diagnostics=diagnostics,
     )
+    if kwargs.get("background") or kwargs.get("previous_response_id") or kwargs.get("conversation"):
+        raise ValueError("Agent owns full local history; use llm.lifecycle for server-managed Responses")
     agent._llm_diagnostics = diagnostics
     return kwargs
 
@@ -571,6 +575,25 @@ async def _run_loop(agent: AgentContext, messages: list[dict], *, include_histor
             if last_results is not None and not isinstance(exc, (ProtocolError, asyncio.CancelledError)):
                 return _format_tool_results_fallback(last_results, []) + f"\n[llm follow-up failed] {exc}"
             raise
+        approvals = []
+        for request in result.approval_requests:
+            from vulnclaw.agent.exec_gate import GateRequest, get_execution_gate
+
+            decision = await get_execution_gate(agent.config).authorize(
+                GateRequest(kind="mcp", display=json.dumps(request, ensure_ascii=False),
+                            model_risk="review", detail="Provider-hosted MCP tool request"),
+                run_id=str(getattr(getattr(agent, "runtime", None), "run_id", "") or ""),
+            )
+            approvals.append({"type": "mcp_approval_response", "approval_request_id": request["id"],
+                              "approve": decision.approved})
+        if approvals and not result.tool_calls:
+            exchange = [*result.output_items, *approvals]
+            messages.extend(exchange)
+            if include_history:
+                _append_context_items(agent, exchange)
+            if round_index == _resolve_auto_tool_rounds(agent, max_tool_rounds):
+                return "Remote MCP approval recorded; tool round limit reached."
+            continue
         if not result.tool_calls:
             if include_history:
                 _append_context_items(agent, result.output_items)
@@ -581,17 +604,23 @@ async def _run_loop(agent: AgentContext, messages: list[dict], *, include_histor
         try:
             tool_results, skipped = await handle_tool_calls_with_results(agent, result)
         except asyncio.CancelledError:
-            cancelled = [{"type": "function_call_output", "call_id": c.id,
-                          "output": getattr(agent, "_llm_tool_results", {}).get(c.id, {}).get("content",
-                              "Cancelled; execution outcome may be unknown. Do not replay automatically.")}
-                         for c in result.tool_calls]
+            cancelled = []
+            for call in result.tool_calls:
+                completed = getattr(agent, "_llm_tool_results", {}).get(call.id)
+                value = (completed.get("native_output", completed["content"]) if completed else
+                         "Cancelled; execution outcome may be unknown. Do not replay automatically.")
+                cancelled.append(call.output_item(
+                    value, failed=completed.get("failed", False) if completed else True,
+                ))
             if include_history:
-                _append_context_items(agent, [*result.output_items, *cancelled])
+                _append_context_items(agent, [*result.output_items, *cancelled, *approvals])
             raise
         last_results = tool_results
-        outputs = [{"type": "function_call_output", "call_id": item["tool_call_id"],
-                    "output": str(item.get("content", ""))} for item in tool_results]
-        exchange = [*result.output_items, *outputs]
+        calls_by_id = {call.id: call for call in result.tool_calls}
+        outputs = [calls_by_id[item["tool_call_id"]].output_item(
+            item.get("native_output", str(item.get("content", ""))), failed=item.get("failed", False),
+        ) for item in tool_results]
+        exchange = [*result.output_items, *outputs, *approvals]
         messages.extend(exchange)
         if include_history:
             _append_context_items(agent, exchange)

@@ -27,7 +27,7 @@ from vulnclaw.agent.subagent.tooling import (
 from vulnclaw.agent.subagent.tooling import (
     reserve_tool_call as _reserve_subagent_tool_call,
 )
-from vulnclaw.agent.tool_result_overrides import pop_raw_tool_output_override
+from vulnclaw.agent.tool_result_overrides import ToolOutput, pop_raw_tool_output_override
 from vulnclaw.i18n import _
 
 if TYPE_CHECKING:
@@ -128,7 +128,7 @@ async def handle_tool_calls_with_results(
             errors[tool_call.id] = f"Tool arguments rejected: {exc}"
             continue
         args_key = json.dumps(func_args, sort_keys=True, ensure_ascii=False)
-        key = f"{func_name}::{args_key}"
+        key = f"{getattr(tool_call, 'type', 'function')}::{getattr(tool_call, 'namespace', None)}::{func_name}::{args_key}"
         keys[tool_call.id] = key
         if key not in seen:
             seen[key] = {
@@ -205,7 +205,10 @@ async def handle_tool_calls_with_results(
             else "Tool not executed: batch limit or execution cancelled."
         )
         complete_results.append({"tool_call": call, "tool_call_id": call.id,
-                                 "content": content, "duration_ms": 0})
+                                 "content": content, "duration_ms": 0,
+                                 "failed": original.get("failed", False) if original is not None else True,
+                                 **({"native_output": original["native_output"]}
+                                    if original is not None and "native_output" in original else {})})
     return complete_results, skipped_info
 
 
@@ -314,7 +317,14 @@ async def _execute_single_impl(agent: AgentContext, item: dict[str, Any]) -> dic
         }
     try:
         _reserve_subagent_tool_call(agent)
-        tool_result = await agent._execute_mcp_tool(func_name, func_args)
+        if getattr(tool_call, "type", "function") in {
+            "custom", "shell_call", "local_shell_call", "apply_patch_call", "tool_search_call",
+        } or isinstance(getattr(tool_call, "namespace", None), str):
+            from vulnclaw.agent.native_tools import execute_native_tool
+
+            tool_result = await execute_native_tool(agent, tool_call)
+        else:
+            tool_result = await agent._execute_mcp_tool(func_name, func_args)
         _reserve_subagent_evidence_bytes(agent, tool_result)
         duration_ms = _elapsed_ms(started)
         # NOTE: do not re-invoke agent.mcp_manager.call_tool here. _execute_mcp_tool
@@ -345,6 +355,7 @@ async def _execute_single_impl(agent: AgentContext, item: dict[str, Any]) -> dic
             "tool_call_id": tool_call.id,
             "content": f"[tool:{func_name}] {content}",
             "structured_content": structured_content,
+            **({"native_output": tool_result.native_output} if isinstance(tool_result, ToolOutput) else {}),
             "duration_ms": duration_ms,
             "correction": signal.model_hint(),
             "correction_signal": signal,
@@ -372,6 +383,7 @@ async def _execute_single_impl(agent: AgentContext, item: dict[str, Any]) -> dic
             "tool_call_id": tool_call.id,
             "content": f"[tool:{func_name}] {content}",
             "structured_content": None,
+            "failed": True,
             "duration_ms": duration_ms,
             "correction": signal.model_hint(),
             "correction_signal": signal,
@@ -397,6 +409,7 @@ async def _execute_single_impl(agent: AgentContext, item: dict[str, Any]) -> dic
             "tool_call_id": tool_call.id,
             "content": f"[tool:{func_name}] {content}",
             "structured_content": None,
+            "failed": True,
             "duration_ms": duration_ms,
             "correction": signal.model_hint(),
             "correction_signal": signal,

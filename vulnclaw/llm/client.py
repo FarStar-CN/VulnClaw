@@ -10,6 +10,7 @@ from typing import Any
 
 from .adapters import chat_completions, responses
 from .capabilities import UNSET, Diagnostic, api_format, endpoint, official_provider, parameters
+from .options import adapt_options, merge_options, sdk_options
 from .types import Result
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ def make_client(config: Any, *, api_key: Any = UNSET, timeout: float | None = No
 
 def build_request(
     config: Any,
-    messages: list[dict],
+    messages: list[dict] | str,
     tools: list[dict] | None = None,
     *,
     max_tokens: Any = UNSET,
@@ -70,7 +71,30 @@ def build_request(
     reasoning_effort: Any = UNSET,
     response_format: dict | None = None,
     diagnostics: list | None = None,
+    response_options: dict | None = None,
+    **options: Any,
 ) -> dict:
+    native = merge_options(config, response_options, options)
+    protocol = api_format(config)
+    if protocol != "responses" and native:
+        raise ValueError("Native Responses options require api_format=responses")
+    reasoning = native.pop("reasoning", {}) or {}
+    if not isinstance(reasoning, dict):
+        raise ValueError("Responses reasoning must be an object")
+    for name in ("temperature", "top_p", "max_output_tokens"):
+        if name not in native:
+            continue
+        value = native.pop(name)
+        if name == "temperature" and temperature is UNSET:
+            temperature = value
+        elif name == "top_p" and top_p is UNSET:
+            top_p = value
+        elif name == "max_output_tokens" and max_tokens is UNSET:
+            max_tokens = value
+    if reasoning_effort is UNSET and "effort" in reasoning:
+        reasoning_effort = reasoning["effort"]
+    elif reasoning_effort is UNSET and native.get("enable_thinking") is False:
+        reasoning_effort = "none"
     route = endpoint(config)  # Validate routing before any network activity.
     kwargs, notices = parameters(
         config,
@@ -91,24 +115,20 @@ def build_request(
             f"Effective API base: {route}",
         ),
     )
-    if diagnostics is not None:
-        diagnostics.extend(notices)
-    for notice in notices:
-        logger.info(
-            "LLM %s: %r -> %r (%s)",
-            notice.parameter,
-            notice.requested,
-            notice.effective,
-            notice.reason,
-        )
     kwargs["model"] = config.model
     protocol = api_format(config)
+    native_tools = native.pop("tools", []) or []
     flat_tools = responses.tools_for_wire(
-        tools or [],
+        [*(tools or []), *native_tools],
         limit=128 if official_provider(config) == "openai" else None,
     )
     if protocol == "responses":
-        instructions, items = responses.input_items(messages)
+        for key, value in reasoning.items():
+            if key != "effort" and kwargs.get("reasoning") is not None:
+                kwargs["reasoning"][key] = value
+        if official_provider(config) == "openai" and kwargs.get("reasoning", {}).get("effort") not in {None, "none"}:
+            kwargs["reasoning"].setdefault("summary", "auto")
+        instructions, items = responses.input_items(messages, allow_external_calls=bool(native.get("previous_response_id") or native.get("conversation")))
         kwargs["input"] = items
         if instructions:
             kwargs["instructions"] = instructions
@@ -120,7 +140,17 @@ def build_request(
                 kwargs["text"] = {"format": {"type": "json_schema", **schema}}
             else:
                 kwargs["text"] = {"format": response_format}
+        if "include" in native:
+            native["include"] = list(dict.fromkeys([*(kwargs.get("include") or []), *(native["include"] or [])]))
+        if native.get("background"):
+            native.setdefault("store", True)
+        if "text" in kwargs and "text" in native:
+            native["text"] = {**native["text"], **kwargs["text"]}
+        kwargs.update(native)
+        kwargs = sdk_options(adapt_options(config, kwargs, notices, subscription=subscription_enabled(config)))
     else:
+        if any(tool.get("type") != "function" for tool in flat_tools):
+            raise ValueError("Chat Completions adapter accepts function tools only")
         if flat_tools and official_provider(config) == "openai" and config.model == "gpt-6-astra":
             raise ValueError("GPT-6 Astra tool calling requires api_format=responses")
         kwargs["messages"] = chat_completions.messages_for_wire(messages)
@@ -131,6 +161,16 @@ def build_request(
             ]
         if response_format is not None:
             kwargs["response_format"] = response_format
+    if diagnostics is not None:
+        diagnostics.extend(notices)
+    for notice in notices:
+        logger.info(
+            "LLM %s: %r -> %r (%s)",
+            notice.parameter,
+            notice.requested,
+            notice.effective,
+            notice.reason,
+        )
     return kwargs
 
 
@@ -231,6 +271,11 @@ async def stream_result(
 
         async for event in events():
             deltas = collector.feed(event)
+            callback = getattr(sink, "on_response_event", None)
+            if callback and getattr(collector, "accepted_event", True):
+                emitted = callback(event)
+                if inspect.isawaitable(emitted):
+                    await emitted
             if isinstance(deltas, tuple):
                 deltas = [deltas]
             for kind, text in deltas or []:

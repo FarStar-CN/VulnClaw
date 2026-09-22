@@ -41,7 +41,7 @@ from vulnclaw.agent.network_scan import (
     without_privileged_nmap_args,
 )
 from vulnclaw.agent.roles import role_tool_violation, tool_allowed_for_role
-from vulnclaw.agent.tool_result_overrides import set_raw_tool_output_override
+from vulnclaw.agent.tool_result_overrides import ToolOutput, set_raw_tool_output_override
 from vulnclaw.agent.tool_schemas import append_builtin_tool_schemas
 from vulnclaw.config.source_render import (
     render_highlighted_source_block,
@@ -704,12 +704,13 @@ async def execute_shell_command(agent: AgentContext, args: dict[str, Any]) -> st
     except Exception as exc:
         return f"[!] shell_command failed: {exc.__class__.__name__}: {exc}"
 
+    native_output = {"stdout": stdout, "stderr": stderr,
+                     "outcome": {"type": "timeout"} if timed_out else {"type": "exit", "exit_code": returncode}}
     if timed_out:
-        return (
+        return ToolOutput(
             f"[!] shell_command timed out after {timeout_ms}ms\n"
-            f"Command: {command}\n"
-            f"Workdir: {workdir}\n"
-            "Output:\n(process tree terminated)"
+            f"Command: {command}\nWorkdir: {workdir}\nOutput:\n(process tree terminated)",
+            native_output,
         )
 
     result_returncode = returncode
@@ -732,8 +733,10 @@ async def execute_shell_command(agent: AgentContext, args: dict[str, Any]) -> st
     raw_output = "\n".join(parts + [output])
     if max_output_chars > 0 and len(raw_output) > max_output_chars:
         clip = max_output_chars // 2
-        return raw_output[:clip] + "\n...[truncated by max_output_chars]...\n" + raw_output[-clip:]
-    return raw_output
+        raw_output = raw_output[:clip] + "\n...[truncated by max_output_chars]...\n" + raw_output[-clip:]
+        native_output["stdout"] = stdout[:max_output_chars]
+        native_output["stderr"] = stderr[:max_output_chars]
+    return ToolOutput(raw_output, native_output)
 
 
 def _strip_highlighted_source(raw: str) -> str:

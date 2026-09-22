@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
@@ -198,7 +199,7 @@ class LLMConfig(BaseModel):
     )
     max_tokens: int | None = Field(
         default=4096, gt=0, strict=True,
-        description="Total reasoning + answer output budget; null omits the limit",
+        description="Output token limit with provider-specific reasoning semantics; null omits the limit",
     )
     max_context_tokens: int = Field(
         default=128000, gt=0, description="Total model context window including input and completion tokens"
@@ -213,6 +214,20 @@ class LLMConfig(BaseModel):
         description="Reasoning effort level, sent only to models that accept "
         f"reasoning parameters. One of: {', '.join(REASONING_EFFORTS)}.",
     )
+
+    responses: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Native Responses request options, including tools, reasoning, text and caching",
+    )
+
+    @model_validator(mode="after")
+    def validate_responses_options(self) -> LLMConfig:
+        # Persisted options must round-trip as JSON, including nested provider extensions.
+        try:
+            json.dumps(self.responses, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("llm.responses must contain finite JSON values") from exc
+        return self
 
     def key_pool(self) -> list[str]:
         """Return the ordered, de-blanked list of usable static API keys.

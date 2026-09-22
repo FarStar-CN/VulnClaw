@@ -16,7 +16,7 @@ SOURCES = {
     "deepseek": "https://api-docs.deepseek.com/api/create-response/",
     "qwen": "https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses",
     "moonshot": "https://platform.kimi.com/docs/api/responses",
-    "zhipu": "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3",
+    "zhipu": "https://docs.bigmodel.cn/cn/coding-plan/tool/codex",
 }
 # Exact slugs (plus dated snapshots), never arbitrary gpt-5*/o* prefixes.
 OPENAI_EFFORTS = {
@@ -131,9 +131,14 @@ def parameters(
     from vulnclaw.config.schema import DEFAULT_REASONING_EFFORT, LLMConfig
 
     values["reasoning_effort"] = values["reasoning_effort"] or DEFAULT_REASONING_EFFORT
-    validated = LLMConfig.model_validate(values)
+    # The application selector keeps its five rungs; native Responses options
+    # also expose the endpoint's none/minimal levels.
+    native_effort = values["reasoning_effort"]
+    if native_effort not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
+        raise ValueError(f"Invalid reasoning effort: {native_effort}")
+    validated = LLMConfig.model_validate({**values, "reasoning_effort": "low"})
     values = {key: getattr(validated, key) for key in values}
-    effort = values["reasoning_effort"]
+    effort = values["reasoning_effort"] = native_effort
 
     diagnostics: list[Diagnostic] = []
 
@@ -159,9 +164,7 @@ def parameters(
         if protocol != "responses":
             raise ValueError("ChatGPT subscription proxy requires api_format=responses")
         if values["max_tokens"] is not None:
-            raise ValueError(
-                "ChatGPT backend cannot enforce total output budget; set llm.max_tokens=null"
-            )
+            adjust("max_tokens", None, "ChatGPT backend does not accept output limits")
         for key in ("temperature", "top_p"):
             adjust(key, None, "ChatGPT subscription backend does not accept this parameter")
     if provider == "custom":
@@ -170,24 +173,27 @@ def parameters(
         )
     if provider == "moonshot" and protocol == "responses" and model != "kimi-k3":
         raise ValueError("Kimi Responses currently documents kimi-k3 only; explicitly select Chat")
-    if provider in {"moonshot", "zhipu"} and model in {"kimi-k3", "glm-5.3"}:
-        if provider == "moonshot" or protocol == "chat_completions":
-            mapped = {"medium": "high", "xhigh": "max"}.get(effort, effort)
-            adjust("reasoning_effort", mapped, "VulnClaw mapping to native low/high/max")
-        else:
-            adjust("reasoning_effort", None, "GLM Responses effort contract unverified")
+    if provider in {"moonshot", "zhipu"} and model in {
+        "kimi-k3", "glm-5.3", "glm-5.3-flash", "glm-5.3-flashx",
+    }:
+        mapped = {"none": "low", "minimal": "low", "medium": "high", "xhigh": "max"}.get(effort, effort)
+        adjust("reasoning_effort", mapped, "Mapping to native low/high/max")
         if provider == "moonshot":
             for key in ("temperature", "top_p"):
                 adjust(key, None, "Kimi K3 sampling is not configurable on this endpoint")
     if provider == "deepseek" and model in {"deepseek-flash", "deepseek-v4-pro"}:
-        mapped = {"medium": "high", "xhigh": "high"}.get(effort, effort)
+        mapped = {"minimal": "low", "medium": "high", "xhigh": "high"}.get(effort, effort)
         adjust("reasoning_effort", mapped, "Documented DeepSeek effort mapping")
-        adjust("temperature", None, "DeepSeek ignores temperature in thinking mode")
-        if values["top_p"] is not None and values["top_p"] < 0.95:
+        if effort != "none":
+            adjust("temperature", None, "DeepSeek ignores temperature in thinking mode")
+        elif values["top_p"] is not None:
+            adjust("top_p", None, "DeepSeek fixes top_p to 1 in non-thinking mode")
+        if effort != "none" and values["top_p"] is not None and values["top_p"] < 0.95:
             adjust("top_p", 0.95, "DeepSeek thinking top_p lower bound")
     if provider == "qwen" and model in QWEN_38:
-        mapped = {"high": "xhigh", "max": "xhigh"}.get(effort, effort)
+        mapped = {"minimal": "low", "high": "xhigh", "max": "xhigh"}.get(effort, effort)
         adjust("reasoning_effort", mapped, "Documented Qwen3.8 effort mapping")
+    if provider == "qwen":
         if values["temperature"] is not None and values["temperature"] >= 2:
             raise ValueError("Qwen temperature must be less than 2")
         if values["top_p"] == 0:
@@ -200,12 +206,13 @@ def parameters(
             if effort not in supported:
                 adjust(
                     "reasoning_effort",
-                    supported[-1],
+                    supported[0] if effort in {"none", "minimal"} else supported[-1],
                     "VulnClaw mapping to a documented model effort",
                 )
-            # Every remaining rung asks for reasoning, so sampling is gone.
-            for key in ("temperature", "top_p"):
-                adjust(key, None, "Sampling unavailable with this reasoning model")
+            # Sampling is available only in the documented non-thinking mode.
+            if values["reasoning_effort"] != "none":
+                for key in ("temperature", "top_p"):
+                    adjust(key, None, "Sampling unavailable with this reasoning model")
         elif model in NON_REASONING_OPENAI:
             adjust("reasoning_effort", None, "This model has no reasoning effort control")
         else:
@@ -213,8 +220,11 @@ def parameters(
                 Diagnostic("model", model, "unverified", "Unknown OpenAI model capabilities")
             )
     if provider == "zhipu" and protocol == "responses":
-        for key in ("temperature", "top_p", "reasoning_effort"):
-            adjust(key, None, "GLM Responses parameter contract unverified")
+        diagnostics.append(Diagnostic(
+            "capabilities", None, "unverified",
+            "GLM Responses route/effort documented; remaining parameter contract unverified",
+            source=SOURCES["zhipu"],
+        ))
     limits = {"deepseek-flash": 393216, "deepseek-v4-pro": 393216, "kimi-k3": 1048576}
     ceiling = (
         128000
@@ -230,9 +240,11 @@ def parameters(
         if provider == "zhipu" or (
             provider == "qwen" and (protocol != "responses" or model not in QWEN_38)
         ):
-            raise ValueError(
-                "Total reasoning+answer budget is unverified/unsupported; set llm.max_tokens=null"
-            )
+            diagnostics.append(Diagnostic(
+                "max_tokens", budget, budget,
+                "Output limit forwarded; total reasoning+answer budget is unverified",
+                source=SOURCES.get(provider, ""),
+            ))
         if provider == "qwen" and budget < 16:
             raise ValueError("Qwen max_output_tokens must be at least 16")
     kwargs: dict[str, Any] = {}

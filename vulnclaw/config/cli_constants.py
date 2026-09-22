@@ -352,7 +352,7 @@ COMMANDS: tuple[ManualTopic, ...] = (
             "A config subcommand is required; running vulnclaw config alone prints usage and exits.",
             "Useful LLM keys: llm.provider, llm.api_key, llm.api_keys, llm.auth_mode, "
             "llm.chatgpt_auto_proxy, llm.api_format, llm.base_url, llm.model, llm.max_tokens, "
-            "llm.max_context_tokens, llm.temperature, llm.top_p, llm.reasoning_effort. Temperature, top_p and max_tokens accept null; max_tokens limits total reasoning + answer. ChatGPT subscription requires max_tokens=null. Use `vulnclaw login` "
+            "llm.max_context_tokens, llm.temperature, llm.top_p, llm.reasoning_effort, llm.responses (JSON object). Temperature, top_p and max_tokens accept null; max_tokens is forwarded subject to provider budget semantics. ChatGPT subscription omits output limits. Use `vulnclaw login` "
             "instead of llm.api_key for OAuth-based ChatGPT-subscription auth.",
             "Useful session keys: session.output_dir, session.report_format, session.max_rounds, "
             "session.engine (solve|rounds), session.solve_max_steps, session.context_auto_compact, "
@@ -555,7 +555,7 @@ COMMANDS: tuple[ManualTopic, ...] = (
         ),
         notes=(
             "Opens the ChatGPT consent page, stores a refreshable token, and (with "
-            "llm.chatgpt_auto_proxy) starts a built-in local proxy that bridges chat.completions "
+            "llm.chatgpt_auto_proxy) starts a built-in local proxy that forwards Responses "
             "to the ChatGPT backend.",
             "This reuses OpenAI's first-party Codex OAuth client. Using a ChatGPT subscription "
             "through a non-official client may violate OpenAI's Terms of Service and can get your "

@@ -13,6 +13,15 @@ from typing import Any
 _ATTR_NAME = "_vulnclaw_raw_tool_output_overrides"
 
 
+class ToolOutput(str):
+    """Display text with the native protocol result from the same execution."""
+
+    def __new__(cls, text: str, native_output: Any):
+        value = super().__new__(cls, text)
+        value.native_output = native_output
+        return value
+
+
 def _tool_key(tool: str, arguments: dict[str, Any] | None) -> str:
     args_key = json.dumps(dict(arguments or {}), sort_keys=True, ensure_ascii=False)
     return f"{tool}::{args_key}"

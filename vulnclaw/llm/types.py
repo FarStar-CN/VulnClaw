@@ -21,6 +21,27 @@ class ToolCall:
     id: str
     function: Function
     type: str = "function"
+    namespace: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def output_item(self, output: Any, *, failed: bool = False) -> dict[str, Any]:
+        kind = {
+            "function": "function_call_output", "custom": "custom_tool_call_output",
+            "shell_call": "shell_call_output", "local_shell_call": "local_shell_call_output",
+            "apply_patch_call": "apply_patch_call_output", "tool_search_call": "tool_search_output",
+        }.get(self.type)
+        if kind is None:
+            raise ProtocolError(f"Unsupported local tool result: {self.type}")
+        result = {"type": kind, "call_id": self.id, "output": output}
+        if self.type == "shell_call" and not isinstance(output, list):
+            result["output"] = [{"stdout": "", "stderr": str(output),
+                                 "outcome": {"type": "exit", "exit_code": 1}}]
+        if self.type == "tool_search_call":
+            result.pop("output")
+            result.update(tools=output if isinstance(output, list) else [], execution="client", status="completed")
+        if self.type == "apply_patch_call":
+            result["status"] = "failed" if failed or str(output).startswith("[!") else "completed"
+        return result
 
 
 @dataclass
@@ -55,6 +76,15 @@ class Result:
     response_id: str = ""
     usage: Usage | None = None
     retry_attempts: int = 0
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def pending(self) -> bool:
+        return self.status in {"queued", "in_progress"}
+
+    @property
+    def approval_requests(self) -> list[dict[str, Any]]:
+        return [item for item in self.output_items if item.get("type") == "mcp_approval_request"]
 
     def require_complete(self) -> Result:
         if self.status != "completed":

@@ -87,7 +87,7 @@ def estimate_message_tokens(message: dict) -> int:
     if not isinstance(message, dict):
         return _text_tokens(str(message)) + _MESSAGE_OVERHEAD
     total = _MESSAGE_OVERHEAD
-    for key in ("arguments", "output", "summary", "reasoning_content"):
+    for key in ("arguments", "output", "summary", "reasoning_content", "input", "action", "operation", "tools", "results"):
         total += _content_tokens(message.get(key))
     # Encrypted reasoning is opaque; retain a conservative reservation, not an
     # asserted tokenizer count inferred from ciphertext bytes.
@@ -140,7 +140,7 @@ def group_tool_exchanges(messages: list[dict]) -> list[list[dict]]:
     while index < len(messages):
         message = messages[index]
         group = [message]
-        if message.get("type") in {"reasoning", "function_call"} or (
+        if message.get("type") not in {None, "message"} or (
             message.get("role") == "assistant" and message.get("type") == "message"
         ):
             cursor = index + 1

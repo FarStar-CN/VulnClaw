@@ -217,3 +217,192 @@ def test_explicit_null_subagent_budget_does_not_restore_server_limit():
     request = build_llm_request(obj, [{"role": "user", "content": "hi"}], max_tokens=None)
     assert "max_output_tokens" not in request
     assert obj._subagent_ctx.next_model_token_reservation >= 4096
+
+
+@pytest.mark.parametrize("kind", ["shell_call", "local_shell_call"])
+async def test_native_shell_reuses_executor_and_preserves_result(kind):
+    from vulnclaw.agent.tool_result_overrides import ToolOutput
+
+    obj, client = agent()
+    native = {"stdout": "hello", "stderr": "warning", "outcome": {"type": "exit", "exit_code": 7}}
+    obj._execute_mcp_tool.return_value = ToolOutput("display", native)
+    action = {"commands": ["echo hello"]} if kind == "shell_call" else {"command": ["echo", "hello"]}
+    call = {"type": kind, "call_id": "s1", "action": action}
+    client.responses.create.side_effect = [result([call]), result([output()])]
+    assert await call_llm_auto(obj, "system", "run") == "done"
+    obj._execute_mcp_tool.assert_awaited_once_with("shell_command", {
+        "command": "echo hello", "workdir": None, "timeout_ms": None, "max_output_chars": None,
+    })
+    sent = client.responses.create.call_args.kwargs["input"][-1]
+    assert sent["type"] == kind + "_output"
+    assert sent["output"] == ([native] if kind == "shell_call" else "display")
+
+
+@pytest.mark.parametrize("approved", [True, False])
+async def test_hosted_mcp_approval_is_recorded_before_followup(monkeypatch, approved):
+    obj, client = agent()
+    authorize = AsyncMock(return_value=SimpleNamespace(approved=approved))
+    monkeypatch.setattr("vulnclaw.agent.exec_gate.get_execution_gate", lambda _: SimpleNamespace(authorize=authorize))
+    request = {"type": "mcp_approval_request", "id": "approval_1", "name": "lookup", "server_label": "remote", "arguments": "{}"}
+    client.responses.create.side_effect = [result([request]), result([output()])]
+    assert await call_llm_auto(obj, "system", "run") == "done"
+    authorize.assert_awaited_once()
+    obj._execute_mcp_tool.assert_not_called()
+    assert client.responses.create.call_args.kwargs["input"][-1] == {
+        "type": "mcp_approval_response", "approval_request_id": "approval_1", "approve": approved,
+    }
+
+
+@pytest.mark.parametrize("custom", [True, False])
+@pytest.mark.parametrize("approved", [True, False])
+async def test_native_patch_uses_gate_and_returns_typed_result(monkeypatch, tmp_path, custom, approved):
+    obj, client = agent()
+    monkeypatch.chdir(tmp_path)
+    authorize = AsyncMock(return_value=SimpleNamespace(approved=approved, refusal_text=lambda _: "denied"))
+    monkeypatch.setattr("vulnclaw.agent.exec_gate.get_execution_gate", lambda _: SimpleNamespace(authorize=authorize))
+    call = ({"type": "custom_tool_call", "name": "apply_patch", "call_id": "p1",
+             "input": "*** Begin Patch\n*** Add File: file.txt\n+hello\n*** End Patch"}
+            if custom else {"type": "apply_patch_call", "call_id": "p1",
+                            "operation": {"type": "create_file", "path": "file.txt", "diff": "+hello"}})
+    client.responses.create.side_effect = [result([call]), result([output()])]
+    assert await call_llm_auto(obj, "system", "run") == "done"
+    assert (tmp_path / "file.txt").exists() is approved
+    authorize.assert_awaited_once()
+    obj._execute_mcp_tool.assert_not_called()
+    sent = client.responses.create.call_args.kwargs["input"][-1]
+    assert sent["type"] == ("custom_tool_call_output" if custom else "apply_patch_call_output")
+    if not custom:
+        assert sent["status"] == ("completed" if approved else "failed")
+
+
+@pytest.mark.parametrize("path", ["../outside", "link/file.txt"])
+async def test_native_patch_rejects_escape_without_requesting_approval(monkeypatch, tmp_path, path):
+    obj, client = agent()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "link").symlink_to(tmp_path.parent, target_is_directory=True)
+    gate = MagicMock()
+    monkeypatch.setattr("vulnclaw.agent.exec_gate.get_execution_gate", gate)
+    call = {"type": "apply_patch_call", "call_id": "p1", "operation": {
+        "type": "create_file", "path": path, "diff": "+hello",
+    }}
+    client.responses.create.side_effect = [result([call]), result([output()])]
+    await call_llm_auto(obj, "system", "run")
+    gate.assert_not_called()
+    sent = client.responses.create.call_args.kwargs["input"][-1]
+    assert sent["status"] == "failed"
+    assert "inside the working directory" in sent["output"]
+
+
+async def test_native_patch_rechecks_file_after_approval(monkeypatch, tmp_path):
+    obj, client = agent()
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "file.txt"
+    path.write_text("before\n")
+    async def authorize(*args, **kwargs):
+        path.write_text("changed by user\n")
+        return SimpleNamespace(approved=True)
+    monkeypatch.setattr("vulnclaw.agent.exec_gate.get_execution_gate", lambda _: SimpleNamespace(authorize=authorize))
+    call = {"type": "apply_patch_call", "call_id": "p1", "operation": {
+        "type": "update_file", "path": "file.txt", "diff": "@@\n-before\n+after",
+    }}
+    client.responses.create.side_effect = [result([call]), result([output()])]
+    await call_llm_auto(obj, "system", "run")
+    assert path.read_text() == "changed by user\n"
+    assert client.responses.create.call_args.kwargs["input"][-1]["status"] == "failed"
+
+
+async def test_native_patch_cancellation_does_not_apply_or_retry(monkeypatch, tmp_path):
+    obj, client = agent()
+    monkeypatch.chdir(tmp_path)
+    authorize = AsyncMock(side_effect=asyncio.CancelledError())
+    monkeypatch.setattr("vulnclaw.agent.exec_gate.get_execution_gate", lambda _: SimpleNamespace(authorize=authorize))
+    call = {"type": "apply_patch_call", "call_id": "p1", "operation": {
+        "type": "create_file", "path": "file.txt", "diff": "+hello",
+    }}
+    client.responses.create.return_value = result([call])
+    with pytest.raises(asyncio.CancelledError):
+        await call_llm_auto(obj, "system", "run")
+    assert not (tmp_path / "file.txt").exists()
+    assert client.responses.create.call_count == 1
+    assert obj.context.messages[-1]["status"] == "failed"
+
+
+async def test_native_hosted_shell_is_not_executed_locally():
+    obj, client = agent()
+    call = {"type": "shell_call", "call_id": "s1", "environment": {"type": "container_reference", "container_id": "c1"},
+            "action": {"commands": ["echo hello"]}}
+    client.responses.create.return_value = result([call, output()])
+    assert await call_llm_auto(obj, "system", "run") == "done"
+    obj._execute_mcp_tool.assert_not_called()
+
+
+async def test_patch_write_failure_rolls_back_prior_files(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    obj, client = agent()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_text("before\n")
+    original_write = Path.write_bytes
+    def write(path, data):
+        if path.name == "b.txt":
+            raise OSError("disk error")
+        return original_write(path, data)
+    monkeypatch.setattr(Path, "write_bytes", write)
+    gate = SimpleNamespace(authorize=AsyncMock(return_value=SimpleNamespace(approved=True)))
+    monkeypatch.setattr("vulnclaw.agent.exec_gate.get_execution_gate", lambda _: gate)
+    call = {"type": "custom_tool_call", "name": "apply_patch", "call_id": "p1", "input":
+            "*** Begin Patch\n*** Update File: a.txt\n@@\n-before\n+after\n*** Add File: b.txt\n+new\n*** End Patch"}
+    client.responses.create.side_effect = [result([call]), result([output()])]
+    await call_llm_auto(obj, "system", "run")
+    assert (tmp_path / "a.txt").read_text() == "before\n"
+    assert not (tmp_path / "b.txt").exists()
+    assert "disk error" in client.responses.create.call_args.kwargs["input"][-1]["output"]
+
+
+async def test_native_patch_is_unavailable_to_subagents(monkeypatch, tmp_path):
+    from vulnclaw.agent.native_tools import execute_native_tool
+    from vulnclaw.llm.adapters.responses import parse
+
+    obj, _ = agent()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("vulnclaw.agent.builtin_tools.is_subagent", lambda _: True)
+    gate = MagicMock()
+    monkeypatch.setattr("vulnclaw.agent.exec_gate.get_execution_gate", gate)
+    call = parse(result([{"type": "apply_patch_call", "call_id": "p1", "operation": {
+        "type": "create_file", "path": "file.txt", "diff": "+hello",
+    }}])).tool_calls[0]
+    value = await execute_native_tool(obj, call)
+    assert "not available to subagents" in value
+    assert not (tmp_path / "file.txt").exists()
+    gate.assert_not_called()
+
+
+async def test_native_shell_duplicates_execute_once_but_return_both_call_ids():
+    from vulnclaw.agent.tool_result_overrides import ToolOutput
+
+    obj, client = agent()
+    native = {"stdout": "ok", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}
+    obj._execute_mcp_tool.return_value = ToolOutput("ok", native)
+    calls = [{"type": "shell_call", "id": f"item_{i}", "call_id": f"s{i}",
+              "action": {"commands": ["echo hello"]}} for i in range(2)]
+    client.responses.create.side_effect = [result(calls), result([output()])]
+    await call_llm_auto(obj, "system", "run")
+    obj._execute_mcp_tool.assert_awaited_once()
+    sent = client.responses.create.call_args.kwargs["input"][-2:]
+    assert [item["call_id"] for item in sent] == ["s0", "s1"]
+    assert all(item["output"] == [native] for item in sent)
+
+
+async def test_client_tool_search_returns_available_tools_and_namespace_dispatch():
+    obj, client = agent()
+    obj._build_openai_tools = lambda: [{"type": "function", "function": {
+        "name": "ping", "description": "Ping a host", "parameters": {"type": "object", "properties": {}},
+    }}]
+    search = {"type": "tool_search_call", "execution": "client", "call_id": "search1", "arguments": {"goal": "ping"}}
+    call = {"type": "function_call", "call_id": "f1", "namespace": "network", "name": "ping", "arguments": "{}"}
+    client.responses.create.side_effect = [result([search]), result([call]), result([output()])]
+    assert await call_llm_auto(obj, "system", "run") == "done"
+    sent = client.responses.create.call_args_list[1].kwargs["input"]
+    found = next(item for item in sent if item.get("type") == "tool_search_output")
+    assert [tool["name"] for tool in found["tools"]] == ["ping"]
+    obj._execute_mcp_tool.assert_awaited_once_with("network.ping", {})

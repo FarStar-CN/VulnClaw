@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from contextlib import suppress
@@ -160,7 +161,9 @@ def set_config_value(key: str, value: str) -> None:
         if field_name in model_fields:
             field_info = model_fields[field_name]
             annotation = field_info.annotation
-            if key in {"llm.max_tokens", "llm.temperature", "llm.top_p"}:
+            if key == "llm.responses":
+                value = json.loads(value)
+            elif key in {"llm.max_tokens", "llm.temperature", "llm.top_p"}:
                 if value.lower() == "null":
                     value = None
                 else:
@@ -277,6 +280,9 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
                 "max_tokens", "temperature", "top_p",
             } else convert(value)
             setattr(config.llm, name, parsed)
+
+    if v := os.environ.get("VULNCLAW_LLM_RESPONSES"):
+        config.llm.responses = json.loads(v)
 
     # ── LLM auth mode (static / oauth) ──────────────────────────────────
     if v := os.environ.get("VULNCLAW_LLM_AUTH_MODE"):

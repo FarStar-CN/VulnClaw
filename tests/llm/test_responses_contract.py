@@ -65,7 +65,13 @@ def sdk(handler, base="https://api.openai.com/v1"):
 )
 def test_real_sdk_request_wire_and_tool_replay(provider, model, base, effort):
     requests = []
-    reasoning = {"type": "reasoning", "id": "rs_test", "summary": [], "encrypted_content": "opaque"}
+    reasoning = {"type": "reasoning", "id": "rs_test", "summary": []}
+    if provider == "deepseek":
+        reasoning["content"] = [{"type": "reasoning_text", "text": "Need to call ping"}]
+    elif provider == "qwen":
+        reasoning["summary"] = [{"type": "summary_text", "text": "Need to call ping"}]
+    else:
+        reasoning["encrypted_content"] = "opaque"
     call = {
         "type": "function_call",
         "id": "fc_item",
@@ -94,7 +100,7 @@ def test_real_sdk_request_wire_and_tool_replay(provider, model, base, effort):
             ],
             client=client,
         )
-    assert requests[0]["reasoning"] == {"effort": effort}
+    assert requests[0]["reasoning"]["effort"] == effort
     assert requests[0]["max_output_tokens"] == 4096
     assert requests[0]["tools"][0]["name"] == "ping"
     assert requests[0]["tools"][0]["strict"] is False
@@ -102,7 +108,7 @@ def test_real_sdk_request_wire_and_tool_replay(provider, model, base, effort):
         not {"messages", "max_tokens", "max_completion_tokens", "reasoning_effort"}
         & requests[0].keys()
     )
-    assert requests[1]["input"][1]["encrypted_content"] == "opaque"
+    assert requests[1]["input"][1] == reasoning
     assert requests[1]["input"][2]["call_id"] == "call_1"
     if provider in {"deepseek", "moonshot"}:
         assert "store" not in requests[0]
@@ -114,12 +120,12 @@ def test_glm_route_and_unverified_budget():
         provider="zhipu", model="glm-5.3", base_url="https://open.bigmodel.cn/api/paas/v4"
     )
     assert endpoint(cfg) == "https://open.bigmodel.cn/api/v1"
-    with pytest.raises(ValueError, match="budget"):
-        build_request(cfg, [])
+    assert build_request(cfg, [])["max_output_tokens"] == 4096
     cfg.max_tokens = None
     diagnostics = []
     payload = build_request(cfg, [{"role": "user", "content": "hi"}], diagnostics=diagnostics)
-    assert "reasoning" not in payload
+    assert payload["reasoning"] == {"effort": "max"}
+    assert "max_output_tokens" not in payload
     assert any("unverified" in d.reason for d in diagnostics)
 
 
@@ -263,7 +269,9 @@ def test_glm_offline_request_and_no_claim_of_parameter_support():
     def handler(request):
         body = json.loads(request.content)
         assert str(request.url) == base + "/responses"
-        assert not {"reasoning", "temperature", "top_p", "max_output_tokens"} & body.keys()
+        assert body["reasoning"] == {"effort": "max"}
+        assert body["temperature"] == 0.1
+        assert "max_output_tokens" not in body
         return httpx.Response(200, json=response([message()]))
 
     with sdk(handler, base) as client:
