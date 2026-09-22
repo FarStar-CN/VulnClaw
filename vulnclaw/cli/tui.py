@@ -49,13 +49,13 @@ from vulnclaw.config.schema import (
 )
 from vulnclaw.config.settings import (
     apply_provider_preset,
-    fetch_provider_models,
     list_providers,
     load_config,
     save_config,
 )
-from vulnclaw.config.token_provider import has_llm_credentials
 from vulnclaw.i18n import _, init_i18n
+from vulnclaw.llm.discovery import fetch_provider_models
+from vulnclaw.llm.token_provider import has_llm_credentials
 from vulnclaw.skills.dispatcher import SkillDispatcher
 from vulnclaw.skills.flag_skills import (
     apply_flag_skill_to_tui_state,

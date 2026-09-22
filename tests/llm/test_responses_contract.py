@@ -8,9 +8,9 @@ import pytest
 from openai import OpenAI
 
 from vulnclaw.config.schema import LLMConfig
+from vulnclaw.llm.adapters.responses import Collector, input_items
 from vulnclaw.llm.capabilities import api_format, endpoint
 from vulnclaw.llm.client import build_request, complete, stream_result
-from vulnclaw.llm.responses import Collector, input_items
 from vulnclaw.llm.types import ProtocolError
 
 TOOL = {
@@ -343,7 +343,7 @@ def test_oauth_401_refreshes_once_on_same_route(monkeypatch, streaming):
     calls = []
     refreshes = []
     monkeypatch.setattr(
-        "vulnclaw.config.token_provider.refresh_llm_token",
+        "vulnclaw.llm.token_provider.refresh_llm_token",
         lambda config: refreshes.append(config) or "renewed-test-token",
     )
 

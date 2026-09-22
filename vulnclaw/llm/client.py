@@ -5,14 +5,20 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 from typing import Any
 
-from . import chat, responses
+from .adapters import chat_completions, responses
 from .capabilities import UNSET, Diagnostic, api_format, endpoint, official_provider, parameters
 from .types import Result
 
 logger = logging.getLogger(__name__)
 _END = object()
+DEFAULT_OPENAI_USER_AGENT = "Mozilla/5.0"
+
+
+def openai_default_headers() -> dict[str, str]:
+    return {"User-Agent": os.environ.get("VULNCLAW_LLM_USER_AGENT", DEFAULT_OPENAI_USER_AGENT)}
 
 
 def subscription_enabled(config: Any) -> bool:
@@ -21,15 +27,13 @@ def subscription_enabled(config: Any) -> bool:
         or getattr(config, "auth_mode", "") != "oauth"
     ):
         return False
-    from vulnclaw.config.token_provider import load_oauth_tokens
+    from vulnclaw.llm.token_provider import load_oauth_tokens
 
     return load_oauth_tokens().get("flow") == "chatgpt"
 
 
 def make_openai_client(api_key: str, base_url: str, timeout: float | None = None):
     from openai import OpenAI
-
-    from vulnclaw.config.settings import openai_default_headers
 
     kwargs: dict[str, Any] = {
         "api_key": api_key or "placeholder",
@@ -43,7 +47,7 @@ def make_openai_client(api_key: str, base_url: str, timeout: float | None = None
 
 
 def make_client(config: Any, *, api_key: Any = UNSET, timeout: float | None = None):
-    from vulnclaw.config.token_provider import resolve_llm_token
+    from vulnclaw.llm.token_provider import resolve_llm_token
 
     if subscription_enabled(config):
         if api_format(config) != "responses":
@@ -119,7 +123,7 @@ def build_request(
     else:
         if flat_tools and official_provider(config) == "openai" and config.model == "gpt-6-astra":
             raise ValueError("GPT-6 Astra tool calling requires api_format=responses")
-        kwargs["messages"] = chat.messages_for_wire(messages)
+        kwargs["messages"] = chat_completions.messages_for_wire(messages)
         if flat_tools:
             kwargs["tools"] = [
                 {"type": "function", "function": {k: v for k, v in tool.items() if k != "type"}}
@@ -131,12 +135,12 @@ def build_request(
 
 
 def create(client: Any, config: Any, kwargs: dict) -> Result:
-    adapter = responses if api_format(config) == "responses" else chat
+    adapter = responses if api_format(config) == "responses" else chat_completions
     return _authenticated_request(client, config, lambda: adapter.create(client, kwargs))
 
 
 def start_stream(client: Any, config: Any, kwargs: dict) -> Any:
-    adapter = responses if api_format(config) == "responses" else chat
+    adapter = responses if api_format(config) == "responses" else chat_completions
     return _authenticated_request(client, config, lambda: adapter.stream(client, kwargs))
 
 
@@ -146,7 +150,7 @@ def _authenticated_request(client: Any, config: Any, request: Any) -> Any:
     except Exception as exc:
         if getattr(exc, "status_code", None) != 401 or getattr(config, "auth_mode", "") != "oauth":
             raise
-        from vulnclaw.config.token_provider import refresh_llm_token
+        from vulnclaw.llm.token_provider import refresh_llm_token
 
         token = refresh_llm_token(config)
         if not subscription_enabled(config):
@@ -202,7 +206,7 @@ async def await_stream_open(pending: Any) -> Any:
 async def stream_result(
     client: Any, config: Any, kwargs: dict, sink: Any, *, open_stream: Any = None
 ) -> Result:
-    adapter = responses if api_format(config) == "responses" else chat
+    adapter = responses if api_format(config) == "responses" else chat_completions
     collector = adapter.Collector()
     response = (
         await open_stream()

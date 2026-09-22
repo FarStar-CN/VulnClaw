@@ -840,10 +840,10 @@ def _generate_attack_summary_from_session(session: SessionState) -> str:
     try:
         from vulnclaw.config.settings import load_config
         from vulnclaw.config.text_utils import strip_think_tags
-        from vulnclaw.config.token_provider import (
+        from vulnclaw.llm.client import complete
+        from vulnclaw.llm.token_provider import (
             has_llm_credentials,
         )
-        from vulnclaw.llm.client import complete
 
         config = load_config()
         if not has_llm_credentials(config.llm):

@@ -249,8 +249,8 @@ def test_learn_command_distills_an_existing_run_into_pending_lessons(tmp_path: P
 
     import vulnclaw.agent.distiller as distiller_module
     import vulnclaw.cli.main as cli_main
-    import vulnclaw.config.token_provider as token_provider_module
     import vulnclaw.kb.experience as experience_module
+    import vulnclaw.llm.token_provider as token_provider_module
     from vulnclaw.agent.context import SessionState
     from vulnclaw.run_context import create_run_context
     from vulnclaw.targets import build_targets

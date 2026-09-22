@@ -217,9 +217,9 @@ def _schedule_completed_run_distillation(
             configured_distiller,
             schedule_run_distillation,
         )
-        from vulnclaw.config.token_provider import has_llm_credentials
         from vulnclaw.feedback import feedback_for_distillation
         from vulnclaw.kb.experience import ExperienceStore
+        from vulnclaw.llm.token_provider import has_llm_credentials
 
         if not has_llm_credentials(agent.config.llm):
             run_context.append_event("distillation_skipped", {"reason": "missing_llm_credentials"})

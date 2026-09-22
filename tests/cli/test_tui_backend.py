@@ -749,7 +749,7 @@ async def test_config_models_falls_back_to_the_saved_key(monkeypatch) -> None:
         seen.append((base_url, api_key))
         return ["b-model", "a-model"]
 
-    monkeypatch.setattr(settings_mod, "fetch_provider_models", fake_fetch)
+    monkeypatch.setattr("vulnclaw.llm.discovery.fetch_provider_models", fake_fetch)
 
     config = VulnClawConfig()
     config.llm.api_key = "sk-stored"

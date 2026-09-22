@@ -858,7 +858,7 @@ class ConfigPanelModel:
         return self.draft.llm.api_key.strip()
 
     def can_fetch(self) -> bool:
-        from vulnclaw.config.token_provider import has_llm_credentials
+        from vulnclaw.llm.token_provider import has_llm_credentials
 
         return bool(self.draft.llm.base_url.strip() and has_llm_credentials(self.draft.llm))
 

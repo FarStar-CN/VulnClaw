@@ -318,7 +318,7 @@ class AgentCore:
         rotated or just-minted access tokens are picked up without rebuilding the
         client; ``client.api_key`` becomes the ``Authorization: Bearer`` value.
         """
-        from vulnclaw.config.token_provider import resolve_llm_token
+        from vulnclaw.llm.token_provider import resolve_llm_token
 
         llm = self.config.llm
 

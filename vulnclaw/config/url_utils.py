@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 
 def infer_port_from_url(url: str) -> int | None:
@@ -29,3 +29,27 @@ def infer_port_from_url(url: str) -> int | None:
     if parsed.scheme == "http":
         return 80
     return None
+
+
+def normalize_base_url(value: str | None) -> str:
+    """Validate an OpenAI-compatible HTTP(S) base URL, stripping a trailing slash.
+
+    Mirrors the rule the Web UI applies in ``vulnclaw.web.schemas`` so both
+    surfaces accept exactly the same strings; it lives here so the config layer
+    keeps no dependency on the optional ``web`` extra.
+    """
+    if value is None:
+        return ""
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        return ""
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("base_url must use http or https")
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("base_url must include a host")
+    if parsed.username or parsed.password:
+        raise ValueError("base_url must not include credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("base_url must not include query strings or fragments")
+    return normalized

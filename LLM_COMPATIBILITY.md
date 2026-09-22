@@ -98,9 +98,25 @@ vulnclaw doctor --probe-llm
 
 探测会发出两轮无害 ping 工具交换，采用低 effort 并尊重 null 预算。单次未观察到工具调用不等同于供应商不支持工具。
 
+## 接入层目录与职责
+
+接入代码集中在 `vulnclaw/llm/`：
+
+| 模块 | 职责 |
+| --- | --- |
+| `client.py` | 客户端创建、默认请求头、请求调度及流式调用 |
+| `capabilities.py`、`types.py` | 供应商能力与参数适配；统一结果、用量与协议异常 |
+| `adapters/responses.py`、`adapters/chat_completions.py` | 两种显式协议的请求转换与响应收集 |
+| `token_provider.py`、`chatgpt_proxy.py` | API Key 与 OAuth 凭据管理；ChatGPT 订阅代理 |
+| `discovery.py`、`probe.py` | 模型列表发现；连通性与工具调用探测 |
+
+配置模型、供应商预设及配置读写留在 `vulnclaw/config/`，基址校验由其中的 `url_utils.py` 提供。Agent 的上下文预算、工具循环和重试编排留在 Agent 层。对应的协议、凭据、代理和探测测试集中在 `tests/llm/`；Agent 集成测试继续留在 `tests/agent/`。
+
+本次目录调整不改变配置、环境变量、OAuth 令牌存储位置或会话历史格式，无需迁移用户数据。
+
 ## 验证与维护
 
-2026-09-22 最终验收：全量 pytest **1901 passed、5 skipped**；Ruff 通过；执行边界检查 **25 个现有进程启动点全部通过**。测试中的 1 条 Pydantic 警告来自故意写入非法类型的配置校验用例。未修改前端 TypeScript 或 Rust 源码。
+2026-09-22 目录重整后验收：全量 pytest **1909 passed、5 skipped**；Ruff 通过；执行边界检查 **25 个现有进程启动点全部通过**。测试中的 1 条 Pydantic 警告来自故意写入非法类型的配置校验用例。未修改前端 TypeScript 或 Rust 源码。
 
 SDK 最低版本为 `openai>=3.13.0`，离线测试使用该版本。契约测试使用虚构密钥和模拟 HTTP/SSE；本轮没有使用用户凭据执行供应商实测。真实账户的访问权限、采样统计效果以及 GLM 的完整契约仍须分别验证，不能从其他供应商的通过结果推断。
 

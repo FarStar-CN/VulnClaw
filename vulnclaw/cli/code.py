@@ -159,8 +159,8 @@ def _resolve_llm_client():
             raise RuntimeError("no llm config")
         provider = getattr(llm, "provider", None) or "openai"
         model = llm.model
-        from vulnclaw.config.token_provider import has_llm_credentials
         from vulnclaw.llm.client import complete
+        from vulnclaw.llm.token_provider import has_llm_credentials
 
         if not has_llm_credentials(llm):
             raise RuntimeError("LLM credentials not configured")

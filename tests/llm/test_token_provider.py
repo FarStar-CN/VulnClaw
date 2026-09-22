@@ -12,8 +12,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from vulnclaw.config import token_provider as tp
 from vulnclaw.config.schema import LLMConfig
+from vulnclaw.llm import token_provider as tp
 
 
 @pytest.fixture

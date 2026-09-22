@@ -14,9 +14,9 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from vulnclaw.config.token_provider import TokenResolutionError
 from vulnclaw.llm.capabilities import api_format, endpoint
 from vulnclaw.llm.client import complete, make_client
+from vulnclaw.llm.token_provider import TokenResolutionError
 
 _PING_TOOL: dict[str, Any] = {
     "type": "function",

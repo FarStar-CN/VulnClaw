@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from .types import Function, ProtocolError, Result, ToolCall, Usage, as_dict
+from ..types import Function, ProtocolError, Result, ToolCall, Usage, as_dict
 
 
 def messages_for_wire(messages: list[dict]) -> list[dict]:

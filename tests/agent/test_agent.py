@@ -2201,5 +2201,5 @@ def _sdk_chat_response(response):
 
 
 def _protocol_result(response):
-    from vulnclaw.llm.chat import parse
+    from vulnclaw.llm.adapters.chat_completions import parse
     return parse(_sdk_chat_response(response))

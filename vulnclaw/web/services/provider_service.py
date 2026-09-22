@@ -8,7 +8,8 @@ API key server-side (the key is never sent to the browser).
 from __future__ import annotations
 
 from vulnclaw.config.schema import PROVIDER_PRESETS, LLMProvider
-from vulnclaw.config.settings import fetch_provider_models, load_config
+from vulnclaw.config.settings import load_config
+from vulnclaw.llm.discovery import fetch_provider_models
 from vulnclaw.web.schemas import (
     ProviderModelsRequest,
     ProviderModelsResponse,
@@ -80,7 +81,7 @@ def fetch_models(request: ProviderModelsRequest) -> ProviderModelsResponse:
     base_url = _resolve_base_url(request, config.llm.base_url)
     api_key = config.llm.primary_key()
 
-    from vulnclaw.config.token_provider import has_llm_credentials
+    from vulnclaw.llm.token_provider import has_llm_credentials
 
     if not has_llm_credentials(config.llm):
         return ProviderModelsResponse(

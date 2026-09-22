@@ -168,9 +168,9 @@ def distill_run(
         configured_distiller,
         persist_distilled_lessons,
     )
-    from vulnclaw.config.token_provider import has_llm_credentials
     from vulnclaw.feedback import feedback_for_distillation
     from vulnclaw.kb.experience import ExperienceStore
+    from vulnclaw.llm.token_provider import has_llm_credentials
     from vulnclaw.run_context import RunContextError, load_run_context
 
     if not has_llm_credentials(config.llm):

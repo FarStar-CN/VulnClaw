@@ -137,8 +137,8 @@ class TestCLI:
     def test_cli_doctor_probe_llm_reports_no_tool_call_endpoint(self, runner, monkeypatch):
         import vulnclaw.cli.main as cli_main
         from vulnclaw.cli.main import app
-        from vulnclaw.config import llm_probe
         from vulnclaw.config.schema import VulnClawConfig
+        from vulnclaw.llm import probe as llm_probe
 
         config = VulnClawConfig()
         config.llm.api_key = "test-key"
@@ -156,8 +156,8 @@ class TestCLI:
     def test_cli_doctor_probe_llm_ok(self, runner, monkeypatch):
         import vulnclaw.cli.main as cli_main
         from vulnclaw.cli.main import app
-        from vulnclaw.config import llm_probe
         from vulnclaw.config.schema import VulnClawConfig
+        from vulnclaw.llm import probe as llm_probe
 
         config = VulnClawConfig()
         config.llm.api_key = "test-key"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from vulnclaw.config.llm_probe import _classify_status_error, probe_llm_endpoint
+from vulnclaw.llm.probe import _classify_status_error, probe_llm_endpoint
 
 
 class _Err(Exception):
@@ -52,7 +52,7 @@ class _ProbeMonkey:
         self.calls = {}
         def factory(config, timeout=None):
             if token_error:
-                from vulnclaw.config.token_provider import TokenResolutionError
+                from vulnclaw.llm.token_provider import TokenResolutionError
                 raise TokenResolutionError(str(token_error))
             def create(**kwargs):
                 self.calls.setdefault("requests", []).append(kwargs)
@@ -66,7 +66,7 @@ class _ProbeMonkey:
                 }}]}
             return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
                                    close=lambda: None)
-        monkeypatch.setattr("vulnclaw.config.llm_probe.make_client", factory)
+        monkeypatch.setattr("vulnclaw.llm.probe.make_client", factory)
 
 
 def test_probe_ok_when_tool_call_emitted(monkeypatch):

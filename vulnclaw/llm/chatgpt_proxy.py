@@ -89,7 +89,7 @@ def list_backend_models(token: str, account_id: str) -> list[str]:
 def _resolve_credentials() -> tuple[str, str]:
     """Fetch a fresh ChatGPT token (auto-refreshing) + account id from the store."""
     from vulnclaw.config.settings import load_config
-    from vulnclaw.config.token_provider import load_oauth_tokens, resolve_llm_token
+    from vulnclaw.llm.token_provider import load_oauth_tokens, resolve_llm_token
 
     token = resolve_llm_token(load_config().llm)
     account_id = str(load_oauth_tokens().get("account_id") or "")

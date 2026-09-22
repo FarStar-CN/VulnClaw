@@ -60,7 +60,7 @@ class TestDetectSetupStatus:
         cfg.llm.api_key = "sk-test"
         # Prefer real helper if available
         try:
-            from vulnclaw.config.token_provider import has_llm_credentials as real_has
+            from vulnclaw.llm.token_provider import has_llm_credentials as real_has
 
             assert real_has(cfg.llm)
         except Exception:

@@ -58,7 +58,7 @@ def api_format(config: Any) -> str:
 
 
 def endpoint(config: Any) -> str:
-    from vulnclaw.config.settings import normalize_base_url
+    from vulnclaw.config.url_utils import normalize_base_url
 
     base = normalize_base_url(config.base_url)
     parsed = urlsplit(base)

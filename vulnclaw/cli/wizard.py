@@ -32,7 +32,7 @@ from vulnclaw.config.settings import (
     load_config,
     save_config,
 )
-from vulnclaw.config.token_provider import has_llm_credentials
+from vulnclaw.llm.token_provider import has_llm_credentials
 
 MIN_JAVA_MAJOR = 17
 DEFAULT_DEBUG_PORT = 9222

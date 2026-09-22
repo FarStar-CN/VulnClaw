@@ -7,12 +7,10 @@ import os
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import yaml
 
-from vulnclaw.llm.client import make_openai_client
-
+from . import url_utils
 from .schema import (
     BUILTIN_MCP_SERVERS,
     PROVIDER_PRESETS,
@@ -78,17 +76,12 @@ KB_DIR = CONFIG_DIR / "kb"
 SKILLS_DIR = CONFIG_DIR / "skills"
 WEB_TASKS_FILE = CONFIG_DIR / "web_tasks.json"
 PYTHON_EXECUTE_AUDIT_FILE = CONFIG_DIR / "python_execute_audit.jsonl"
-DEFAULT_OPENAI_USER_AGENT = "Mozilla/5.0"
 
 
 def ensure_dirs() -> None:
     """Create VulnClaw config directories if they don't exist."""
     for d in [CONFIG_DIR, SESSIONS_DIR, TARGETS_DIR, RUNS_DIR, KB_DIR, SKILLS_DIR]:
         d.mkdir(parents=True, exist_ok=True)
-
-
-def openai_default_headers() -> dict[str, str]:
-    return {"User-Agent": os.environ.get("VULNCLAW_LLM_USER_AGENT", DEFAULT_OPENAI_USER_AGENT)}
 
 
 # ── Load / Save ────────────────────────────────────────────────────
@@ -532,30 +525,6 @@ def list_providers() -> list[dict[str, str]]:
     return result
 
 
-def normalize_base_url(value: str | None) -> str:
-    """Validate an OpenAI-compatible HTTP(S) base URL, stripping a trailing slash.
-
-    Mirrors the rule the Web UI applies in ``vulnclaw.web.schemas`` so both
-    surfaces accept exactly the same strings; it lives here so the config layer
-    keeps no dependency on the optional ``web`` extra.
-    """
-    if value is None:
-        return ""
-    normalized = value.strip().rstrip("/")
-    if not normalized:
-        return ""
-    parsed = urlsplit(normalized)
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("base_url must use http or https")
-    if not parsed.netloc or not parsed.hostname:
-        raise ValueError("base_url must include a host")
-    if parsed.username or parsed.password:
-        raise ValueError("base_url must not include credentials")
-    if parsed.query or parsed.fragment:
-        raise ValueError("base_url must not include query strings or fragments")
-    return normalized
-
-
 def provider_form_values(provider_name: str) -> dict[str, str]:
     """Field values a settings form adopts when a provider template is chosen.
 
@@ -594,7 +563,7 @@ def apply_llm_form(
         raise ValueError(f"unknown provider: {provider}") from None
 
     preset = PROVIDER_PRESETS[resolved]
-    normalized = normalize_base_url(base_url) or preset.get("base_url", "")
+    normalized = url_utils.normalize_base_url(base_url) or preset.get("base_url", "")
     if not normalized:
         raise ValueError("a base URL is required for the custom provider")
 
@@ -607,51 +576,3 @@ def apply_llm_form(
     config.llm.model = model_name
     config.llm.website_url = website_url.strip()
     return config
-
-
-def fetch_provider_models(base_url: str, api_key: str, timeout: float = 10.0, *, llm_config: Any = None) -> list[str]:
-    """Fetch available models from a provider's OpenAI-compatible API.
-
-    Uses the OpenAI SDK's ``client.models.list()`` endpoint.
-    Returns a sorted list of model ID strings.  Returns an empty list
-    on any error (network, auth, timeout, etc.).
-    """
-    if not base_url or (not api_key and llm_config is None):
-        return []
-    from vulnclaw.llm.client import make_client
-
-    try:
-        client = (make_client(llm_config, timeout=timeout) if llm_config is not None
-                  else make_openai_client(api_key=api_key, base_url=base_url, timeout=timeout))
-        with client:
-            return sorted(m.id for m in client.models.list() if m.id)
-    except Exception:
-        return []
-
-
-def fetch_provider_models_async(
-    base_url: str,
-    api_key: str,
-    timeout: float = 10.0,
-    on_result: Any = None,
-):
-    """Fetch provider models in a background thread.
-
-    Calls ``fetch_provider_models()`` in a daemon thread.  When the
-    fetch completes, *on_result* (if provided) is called with the
-    model list on the **calling** thread via ``app.call_later()``-style
-    scheduling — the caller is responsible for arranging thread-safe
-    delivery (e.g. by passing a lambda that uses ``call_later``).
-
-    Returns the ``Thread`` object so callers can track or join it.
-    """
-    import threading
-
-    def _worker() -> None:
-        models = fetch_provider_models(base_url, api_key, timeout)
-        if on_result is not None:
-            on_result(models)
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    return t

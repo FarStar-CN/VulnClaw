@@ -76,9 +76,9 @@ from vulnclaw.config.settings import (
     save_config,
     set_config_value,
 )
-from vulnclaw.config.token_provider import has_llm_credentials
 from vulnclaw.i18n import _
 from vulnclaw.i18n.phases import localized_phase_name
+from vulnclaw.llm.token_provider import has_llm_credentials
 from vulnclaw.repl_runner import run_repl_call
 from vulnclaw.target_state.store import (
     apply_target_state_to_agent,
@@ -2635,7 +2635,7 @@ def login(
     subscription through a non-official client may violate OpenAI's Terms of
     Service and can get your account restricted. You proceed at your own risk.
     """
-    from vulnclaw.config.token_provider import (
+    from vulnclaw.llm.token_provider import (
         CHATGPT_CLIENT_ID,
         CHATGPT_TOKEN_URL,
         OAuthError,
@@ -2695,7 +2695,7 @@ def login(
 @app.command()
 def logout() -> None:
     """Remove stored OAuth tokens (browser sign-in)."""
-    from vulnclaw.config.token_provider import logout_oauth
+    from vulnclaw.llm.token_provider import logout_oauth
 
     if logout_oauth():
         console.print("[green]Signed out — stored OAuth tokens removed.[/]")
@@ -2777,7 +2777,7 @@ def doctor(
     console.print(f"  Model: [dim]{config.llm.model}[/]")
 
     if probe_llm:
-        from vulnclaw.config.llm_probe import probe_llm_endpoint
+        from vulnclaw.llm.probe import probe_llm_endpoint
 
         console.print()
         if not has_key:

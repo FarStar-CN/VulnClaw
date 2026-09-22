@@ -9,7 +9,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from .types import Function, ProtocolError, Result, ToolCall, Usage, as_dict
+from ..types import Function, ProtocolError, Result, ToolCall, Usage, as_dict
 
 
 def tools_for_wire(tools: list[dict[str, Any]], *, limit: int | None = None) -> list[dict]:

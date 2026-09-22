@@ -442,12 +442,10 @@ class BackendSession:
             return provider_form_values(str(arguments.get("provider") or "")), None
 
         if operation == "config.models":
-            from vulnclaw.config.settings import (
-                fetch_provider_models,
-                load_config,
-                normalize_base_url,
-            )
-            from vulnclaw.config.token_provider import has_llm_credentials
+            from vulnclaw.config.settings import load_config
+            from vulnclaw.config.url_utils import normalize_base_url
+            from vulnclaw.llm.discovery import fetch_provider_models
+            from vulnclaw.llm.token_provider import has_llm_credentials
 
             base_url = normalize_base_url(str(arguments.get("base_url") or ""))
             api_key = str(arguments.get("api_key") or "").strip()
@@ -821,7 +819,7 @@ def _llm_configured(llm: Any) -> bool:
     if llm is None:
         return False
     try:
-        from vulnclaw.config.token_provider import has_llm_credentials
+        from vulnclaw.llm.token_provider import has_llm_credentials
 
         return bool(has_llm_credentials(llm))
     except Exception:

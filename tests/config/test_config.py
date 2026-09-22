@@ -563,15 +563,6 @@ class TestSettingsLoad:
         # Just verify it doesn't crash
         assert config is not None
 
-    def test_openai_default_headers_allow_user_agent_override(self, monkeypatch):
-        from vulnclaw.config.settings import openai_default_headers
-
-        assert openai_default_headers()["User-Agent"] == "Mozilla/5.0"
-
-        monkeypatch.setenv("VULNCLAW_LLM_USER_AGENT", "test-agent")
-
-        assert openai_default_headers()["User-Agent"] == "test-agent"
-
     def test_env_var_override_new_session_fields(self, monkeypatch):
         """二开新增的 session 配置（反思/插件）可通过环境变量注入。"""
         from vulnclaw.config.settings import load_config
