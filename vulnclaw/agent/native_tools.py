@@ -96,7 +96,7 @@ async def _patch(agent: Any, call: ToolCall) -> ToolOutput:
         {},
     )
     if refusal:
-        return ToolOutput(f"[!] {refusal}", f"[!] {refusal}")
+        return ToolOutput(f"[!] {refusal}", f"[!] {refusal}", failed=True)
     root = Path.cwd().resolve()
     operations = (
         [call.raw["operation"]]
@@ -145,7 +145,7 @@ async def _patch(agent: Any, call: ToolCall) -> ToolOutput:
         run_id=str(getattr(getattr(agent, "runtime", None), "run_id", "") or ""),
     )
     if not outcome.approved:
-        return ToolOutput("[!] " + outcome.refusal_text("apply_patch"), "[!] Patch denied")
+        return ToolOutput("[!] " + outcome.refusal_text("apply_patch"), "[!] Patch denied", failed=True)
     for value, expected in paths.items():
         if _path(root, value) != expected:
             raise ValueError("Patch path changed during approval")

@@ -143,13 +143,35 @@ def group_tool_exchanges(messages: list[dict]) -> list[list[dict]]:
         if message.get("type") not in {None, "message"} or (
             message.get("role") == "assistant" and message.get("type") == "message"
         ):
-            cursor = index + 1
+            from vulnclaw.llm.adapters.responses import CALL_OUTPUTS, server_executed
+
+            group = []
+            pending: set[str] = set()
+            cursor = index
             while cursor < len(messages):
                 candidate = messages[cursor]
                 if candidate.get("role") in {"user", "system", "developer"}:
                     break
+                kind = candidate.get("type")
+                completed = False
+                if kind in CALL_OUTPUTS and not server_executed(candidate):
+                    pending.add(candidate.get("call_id"))
+                elif kind == "mcp_approval_request":
+                    pending.add(candidate.get("id"))
+                elif kind in CALL_OUTPUTS.values() and not server_executed(candidate):
+                    call_id = candidate.get("call_id")
+                    completed = call_id in pending
+                    pending.discard(call_id)
+                elif kind == "mcp_approval_response":
+                    call_id = candidate.get("approval_request_id")
+                    completed = call_id in pending
+                    pending.discard(call_id)
                 group.append(candidate)
                 cursor += 1
+                # One complete model/tool exchange is indivisible, not the
+                # entire user turn: older completed rounds can be archived.
+                if completed and not pending:
+                    break
             groups.append(group)
             index = cursor
             continue

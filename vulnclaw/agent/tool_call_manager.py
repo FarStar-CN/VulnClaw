@@ -355,7 +355,12 @@ async def _execute_single_impl(agent: AgentContext, item: dict[str, Any]) -> dic
             "tool_call_id": tool_call.id,
             "content": f"[tool:{func_name}] {content}",
             "structured_content": structured_content,
-            **({"native_output": tool_result.native_output} if isinstance(tool_result, ToolOutput) else {}),
+            **(
+                {"native_output": tool_result.native_output, "failed": tool_result.failed}
+                if isinstance(tool_result, ToolOutput)
+                and getattr(tool_call, "type", "function") != "function"
+                else {}
+            ),
             "duration_ms": duration_ms,
             "correction": signal.model_hint(),
             "correction_signal": signal,

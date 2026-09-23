@@ -16,9 +16,10 @@ _ATTR_NAME = "_vulnclaw_raw_tool_output_overrides"
 class ToolOutput(str):
     """Display text with the native protocol result from the same execution."""
 
-    def __new__(cls, text: str, native_output: Any):
+    def __new__(cls, text: str, native_output: Any, *, failed: bool = False):
         value = super().__new__(cls, text)
         value.native_output = native_output
+        value.failed = failed
         return value
 
 

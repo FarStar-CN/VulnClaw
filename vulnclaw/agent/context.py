@@ -1313,10 +1313,12 @@ class ContextManager:
         Extracts key findings, tool results, and discoveries from the
         conversation history so the LLM doesn't completely lose context.
         """
+        from vulnclaw.agent.context_vault import _content_text
+
         key_parts = []
 
         for msg in messages:
-            content = msg.get("content", "")
+            content = _content_text(msg)
             # Extract tool call/result information — these contain actual findings
             if "调用工具:" in content or "工具结果:" in content:
                 key_parts.append(content[:300])

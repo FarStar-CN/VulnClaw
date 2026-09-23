@@ -66,7 +66,9 @@ def _fit_context_window(
     purpose: str = "agent",
 ) -> list[dict[str, Any]]:
     """Fit messages to the configured context window via the unified budget."""
-    native_tools = getattr(agent.config.llm, "responses", {}).get("tools", []) or []
+    from vulnclaw.llm.options import merge_options
+
+    native_tools = merge_options(agent.config.llm, None, {}).get("tools", []) or []
     result = prepare_context(agent, messages, [*(tools or []), *native_tools], purpose=purpose)
     if result.compacted or result.reason:
         logger.info(

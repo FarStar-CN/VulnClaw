@@ -91,7 +91,13 @@ def build_context_budget(agent: Any, messages: list[dict[str, Any]], tools: list
     )
     max_completion = _number(getattr(llm, "max_tokens", None), 4096, minimum=1)
     reserve = configured_reserve or min(max_completion, 8192)
-    usable = max(1, int(window - reserve))
+    from vulnclaw.llm.options import merge_options
+
+    native_instructions = merge_options(llm, None, {}).get("instructions")
+    instruction_reserve = estimate_tokens(
+        [{"role": "system", "content": native_instructions}]
+    ) if native_instructions else 0
+    usable = max(1, int(window - reserve - instruction_reserve))
     trigger_ratio = min(
         0.95,
         max(0.1, _number(getattr(session, "context_compact_trigger_ratio", 0.70), 0.70)),
@@ -199,10 +205,16 @@ def _message_history_digest(groups: list[list[dict[str, Any]]], *, limit: int = 
         first = group[0] if group else {}
         role = str(first.get("role", "message")) if isinstance(first, dict) else "message"
         content = ""
-        for message in group:
-            if isinstance(message, dict) and message.get("content"):
-                content = str(message["content"])
-                break
+        # Preserve observations before reasoning or function arguments; a
+        # Responses exchange often starts with both before its tool result.
+        ordered = sorted(group, key=lambda m: not (
+            m.get("role") == "tool" or str(m.get("type", "")).endswith("_output")
+        ))
+        for message in ordered:
+            if isinstance(message, dict):
+                content = _content_text(message)
+                if content:
+                    break
         if content:
             lines.append(f"- Prior {role}: {_redact(_one_line(content, 180))}")
     rendered = "\n".join(lines)

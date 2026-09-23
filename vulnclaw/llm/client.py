@@ -130,8 +130,13 @@ def build_request(
             kwargs["reasoning"].setdefault("summary", "auto")
         instructions, items = responses.input_items(messages, allow_external_calls=bool(native.get("previous_response_id") or native.get("conversation")))
         kwargs["input"] = items
-        if instructions:
-            kwargs["instructions"] = instructions
+        extra_instructions = native.pop("instructions", None)
+        if extra_instructions is not None and not isinstance(extra_instructions, str):
+            raise ValueError("Responses instructions must be text or null")
+        if instructions or extra_instructions:
+            kwargs["instructions"] = "\n\n".join(
+                part for part in (instructions, extra_instructions) if part
+            )
         if flat_tools:
             kwargs["tools"] = flat_tools
         if response_format is not None:

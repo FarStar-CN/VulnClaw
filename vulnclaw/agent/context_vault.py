@@ -124,24 +124,37 @@ def _estimate_chars(value: Any) -> int:
 
 def _content_text(message: dict[str, Any]) -> str:
     """Flatten a message's content to plain text for counting/rendering."""
-    content = message.get("output", "") if message.get("type") == "function_call_output" else message.get("content", "")
+    content = message.get("content")
+    if content is None:
+        content = message.get("output")
+    if content is None:
+        # Summaries/previews never substitute encrypted reasoning or binary
+        # artifacts for readable observations. Raw items stay in the archive.
+        for key in ("summary", "arguments", "input", "action", "operation", "tools"):
+            if message.get(key) is not None:
+                content = message[key]
+                break
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        return json.dumps(content, ensure_ascii=False)
     parts: list[str] = []
     if isinstance(content, list):
         for part in content:
             if isinstance(part, dict):
-                text = part.get("text")
+                text = part.get("text", part.get("refusal"))
                 if text:
                     parts.append(str(text))
-            elif part:
-                parts.append(str(part))
+                elif "stdout" in part or "stderr" in part:
+                    parts.append(json.dumps(part, ensure_ascii=False))
+            elif isinstance(part, str):
+                parts.append(part)
     return "\n".join(parts)
 
 
 def _message_label(message: dict[str, Any], index: int) -> str:
     """Short one-line description of a message for pointers/summaries."""
-    role = str(message.get("role", "message"))
+    role = str(message.get("role") or message.get("type") or "message")
     content = _content_text(message).strip()
     if message.get("tool_calls"):
         names = [tc.get("function", {}).get("name", "?") for tc in message["tool_calls"]]
