@@ -2636,14 +2636,18 @@ def _read_system_clipboard() -> str | None:
                     "powershell.exe",
                     "-NoProfile",
                     "-NonInteractive",
-                    "-WindowStyle",
-                    "Hidden",
                     "-Command",
                     ps,
                 ],
                 check=False,
                 capture_output=True,
                 timeout=5,
+                # CREATE_NO_WINDOW (not -WindowStyle Hidden): the child must not
+                # attach to and hide this process's *shared* console window.
+                # getattr keeps the line importable/testable on non-Windows,
+                # where the constant does not exist; this branch only runs on
+                # win32 anyway.
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except (OSError, subprocess.SubprocessError):
             return None

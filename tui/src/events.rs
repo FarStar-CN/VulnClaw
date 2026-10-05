@@ -95,6 +95,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 app.running = false;
             }
         }
+        // Windows has no bracketed paste (crossterm parses it on Unix only),
+        // so Ctrl+V must read the clipboard directly. Without this arm the
+        // CONTROL guard below swallows the keypress and pasting silently does
+        // nothing on conhost/VSCode terminals. See #296.
+        (KeyCode::Char('v'), KeyModifiers::CONTROL) => {
+            crate::app::paste_clipboard_into_composer(app);
+        }
+        // Shift+Insert is the terminal-native paste chord (predates mice and
+        // Ctrl+V); terminals deliver it as a key event, not bracketed paste,
+        // so route it through the same clipboard path. See #296.
+        (KeyCode::Insert, KeyModifiers::SHIFT) => {
+            crate::app::paste_clipboard_into_composer(app);
+        }
         (KeyCode::Char('s'), KeyModifiers::CONTROL) => app.save_session(),
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => app.restore_session(),
         (KeyCode::Char('t'), KeyModifiers::CONTROL) => app.show_reasoning = !app.show_reasoning,
@@ -182,6 +195,23 @@ fn handle_llm_settings_key(app: &mut App, key: KeyEvent) {
             }
         }
         (KeyCode::Char('s'), KeyModifiers::CONTROL) => app.save_llm_settings(),
+        // Windows cannot rely on Event::Paste (see #296): route Ctrl+V into
+        // the focused settings row, mirroring the composer arm above.
+        (KeyCode::Char('v'), KeyModifiers::CONTROL) if editing => {
+            if let Some(text) = crate::app::read_clipboard_text() {
+                edit_llm_settings(app, |settings| settings.insert_text(&text));
+            } else {
+                app.toast = "Paste failed: clipboard unavailable".into();
+            }
+        }
+        // Shift+Insert mirrors Ctrl+V here too (see the composer arm).
+        (KeyCode::Insert, KeyModifiers::SHIFT) if editing => {
+            if let Some(text) = crate::app::read_clipboard_text() {
+                edit_llm_settings(app, |settings| settings.insert_text(&text));
+            } else {
+                app.toast = "Paste failed: clipboard unavailable".into();
+            }
+        }
         // Enter is the confirmation both ways: it opens the focused row, and a
         // second press closes it.
         (KeyCode::Enter, _) => {
@@ -263,6 +293,13 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) {
         return;
     }
     match mouse.kind {
+        // Right-click pastes, mirroring the Windows Terminal / conhost
+        // quick-edit convention. Earlier guards already returned during
+        // approval/task/settings modals, so this can never smuggle text
+        // through a modal. See #296.
+        MouseEventKind::Down(MouseButton::Right) => {
+            crate::app::paste_clipboard_into_composer(app);
+        }
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(sash) = geometry
                 .sashes

@@ -72,30 +72,13 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 /// Write text to the system clipboard without pulling in a third-party crate.
-/// Windows: persist to a temp UTF-8 file and use the built-in `Set-Clipboard`
-/// (handles Unicode correctly). Unix: emit an OSC 52 sequence to the terminal.
+/// Windows: Win32 clipboard API via FFI (microseconds; the previous
+/// powershell.exe detour paid a 1–3 s .NET startup on every copy). Unix:
+/// emit an OSC 52 sequence to the terminal.
 fn copy_to_clipboard(text: &str) -> bool {
     #[cfg(windows)]
     {
-        use std::process::Command;
-        let tmp = std::env::temp_dir().join(format!("vulnclaw-cb-{}.txt", std::process::id()));
-        if std::fs::write(&tmp, text.as_bytes()).is_err() {
-            return false;
-        }
-        let path = tmp.to_string_lossy().replace('\'', "''");
-        let ps = format!("Set-Clipboard -LiteralPath '{}'", path);
-        let status = Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                &ps,
-            ])
-            .status();
-        let _ = std::fs::remove_file(&tmp);
-        matches!(status, Ok(s) if s.success())
+        crate::windows_clipboard::write(text)
     }
     #[cfg(not(windows))]
     {
@@ -105,6 +88,49 @@ fn copy_to_clipboard(text: &str) -> bool {
         let _ = std::io::stdout().write_all(seq.as_bytes());
         let _ = std::io::stdout().flush();
         true
+    }
+}
+
+/// Read text from the system clipboard. Windows: the Win32 clipboard API
+/// directly (the previous powershell.exe detour cost 1–3 s of .NET startup
+/// per paste, which felt broken interactively). Returns `None` on Unix:
+/// bracketed paste already delivers `Event::Paste` there and crossterm 0.28
+/// does not parse it on Windows. Callers surface a toast on `None` so the
+/// failure is visible rather than silent. See #296.
+fn read_from_clipboard() -> Option<String> {
+    crate::windows_clipboard::read()
+}
+
+/// Read the system clipboard for a paste trigger. On Unix this returns
+/// `None`: bracketed paste already delivers `Event::Paste` there, and
+/// terminals that synthesize Ctrl+V as a plain 'v' keystroke keep working
+/// through the ordinary char arm. Callers surface a toast on `None` so the
+/// failure is visible rather than silent.
+pub fn read_clipboard_text() -> Option<String> {
+    read_from_clipboard()
+}
+
+/// Paste the system clipboard into the composer at the cursor. Returns false
+/// when the clipboard is unavailable so the caller can surface a toast.
+pub fn paste_clipboard_into_composer(app: &mut App) -> bool {
+    match read_clipboard_text() {
+        Some(text) => {
+            app.insert_text(&text);
+            app.toast = format!("Pasted {} chars", text.chars().count());
+            true
+        }
+        None => {
+            // On Unix, bracketed paste already handles `Event::Paste`; a
+            // second Ctrl+V path would need an OSC 52 round-trip that most
+            // terminals do not answer. Point the user at the working path
+            // instead of failing silently.
+            if cfg!(not(windows)) {
+                app.toast = "Use terminal paste (bracketed paste enabled)".into();
+            } else {
+                app.toast = "Paste failed: clipboard unavailable".into();
+            }
+            false
+        }
     }
 }
 
