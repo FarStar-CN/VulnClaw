@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import types
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
@@ -77,7 +78,7 @@ def _install_fake_run(
 
     monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
     monkeypatch.setattr(
-        cli_main, "_generate_report_for_target", lambda target, **kw: "/tmp/report.md"
+        cli_main, "_generate_report_for_target", AsyncMock(side_effect=lambda target, **kw: "/tmp/report.md")
     )
 
 
@@ -126,7 +127,7 @@ class TestNonInteractiveOutput:
             report_calls.append(kwargs.get("output_path"))
             return kwargs.get("output_path") or "/tmp/report.md"
 
-        monkeypatch.setattr(cli_main, "_generate_report_for_target", capture_report)
+        monkeypatch.setattr(cli_main, "_generate_report_for_target", AsyncMock(side_effect=capture_report))
 
         runner.invoke(app, ["run", "https://example.com", "--non-interactive"])
         assert report_calls
@@ -145,7 +146,7 @@ class TestNonInteractiveOutput:
             report_calls.append(kwargs.get("output_path"))
             return kwargs.get("output_path")
 
-        monkeypatch.setattr(cli_main, "_generate_report_for_target", capture_report)
+        monkeypatch.setattr(cli_main, "_generate_report_for_target", AsyncMock(side_effect=capture_report))
 
         runner.invoke(
             app,

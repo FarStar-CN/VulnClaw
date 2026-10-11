@@ -179,6 +179,7 @@ class ReportGenerateRequest(BaseModel):
     target: str = Field(min_length=1, max_length=2048)
     output_path: Optional[str] = Field(default=None, max_length=1024)
     report_format: Literal["markdown", "html"] = "markdown"
+    poc_verify: bool | None = None
 
 
 class ConfigView(BaseModel):
@@ -201,6 +202,7 @@ class ConfigView(BaseModel):
     persistent_rounds_per_cycle: int
     persistent_max_cycles: int
     show_thinking: bool
+    report_poc_verify_enabled: bool = False
     python_execute_enabled: bool
     python_execute_mode: str
     python_execute_max_lines: int
@@ -226,6 +228,7 @@ class ConfigUpdateRequest(BaseModel):
     persistent_rounds_per_cycle: Optional[int] = Field(default=None, ge=1, le=1000)
     persistent_max_cycles: Optional[int] = Field(default=None, ge=0, le=1000)
     show_thinking: Optional[bool] = None
+    report_poc_verify_enabled: bool | None = None
     python_execute_enabled: Optional[bool] = None
     python_execute_mode: Optional[PythonExecuteMode] = None
     python_execute_max_lines: Optional[int] = Field(default=None, ge=1, le=500)

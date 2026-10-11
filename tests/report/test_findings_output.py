@@ -13,6 +13,7 @@ observable artifact shape:
 import json
 
 from vulnclaw.agent.context import EvidenceRef, SessionState, VulnerabilityFinding
+from vulnclaw.findings.types import FindingAssessment
 from vulnclaw.report.findings_output import (
     build_findings_document,
     is_report_included,
@@ -24,6 +25,7 @@ from vulnclaw.report.findings_output import (
 def _verified(**kwargs) -> VulnerabilityFinding:
     finding = VulnerabilityFinding(**kwargs)
     finding.mark_verified(note="confirmed", evidence_level="L4")
+    finding.report_assessment = FindingAssessment(outcome="verified", method="poc", reason="Controlled test result")
     return finding
 
 
@@ -66,6 +68,7 @@ def _make_mixed_session() -> SessionState:
         title="Bogus XSS", severity="Medium", vuln_type="XSS", evidence="maybe"
     )
     rejected.mark_rejected(reason="false positive")
+    rejected.report_assessment = FindingAssessment(outcome="rejected", method="poc", reason="Controlled exclusion")
     state.add_finding(rejected)
 
     # candidate (has vuln_type so it isn't intake-quarantined)
@@ -74,6 +77,9 @@ def _make_mixed_session() -> SessionState:
             title="Weak header", severity="Low", vuln_type="Info Leak", evidence="server header"
         )
     )
+    for finding in state.findings:
+        if finding.report_assessment is None:
+            finding.report_assessment = FindingAssessment(outcome="suspected_low", method="evidence_review", reason="Indirect evidence")
     return state
 
 
@@ -92,7 +98,7 @@ class TestFindingsDocument:
         session = _make_mixed_session()
         doc = build_findings_document(session)
 
-        assert doc["schema_version"] == "1.0"
+        assert doc["schema_version"] == "1.1"
         assert doc["tool"]["name"] == "VulnClaw"
         assert doc["target"] == "https://shop.example.com"
 
@@ -262,19 +268,19 @@ class TestWriteArtifacts:
         result_titles = {r["message"]["text"].split(" — ")[0] for r in sarif["runs"][0]["results"]}
         assert "Bogus XSS" not in result_titles
 
-    def test_generate_report_emits_findings_dir(self, tmp_path):
+    async def test_generate_report_emits_findings_dir(self, tmp_path):
         from vulnclaw.report.generator import generate_report
 
         session = _make_mixed_session()
-        generate_report(session, str(tmp_path / "report.md"))
-        assert (tmp_path / "findings" / "findings.json").exists()
-        assert (tmp_path / "findings" / "findings.sarif").exists()
+        await generate_report(session, str(tmp_path / "report.md"))
+        assert (tmp_path / "report.artifacts" / "findings" / "findings.json").exists()
+        assert (tmp_path / "report.artifacts" / "findings" / "findings.sarif").exists()
 
-    def test_persistent_cycle_report_emits_findings_dir(self, tmp_path):
+    async def test_persistent_cycle_report_emits_findings_dir(self, tmp_path):
         from vulnclaw.report.generator import generate_persistent_cycle_report
 
         session = _make_mixed_session()
-        generate_persistent_cycle_report(
+        await generate_persistent_cycle_report(
             session,
             cycle_num=1,
             total_findings=len(session.findings),
@@ -283,5 +289,5 @@ class TestWriteArtifacts:
             rounds_per_cycle=100,
             output_path=str(tmp_path / "cycle.md"),
         )
-        assert (tmp_path / "findings" / "findings.json").exists()
-        assert (tmp_path / "findings" / "findings.sarif").exists()
+        assert (tmp_path / "cycle.artifacts" / "findings" / "findings.json").exists()
+        assert (tmp_path / "cycle.artifacts" / "findings" / "findings.sarif").exists()

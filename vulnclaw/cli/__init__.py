@@ -1,4 +1,4 @@
-﻿"""CLI shared helper functions — extracted from cli/main.py.
+"""CLI shared helper functions — extracted from cli/main.py.
 
 修改者: Nyaecho
 修改时间: 2026-07-08
@@ -174,7 +174,7 @@ def _make_solve_event_printer(target_console: Console) -> Any:
     return on_event
 
 
-def _generate_report_for_target(
+async def _generate_report_for_target(
     target: str,
     *,
     current_session: Any = None,
@@ -189,16 +189,16 @@ def _generate_report_for_target(
     if current_session is not None and (
         current_session.findings or current_session.executed_steps or current_session.notes
     ):
-        path = generate_report(current_session, output_path, report_format=report_format)
+        path = await generate_report(current_session, output_path, report_format=report_format)
         return str(path)
 
     state = load_target_state(target)
     if state:
-        path = generate_report_from_target_state(state, output_path=output_path)
+        path = await generate_report_from_target_state(state, output_path=output_path)
         return str(path)
 
     session = SessionState(target=target)
-    path = generate_report(session, output_path, report_format=report_format)
+    path = await generate_report(session, output_path, report_format=report_format)
     return str(path)
 
 

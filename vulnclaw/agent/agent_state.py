@@ -171,6 +171,7 @@ class EvidenceRecord(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
+    target: str = ""
     tool: str = ""
     arguments: dict[str, Any] = Field(default_factory=dict)
     key_args: str = ""
@@ -408,6 +409,7 @@ class AgentState(BaseModel):
         arguments: dict[str, Any] | None,
         output: Any,
         status: int = 0,
+        target: str = "",
         preview_chars: int = DEFAULT_EVIDENCE_PREVIEW_CHARS,
     ) -> EvidenceRecord:
         raw = str(output or "")
@@ -434,6 +436,7 @@ class AgentState(BaseModel):
             preview = make_evidence_preview(raw, preview_chars)
         record = EvidenceRecord(
             id=f"e{self.evidence_seq:03d}",
+            target=target,
             tool=tool,
             arguments=args,
             key_args=key_args,

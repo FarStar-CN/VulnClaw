@@ -235,7 +235,15 @@ async def _run_surface_wave(
 def merge_session_state(parent: SessionState, child: SessionState) -> None:
     """Merge child findings, recon data, notes, and steps into a parent session."""
     for finding in child.findings:
-        parent.add_finding(finding)
+        import copy
+
+        merged = copy.deepcopy(finding)
+        by_fingerprint = {record.fingerprint: record.id for record in parent.agent_state.evidence}
+        for ref in merged.evidence_snapshots:
+            ref.evidence_id = by_fingerprint.get(
+                ref.fingerprint, ref.fingerprint[:12] + ":" + ref.source_id,
+            )
+        parent.add_finding(merged)
 
     for key, value in child.recon_data.items():
         existing = parent.recon_data.get(key)

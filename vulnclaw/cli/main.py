@@ -1,4 +1,4 @@
-﻿"""VulnClaw CLI main entry point with REPL and sub-commands."""
+"""VulnClaw CLI main entry point with REPL and sub-commands."""
 
 # ruff: noqa: E402
 
@@ -625,13 +625,13 @@ def _run_repl() -> None:
                     console.print(_("cli.no_target_for_report"))
                     continue
 
-                report_path = _generate_report_for_target(
+                report_path = asyncio.run(_generate_report_for_target(
                     report_target,
                     current_session=agent.session_state
                     if agent.session_state.target == report_target
                     else None,
                     report_format=config.session.report_format,
-                )
+                ))
                 console.print(_("cli.report_generated", path=report_path))
                 continue
 
@@ -722,21 +722,21 @@ def _run_repl() -> None:
 
                     asyncio.run(_run_persistent())
                     if auto_report and not all_cycle_results:
-                        partial_report = _generate_report_for_target(
+                        partial_report = asyncio.run(_generate_report_for_target(
                             persistent_target,
                             current_session=agent.session_state,
                             report_format=config.session.report_format,
-                        )
+                        ))
                         console.print(_("cli.partial_report", path=partial_report))
                 except KeyboardInterrupt:
                     console.print(f"\n{_('persistent.interrupted_message')}")
                     if agent.session_state.findings:
                         try:
-                            final_report = _generate_report_for_target(
+                            final_report = asyncio.run(_generate_report_for_target(
                                 persistent_target,
                                 current_session=agent.session_state,
                                 report_format=config.session.report_format,
-                            )
+                            ))
                             console.print(_("persistent.final_report", path=final_report))
                         except Exception as exc:
                             console.print(_("persistent.failed_final_report", exc=exc))
@@ -906,7 +906,7 @@ def _run_repl() -> None:
                                         "export",
                                     )
                                 ):
-                                    _auto_save_recon_report(agent, user_input, config)
+                                    await _auto_save_recon_report(agent, user_input, config)
 
                         await _run_repl_agent_call(agent, call=call, after_result=after_result)
 
@@ -1082,7 +1082,7 @@ def _run_non_interactive(
     # Co-locate the report inside the run directory unless the caller pinned a
     # path with --output, so all structured output for a run lives in one place.
     report_output = output or str(run_dir / "report.md")
-    report_path = _generate_report_for_target(target, output_path=report_output)
+    report_path = asyncio.run(_generate_report_for_target(target, output_path=report_output))
 
     summary = headless.build_run_summary(
         target=target,
@@ -1492,7 +1492,7 @@ def run(
         total_findings = orchestrated.summary["findings_count"]
         console.print(_("cli.pentest_finished", findings=total_findings))
 
-    report_path = _generate_report_for_target(target, output_path=output)
+    report_path = asyncio.run(_generate_report_for_target(target, output_path=output))
     console.print(_("cli.report_generated", path=report_path))
 
 
@@ -2394,6 +2394,10 @@ def report(
     pdf_out: str = typer.Option(
         "", "--pdf-out", help="PDF output path (default: the report path with a .pdf suffix)"
     ),
+    poc_verify: Optional[bool] = typer.Option(
+        None, "--poc-verify/--no-poc-verify",
+        help="Allow approved PoC verification; saved-evidence review is always performed",
+    ),
 ) -> None:
     """Generate a report from a session file or target state."""
     # Report bodies call _() for localized text; initialize i18n from the
@@ -2402,6 +2406,9 @@ def report(
     from vulnclaw.i18n import init_i18n
 
     report_config = load_config()
+    from vulnclaw.cli.approval_channel import install_cli_approval_channel
+
+    install_cli_approval_channel(report_config)
     init_i18n(config=report_config)
 
     if target_mode:
@@ -2411,11 +2418,15 @@ def report(
         if not state:
             err_console.print(f"[!] Target state not found: {session}")
             raise typer.Exit(1)
-        report_path = generate_report_from_target_state(state)
+        report_path = asyncio.run(generate_report_from_target_state(
+            state, poc_verify=poc_verify, config=report_config,
+        ))
     else:
         from vulnclaw.report.generator import generate_report_from_file
 
-        report_path = generate_report_from_file(session)
+        report_path = asyncio.run(generate_report_from_file(
+            session, poc_verify=poc_verify, config=report_config,
+        ))
     console.print(f"[+] Report generated: {report_path}")
 
     if pdf:
@@ -3548,7 +3559,7 @@ def _resume_saved_run(
     asyncio.run(_run())
 
 
-def _auto_save_recon_report(agent, user_input: str, config) -> None:
+async def _auto_save_recon_report(agent, user_input: str, config) -> None:
     """Auto-save a recon report after auto_pentest completes when user requested file output."""
     import re
     from datetime import datetime
@@ -3573,7 +3584,7 @@ def _auto_save_recon_report(agent, user_input: str, config) -> None:
 
         from vulnclaw.report.generator import generate_report
 
-        generate_report(
+        await generate_report(
             state,
             output_path,
             report_format=config.session.report_format,
