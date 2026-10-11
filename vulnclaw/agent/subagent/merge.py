@@ -413,6 +413,12 @@ class EvidenceCommitter:
             max_records=self.max_records,
             baseline_fingerprints=baseline_fingerprints,
         )
+        for finding in parent_session.findings:
+            for ref in finding.evidence_snapshots:
+                mapped = next((record.id for record in parent_session.agent_state.evidence
+                               if record.fingerprint == ref.fingerprint), None)
+                if mapped is not None:
+                    ref.evidence_id = mapped
         new_ids = sorted(set(id_map.values()))
         for parent_id in new_ids:
             child_ids = sorted(

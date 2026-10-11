@@ -2,6 +2,7 @@
 
 import io
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from typer.testing import CliRunner
@@ -353,7 +354,7 @@ class TestCLI:
         )
         monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "stop_all", lambda self: None)
         monkeypatch.setattr(
-            cli_main, "_generate_report_for_target", lambda target, **kwargs: "C:/tmp/report.md"
+            cli_main, "_generate_report_for_target", AsyncMock(side_effect=lambda target, **kwargs: "C:/tmp/report.md")
         )
 
         result = runner.invoke(
@@ -489,7 +490,7 @@ class TestCLI:
             report_calls.append((target, kwargs))
             return "/tmp/vulnclaw-output/report.md"
 
-        monkeypatch.setattr(cli_main, "_generate_report_for_target", fake_generate_report)
+        monkeypatch.setattr(cli_main, "_generate_report_for_target", AsyncMock(side_effect=fake_generate_report))
 
         result = runner.invoke(app, ["run", "https://example.com"])
 
@@ -517,7 +518,7 @@ class TestCLI:
             report_calls.append((target, kwargs))
             return "/custom/path/report.md"
 
-        monkeypatch.setattr(cli_main, "_generate_report_for_target", fake_generate_report)
+        monkeypatch.setattr(cli_main, "_generate_report_for_target", AsyncMock(side_effect=fake_generate_report))
 
         result = runner.invoke(
             app, ["run", "https://example.com", "--output", "/custom/path/report.md"]
@@ -578,7 +579,7 @@ class TestCLI:
         monkeypatch.setattr(
             cli_main,
             "_generate_report_for_target",
-            lambda target, **kwargs: "/tmp/report.md",
+            AsyncMock(side_effect=lambda target, **kwargs: "/tmp/report.md"),
         )
 
         result = runner.invoke(app, ["run", "https://example.com", "--engine", "team"])
@@ -779,7 +780,7 @@ class TestCLI:
         monkeypatch.setattr(cli_main, "apply_target_state_to_agent", fake_apply)
         monkeypatch.setattr(agent_core.AgentCore, "persistent_pentest", fake_persistent_pentest)
         monkeypatch.setattr(
-            cli_main, "_generate_report_for_target", lambda target, **kwargs: "C:/tmp/final.md"
+            cli_main, "_generate_report_for_target", AsyncMock(side_effect=lambda target, **kwargs: "C:/tmp/final.md")
         )
 
         result = runner.invoke(

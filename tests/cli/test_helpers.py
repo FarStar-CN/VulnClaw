@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from rich.console import Console
@@ -373,7 +374,7 @@ def test_print_agent_output_handles_visible_and_reasoning_only_text(monkeypatch)
     assert "secret" not in rendered
 
 
-def test_generate_report_selects_session_target_state_then_empty_session(
+async def test_generate_report_selects_session_target_state_then_empty_session(
     monkeypatch, tmp_path
 ):
     import vulnclaw.report.generator as report_generator
@@ -391,24 +392,24 @@ def test_generate_report_selects_session_target_state_then_empty_session(
         calls.append(("saved", state, output_path))
         return tmp_path / "saved.md"
 
-    monkeypatch.setattr(report_generator, "generate_report", fake_generate)
+    monkeypatch.setattr(report_generator, "generate_report", AsyncMock(side_effect=fake_generate))
     monkeypatch.setattr(
-        report_generator, "generate_report_from_target_state", fake_generate_saved
+        report_generator, "generate_report_from_target_state", AsyncMock(side_effect=fake_generate_saved)
     )
     monkeypatch.setattr(target_store, "load_target_state", lambda target: saved_state)
 
-    assert helpers._generate_report_for_target(
+    assert (await helpers._generate_report_for_target(
         "example.com",
         current_session=current_session,
         report_format="json",
         output_path="custom.json",
-    ).endswith("session.md")
-    assert helpers._generate_report_for_target(
+    )).endswith("session.md")
+    assert (await helpers._generate_report_for_target(
         "example.com", output_path="saved.md"
-    ).endswith("saved.md")
+    )).endswith("saved.md")
 
     monkeypatch.setattr(target_store, "load_target_state", lambda target: None)
-    assert helpers._generate_report_for_target("new.example").endswith("session.md")
+    assert (await helpers._generate_report_for_target("new.example")).endswith("session.md")
 
     assert calls[0] == ("session", current_session, "custom.json", "json")
     assert calls[1] == ("saved", saved_state, "saved.md")

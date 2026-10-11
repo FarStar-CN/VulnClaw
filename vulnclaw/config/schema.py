@@ -405,7 +405,6 @@ class SessionConfig(BaseModel):
     report_format: str = Field(
         default="markdown", description="Default report format: markdown, html"
     )
-    poc_language: str = Field(default="python", description="Default PoC language: python, bash")
     max_rounds: int = Field(default=15, description="Max autonomous pentest rounds (1-100)")
     context_hot_max_messages: int = Field(
         default=48,
@@ -518,6 +517,10 @@ class SessionConfig(BaseModel):
     solve_report_show: bool = Field(
         default=True,
         description="Print the generated solve replay report in the terminal after completion",
+    )
+    report_poc_verify_enabled: bool = Field(
+        default=False,
+        description="Allow approved PoC execution before reports; independent evidence review always runs",
     )
     show_thinking: bool = Field(
         default=False, description="Show LLM thinking/reasoning output (default: off)"

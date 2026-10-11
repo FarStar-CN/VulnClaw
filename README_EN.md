@@ -310,7 +310,16 @@ vulnclaw recon 192.168.1.100                   # recon only
 vulnclaw scan 192.168.1.100 --ports 80,443     # vuln scan
 vulnclaw exploit 192.168.1.100 --cve CVE-2024-1234 --cmd id  # exploit
 vulnclaw report session.json                   # generate report
+vulnclaw report session.json --poc-verify      # run PoC verification before reporting (needs execution approval)
 ```
+
+> 📝 **Mandatory independent verification before reporting**: every report entry point
+> first runs a fresh independent assessment on each submitted finding (independent
+> evidence review, or approved PoC reproduction), then renders findings grouped as
+> Verified / Confirmed Exclusion / High-confidence Suspected / Low-confidence Suspected.
+> `--poc-verify/--no-poc-verify` overrides `session.report_poc_verify_enabled` for a
+> single run; when PoC is off or restricted, verification falls back to evidence
+> review. "Verified" phrasing in ordinary replies no longer changes any status.
 
 ### Mode 4: Persistent Pentesting
 
@@ -363,6 +372,13 @@ the source-checkout installation above for the full Web UI. If you see the
 **Fallback Web Shell** (no full scan UI),
 `frontend/dist/index.html` is missing. Build as above, restart `vulnclaw web`,
 and hard-refresh. API endpoints such as `/api/health` still work while the SPA is unbuilt.
+
+**New report-page interface**: report-generation requests (`POST /api/reports/target`,
+etc.) accept an optional boolean `poc_verify` field (default: the saved
+`session.report_poc_verify_enabled` value). The reports page offers a
+"Verify with PoC" switch; a per-run choice overrides the saved config. Regardless of
+the switch, every submitted finding first passes an independent evidence review or an
+approved PoC reproduction before entering the report.
 
 > ⚠️ By default binds to localhost only. For remote access pass `--host 0.0.0.0 --allow-remote`.
 
@@ -418,7 +434,7 @@ FINAL passes evidence gate → accepted; otherwise the rejection is fed back and
 | **Skill reference index** | `skills/loader.py` + `resolver.py` | Task-aware optional references without forced workflow injection |
 | **MCP Orchestration** | `mcp/registry.py` + `lifecycle.py` + `router.py` | Service registry + lifecycle + tool routing |
 | **Config** | `config/schema.py` + `settings.py` | Pydantic + YAML + 14 provider presets + SubagentConfig |
-| **Report Generator** | `report/generator.py` + `poc_builder.py` | Markdown reports + PoC scripts |
+| **Report Generator** | `report/generator.py` + `findings/verification.py` | Mandatory independent verification + Markdown/HTML/PDF/SARIF reports |
 | **Security KB** | `kb/store.py` + `retriever.py` + `ranking.py` | JSON storage + Chinese-aware BM25 retrieval + optional reranking |
 
 ---
@@ -654,7 +670,7 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 | `session.max_rounds` | 15 | Max rounds |
 | `session.output_dir` | ./vulnclaw-output | Report output directory |
 | `session.report_format` | markdown | Report format (markdown / html) |
-| `session.poc_language` | python | PoC language (python / bash) |
+| `session.report_poc_verify_enabled` | false | Run PoC verification (via execution approval) before reports; off = independent evidence review only |
 | `session.language` | auto | UI language (auto / zh / en), defaults to English |
 | `session.show_thinking` | false | Show LLM reasoning |
 | `session.persistent_rounds_per_cycle` | 100 | Rounds per cycle in persistent mode |

@@ -565,5 +565,7 @@
   "shell.quick_actions": "快捷操作",
   "home.scan_start_aria": "开始扫描",
   "home.excluded_hosts": "排除主机",
-  "home.excluded_hosts_help": "跳过的主机或 IP（黑名单/blocklist）。用逗号或换行分隔。"
+  "home.excluded_hosts_help": "跳过的主机或 IP（黑名单/blocklist）。用逗号或换行分隔。",
+  "reports.poc_verify": "使用 PoC 实施验证",
+  "reports.poc_verify_hint": "始终独立审查证据；开启后尝试复现，沿用执行审批和目标范围。"
 }

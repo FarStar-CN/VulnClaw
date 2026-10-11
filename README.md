@@ -305,7 +305,14 @@ vulnclaw recon 192.168.1.100                   # 仅信息收集
 vulnclaw scan 192.168.1.100 --ports 80,443     # 漏洞扫描
 vulnclaw exploit 192.168.1.100 --cve CVE-2024-1234 --cmd id  # 漏洞利用
 vulnclaw report session.json                   # 生成报告
+vulnclaw report session.json --poc-verify      # 报告前实施 PoC 验证（需执行审批）
 ```
+
+> 📝 **报告前强制独立验证**：所有报告入口都会先对每条已上报漏洞做本次独立校验
+> （独立证据审查，或经审批的 PoC 复现），再按 已验证 / 确认排除 / 高置信疑似 /
+> 低置信疑似 分类渲染。`--poc-verify/--no-poc-verify` 单次覆盖
+> `session.report_poc_verify_enabled` 配置；PoC 关闭或受限时自动回退证据审查，
+> 普通回复文本中的"已验证"措辞不再产生任何状态变更。
 
 ### 方式四：持续性渗透
 
@@ -358,6 +365,11 @@ PyPI wheel 不包含 React 构建产物或前端源码；完整 Web UI 需要按
 `frontend/dist/index.html`。按上式构建后重启 `vulnclaw web` 并强制刷新。
 未构建前端时，`/api/health` 等 API 仍可用。
 
+**报告页新接口**：报告生成请求（`POST /api/reports/target` 等）新增可选字段
+`poc_verify`（布尔，缺省时使用 `session.report_poc_verify_enabled` 保存值）。
+报告页提供"使用 PoC 实施验证"开关，单次选择优先于保存配置；无论开关状态，
+每条已上报漏洞都会先经过独立证据审查或受审批的 PoC 复现，再进入报告。
+
 > ⚠️ 默认仅绑定本地回环地址。如需远程访问须显式指定 `--host 0.0.0.0 --allow-remote`。
 
 ---
@@ -409,7 +421,7 @@ FINAL 经过证据闸门校验 → 通过才结束，否则把拒绝原因返回
 | **Skill 参考索引** | `skills/loader.py` + `resolver.py` | 只解析相关参考资料，不注入强制流程 |
 | **MCP 编排** | `mcp/registry.py` + `lifecycle.py` + `router.py` | 服务注册 + 生命周期 + 工具路由 |
 | **配置管理** | `config/schema.py` + `settings.py` | Pydantic + YAML + 14 Provider 预设 |
-| **报告生成** | `report/generator.py` + `poc_builder.py` | Markdown 报告 + PoC 脚本 |
+| **报告生成** | `report/generator.py` + `findings/verification.py` | 强制独立验证 + Markdown/HTML/PDF/SARIF 报告 |
 | **安全知识库** | `kb/store.py` + `retriever.py` + `ranking.py` | JSON 存储 + 中文感知 BM25 检索 + 可选重排序 |
 
 ---
@@ -630,7 +642,7 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 | `session.max_rounds` | 15 | 最大轮数 |
 | `session.output_dir` | ./vulnclaw-output | 报告输出目录 |
 | `session.report_format` | markdown | 报告格式（markdown / html） |
-| `session.poc_language` | python | PoC 生成语言（python / bash） |
+| `session.report_poc_verify_enabled` | false | 报告前实施 PoC 验证（经执行审批）；关闭时仅做独立证据审查 |
 | `session.language` | auto | 界面语言（auto / zh / en），默认英文 |
 | `session.show_thinking` | false | 显示 LLM 推理过程 |
 | `session.persistent_rounds_per_cycle` | 100 | 持续性渗透每周期轮数 |

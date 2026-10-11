@@ -111,6 +111,8 @@ def _report_fs_errors():
     """Map report filesystem errors onto HTTP responses (missing -> 404, denied -> 403)."""
     try:
         yield
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
@@ -262,10 +264,11 @@ def create_app():
     @app.post("/api/reports/target")
     async def report_target(request: ReportGenerateRequest):
         with _report_fs_errors():
-            path = generate_target_report(
+            path = await generate_target_report(
                 request.target,
                 request.output_path,
                 request.report_format,
+                request.poc_verify,
             )
         return {"status": "ok", "path": path}
 

@@ -44,10 +44,11 @@ def list_reports(limit: int = 50) -> list[dict[str, str | int]]:
     return items[:limit]
 
 
-def generate_target_report(
+async def generate_target_report(
     target: str,
     output_path: str | None = None,
     report_format: str = "markdown",
+    poc_verify: bool | None = None,
 ) -> str:
     """Generate a report from target state and return the saved path."""
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -55,15 +56,18 @@ def generate_target_report(
     # the scan task path, this standalone endpoint has no ambient i18n state, so
     # initialize it from the saved config.session.language before generating —
     # otherwise the report always falls back to auto-detection (defaults to zh).
-    init_i18n(config=load_config())
+    config = load_config()
+    init_i18n(config=config)
     raw = load_target_state(target)
     if not raw:
         raise FileNotFoundError(f"Target state not found: {target}")
     normalized_format = "html" if report_format.lower() == "html" else "markdown"
-    path = generate_report_from_target_state(
+    path = await generate_report_from_target_state(
         raw,
         report_format=normalized_format,
         output_path=str(_default_report_path(target, normalized_format)),
+        poc_verify=poc_verify,
+        config=config,
     )
     if output_path:
         destination = resolve_report_output_path(output_path, normalized_format)

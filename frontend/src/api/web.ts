@@ -178,10 +178,11 @@ export function clearTargetState(target: string): Promise<{ status: string; targ
 export function generateTargetReport(
   target: string,
   reportFormat: "markdown" | "html" = "markdown",
+  pocVerify = false,
 ): Promise<{ status: string; path: string }> {
   return requestJson("/api/reports/target", {
     method: "POST",
-    body: JSON.stringify({ target, report_format: reportFormat }),
+    body: JSON.stringify({ target, report_format: reportFormat, poc_verify: pocVerify }),
   });
 }
 

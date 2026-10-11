@@ -565,5 +565,7 @@
   "shell.quick_actions": "Quick actions",
   "home.scan_start_aria": "Start scan",
   "home.excluded_hosts": "Excluded hosts",
-  "home.excluded_hosts_help": "Hosts or IPs to skip (blocklist). Separate with commas or new lines."
+  "home.excluded_hosts_help": "Hosts or IPs to skip (blocklist). Separate with commas or new lines.",
+  "reports.poc_verify": "Verify with PoC",
+  "reports.poc_verify_hint": "Evidence is always independently assessed. PoC requests require the existing approval and scope checks."
 }
