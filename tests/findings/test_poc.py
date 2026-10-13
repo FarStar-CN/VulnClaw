@@ -67,7 +67,7 @@ def receiver(monkeypatch):
         thread.join(timeout=5)
 
 
-def _candidate(tmp_path, base, url, output, *, vuln_type="RCE", constraints=None):
+def _candidate(tmp_path, base, url, output, *, vuln_type="RCE", constraints=None, method=None):
     config = VulnClawConfig()
     config.session.output_dir = tmp_path
     config.session.auto_save = False
@@ -80,11 +80,14 @@ def _candidate(tmp_path, base, url, output, *, vuln_type="RCE", constraints=None
         state.task_constraints = constraints
     agent = SimpleNamespace(config=config, context=SimpleNamespace(state=state),
                             session_state=state)
-    submit_finding(agent, {
+    submission = {
         "title": "Recorded candidate", "description": "Reproduce from the recorded request",
         "vuln_type": vuln_type, "severity": "High", "evidence_ids": ["e001"],
         "endpoint": url,
-    })
+    }
+    if method is not None:
+        submission["method"] = method
+    submit_finding(agent, submission)
     return config, state
 
 
@@ -167,3 +170,57 @@ async def test_redirects_are_not_followed_and_fall_back(tmp_path, receiver, monk
     assert assessment.method == "evidence_review"
     assert "200" in assessment.failure_reason
     assert not state.findings[0].verified
+
+
+async def test_get_replay_cannot_confirm_a_post_candidate(tmp_path, receiver, monkeypatch):
+    # The endpoint is command-executable over GET, but the candidate claims a
+    # POST method and cites both a GET and a POST request to the same path.
+    # The GET-only replay must not be borrowed to confirm the POST candidate.
+    def execute_printf(query):
+        match = re.search(r"printf 'VC_%s%s' '([0-9a-f]{16})' '([0-9a-f]{16})'",
+                          unquote_plus(query))
+        return (200, f"VC_{match.group(1)}{match.group(2)}" if match else "plain", {})
+
+    _BEHAVIOR["run"] = execute_printf
+    url = f"{receiver}/cmd?file=notes%20id"
+    config = VulnClawConfig()
+    config.session.output_dir = tmp_path
+    config.session.auto_save = False
+    config.safety.permission_mode = "full_access"
+    state = SessionState(target=receiver)
+    state.agent_state.remember_tool_result(
+        tool="fetch", arguments={"url": url}, target=receiver,
+        output=_recorded(url, "notes id"),
+    )
+    state.agent_state.remember_tool_result(
+        tool="fetch", arguments={"url": url, "method": "POST", "data": "file=notes id"},
+        target=receiver, output=_recorded(url, "notes id"),
+    )
+    agent = SimpleNamespace(config=config, context=SimpleNamespace(state=state),
+                            session_state=state)
+    submit_finding(agent, {
+        "title": "Recorded candidate", "description": "Reproduce from the recorded request",
+        "vuln_type": "RCE", "severity": "High", "evidence_ids": ["e001", "e002"],
+        "endpoint": url, "method": "POST",
+    })
+    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", lambda *args: _review())
+    view = await prepare_report(state, config=config, poc_verify=True)
+    assessment = view.findings[0].report_assessment
+    assert assessment.method == "evidence_review" and assessment.outcome == "suspected_high"
+    assert assessment.failure_reason
+    assert not state.findings[0].verified
+    assert _Handler.hits == 0  # the vulnerable GET path was never replayed
+
+
+async def test_declared_get_candidate_still_verifies_via_poc(tmp_path, receiver):
+    def execute_printf(query):
+        match = re.search(r"printf 'VC_%s%s' '([0-9a-f]{16})' '([0-9a-f]{16})'",
+                          unquote_plus(query))
+        return (200, f"VC_{match.group(1)}{match.group(2)}" if match else "plain", {})
+
+    _BEHAVIOR["run"] = execute_printf
+    url = f"{receiver}/cmd?file=notes%20id"
+    config, state = _candidate(tmp_path, receiver, url, _recorded(url, "notes id"), method="GET")
+    view = await prepare_report(state, config=config, poc_verify=True)
+    assessment = view.findings[0].report_assessment
+    assert assessment.outcome == "verified" and assessment.method == "poc"

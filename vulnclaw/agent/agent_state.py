@@ -414,7 +414,8 @@ class AgentState(BaseModel):
     ) -> EvidenceRecord:
         raw = str(output or "")
         args = dict(arguments or {})
-        key_args = json.dumps(args, ensure_ascii=False, sort_keys=True)[:500]
+        serialized_args = json.dumps(args, ensure_ascii=False, sort_keys=True)
+        key_args = serialized_args[:500]
         content_hash = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:24]
         duplicate_of = ""
         for item in self.evidence:
@@ -422,7 +423,7 @@ class AgentState(BaseModel):
                 duplicate_of = item.id
                 break
         digest = hashlib.sha256(
-            f"{tool}\0{key_args}\0{raw}".encode("utf-8", errors="replace")
+            f"{tool}\0{serialized_args}\0{raw}".encode("utf-8", errors="replace")
         ).hexdigest()[:24]
         self.evidence_seq += 1
         if duplicate_of:
