@@ -285,6 +285,7 @@ def finding_similarity(a: "VulnerabilityFinding", b: "VulnerabilityFinding") -> 
             return 0.0
         if normalize_vuln_type(a.vuln_type) == normalize_vuln_type(b.vuln_type):
             return 1.0
+        return 0.0
     type_sim = _vuln_type_similarity(a.vuln_type, b.vuln_type)
 
     loc_a, loc_b = _extract_location(a), _extract_location(b)

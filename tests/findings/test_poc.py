@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from types import SimpleNamespace
-from urllib.parse import unquote_plus, urlsplit
+from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 import pytest
 
@@ -14,6 +14,7 @@ from vulnclaw.config.schema import VulnClawConfig
 from vulnclaw.findings.intake import submit_finding
 from vulnclaw.findings.types import EvidenceReview
 from vulnclaw.findings.verification import prepare_report
+from vulnclaw.report.findings_output import to_sarif
 
 # Per-test handler behavior: query string -> (status, body, headers).
 _BEHAVIOR = {}
@@ -67,7 +68,7 @@ def receiver(monkeypatch):
         thread.join(timeout=5)
 
 
-def _candidate(tmp_path, base, url, output, *, vuln_type="RCE", constraints=None):
+def _candidate(tmp_path, base, url, output, *, vuln_type="RCE", constraints=None, method=None):
     config = VulnClawConfig()
     config.session.output_dir = tmp_path
     config.session.auto_save = False
@@ -80,11 +81,14 @@ def _candidate(tmp_path, base, url, output, *, vuln_type="RCE", constraints=None
         state.task_constraints = constraints
     agent = SimpleNamespace(config=config, context=SimpleNamespace(state=state),
                             session_state=state)
-    submit_finding(agent, {
+    submission = {
         "title": "Recorded candidate", "description": "Reproduce from the recorded request",
         "vuln_type": vuln_type, "severity": "High", "evidence_ids": ["e001"],
         "endpoint": url,
-    })
+    }
+    if method is not None:
+        submission["method"] = method
+    submit_finding(agent, submission)
     return config, state
 
 
@@ -167,3 +171,90 @@ async def test_redirects_are_not_followed_and_fall_back(tmp_path, receiver, monk
     assert assessment.method == "evidence_review"
     assert "200" in assessment.failure_reason
     assert not state.findings[0].verified
+
+
+async def test_get_replay_cannot_confirm_a_post_candidate(tmp_path, receiver, monkeypatch):
+    # The endpoint is command-executable over GET, but the candidate claims a
+    # POST method and cites both a GET and a POST request to the same path.
+    # The GET-only replay must not be borrowed to confirm the POST candidate.
+    def execute_printf(query):
+        match = re.search(r"printf 'VC_%s%s' '([0-9a-f]{16})' '([0-9a-f]{16})'",
+                          unquote_plus(query))
+        return (200, f"VC_{match.group(1)}{match.group(2)}" if match else "plain", {})
+
+    _BEHAVIOR["run"] = execute_printf
+    url = f"{receiver}/cmd?file=notes%20id"
+    config = VulnClawConfig()
+    config.session.output_dir = tmp_path
+    config.session.auto_save = False
+    config.safety.permission_mode = "full_access"
+    state = SessionState(target=receiver)
+    state.agent_state.remember_tool_result(
+        tool="fetch", arguments={"url": url}, target=receiver,
+        output=_recorded(url, "notes id"),
+    )
+    state.agent_state.remember_tool_result(
+        tool="fetch", arguments={"url": url, "method": "POST", "data": "file=notes id"},
+        target=receiver, output=_recorded(url, "notes id"),
+    )
+    agent = SimpleNamespace(config=config, context=SimpleNamespace(state=state),
+                            session_state=state)
+    submit_finding(agent, {
+        "title": "Recorded candidate", "description": "Reproduce from the recorded request",
+        "vuln_type": "RCE", "severity": "High", "evidence_ids": ["e001", "e002"],
+        "endpoint": url, "method": "POST",
+    })
+    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", lambda *args: _review())
+    view = await prepare_report(state, config=config, poc_verify=True)
+    assessment = view.findings[0].report_assessment
+    assert assessment.method == "evidence_review" and assessment.outcome == "suspected_high"
+    assert assessment.failure_reason
+    assert not state.findings[0].verified
+    assert _Handler.hits == 0  # the vulnerable GET path was never replayed
+
+
+async def test_declared_get_candidate_still_verifies_via_poc(tmp_path, receiver):
+    def execute_printf(query):
+        match = re.search(r"printf 'VC_%s%s' '([0-9a-f]{16})' '([0-9a-f]{16})'",
+                          unquote_plus(query))
+        return (200, f"VC_{match.group(1)}{match.group(2)}" if match else "plain", {})
+
+    _BEHAVIOR["run"] = execute_printf
+    url = f"{receiver}/cmd?file=notes%20id"
+    config, state = _candidate(tmp_path, receiver, url, _recorded(url, "notes id"), method="GET")
+    view = await prepare_report(state, config=config, poc_verify=True)
+    assessment = view.findings[0].report_assessment
+    assert assessment.outcome == "verified" and assessment.method == "poc"
+
+
+async def test_poc_cannot_verify_a_different_query_route(tmp_path, receiver, monkeypatch):
+    hit_modes = []
+
+    def execute_unsafe_mode(query):
+        params = parse_qs(query)
+        hit_modes.append(params['mode'][0])
+        match = re.search(r"printf 'VC_%s%s' '([0-9a-f]{16})' '([0-9a-f]{16})'",
+                          unquote_plus(query))
+        body = f'VC_{match[1]}{match[2]}' if params['mode'] == ['unsafe'] and match else 'safe'
+        return 200, body, {}
+
+    _BEHAVIOR['run'] = execute_unsafe_mode
+    unsafe_url = f'{receiver}/cmd?mode=unsafe&cmd=id'
+    safe_url = f'{receiver}/cmd?mode=safe&cmd=id'
+    config, state = _candidate(tmp_path, receiver, unsafe_url, _recorded(unsafe_url, 'safe'))
+    state.findings.clear()
+    state.agent_state.remember_tool_result(
+        tool='fetch', arguments={'url': safe_url}, target=receiver,
+        output=_recorded(safe_url, 'safe'),
+    )
+    agent = SimpleNamespace(config=config, context=SimpleNamespace(state=state), session_state=state)
+    submit_finding(agent, {
+        'title': 'Safe route claim', 'description': 'The safe mode executes commands',
+        'vuln_type': 'RCE', 'severity': 'High', 'endpoint': safe_url, 'method': 'GET',
+        'evidence_ids': ['e001', 'e002'],
+    })
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *_: _review())
+    view = await prepare_report(state, config=config, poc_verify=True)
+    assert not view.findings[0].verified
+    assert to_sarif(view.findings)['runs'][0]['results'] == []
+    assert hit_modes == ['safe'] * 4
