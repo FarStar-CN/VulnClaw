@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from vulnclaw.agent.constraint_policy import validate_tool_action
 from vulnclaw.agent.exec_gate import GateRequest, get_execution_gate
 from vulnclaw.config.url_utils import infer_port_from_url
+from vulnclaw.findings.evidence import endpoint_identity
 from vulnclaw.findings.types import FindingAssessment, Snapshot
 from vulnclaw.mcp.fetch_request import prepare_fetch_request_kwargs
 
@@ -119,10 +120,13 @@ def build_plan(finding, snapshots: dict[str, Snapshot]) -> PocPlan | None:
         request = _request(snapshot)
         if request is None:
             continue
-        if finding.endpoint:
-            a, b = urlsplit(finding.endpoint), urlsplit(request.url)
-            if (a.hostname, a.port, a.path) != (b.hostname, b.port, b.path):
-                continue
+        if finding.method and finding.method.upper() != request.method:
+            # A replay must exercise the claimed method: a GET result can never
+            # confirm a POST candidate, so unsupported methods fall back to
+            # evidence review instead of borrowing a same-path GET.
+            continue
+        if finding.endpoint and endpoint_identity(finding.endpoint) != endpoint_identity(request.url):
+            continue
         pairs = parse_qsl(urlsplit(request.url).query)
         if finding.vuln_type == "remote_code_execution":
             for key, value in pairs:

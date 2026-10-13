@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -10,8 +9,14 @@ from uuid import uuid4
 
 from vulnclaw.config.domain_models import EvidenceRef, VulnerabilityFinding
 from vulnclaw.config.finding_similarity import normalize_vuln_type
-from vulnclaw.findings.evidence import scope_identity, snapshot_records
-from vulnclaw.findings.types import FindingSubmission
+from vulnclaw.findings.evidence import (
+    endpoint_identity,
+    recorded_requests,
+    scope_identity,
+    snapshot_records,
+)
+from vulnclaw.findings.identity import canonical_endpoint, structured_finding_id
+from vulnclaw.findings.types import FindingSubmission, replace_snapshot_refs
 
 
 def submit_finding(agent, arguments: dict) -> str:
@@ -40,6 +45,7 @@ def submit_finding(agent, arguments: dict) -> str:
         ) or enforce_port_constraints(agent, [infer_port_from_url(endpoint)], target=endpoint)
         if violation:
             raise ValueError(violation)
+        endpoint = canonical_endpoint(endpoint)
     if submission.code_location:
         location_path = submission.code_location.rsplit(":", 1)[0]
         target_path = Path(target).expanduser().resolve()
@@ -48,33 +54,34 @@ def submit_finding(agent, arguments: dict) -> str:
             raise ValueError("Code location is outside the selected source target")
     records = [session.agent_state.get_evidence(key) for key in submission.evidence_ids]
     if endpoint:
-        supplied = urlsplit(endpoint)
-        matching = [record for record in records if record is not None and record.arguments.get("url")
-                    and scope_identity(str(record.arguments["url"]))[0] == supplied.hostname
-                    and urlsplit(str(record.arguments["url"])).path == supplied.path]
+        supplied = endpoint_identity(endpoint)
+        matching = [
+            (record, method)
+            for record in records
+            if record is not None
+            for url, method in recorded_requests(record)
+            if endpoint_identity(url) == supplied
+        ]
         if not matching:
             raise ValueError("No cited tool request concerns the submitted endpoint")
         if submission.method and not any(
-            str(record.arguments.get("method", "GET")).upper() == submission.method.upper()
-            for record in matching
+            method == submission.method.upper() for _, method in matching
         ):
             raise ValueError("No cited tool request uses the submitted HTTP method")
     snapshots = snapshot_records(agent, submission.evidence_ids)
     kind = normalize_vuln_type(submission.vuln_type)
     method = submission.method.upper() if submission.method else (
-        str(matching[0].arguments.get("method", "GET")).upper() if endpoint else None
+        matching[0][1] if endpoint else None
     )
     location = endpoint or submission.code_location or target
-    identity = hashlib.sha256(
-        json.dumps([kind, target, location, method], ensure_ascii=False).encode()
-    ).hexdigest()[:32]
+    identity = structured_finding_id(kind, target, location, method)
     existing = next((f for f in session.findings if f.finding_id == identity), None)
     references = [EvidenceRef(kind="file", path=ref.path) for ref in snapshots]
     if existing is not None:
         known = {ref.sha256 for ref in existing.evidence_snapshots}
         additions = [ref for ref in snapshots if ref.sha256 not in known]
         if additions:
-            existing.evidence_snapshots.extend(additions)
+            replace_snapshot_refs(existing, [*existing.evidence_snapshots, *additions])
             existing.evidence_refs.extend(
                 EvidenceRef(kind="file", path=ref.path) for ref in additions
             )

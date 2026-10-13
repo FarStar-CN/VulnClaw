@@ -46,10 +46,52 @@ def test_explicit_submission_snapshots_and_deduplicates(agent):
     assert load_snapshots(finding)[key].content == 'SQL error under review'
 
 
+@pytest.mark.parametrize('threshold', [0.75, 0.6])
+def test_different_structured_types_never_merge_via_prose(agent, threshold):
+    agent.session_state.semantic_dedup_threshold = threshold
+    key = record(agent)
+    submit_finding(agent, payload(key))
+    submit_finding(agent, payload(key, vuln_type='XSS'))
+    assert {f.vuln_type for f in agent.session_state.findings} == {
+        'sql_injection', 'cross_site_scripting',
+    }
+
+
+@pytest.mark.parametrize(('first', 'equivalent'), [
+    ('https://lab.test/login', 'https://LAB.test:443/login'),
+    ('https://lab.test', 'https://lab.test:443/'),
+    ('https://lab.test/login?q=1', 'https://lab.test:443/login?q=1#fragment'),
+])
+def test_equivalent_endpoints_have_one_structured_identity(agent, first, equivalent):
+    record = agent.session_state.agent_state.remember_tool_result(
+        tool='fetch', arguments={'url': first}, output='observed', target=agent.session_state.target,
+    )
+    one = json.loads(submit_finding(agent, payload(record.id, endpoint=first)))
+    two = json.loads(submit_finding(agent, payload(record.id, endpoint=equivalent)))
+    assert one['finding_id'] == two['finding_id']
+    assert two['action'] == 'duplicate'
+    assert len(agent.session_state.findings) == 1
+
+
+@pytest.mark.parametrize('other', [
+    'https://lab.test/login?q=2', 'https://lab.test:8443/login?q=1',
+    'http://lab.test/login?q=1', 'https://lab.test/Login?q=1',
+])
+def test_endpoint_normalization_preserves_request_semantics(agent, other):
+    for endpoint in ['https://lab.test/login?q=1', other]:
+        record = agent.session_state.agent_state.remember_tool_result(
+            tool='fetch', arguments={'url': endpoint}, output='observed',
+            target=agent.session_state.target,
+        )
+        submit_finding(agent, payload(record.id, endpoint=endpoint))
+    assert len(agent.session_state.findings) == 2
+
+
 @pytest.mark.parametrize('override', [
     {'verified': True}, {'evidence_level': 'L4'}, {'evidence': 'invented'},
     {'evidence_ids': []}, {'evidence_ids': ['e999']}, {'title': '   '},
     {'endpoint': 'https://outside.test/login'}, {'endpoint': 'https://lab.test/other'},
+    {'endpoint': 'https://lab.test/login?mode=other'},
     {'method': 'POST'}, {'severity': 'certain'},
 ])
 def test_invalid_submissions_do_not_mutate_findings(agent, override):
@@ -90,6 +132,107 @@ def test_locations_and_methods_are_distinct_and_new_evidence_preserves_terminal_
     result = json.loads(submit_finding(agent, payload(extra)))
     assert result['action'] == 'updated' and original.verification_status == 'rejected'
     assert len(original.evidence_snapshots) == 2
+
+
+def record_batch(agent, requests, base_url='https://lab.test'):
+    return agent.session_state.agent_state.remember_tool_result(
+        tool='http_probe_batch', arguments={'base_url': base_url, 'requests': requests},
+        output='batch probe results', target=agent.session_state.target,
+    ).id
+
+
+def test_batch_probe_evidence_concerns_the_submitted_endpoint(agent):
+    key = record_batch(agent, [
+        {'url': '/cmd', 'method': 'GET', 'params': {'arg': 'id'}},
+        {'url': 'https://lab.test/other'},
+        {'method': 'POST', 'url': '/submit'},
+    ])
+    result = json.loads(submit_finding(agent, payload(key, endpoint='https://lab.test/cmd?arg=id')))
+    assert result['action'] == 'created'
+    assert agent.session_state.findings[0].method == 'GET'
+
+
+def test_batch_probe_post_spec_supports_a_post_candidate(agent):
+    key = record_batch(agent, [{'url': '/submit', 'method': 'POST'}])
+    with pytest.raises(ValueError, match='HTTP method'):
+        submit_finding(agent, payload(key, endpoint='https://lab.test/submit', method='GET'))
+    assert agent.session_state.findings == []
+    result = json.loads(submit_finding(
+        agent, payload(key, endpoint='https://lab.test/submit', method='POST')))
+    assert result['action'] == 'created'
+    assert agent.session_state.findings[0].method == 'POST'
+
+
+@pytest.mark.parametrize('spec', [
+    {'params': {'arg': 'id'}},
+    {'method': 'POST', 'json': {'arg': 'id'}},
+])
+def test_batch_probe_can_submit_evidence_using_only_base_url(agent, spec):
+    import httpx
+
+    from vulnclaw.agent.builtin_tools import _prepare_http_probe_request
+
+    endpoint = 'https://lab.test/cmd'
+    prepared = _prepare_http_probe_request(agent, endpoint, 1, spec)
+    assert 'error' not in prepared
+    key = record_batch(agent, [spec], base_url=endpoint)
+    requested_url = str(httpx.Request(
+        prepared['method'], prepared['url'], params=prepared['params'],
+    ).url)
+    result = json.loads(submit_finding(
+        agent, payload(key, endpoint=requested_url, method=prepared['method']),
+    ))
+    assert result['action'] == 'created'
+    assert agent.session_state.findings[0].method == prepared['method']
+
+
+@pytest.mark.parametrize(('arguments', 'endpoint'), [
+    ({'url': 'https://lab.test/cmd', 'params': {'arg': 'id'}},
+     'https://lab.test/cmd?arg=id'),
+    ({'url': 'https://lab.test/cmd?mode=unsafe', 'params': {'mode': 'safe', 'arg': 'id'}},
+     'https://lab.test/cmd?mode=safe&arg=id'),
+    ({'url': 'https://lab.test/cmd?arg=notes id'},
+     'https://lab.test/cmd?arg=notes%20id'),
+])
+def test_fetch_evidence_matches_the_effective_query(agent, arguments, endpoint):
+    key = agent.session_state.agent_state.remember_tool_result(
+        tool='fetch', arguments=arguments, output='observed', target=agent.session_state.target,
+    ).id
+    with pytest.raises(ValueError, match='concerns the submitted endpoint'):
+        submit_finding(agent, payload(key, endpoint=endpoint + '&mode=other'))
+    assert agent.session_state.findings == []
+    assert json.loads(submit_finding(agent, payload(key, endpoint=endpoint)))['action'] == 'created'
+
+
+def test_batch_raw_url_does_not_borrow_ignored_query_parameters(agent):
+    endpoint = 'https://lab.test/cmd?mode=safe'
+    key = record_batch(agent, [{'raw_url': endpoint, 'params': {'mode': 'unsafe'}}])
+    with pytest.raises(ValueError, match='concerns the submitted endpoint'):
+        submit_finding(agent, payload(key, endpoint='https://lab.test/cmd?mode=unsafe'))
+    assert json.loads(submit_finding(agent, payload(key, endpoint=endpoint)))['action'] == 'created'
+
+
+def test_unresolvable_relative_batch_urls_do_not_match(agent):
+    key = record_batch(agent, [{'url': '/cmd'}], base_url='')
+    with pytest.raises(ValueError, match='concerns the submitted endpoint'):
+        submit_finding(agent, payload(key, endpoint='https://lab.test/cmd'))
+    assert agent.session_state.findings == []
+
+
+def test_evidence_from_another_port_or_scheme_cannot_concern_the_endpoint(agent):
+    key = record(agent, path='/cmd')
+    with pytest.raises(ValueError, match='concerns the submitted endpoint'):
+        submit_finding(agent, payload(key, endpoint='https://lab.test:8443/cmd'))
+    with pytest.raises(ValueError, match='concerns the submitted endpoint'):
+        submit_finding(agent, payload(key, endpoint='http://lab.test/cmd'))
+    assert agent.session_state.findings == []
+
+
+def test_default_ports_are_equivalent_for_endpoint_matching(agent):
+    key = record(agent, path='/cmd')
+    result = json.loads(submit_finding(agent, payload(key, endpoint='https://lab.test:443/cmd')))
+    assert result['action'] == 'created'
+    assert len(agent.session_state.findings) == 1
 
 
 def test_receipts_are_not_new_evidence(agent):

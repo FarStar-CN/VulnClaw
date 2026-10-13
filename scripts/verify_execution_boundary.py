@@ -90,7 +90,7 @@ ALLOWED_SPAWN_SITES: dict[str, str] = {
     "vulnclaw/agent/builtin_tools.py:1710:subprocess.run": (
         "structured argv non-privileged nmap retry"
     ),
-    "vulnclaw/findings/poc.py:211:asyncio.create_subprocess_exec": (
+    "vulnclaw/findings/poc.py:215:asyncio.create_subprocess_exec": (
         "fixed reviewed PoC verification program run as a subprocess after "
         "ExecutionGate approval; plan and scope are re-checked before the spawn"
     ),

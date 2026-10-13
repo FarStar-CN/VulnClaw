@@ -20,7 +20,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from vulnclaw.findings.types import EvidenceSnapshotRef, FindingAssessment
+from vulnclaw.findings.identity import canonical_endpoint, structured_finding_id
+from vulnclaw.findings.types import EvidenceSnapshotRef, FindingAssessment, replace_snapshot_refs
 from vulnclaw.i18n import I18nLoader, _
 
 # ──────────────────────────────────────────────────────────────
@@ -197,6 +198,20 @@ class VulnerabilityFinding(BaseModel):
     finding_id: str = Field(default="", description="漏洞唯一标识：vuln_type + target + location")
 
     def model_post_init(self, *args, **kwargs) -> None:
+        # Also recover saved findings whose references reused IDs across sessions.
+        replace_snapshot_refs(self, self.evidence_snapshots)
+        if self.submission_id:
+            from vulnclaw.config.finding_similarity import normalize_vuln_type
+
+            self.vuln_type = normalize_vuln_type(self.vuln_type)
+            if self.endpoint:
+                self.endpoint = canonical_endpoint(self.endpoint)
+            if self.method:
+                self.method = self.method.upper()
+            self.finding_id = structured_finding_id(
+                self.vuln_type, self.target, self.endpoint or self.code_location or self.target,
+                self.method,
+            )
         # ★ Generate the dedup identity FIRST, from the caller-supplied fields —
         # before the intake quarantine below rewrites the description. Otherwise the
         # injected warning text (which contains "/vuln_type/…") is picked up as a
