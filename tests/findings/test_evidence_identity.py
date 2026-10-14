@@ -50,7 +50,7 @@ def sessions(tmp_path):
             evidence_ids=[record.id], observations=[{'evidence_id': record.id, 'quote': text}],
         )
         state.findings[0].verification_history.append(assessment)
-        state.findings[0].report_assessment = assessment.model_copy(deep=True)
+        state.findings[0].assessment = assessment.model_copy(deep=True)
         states.append(state)
     return states
 
@@ -58,8 +58,8 @@ def sessions(tmp_path):
 def assert_citations(finding):
     snapshots = load_snapshots(finding)
     assessments = [*finding.verification_history]
-    if finding.report_assessment:
-        assessments.append(finding.report_assessment)
+    if finding.assessment:
+        assessments.append(finding.assessment)
     for assessment in assessments:
         assert assessment.evidence_ids == [o['evidence_id'] for o in assessment.observations]
         for observation in assessment.observations:
@@ -113,7 +113,7 @@ def test_old_ambiguous_citations_are_flagged_instead_of_guessed(sessions):
     finding = VulnerabilityFinding.model_validate(raw)
     assert len(load_snapshots(finding)) == 2
     assert all(a.unresolved_evidence_ids == ['e001'] for a in finding.verification_history)
-    assert finding.report_assessment.unresolved_evidence_ids == ['e001']
+    assert finding.assessment.unresolved_evidence_ids == ['e001']
     assert [a.observations for a in finding.verification_history] == [
         a['observations'] for a in raw['verification_history']
     ]

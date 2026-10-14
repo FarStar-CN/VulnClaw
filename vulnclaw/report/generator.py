@@ -115,9 +115,9 @@ def _labels() -> dict[str, str]:
         "type": ("漏洞类型", "Vulnerability Type"), "location": ("位置 / URL", "Location / URL"),
         "lifecycle": ("生命周期", "Lifecycle"), "evidence_level": ("证据等级", "Evidence Level"),
         "impact": ("影响范围", "Impact"), "remediation": ("修复建议", "Remediation"),
-        "method": ("本次校验方式", "Current Assessment Method"), "basis": ("判定依据", "Assessment Basis"),
+        "method": ("审计方式", "Assessment Method"), "basis": ("判定依据", "Assessment Basis"),
         "failure": ("PoC 未完成原因", "PoC Incomplete Reason"), "missing": ("缺失检查", "Missing Checks"),
-        "previous": ("此前结论（不代替本次校验）", "Previous Result (not current assessment)"),
+        "previous": ("此前结论（不代替当前审计）", "Previous Result (not current assessment)"),
         "evidence": ("验证证据", "Evidence"), "observation": ("证据观察", "Observation"),
         "artifact": ("验证附件", "Verification Artifact"), "reproduction": ("复现 / PoC", "Reproduction / PoC"),
         "attack_path": ("攻击路径摘要", "Attack Path Summary"),
@@ -125,7 +125,7 @@ def _labels() -> dict[str, str]:
         "recommendations": ("关键建议", "Key Recommendations"),
         "incomplete": ("校验未完成", "Assessment incomplete"),
         "empty": ("本次没有已上报的漏洞候选。", "No vulnerability candidates were submitted."),
-        "principle": ("疑似结果保留供复核；只有本次 PoC 明确验证成立的结果计入已验证漏洞。",
+        "principle": ("疑似结果保留供复核；只有对应当前漏洞输入、经 PoC 明确验证成立的结果计入已验证漏洞。",
                       "Suspected findings remain available for review; only conclusive PoC results count as verified."),
     }
     return {key: _rl(*value) for key, value in pairs.items()}
@@ -134,7 +134,7 @@ def _labels() -> dict[str, str]:
 def _render_assessed_report(session, output: Path, *, summary="", cycle_num=None, target_state_context=None):
     from html import escape
 
-    from vulnclaw.findings.verification import require_assessed
+    from vulnclaw.findings.types import require_assessed
 
     require_assessed(session)
     groups = []
@@ -144,7 +144,7 @@ def _render_assessed_report(session, output: Path, *, summary="", cycle_num=None
         ("suspected_high", "高置信疑似", "High-confidence Suspected Findings"),
         ("suspected_low", "低置信疑似", "Low-confidence Suspected Findings"),
     ):
-        findings = [f for f in session.findings if f.report_assessment.outcome == outcome]
+        findings = [f for f in session.findings if f.assessment.outcome == outcome]
         groups.append({"label": _rl(zh, en), "findings": [_build_report_finding(f) for f in findings]})
     verified = deduplicate_report_findings(session.get_verified_findings())
     recommendations = []
@@ -195,11 +195,10 @@ def _render_assessed_report(session, output: Path, *, summary="", cycle_num=None
 async def generate_report(
     session: SessionState, output_path: Optional[str] = None, llm_attack_summary: str = "",
     report_format: str = "markdown", target_state_context: Optional[dict[str, Any]] = None,
-    *, poc_verify: bool | None = None, config=None,
 ) -> Path:
     from uuid import uuid4
 
-    from vulnclaw.findings.verification import prepare_report
+    from vulnclaw.findings.types import require_assessed
 
     if output_path is None:
         safe_target = (session.target or "unknown").replace("/", "_").replace(":", "_")
@@ -210,30 +209,15 @@ async def generate_report(
     if output.exists():
         raise FileExistsError("Report output already exists; choose a new output path")
     output.parent.mkdir(parents=True, exist_ok=True)
-    assessed = await prepare_report(session, config=config, poc_verify=poc_verify)
+    require_assessed(session)
+    assessed = session.model_copy(deep=True)
+    assessed.findings = deduplicate_report_findings(assessed.findings)
+    assessed._vulnerabilities.findings = assessed.findings
     if not llm_attack_summary:
         import asyncio
         llm_attack_summary = await asyncio.to_thread(_generate_attack_summary_from_session, assessed)
     return _render_assessed_report(assessed, output, summary=llm_attack_summary,
                                    target_state_context=target_state_context)
-
-
-async def generate_report_from_file(session_path: str, *, poc_verify=None, config=None) -> Path:
-    session = SessionState.load(Path(session_path))
-    return await generate_report(session, poc_verify=poc_verify, config=config)
-
-
-async def generate_report_from_target_state(
-    target_state: dict[str, Any], report_format: str = "markdown", output_path: str | None = None,
-    *, poc_verify=None, config=None,
-) -> Path:
-    raw = dict(target_state)
-    context = {key: raw.pop(key, None) for key in (
-        "resume_meta", "resume_summary", "recon_meta", "runtime_meta", "finding_meta",
-    )}
-    session = SessionState(**raw)
-    return await generate_report(session, output_path=output_path, report_format=report_format,
-                                 target_state_context=context, poc_verify=poc_verify, config=config)
 
 
 def _summarize_attack_surface(session: SessionState) -> str:
@@ -298,7 +282,7 @@ def _generate_attack_summary_from_session(session: SessionState) -> str:
         notes_text = "\n".join(f"- {note}" for note in notes) if notes else "No key observations"
         findings_text = (
             "\n".join(
-                f"- [{finding.report_assessment.outcome}] [{finding.severity}] {finding.title} | Evidence: {(finding.evidence or '')[:200]}"
+                f"- [{finding.assessment.outcome}] [{finding.severity}] {finding.title} | Evidence: {(finding.evidence or '')[:200]}"
                 for finding in findings
             )
             if findings
@@ -366,15 +350,13 @@ def _build_report_summary_llm_kwargs(config: Any, messages: list[dict[str, Any]]
 
 
 async def generate_persistent_cycle_report(
-    session: SessionState, cycle_num: int, total_findings: int, new_findings: int,
-    total_steps: int, rounds_per_cycle: int, output_path: Optional[str] = None,
+    session: SessionState, cycle_num: int, output_path: Optional[str] = None,
     llm_attack_summary: str = "",
-    *, poc_verify: bool | None = None, config=None,
 ) -> Path:
     import asyncio
     from uuid import uuid4
 
-    from vulnclaw.findings.verification import prepare_report
+    from vulnclaw.findings.types import require_assessed
 
     if output_path is None:
         output_path = str(SESSIONS_DIR / f"persistent_cycle{cycle_num:03d}_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}.md")
@@ -382,7 +364,10 @@ async def generate_persistent_cycle_report(
     if output.exists():
         raise FileExistsError("Report output already exists; choose a new output path")
     output.parent.mkdir(parents=True, exist_ok=True)
-    assessed = await prepare_report(session, config=config, poc_verify=poc_verify)
+    require_assessed(session)
+    assessed = session.model_copy(deep=True)
+    assessed.findings = deduplicate_report_findings(assessed.findings)
+    assessed._vulnerabilities.findings = assessed.findings
     if not llm_attack_summary:
         llm_attack_summary = await asyncio.to_thread(_generate_attack_summary_from_session, assessed)
     return _render_assessed_report(assessed, output, summary=llm_attack_summary, cycle_num=cycle_num)
@@ -639,7 +624,7 @@ def _build_report_finding(finding: VulnerabilityFinding) -> dict[str, Any]:
         "lifecycle_status": _lifecycle_label(finding.lifecycle_status),
         "evidence_level": finding.evidence_level,
         "subagent_provenance": finding.subagent_provenance,
-        "assessment": finding.report_assessment,
+        "assessment": finding.assessment,
         "previous_verification": finding.previous_verification,
         "location_summary": _extract_location_summary_clean(finding),
         "repro_summary": _build_repro_summary_clean(finding),

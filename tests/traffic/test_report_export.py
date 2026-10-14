@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from tests.reporting_fixtures import renderer_assessment  # noqa: F401
+from tests.reporting_fixtures import assessed_snapshot
 from vulnclaw.agent.context import EvidenceRef, SessionState, VulnerabilityFinding
 from vulnclaw.i18n import current_lang, init_i18n
 from vulnclaw.report.generator import generate_report
@@ -66,7 +64,7 @@ async def _run_http_capture_inlining_assertions(tmp_path):
     session = SessionState(target="http://app.test")
     session.add_finding(finding)
 
-    report_path = await generate_report(session, output_path=str(run_dir / "report.md"))
+    report_path = await generate_report(assessed_snapshot(session), output_path=str(run_dir / "report.md"))
     text = report_path.read_text(encoding="utf-8")
 
     assert "抓包复现证据" in text
@@ -116,7 +114,7 @@ async def test_verified_finding_inlines_http_capture_english(tmp_path):
         session = SessionState(target="http://app.test")
         session.add_finding(finding)
 
-        report_path = await generate_report(session, output_path=str(run_dir / "report.md"))
+        report_path = await generate_report(assessed_snapshot(session), output_path=str(run_dir / "report.md"))
         text = report_path.read_text(encoding="utf-8")
 
         assert "Captured-traffic reproduction evidence" in text
@@ -197,12 +195,7 @@ async def test_report_without_captures_is_unaffected(tmp_path):
     session = SessionState(target="http://app.test")
     session.add_finding(finding)
 
-    report_path = await generate_report(session, output_path=str(run_dir / "report.md"))
+    report_path = await generate_report(assessed_snapshot(session), output_path=str(run_dir / "report.md"))
     text = report_path.read_text(encoding="utf-8")
     assert "Reflected XSS" in text
     assert "```http" not in text
-
-
-@pytest.fixture(autouse=True)
-def use_assessed_renderer_snapshot(renderer_assessment):  # noqa: F811
-    pass

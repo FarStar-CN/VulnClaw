@@ -1,1 +1,1 @@
-"""Structured finding intake and independent report assessment."""
+"""Structured finding intake and independent audits."""

@@ -953,7 +953,7 @@ class TestWebServices:
         monkeypatch.setattr(report_service, "load_target_state", lambda target: {"target": target})
         monkeypatch.setattr(
             report_service,
-            "generate_report_from_target_state",
+            "generate_report_for_target",
             AsyncMock(side_effect=lambda raw, report_format, output_path, **kwargs: output_path),
         )
 
@@ -975,6 +975,9 @@ class TestWebServices:
                     "Ctx", (), {"state": SessionState(target="https://example.com")}
                 )()
                 self.runtime = type("Runtime", (), {})()
+                from vulnclaw.config.schema import VulnClawConfig
+
+                self.config = VulnClawConfig()
 
             @property
             def session_state(self):

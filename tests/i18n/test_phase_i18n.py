@@ -111,10 +111,6 @@ async def test_standard_and_cycle_report_phase_headings_follow_explicit_language
         cycle_path = await generate_persistent_cycle_report(
             session,
             cycle_num=1,
-            total_findings=0,
-            new_findings=0,
-            total_steps=1,
-            rounds_per_cycle=1,
             output_path=str(tmp_path / "cycle.md"),
         )
 

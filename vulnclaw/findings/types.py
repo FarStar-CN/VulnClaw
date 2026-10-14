@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -63,6 +65,43 @@ class FindingAssessment(BaseModel):
     failure_reason: str = ""
     artifacts: list[str] = Field(default_factory=list)
     assessed_at: str = Field(default_factory=timestamp)
+    input_digest: str = ""
+    poc_attempted: bool = False
+
+
+def finding_input_digest(finding: Any) -> str:
+    """Identify candidate inputs, excluding the conclusions produced by an audit."""
+    payload = finding.model_dump(mode="json", exclude={
+        "verification_history", "assessment", "verified", "verification_status",
+        "verified_at", "verification_note", "lifecycle_status", "evidence_level", "poc_script",
+        "previous_verification",
+        "finding_id", "submission_id",
+    })
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def require_assessed(session: Any) -> None:
+    """Check the renderer's input contract without reviewing or executing evidence."""
+    if any(f.assessment is None or f.assessment.input_digest != finding_input_digest(f)
+           for f in session.findings):
+        raise ValueError("Report rendering requires a current independent assessment for every finding")
+
+
+def apply_assessment(finding: Any, assessment: FindingAssessment) -> None:
+    """Keep the current assessment and the public lifecycle fields consistent."""
+    finding.assessment = assessment
+    if assessment.complete and assessment.method == "poc" and assessment.outcome == "verified":
+        finding.mark_verified(assessment.reason)
+        finding.verified_at = assessment.assessed_at
+    elif assessment.complete and assessment.method == "poc" and assessment.outcome == "rejected":
+        finding.mark_rejected(assessment.reason)
+        finding.verified_at = assessment.assessed_at
+    else:
+        finding.mark_manual_review(assessment.reason)
+        finding.verified_at = None
+    finding.poc_script = (
+        assessment.artifacts[0] if assessment.method == "poc" and assessment.artifacts else None
+    )
 
 
 def remap_assessment_evidence(
@@ -108,8 +147,8 @@ def replace_snapshot_refs(finding: Any, refs: list[EvidenceSnapshotRef]) -> None
     finding.verification_history = [
         remap_assessment_evidence(a, previous, refs) for a in finding.verification_history
     ]
-    if finding.report_assessment is not None:
-        finding.report_assessment = remap_assessment_evidence(finding.report_assessment, previous, refs)
+    if finding.assessment is not None:
+        finding.assessment = remap_assessment_evidence(finding.assessment, previous, refs)
     by_hash = {ref.sha256: ref for ref in refs}
     lines = {}
     for ref in previous:

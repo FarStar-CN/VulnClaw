@@ -178,11 +178,22 @@ export function clearTargetState(target: string): Promise<{ status: string; targ
 export function generateTargetReport(
   target: string,
   reportFormat: "markdown" | "html" = "markdown",
-  pocVerify = false,
 ): Promise<{ status: string; path: string }> {
   return requestJson("/api/reports/target", {
     method: "POST",
-    body: JSON.stringify({ target, report_format: reportFormat, poc_verify: pocVerify }),
+    body: JSON.stringify({ target, report_format: reportFormat }),
+  });
+}
+
+export function verifyTargetFindings(target: string, pocVerify: boolean): Promise<{
+  status: string;
+  target: string;
+  path: string;
+  summary: { total: number; verified: number; rejected: number; suspected_high: number; suspected_low: number; incomplete: number };
+}> {
+  return requestJson("/api/findings/verify", {
+    method: "POST",
+    body: JSON.stringify({ target, poc_verify: pocVerify }),
   });
 }
 
