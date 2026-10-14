@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { generateTargetReport, getReportDownloadUrl } from "../api/web";
 import { ReportPreview, ReportPreviewDialog } from "../components/ReportPreviewDialog";
 import { SectionCard } from "../components/SectionCard";
-import { useConfigQuery, useReportContentQuery, useReportsQuery, useTargetsQuery } from "../hooks/queries";
+import { useReportContentQuery, useReportsQuery, useTargetsQuery } from "../hooks/queries";
 import { useT, type TFunction } from "../i18n";
 import type { ReportListItem } from "../types/api";
 import { loadUiPreferences, subscribeUiPreferences } from "../utils/preferences";
@@ -25,9 +25,6 @@ export function ReportsPage({ selectedTarget, focus }: ReportsPageProps) {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [pocVerify, setPocVerify] = useState<boolean | null>(null);
-  const configQuery = useConfigQuery();
-  const usePoc = pocVerify ?? configQuery.data?.report_poc_verify_enabled ?? false;
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [search, setSearch] = useState(selectedTarget ?? "");
   const [reportTarget, setReportTarget] = useState(selectedTarget ?? "");
@@ -86,7 +83,7 @@ export function ReportsPage({ selectedTarget, focus }: ReportsPageProps) {
     try {
       setGenerating(true);
       setError(null);
-      const result = await generateTargetReport(target, generateFormat, usePoc);
+      const result = await generateTargetReport(target, generateFormat);
       setStatus(result.path);
       setSearch(target);
       await reportsQuery.refetch();
@@ -170,12 +167,6 @@ export function ReportsPage({ selectedTarget, focus }: ReportsPageProps) {
                 <option value="markdown">{t("reports.markdown")}</option>
                 <option value="html">{t("reports.html")}</option>
               </select>
-            </label>
-            <label className="field">
-              <span>{t("reports.poc_verify")}</span>
-              <input type="checkbox" checked={usePoc} disabled={generating}
-                onChange={(event) => setPocVerify(event.target.checked)} />
-              <small>{t("reports.poc_verify_hint")}</small>
             </label>
             <button className="primary-btn" disabled={!canGenerate} onClick={handleGenerate} type="button">
               {generating ? t("reports.generating") : t("reports.generate")}

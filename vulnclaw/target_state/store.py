@@ -166,6 +166,19 @@ def _unique_paths(paths: list[Path | None]) -> list[Path | None]:
     return unique
 
 
+def target_state_path(
+    target: str,
+    snapshot_id: Optional[str] = None,
+    *,
+    run_context: RunContext | None = None,
+    target_model: Target | None = None,
+) -> Path | None:
+    """Resolve the existing source used by target-state loading."""
+    return next((path for path in _candidate_state_paths(
+        target, snapshot_id=snapshot_id, run_context=run_context, target_model=target_model,
+    ) if path is not None and path.exists()), None)
+
+
 def load_target_state(
     target: str,
     snapshot_id: Optional[str] = None,
@@ -191,8 +204,16 @@ def load_target_state(
 
 
 def _normalize_structured_state(raw: dict[str, Any]) -> None:
-    """Migrate structured identities in memory; historical files remain untouched."""
+    """Restore current audits and identities in memory; preserve historical files."""
     findings = raw.get("findings", [])
+    for index, finding in enumerate(findings):
+        if not finding.get("submission_id") and (
+            finding.get("assessment") or finding.get("report_assessment")
+            or finding.get("verification_history")
+        ):
+            model = VulnerabilityFinding.model_validate(finding)
+            restore_latest_verdict(model)
+            findings[index] = model.model_dump(mode="json")
     structured = [finding for finding in findings if finding.get("submission_id")]
     if not structured:
         return
@@ -254,7 +275,7 @@ def save_target_state(
             run_context=run_context,
             target_model=model if run_context is not None else None,
         )
-        if merge_existing
+        if merge_existing or command == "verify"
         else None
     )
     raw = session.model_dump(mode="json")
@@ -262,24 +283,31 @@ def save_target_state(
     raw["target_model"] = model.to_manifest()
     raw["schema_version"] = TARGET_STATE_SCHEMA_VERSION
     if existing:
-        raw = _merge_target_state(existing, raw)
+        if merge_existing:
+            raw = _merge_target_state(existing, raw)
         raw["schema_version"] = max(
             int(existing.get("schema_version", TARGET_STATE_SCHEMA_VERSION)),
             TARGET_STATE_SCHEMA_VERSION,
         )
 
-    raw["recon_meta"] = _merge_recon_meta(
-        existing.get("recon_meta", {}) if existing else {},
-        raw.get("recon_data", {}),
-    )
-    raw["runtime_meta"] = _merge_runtime_meta(
-        existing.get("runtime_meta", {}) if existing else {},
-        session,
-        runtime,
-    )
+    if command == "verify" and existing:
+        # An audit changes conclusions, not observations or scan runtime history.
+        raw["recon_meta"] = existing.get("recon_meta", {})
+        raw["runtime_meta"] = existing.get("runtime_meta", {})
+    else:
+        raw["recon_meta"] = _merge_recon_meta(
+            existing.get("recon_meta", {}) if existing else {},
+            raw.get("recon_data", {}),
+        )
+        raw["runtime_meta"] = _merge_runtime_meta(
+            existing.get("runtime_meta", {}) if existing else {},
+            session,
+            runtime,
+        )
     raw["finding_meta"] = _merge_finding_meta(
         existing.get("finding_meta", {}) if existing else {},
         raw.get("findings", []),
+        observe=command != "verify",
     )
 
     plan = build_resume_plan(raw)
@@ -810,25 +838,30 @@ def _merge_target_state(existing: dict[str, Any], current: dict[str, Any]) -> di
 
 
 def _merge_finding_meta(
-    existing_meta: dict[str, Any], findings: list[dict[str, Any]]
+    existing_meta: dict[str, Any], findings: list[dict[str, Any]], *, observe: bool = True,
 ) -> dict[str, Any]:
     now = datetime.now().isoformat()
     merged = dict(existing_meta)
     for finding in findings:
         key = _finding_key(finding)
         prev = merged.get(key, {})
-        observation_count = int(prev.get("observation_count", 0)) + 1
+        observation_count = int(prev.get("observation_count", 0)) + 1 if observe else int(
+            prev.get("observation_count", 1)
+        )
         meta = {
+            **prev,
             "title": finding.get("title", ""),
             "vuln_type": finding.get("vuln_type", ""),
             "verification_status": finding.get("verification_status", "pending"),
             "first_seen_at": prev.get("first_seen_at", now),
-            "last_seen_at": now,
+            "last_seen_at": now if observe else prev.get("last_seen_at", now),
             "last_verified_at": prev.get("last_verified_at"),
             "observation_count": observation_count,
         }
         if finding.get("verification_status") == "verified":
-            meta["last_verified_at"] = finding.get("verified_at") or now
+            meta["last_verified_at"] = finding.get("verified_at") or (
+                now if observe else prev.get("last_verified_at") or now
+            )
         meta["confidence"] = compute_finding_confidence(meta)
         merged[key] = meta
     return merged
@@ -904,12 +937,12 @@ def _merge_findings(
             # absorb the evidence/history the current session appended since
             # the last save — a structured submission extends snapshots in place.
             by_key[key] = _merge_finding_evidence(prev, finding)
-    # Evidence additions cannot change a verdict; a newer completed PoC can.
+    # Restore the latest audit of the merged inputs, invalidating stale conclusions.
     for key, finding in by_key.items():
-        if finding.get("verification_history"):
+        if finding.get("verification_history") or finding.get("assessment") or finding.get("report_assessment"):
             model = VulnerabilityFinding.model_validate(finding)
             restore_latest_verdict(model)
-            by_key[key] = {**finding, **model.model_dump(mode="json")}
+            by_key[key] = model.model_dump(mode="json")
     return list(by_key.values())
 
 
@@ -925,7 +958,7 @@ def _merge_finding_evidence(base: dict[str, Any], other: dict[str, Any]) -> dict
     merge_finding_evidence(kept, VulnerabilityFinding.model_validate(other))
     fields = {
         "evidence_snapshots", "evidence_refs", "evidence", "verification_history",
-        "report_assessment", "submission_id",
+        "assessment", "submission_id",
     }
     return {**base, **kept.model_dump(mode="json", include=fields)}
 

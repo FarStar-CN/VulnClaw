@@ -374,6 +374,9 @@ async def persistent_pentest(
             should_stop = True
             cycle_results_list = cycle_results_list or []
 
+        from vulnclaw.findings.verification import verify_findings
+
+        audited = await verify_findings(agent.context.state, config=agent.config)
         total_findings = len(agent.context.state.findings)
         total_steps = len(agent.context.state.executed_steps)
         new_findings = total_findings - findings_at_cycle_start
@@ -391,13 +394,8 @@ async def persistent_pentest(
                 from vulnclaw.report.generator import generate_persistent_cycle_report
 
                 report_path = await generate_persistent_cycle_report(
-                    session=agent.context.state,
-                    config=agent.config,
+                    session=audited,
                     cycle_num=cycle_num,
-                    total_findings=total_findings,
-                    new_findings=new_findings,
-                    total_steps=total_steps,
-                    rounds_per_cycle=rounds_per_cycle,
                     llm_attack_summary=llm_summary,
                 )
             except Exception as e:

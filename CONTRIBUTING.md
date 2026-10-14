@@ -181,12 +181,15 @@ VulnClaw/
 适用场景：
 - `findings/intake.py`：`submit_finding` 工具的校验、证据归属与入库去重
 - `findings/evidence.py`：稳定证据快照的写入与校验
-- `findings/verification.py`：报告前的强制独立验证（证据审查 / PoC）
+- `findings/verification.py`：任务结束时的独立漏洞审计（证据审查 / PoC）
 - `findings/poc.py`：类型专用 PoC 计划构建与受控执行
 - Markdown / HTML 报告渲染、报告内容过滤、findings.json / SARIF 输出
 
 渲染主入口是 `report/generator.py`，同时影响 target-state 报告和 persistent-cycle 报告；
-渲染器只消费 `findings/verification.py` 产出的报告结果集，不得自行改写状态。
+渲染器只消费 `findings/verification.py` 产出的已审计快照，不得自行改写状态。
+共享 `finding_service.py` / `report_service.py` 负责历史数据审计及导出编排；报告生成器不执行验证。
+新候选经 `submit_finding` 登记；网络扫描和插件只记录观察证据，不直接调用
+`add_finding`。Team 和子代理通过同一个证据提交器合并；恢复已有业务数据时保留历史记录。
 
 ### 2.7 修改 MCP 行为 → `vulnclaw/mcp/`
 

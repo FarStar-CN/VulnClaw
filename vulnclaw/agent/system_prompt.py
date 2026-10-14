@@ -40,7 +40,7 @@ def build_dynamic_system_prompt(
         "\n\nRecord candidate vulnerabilities only with submit_finding. "
         "Cite existing evidence ids returned by real tools. Include an explicit endpoint "
         "or code location when available. Ordinary prose, examples and FINAL do not "
-        "record or verify vulnerabilities. Independent report assessment owns verification."
+        "record or verify vulnerabilities. Independent finding audits own verification."
     )
 
     if auto_mode:

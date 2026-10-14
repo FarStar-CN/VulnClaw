@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from tests.reporting_fixtures import assessed_snapshot
+
 # ── generator.py ─────────────────────────────────────────────────────
 
 
@@ -51,7 +53,7 @@ class TestReportGenerator:
 
         session = self._make_session()
         output = str(tmp_path / "report.md")
-        path = await generate_report(session, output)
+        path = await generate_report(assessed_snapshot(session), output)
         assert path.exists()
 
     async def test_generate_html_report(self, tmp_path):
@@ -59,7 +61,7 @@ class TestReportGenerator:
 
         session = self._make_session()
         output = str(tmp_path / "report.md")
-        path = await generate_report(session, output, report_format="html")
+        path = await generate_report(assessed_snapshot(session), output, report_format="html")
         assert path.suffix == ".html"
         assert path.exists()
 
@@ -68,7 +70,7 @@ class TestReportGenerator:
 
         session = self._make_session()
         output = str(tmp_path / "report.md")
-        await generate_report(session, output)
+        await generate_report(assessed_snapshot(session), output)
         content = Path(output).read_text(encoding="utf-8")
         assert "192.168.1.100" in content
 
@@ -87,7 +89,7 @@ class TestReportGenerator:
         output = str(tmp_path / "report_constraints.md")
         init_i18n(lang="zh")  # pin the Chinese report bundle for this assertion
         try:
-            await generate_report(session, output)
+            await generate_report(assessed_snapshot(session), output)
         finally:
             init_i18n()
         content = Path(output).read_text(encoding="utf-8")
@@ -108,7 +110,7 @@ class TestReportGenerator:
         output = str(tmp_path / "report_violations.md")
         init_i18n(lang="zh")  # pin the Chinese report bundle for this assertion
         try:
-            await generate_report(session, output)
+            await generate_report(assessed_snapshot(session), output)
         finally:
             init_i18n()
         content = Path(output).read_text(encoding="utf-8")
@@ -123,7 +125,7 @@ class TestReportGenerator:
         output = str(tmp_path / "report.md")
         init_i18n(lang="zh")  # pin the Chinese report bundle for this assertion
         try:
-            await generate_report(session, output)
+            await generate_report(assessed_snapshot(session), output)
         finally:
             init_i18n()
         content = Path(output).read_text(encoding="utf-8")
@@ -153,7 +155,7 @@ class TestReportGenerator:
         output = str(tmp_path / "report_rce.md")
         init_i18n(lang="zh")  # pin the Chinese report bundle for this assertion
         try:
-            await generate_report(session, output)
+            await generate_report(assessed_snapshot(session), output)
         finally:
             init_i18n()
         content = Path(output).read_text(encoding="utf-8")
@@ -181,7 +183,7 @@ class TestReportGenerator:
         output = str(tmp_path / "report_review.md")
         init_i18n(lang="zh")  # pin the Chinese report bundle for this assertion
         try:
-            await generate_report(session, output)
+            await generate_report(assessed_snapshot(session), output)
         finally:
             init_i18n()
         content = Path(output).read_text(encoding="utf-8")
@@ -194,7 +196,7 @@ class TestReportGenerator:
 
         session = self._make_session()
         output = str(tmp_path / "report.md")
-        await generate_report(session, output)
+        await generate_report(assessed_snapshot(session), output)
         content = Path(output).read_text(encoding="utf-8")
         assert "Critical" in content
         assert "High" in content
@@ -205,7 +207,7 @@ class TestReportGenerator:
 
         session = self._make_session()
         output = str(tmp_path / "report.md")
-        await generate_report(session, output)
+        await generate_report(assessed_snapshot(session), output)
         content = Path(output).read_text(encoding="utf-8")
         assert "VulnClaw" in content
 
@@ -221,7 +223,7 @@ class TestReportGenerator:
         )
 
         output = str(tmp_path / "report_llm_summary.md")
-        await generate_report(session, output)
+        await generate_report(assessed_snapshot(session), output)
         content = Path(output).read_text(encoding="utf-8")
         assert "这是通过 VulnClaw 对接的 LLM 生成的攻击路径摘要。" in content
 
@@ -253,7 +255,7 @@ class TestReportGenerator:
             "services": ["nginx/1.24", "mysql/8.0"],
         }
         output = str(tmp_path / "report_recon.md")
-        await generate_report(session, output)
+        await generate_report(assessed_snapshot(session), output)
         content = Path(output).read_text(encoding="utf-8")
         assert "10.0.0.1" in content
 
@@ -266,7 +268,7 @@ class TestReportGenerator:
         output = str(tmp_path / "report_empty.md")
         init_i18n(lang="zh")  # pin the Chinese report bundle for this assertion
         try:
-            await generate_report(session, output)
+            await generate_report(assessed_snapshot(session), output)
         finally:
             init_i18n()
         content = Path(output).read_text(encoding="utf-8")
@@ -280,7 +282,7 @@ class TestReportGenerator:
 
         session = self._make_session()
         output = str(tmp_path / "report_with_artifacts.md")
-        await generate_report(session, output)
+        await generate_report(assessed_snapshot(session), output)
         # Every report writes the structured findings + SARIF artifact set.
         artifacts_dir = tmp_path / "report_with_artifacts.artifacts" / "findings"
         assert (artifacts_dir / "findings.json").exists()
@@ -294,7 +296,7 @@ class TestReportGenerator:
         session = SessionState(target="auto-target")
         # This will use the default SESSIONS_DIR
         try:
-            path = await generate_report(session)
+            path = await generate_report(assessed_snapshot(session))
             assert path.exists()
         except Exception:
             # Might fail if SESSIONS_DIR not writable, that's ok for test
@@ -305,12 +307,13 @@ class TestReportGenerator:
 
         session = self._make_session()
         output = str(tmp_path / "report.custom")
-        path = await generate_report(session, output, report_format="markdown")
+        path = await generate_report(assessed_snapshot(session), output, report_format="markdown")
         assert path.suffix == ".custom"
 
-    async def test_generate_report_from_target_state_includes_governance_context(self, tmp_path):
+    async def test_report_includes_governance_context(self, tmp_path):
+        from vulnclaw.agent.context import SessionState
         from vulnclaw.i18n import init_i18n
-        from vulnclaw.report.generator import generate_report_from_target_state
+        from vulnclaw.report.generator import generate_report
 
         target_state = {
             "target": "https://example.com",
@@ -348,7 +351,10 @@ class TestReportGenerator:
 
         init_i18n(lang="zh")  # pin the Chinese report bundle for this assertion
         try:
-            output = await generate_report_from_target_state(target_state)
+            output = await generate_report(
+                SessionState(**target_state), str(tmp_path / "governance.md"),
+                target_state_context=target_state,
+            )
         finally:
             init_i18n()
         content = Path(output).read_text(encoding="utf-8")
@@ -376,12 +382,8 @@ class TestReportGenerator:
         init_i18n(lang="zh")  # pin the Chinese report bundle for this assertion
         try:
             output = await generate_persistent_cycle_report(
-                session=session,
+                session=assessed_snapshot(session),
                 cycle_num=1,
-                total_findings=1,
-                new_findings=1,
-                total_steps=10,
-                rounds_per_cycle=100,
                 output_path=str(tmp_path / "cycle.md"),
             )
         finally:
@@ -433,12 +435,8 @@ class TestReportGenerator:
         init_i18n(lang="zh")  # pin the Chinese report bundle for this assertion
         try:
             output = await generate_persistent_cycle_report(
-                session=session,
+                session=assessed_snapshot(session),
                 cycle_num=2,
-                total_findings=3,
-                new_findings=2,  # raw all-findings delta must not drive the counts
-                total_steps=10,
-                rounds_per_cycle=100,
                 output_path=str(tmp_path / "cycle2.md"),
             )
         finally:
@@ -460,12 +458,8 @@ class TestReportGenerator:
         )
 
         output = await generate_persistent_cycle_report(
-            session=session,
+            session=assessed_snapshot(session),
             cycle_num=1,
-            total_findings=3,
-            new_findings=1,
-            total_steps=12,
-            rounds_per_cycle=100,
             output_path=str(tmp_path / "cycle_llm.md"),
         )
         content = Path(output).read_text(encoding="utf-8")
@@ -529,7 +523,7 @@ class TestStandardReportI18n:
         session = self._session_with_full_context()
         init_i18n(lang="en")
         try:
-            out = await generate_report(session, str(tmp_path / "en.md"))
+            out = await generate_report(assessed_snapshot(session), str(tmp_path / "en.md"))
         finally:
             init_i18n()
         content = out.read_text(encoding="utf-8")
@@ -552,7 +546,7 @@ class TestStandardReportI18n:
         session = self._session_with_full_context()
         init_i18n(lang="zh")
         try:
-            out = await generate_report(session, str(tmp_path / "zh.md"))
+            out = await generate_report(assessed_snapshot(session), str(tmp_path / "zh.md"))
         finally:
             init_i18n()
         content = out.read_text(encoding="utf-8")
@@ -575,7 +569,7 @@ class TestStandardReportI18n:
         async def _run(lang, path):
             init_i18n(lang=lang)
             try:
-                return (await generate_report(session, str(path))).read_text(encoding="utf-8")
+                return (await generate_report(assessed_snapshot(session), str(path))).read_text(encoding="utf-8")
             finally:
                 init_i18n()
 
@@ -585,8 +579,9 @@ class TestStandardReportI18n:
         assert "未收集" in zh
 
     async def test_target_state_report_english_has_zero_chinese_characters(self, tmp_path):
+        from vulnclaw.agent.context import SessionState
         from vulnclaw.i18n import init_i18n
-        from vulnclaw.report.generator import generate_report_from_target_state
+        from vulnclaw.report.generator import generate_report
 
         target_state = {
             "target": "https://example.com",
@@ -612,8 +607,9 @@ class TestStandardReportI18n:
 
         init_i18n(lang="en")
         try:
-            out = await generate_report_from_target_state(
-                target_state, output_path=str(tmp_path / "en_ts.md")
+            out = await generate_report(
+                SessionState(**target_state), output_path=str(tmp_path / "en_ts.md"),
+                target_state_context=target_state,
             )
         finally:
             init_i18n()
@@ -671,7 +667,7 @@ class TestReportRecommendationI18n:
         session = self._session_with_unremediated_high()
         try:
             init_i18n(lang="en")
-            out = await generate_report(session, str(tmp_path / "en.md"))
+            out = await generate_report(assessed_snapshot(session), str(tmp_path / "en.md"))
         finally:
             init_i18n()
         content = out.read_text(encoding="utf-8")
@@ -684,7 +680,7 @@ class TestReportRecommendationI18n:
         session = self._session_with_unremediated_high()
         try:
             init_i18n(lang="zh")
-            out = await generate_report(session, str(tmp_path / "zh.md"))
+            out = await generate_report(assessed_snapshot(session), str(tmp_path / "zh.md"))
         finally:
             init_i18n()
         content = out.read_text(encoding="utf-8")
@@ -697,9 +693,9 @@ class TestReportRecommendationI18n:
         session = self._session_no_high()
         try:
             init_i18n(lang="en")
-            en = (await generate_report(session, str(tmp_path / "en.md"))).read_text(encoding="utf-8")
+            en = (await generate_report(assessed_snapshot(session), str(tmp_path / "en.md"))).read_text(encoding="utf-8")
             init_i18n(lang="zh")
-            zh = (await generate_report(session, str(tmp_path / "zh.md"))).read_text(encoding="utf-8")
+            zh = (await generate_report(assessed_snapshot(session), str(tmp_path / "zh.md"))).read_text(encoding="utf-8")
         finally:
             init_i18n()
         assert "Prioritize reviewing the attack surface" in en
@@ -713,12 +709,8 @@ class TestReportRecommendationI18n:
         try:
             init_i18n(lang="en")
             out = await generate_persistent_cycle_report(
-                session=session,
+                session=assessed_snapshot(session),
                 cycle_num=1,
-                total_findings=1,
-                new_findings=1,
-                total_steps=5,
-                rounds_per_cycle=100,
                 output_path=str(tmp_path / "cycle_en.md"),
             )
         finally:
@@ -734,12 +726,8 @@ class TestReportRecommendationI18n:
         try:
             init_i18n(lang="zh")
             out = await generate_persistent_cycle_report(
-                session=session,
+                session=assessed_snapshot(session),
                 cycle_num=1,
-                total_findings=1,
-                new_findings=1,
-                total_steps=5,
-                rounds_per_cycle=100,
                 output_path=str(tmp_path / "cycle_zh.md"),
             )
         finally:
@@ -755,12 +743,8 @@ class TestReportRecommendationI18n:
 
         async def _run(path):
             return (await generate_persistent_cycle_report(
-                session=session,
+                session=assessed_snapshot(session),
                 cycle_num=1,
-                total_findings=1,
-                new_findings=1,
-                total_steps=5,
-                rounds_per_cycle=100,
                 output_path=str(path),
             )).read_text(encoding="utf-8")
 
@@ -801,12 +785,8 @@ class TestReportRecommendationI18n:
 
         async def _run(path):
             return (await generate_persistent_cycle_report(
-                session=session,
+                session=assessed_snapshot(session),
                 cycle_num=1,
-                total_findings=1,
-                new_findings=1,
-                total_steps=5,
-                rounds_per_cycle=100,
                 output_path=str(path),
             )).read_text(encoding="utf-8")
 
