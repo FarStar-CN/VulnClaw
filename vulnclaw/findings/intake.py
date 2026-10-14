@@ -12,6 +12,7 @@ from vulnclaw.config.finding_similarity import normalize_vuln_type
 from vulnclaw.findings.evidence import (
     endpoint_identity,
     recorded_requests,
+    restore_latest_verdict,
     scope_identity,
     snapshot_records,
 )
@@ -85,6 +86,7 @@ def submit_finding(agent, arguments: dict) -> str:
             existing.evidence_refs.extend(
                 EvidenceRef(kind="file", path=ref.path) for ref in additions
             )
+            restore_latest_verdict(existing)
             session._notify_checkpoint("finding_updated")
         return json.dumps({"finding_id": identity, "action": "updated" if additions else "duplicate",
                            "verification_status": existing.verification_status})

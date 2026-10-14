@@ -18,7 +18,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from vulnclaw.findings.identity import canonical_endpoint, structured_finding_id
 from vulnclaw.findings.types import EvidenceSnapshotRef, FindingAssessment, replace_snapshot_refs
@@ -170,7 +170,7 @@ class VulnerabilityFinding(BaseModel):
     submission_id: str = Field(default="", description="Application-owned structured submission id")
     evidence_snapshots: list[EvidenceSnapshotRef] = Field(default_factory=list)
     verification_history: list[FindingAssessment] = Field(default_factory=list)
-    report_assessment: FindingAssessment | None = None
+    assessment: FindingAssessment | None = None
     previous_verification: dict[str, Any] = Field(default_factory=dict)
     # ★ Optional skill-loading provenance (reserved by the skill-loading PRD);
     # mapped into finding metadata / SARIF ``properties`` when present.
@@ -196,6 +196,15 @@ class VulnerabilityFinding(BaseModel):
 
     # ★ 漏洞唯一标识（用于去重）
     finding_id: str = Field(default="", description="漏洞唯一标识：vuln_type + target + location")
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_assessment(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "report_assessment" in value:
+            value = dict(value)
+            previous = value.pop("report_assessment")
+            value.setdefault("assessment", previous)
+        return value
 
     def model_post_init(self, *args, **kwargs) -> None:
         # Also recover saved findings whose references reused IDs across sessions.

@@ -12,6 +12,8 @@ from urllib.parse import urljoin, urlsplit
 from vulnclaw.findings.types import (
     EvidenceSnapshotRef,
     Snapshot,
+    apply_assessment,
+    finding_input_digest,
     merge_snapshot_refs,
     replace_snapshot_refs,
 )
@@ -136,8 +138,8 @@ def merge_finding_evidence(target_finding: Any, source_finding: Any) -> bool:
     deduplicate; distinct snapshots retain their source IDs and get unique
     reference IDs when necessary. Refs dedupe by their pointer. The
     free-text evidence listing and the verification history grow by union. The
-    target keeps its own verification status: added evidence must not silently
-    promote or demote it.
+    caller restores the latest assessment after the merge; changed inputs
+    invalidate conclusions that no longer match the evidence.
     """
     snapshots = merge_snapshot_refs([
         *target_finding.evidence_snapshots, *source_finding.evidence_snapshots,
@@ -174,27 +176,25 @@ def merge_finding_evidence(target_finding: Any, source_finding: Any) -> bool:
 
 
 def restore_latest_verdict(finding: Any) -> None:
-    """A newer completed PoC may replace a terminal verdict, even after reload."""
-    latest = None
-    latest_at = datetime.min.replace(tzinfo=timezone.utc)
-    for assessment in finding.verification_history:
-        if (assessment.method != "poc" or not assessment.complete
-                or assessment.outcome not in {"verified", "rejected"}):
-            continue
-        try:
-            assessed_at = datetime.fromisoformat(assessment.assessed_at.replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if assessed_at.tzinfo is None:
-            assessed_at = assessed_at.replace(tzinfo=timezone.utc)
-        if assessed_at > latest_at:
-            latest, latest_at = assessment, assessed_at
-    if latest is not None:
-        if latest.outcome == "verified":
-            finding.mark_verified(latest.reason)
-        else:
-            finding.mark_rejected(latest.reason)
-        finding.verified_at = latest.assessed_at
+    """Restore the newest audit of these inputs; retain other verdicts as history."""
+    digest = finding_input_digest(finding)
+    records = list(finding.verification_history)
+    if finding.assessment is not None and finding.assessment not in records:
+        records.append(finding.assessment)
+    current = [a for a in records if a.input_digest == digest]
+    if current:
+        def assessed_time(assessment):
+            try:
+                value = datetime.fromisoformat(assessment.assessed_at.replace("Z", "+00:00"))
+                return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+            except ValueError:
+                return datetime.min.replace(tzinfo=timezone.utc)
+        apply_assessment(finding, max(current, key=assessed_time))
+    elif any(a.input_digest for a in records):
+        finding.assessment = None
+        finding.mark_manual_review("Finding inputs changed; a new audit is required")
+        finding.verified_at = None
+        finding.poc_script = None
 
 
 def merge_structured_findings(findings: list[Any]) -> list[Any]:
@@ -217,4 +217,6 @@ def merge_structured_findings(findings: list[Any]) -> list[Any]:
         merge_finding_evidence(base, other)
         restore_latest_verdict(base)
         kept[position] = base
+    for finding in kept:
+        restore_latest_verdict(finding)
     return kept

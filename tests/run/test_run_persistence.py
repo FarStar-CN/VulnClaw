@@ -448,7 +448,7 @@ async def test_merge_save_keeps_appended_finding_evidence_for_restored_assessmen
     from vulnclaw.findings.evidence import load_snapshots
     from vulnclaw.findings.intake import submit_finding
     from vulnclaw.findings.types import EvidenceReview
-    from vulnclaw.findings.verification import prepare_report
+    from vulnclaw.findings.verification import verify_findings
 
     monkeypatch.setattr(store, "TARGETS_DIR", tmp_path / "targets")
     target = "https://lab.test"
@@ -522,17 +522,17 @@ async def test_merge_save_keeps_appended_finding_evidence_for_restored_assessmen
         )
 
     monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", review)
-    view = await prepare_report(restored, config=config, poc_verify=False)
+    view = await verify_findings(restored, config=config, poc_verify=False)
     assert set(captured) == {ref.evidence_id for ref in restored.findings[0].evidence_snapshots}
     assert len(captured) == 2
-    assert view.findings[0].report_assessment.method == "evidence_review"
+    assert view.findings[0].assessment.method == "evidence_review"
 
 
 @pytest.mark.parametrize(("previous", "outcome"), [
     ("verified", "rejected"), ("rejected", "verified"),
     ("verified", "suspected_low"), ("rejected", "suspected_high"),
 ])
-async def test_merge_save_keeps_latest_conclusive_assessment(
+async def test_merge_save_keeps_latest_current_assessment(
     tmp_path, monkeypatch, previous, outcome,
 ):
     from unittest.mock import AsyncMock
@@ -540,7 +540,7 @@ async def test_merge_save_keeps_latest_conclusive_assessment(
     import vulnclaw.target_state.store as store
     from vulnclaw.config.domain_models import VulnerabilityFinding
     from vulnclaw.findings.types import FindingAssessment
-    from vulnclaw.findings.verification import prepare_report
+    from vulnclaw.findings.verification import verify_findings
 
     monkeypatch.setattr(store, "TARGETS_DIR", tmp_path / "targets")
     config = VulnClawConfig()
@@ -570,16 +570,17 @@ async def test_merge_save_keeps_latest_conclusive_assessment(
     )
     monkeypatch.setattr("vulnclaw.findings.verification.assess_finding",
                         AsyncMock(return_value=assessment))
-    await prepare_report(state, config=config, poc_verify=True)
+    await verify_findings(state, config=config, poc_verify=True)
     store.save_target_state(state.target, state, command="reassessed")
     # A later save from a stale session must not undo the newer verdict.
     store.save_target_state(state.target, stale_state, command="stale")
 
     restored = store.hydrate_session_from_target_state(state.target).findings[0]
-    expected = assessment if conclusive else old_assessment
-    assert restored.verification_status == expected.outcome
-    assert restored.lifecycle_status == expected.outcome
+    expected = assessment
+    assert restored.assessment.outcome == expected.outcome
+    assert restored.verification_status == (expected.outcome if conclusive else "pending")
+    assert restored.lifecycle_status == (expected.outcome if conclusive else "needs_manual_review")
     assert restored.verified == (expected.outcome == "verified")
     assert restored.verification_note == expected.reason
-    assert restored.verified_at == expected.assessed_at
+    assert restored.verified_at == (expected.assessed_at if conclusive else None)
     assert len(restored.verification_history) == 2

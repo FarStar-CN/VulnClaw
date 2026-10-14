@@ -174,34 +174,6 @@ def _make_solve_event_printer(target_console: Console) -> Any:
     return on_event
 
 
-async def _generate_report_for_target(
-    target: str,
-    *,
-    current_session: Any = None,
-    report_format: str = "markdown",
-    output_path: Optional[str] = None,
-) -> str:
-    """Generate a report for a target using the best available source data."""
-    from vulnclaw.agent.context import SessionState
-    from vulnclaw.report.generator import generate_report, generate_report_from_target_state
-    from vulnclaw.target_state.store import load_target_state
-
-    if current_session is not None and (
-        current_session.findings or current_session.executed_steps or current_session.notes
-    ):
-        path = await generate_report(current_session, output_path, report_format=report_format)
-        return str(path)
-
-    state = load_target_state(target)
-    if state:
-        path = await generate_report_from_target_state(state, output_path=output_path)
-        return str(path)
-
-    session = SessionState(target=target)
-    path = await generate_report(session, output_path, report_format=report_format)
-    return str(path)
-
-
 def _append_cli_constraints(
     prompt: str,
     only_port: Optional[int],

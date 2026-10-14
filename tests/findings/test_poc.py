@@ -13,7 +13,7 @@ from vulnclaw.agent.context import SessionState, TaskConstraints
 from vulnclaw.config.schema import VulnClawConfig
 from vulnclaw.findings.intake import submit_finding
 from vulnclaw.findings.types import EvidenceReview
-from vulnclaw.findings.verification import prepare_report
+from vulnclaw.findings.verification import verify_findings
 
 # Per-test handler behavior: query string -> (status, body, headers).
 _BEHAVIOR = {}
@@ -111,8 +111,8 @@ async def test_conclusive_rce_poc_marks_verified_and_archives_artifacts(tmp_path
     _BEHAVIOR["run"] = execute_printf
     url = f"{receiver}/cmd?file=notes%20id"
     config, state = _candidate(tmp_path, receiver, url, _recorded(url, "notes id"))
-    view = await prepare_report(state, config=config, poc_verify=True)
-    assessment = view.findings[0].report_assessment
+    view = await verify_findings(state, config=config, poc_verify=True)
+    assessment = view.findings[0].assessment
     assert assessment.outcome == "verified" and assessment.method == "poc"
     assert state.findings[0].verified and state.findings[0].verification_status == "verified"
     assert assessment.artifacts and all(Path(path).exists() for path in assessment.artifacts)
@@ -124,8 +124,8 @@ async def test_conclusive_sqli_poc_rejects_the_claim(tmp_path, receiver):
     url = f"{receiver}/search?id=1%20AND%201=1"
     config, state = _candidate(tmp_path, receiver, url, _recorded(url, baseline),
                                vuln_type="SQLi")
-    view = await prepare_report(state, config=config, poc_verify=True)
-    assessment = view.findings[0].report_assessment
+    view = await verify_findings(state, config=config, poc_verify=True)
+    assessment = view.findings[0].assessment
     assert assessment.outcome == "rejected" and assessment.method == "poc"
     assert state.findings[0].verification_status == "rejected"
     assert not state.findings[0].verified
@@ -138,9 +138,10 @@ async def test_inconclusive_poc_falls_back_to_evidence_review(tmp_path, receiver
     url = f"{receiver}/cmd?file=notes%20id"
     config, state = _candidate(tmp_path, receiver, url, _recorded(url, "notes id"))
     monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", lambda *args: _review())
-    view = await prepare_report(state, config=config, poc_verify=True)
-    assessment = view.findings[0].report_assessment
-    assert assessment.method == "evidence_review" and assessment.outcome == "suspected_high"
+    view = await verify_findings(state, config=config, poc_verify=True)
+    assessment = view.findings[0].assessment
+    assert assessment.method == "evidence_review" and assessment.outcome == "suspected_low"
+    assert not assessment.complete
     assert assessment.failure_reason
     assert not state.findings[0].verified
 
@@ -153,9 +154,10 @@ async def test_action_restriction_blocks_poc_before_any_request(tmp_path, receiv
         constraints=TaskConstraints(blocked_actions=["exploit"]),
     )
     monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", lambda *args: _review())
-    view = await prepare_report(state, config=config, poc_verify=True)
-    assessment = view.findings[0].report_assessment
-    assert assessment.method == "evidence_review" and assessment.outcome == "suspected_high"
+    view = await verify_findings(state, config=config, poc_verify=True)
+    assessment = view.findings[0].assessment
+    assert assessment.method == "evidence_review" and assessment.outcome == "suspected_low"
+    assert not assessment.complete
     assert assessment.failure_reason
     assert _Handler.hits == 0  # the plan never reached the target
 
@@ -165,8 +167,8 @@ async def test_redirects_are_not_followed_and_fall_back(tmp_path, receiver, monk
     url = f"{receiver}/cmd?file=notes%20id"
     config, state = _candidate(tmp_path, receiver, url, _recorded(url, "notes id"))
     monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", lambda *args: _review())
-    view = await prepare_report(state, config=config, poc_verify=True)
-    assessment = view.findings[0].report_assessment
+    view = await verify_findings(state, config=config, poc_verify=True)
+    assessment = view.findings[0].assessment
     assert assessment.method == "evidence_review"
     assert "200" in assessment.failure_reason
     assert not state.findings[0].verified
@@ -204,8 +206,8 @@ async def test_get_replay_cannot_confirm_a_post_candidate(tmp_path, receiver, mo
         "endpoint": url, "method": "POST",
     })
     monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", lambda *args: _review())
-    view = await prepare_report(state, config=config, poc_verify=True)
-    assessment = view.findings[0].report_assessment
+    view = await verify_findings(state, config=config, poc_verify=True)
+    assessment = view.findings[0].assessment
     assert assessment.method == "evidence_review" and assessment.outcome == "suspected_high"
     assert assessment.failure_reason
     assert not state.findings[0].verified
@@ -221,6 +223,6 @@ async def test_declared_get_candidate_still_verifies_via_poc(tmp_path, receiver)
     _BEHAVIOR["run"] = execute_printf
     url = f"{receiver}/cmd?file=notes%20id"
     config, state = _candidate(tmp_path, receiver, url, _recorded(url, "notes id"), method="GET")
-    view = await prepare_report(state, config=config, poc_verify=True)
-    assessment = view.findings[0].report_assessment
+    view = await verify_findings(state, config=config, poc_verify=True)
+    assessment = view.findings[0].assessment
     assert assessment.outcome == "verified" and assessment.method == "poc"

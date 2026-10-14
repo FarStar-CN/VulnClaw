@@ -1,4 +1,4 @@
-"""VulnClaw Report Module — structured report generation with vulnerability verification."""
+"""VulnClaw Report Module — structured report generation from audited findings."""
 
 from vulnclaw.report.filter import ReportContentFilter, filter_report_content
 from vulnclaw.report.findings_output import (
@@ -10,13 +10,11 @@ from vulnclaw.report.findings_output import (
 from vulnclaw.report.generator import (
     generate_persistent_cycle_report,
     generate_report,
-    generate_report_from_file,
 )
 
 __all__ = [
     # Generator
     "generate_report",
-    "generate_report_from_file",
     "generate_persistent_cycle_report",
     # Filter
     "ReportContentFilter",

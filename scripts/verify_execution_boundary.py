@@ -106,7 +106,7 @@ ALLOWED_SPAWN_SITES: dict[str, str] = {
     "vulnclaw/cli/tui.py:2667:subprocess.run": (
         "operator control plane: Unix pbpaste/wl-paste/xclip/xsel for /config paste"
     ),
-    "vulnclaw/cli/main.py:2750:subprocess.run": (
+    "vulnclaw/cli/main.py:2773:subprocess.run": (
         "operator control plane: fixed Node.js version diagnostic"
     ),
     # First-run setup wizard (merged from dev): operator-driven fixed argv
@@ -147,10 +147,10 @@ ALLOWED_SPAWN_SITES: dict[str, str] = {
     "vulnclaw/cli/wizard.py:1118:subprocess.Popen": (
         "Linux xdg-open path launcher with fixed argv"
     ),
-    "vulnclaw/agent/network_scan.py:452:subprocess.run": (
+    "vulnclaw/agent/network_scan.py:431:subprocess.run": (
         "fixed local wireless-interface diagnostic"
     ),
-    "vulnclaw/agent/network_scan.py:493:subprocess.run": (
+    "vulnclaw/agent/network_scan.py:472:subprocess.run": (
         "fixed local IPv4-interface diagnostic"
     ),
 }

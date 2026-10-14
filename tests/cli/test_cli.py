@@ -472,15 +472,17 @@ class TestCLI:
 
     def test_run_generates_report_after_completion(self, runner, monkeypatch):
         import vulnclaw.cli.main as cli_main
+        from vulnclaw.agent.context import SessionState
         from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
+        audited = SessionState(target="https://example.com")
         config = VulnClawConfig()
         config.llm.api_key = "test-key"
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
 
         async def fake_orchestrated(*, command, target, resume, snapshot, runner):
-            return type("RunResult", (), {"summary": {"findings_count": 2}})()
+            return type("RunResult", (), {"summary": {"findings_count": 2}, "audited_session": audited})()
 
         monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
 
@@ -495,20 +497,22 @@ class TestCLI:
         result = runner.invoke(app, ["run", "https://example.com"])
 
         assert result.exit_code == 0
-        assert report_calls == [("https://example.com", {"output_path": None})]
+        assert report_calls == [("https://example.com", {"output_path": None, "current_session": audited})]
         assert "report.md" in result.output
 
     def test_run_passes_output_flag_to_report_generation(self, runner, monkeypatch):
         import vulnclaw.cli.main as cli_main
+        from vulnclaw.agent.context import SessionState
         from vulnclaw.cli.main import app
         from vulnclaw.config.schema import VulnClawConfig
 
+        audited = SessionState(target="https://example.com")
         config = VulnClawConfig()
         config.llm.api_key = "test-key"
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
 
         async def fake_orchestrated(*, command, target, resume, snapshot, runner):
-            return type("RunResult", (), {"summary": {"findings_count": 0}})()
+            return type("RunResult", (), {"summary": {"findings_count": 0}, "audited_session": audited})()
 
         monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
 
@@ -526,7 +530,7 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert report_calls == [
-            ("https://example.com", {"output_path": "/custom/path/report.md"})
+            ("https://example.com", {"output_path": "/custom/path/report.md", "current_session": audited})
         ]
         assert "/custom/path/report.md" in result.output
 

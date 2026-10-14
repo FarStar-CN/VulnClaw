@@ -166,6 +166,19 @@ def _unique_paths(paths: list[Path | None]) -> list[Path | None]:
     return unique
 
 
+def target_state_path(
+    target: str,
+    snapshot_id: Optional[str] = None,
+    *,
+    run_context: RunContext | None = None,
+    target_model: Target | None = None,
+) -> Path | None:
+    """Resolve the existing source used by target-state loading."""
+    return next((path for path in _candidate_state_paths(
+        target, snapshot_id=snapshot_id, run_context=run_context, target_model=target_model,
+    ) if path is not None and path.exists()), None)
+
+
 def load_target_state(
     target: str,
     snapshot_id: Optional[str] = None,
@@ -191,8 +204,16 @@ def load_target_state(
 
 
 def _normalize_structured_state(raw: dict[str, Any]) -> None:
-    """Migrate structured identities in memory; historical files remain untouched."""
+    """Restore current audits and identities in memory; preserve historical files."""
     findings = raw.get("findings", [])
+    for index, finding in enumerate(findings):
+        if not finding.get("submission_id") and (
+            finding.get("assessment") or finding.get("report_assessment")
+            or finding.get("verification_history")
+        ):
+            model = VulnerabilityFinding.model_validate(finding)
+            restore_latest_verdict(model)
+            findings[index] = model.model_dump(mode="json")
     structured = [finding for finding in findings if finding.get("submission_id")]
     if not structured:
         return
@@ -904,12 +925,12 @@ def _merge_findings(
             # absorb the evidence/history the current session appended since
             # the last save — a structured submission extends snapshots in place.
             by_key[key] = _merge_finding_evidence(prev, finding)
-    # Evidence additions cannot change a verdict; a newer completed PoC can.
+    # Restore the latest audit of the merged inputs, invalidating stale conclusions.
     for key, finding in by_key.items():
-        if finding.get("verification_history"):
+        if finding.get("verification_history") or finding.get("assessment") or finding.get("report_assessment"):
             model = VulnerabilityFinding.model_validate(finding)
             restore_latest_verdict(model)
-            by_key[key] = {**finding, **model.model_dump(mode="json")}
+            by_key[key] = model.model_dump(mode="json")
     return list(by_key.values())
 
 
@@ -925,7 +946,7 @@ def _merge_finding_evidence(base: dict[str, Any], other: dict[str, Any]) -> dict
     merge_finding_evidence(kept, VulnerabilityFinding.model_validate(other))
     fields = {
         "evidence_snapshots", "evidence_refs", "evidence", "verification_history",
-        "report_assessment", "submission_id",
+        "assessment", "submission_id",
     }
     return {**base, **kept.model_dump(mode="json", include=fields)}
 

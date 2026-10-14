@@ -518,9 +518,9 @@ class SessionConfig(BaseModel):
         default=True,
         description="Print the generated solve replay report in the terminal after completion",
     )
-    report_poc_verify_enabled: bool = Field(
+    poc_verify_enabled: bool = Field(
         default=False,
-        description="Allow approved PoC execution before reports; independent evidence review always runs",
+        description="Allow approved PoC execution during finding audits; otherwise review saved evidence",
     )
     show_thinking: bool = Field(
         default=False, description="Show LLM thinking/reasoning output (default: off)"
@@ -613,10 +613,6 @@ class SessionConfig(BaseModel):
     plugin_max_requests_per_target: int = Field(
         default=30, description="Max plugin requests per target"
     )
-    evidence_min_report_level: str = Field(
-        default="L4", description="Minimum evidence level for report inclusion"
-    )
-
 class VulnClawConfig(BaseModel):
     """Top-level VulnClaw configuration."""
 

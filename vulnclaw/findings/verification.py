@@ -1,4 +1,4 @@
-"""Mandatory independent assessment before any general report is rendered."""
+"""Independent finding audits, persisted before summaries and report rendering."""
 
 from __future__ import annotations
 
@@ -6,16 +6,18 @@ import asyncio
 import copy
 import hashlib
 import json
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 from vulnclaw.findings.evidence import load_snapshots
 from vulnclaw.findings.poc import build_plan, execute_plan
-from vulnclaw.findings.types import EvidenceReview, FindingAssessment
-
-logger = logging.getLogger(__name__)
+from vulnclaw.findings.types import (
+    EvidenceReview,
+    FindingAssessment,
+    apply_assessment,
+    finding_input_digest,
+)
 
 
 def incomplete_reason(reason: str) -> str:
@@ -33,15 +35,6 @@ version strings, CVE names, an HTTP 500, a timeout or payload reflection alone d
 prove the claimed vulnerability. Explain missing reproduction or negative controls.
 If evidence is missing, contradictory or indirect choose low. Never invent quotations.
 """
-
-
-def _input_digest(finding) -> str:
-    payload = finding.model_dump(mode="json", exclude={
-        "verification_history", "report_assessment", "verified", "verification_status",
-        "verified_at", "verification_note", "lifecycle_status", "evidence_level", "poc_script",
-        "previous_verification",
-    })
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def _review_with_llm(config, finding, snapshots) -> EvidenceReview:
@@ -115,92 +108,100 @@ async def assess_finding(session, finding, config, *, poc_verify: bool, artifact
             missing_checks=["Restorable, authentic structured tool evidence"],
         )
     failure = ""
+    poc_incomplete = False
     artifacts = []
     if poc_verify:
         try:
             plan = build_plan(finding, snapshots)
             if plan is None:
-                raise ValueError("No supported type-specific PoC with recorded reproduction inputs")
-            return await execute_plan(plan, session, config, artifact_dir)
+                failure = "No supported type-specific PoC with recorded reproduction inputs"
+            else:
+                return await execute_plan(plan, session, config, artifact_dir)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            failure = str(exc)
+            failure = str(exc) or type(exc).__name__
+            poc_incomplete = True
             if artifact_dir.exists():
                 artifacts = [str(path) for path in artifact_dir.iterdir() if path.is_file()]
     assessment = await review_evidence(config, finding, snapshots, failure_reason=failure)
+    if poc_incomplete:
+        assessment.outcome = "suspected_low"
+        assessment.complete = False
+        assessment.reason = incomplete_reason(failure)
+        assessment.missing_checks.append("Complete the requested PoC verification")
     assessment.artifacts = artifacts
     return assessment
 
 
-async def prepare_report(session, *, config=None, poc_verify: bool | None = None):
-    """Produce one assessed snapshot; report formats consume exactly this view."""
+async def verify_findings(session, *, config=None, poc_verify: bool | None = None, reuse=True):
+    """Audit candidates, commit their conclusions, and return an isolated snapshot."""
     if config is None:
         from vulnclaw.config.settings import load_config
 
         config = load_config()
-    use_poc = config.session.report_poc_verify_enabled if poc_verify is None else poc_verify
+    use_poc = config.session.poc_verify_enabled if poc_verify is None else poc_verify
+    artifact_root = Path(config.session.output_dir) / "evidence" / "verification" / uuid4().hex
     view = session.model_copy(deep=True)
-    assessment_id = uuid4().hex
-    artifact_root = Path(config.session.output_dir) / "evidence" / "verification" / assessment_id
     for candidate in view.findings:
+        digest = finding_input_digest(candidate)
+        previous = candidate.assessment
+        if (reuse and previous and previous.complete and previous.input_digest == digest
+                and (not use_poc or previous.poc_attempted)):
+            try:
+                load_snapshots(candidate)
+            except Exception:
+                pass
+            else:
+                continue
         candidate.previous_verification = {
             key: getattr(candidate, key) for key in (
                 "verification_status", "verification_note", "verified_at", "evidence_level",
             )
         }
-        source = next((f for f in session.findings if f.finding_id == candidate.finding_id), None)
-        digest = _input_digest(candidate)
         assessment = await assess_finding(
             session, candidate, config, poc_verify=use_poc,
             artifact_dir=artifact_root / hashlib.sha256(candidate.finding_id.encode()).hexdigest()[:24],
         )
-        if source is None or digest != _input_digest(source):
+        assessment.input_digest = digest
+        assessment.poc_attempted = use_poc
+        # The task may replace or remove a finding while the audit is awaiting I/O.
+        source = next((f for f in session.findings if f.finding_id == candidate.finding_id), None)
+        if source is None or digest != finding_input_digest(source):
             assessment = FindingAssessment(
                 outcome="suspected_low", method="evidence_review", complete=False,
                 reason="Finding input changed during assessment; result was not written back",
+                input_digest=digest, poc_attempted=use_poc,
             )
-        elif source.submission_id:
+        else:
             prior = copy.deepcopy(source)
+            content_hash = session._content_hash
+            save_path = session._save_path
+            source.previous_verification = candidate.previous_verification
             source.verification_history.append(assessment)
-            if assessment.outcome == "verified":
-                source.mark_verified(assessment.reason)
-            elif assessment.outcome == "rejected":
-                source.mark_rejected(assessment.reason)
+            apply_assessment(source, assessment)
             try:
-                # New submissions only. Report assessment never migrates old
-                # sessions or writes an old file supplied for report rendering.
                 if session._checkpoint_callback:
                     session._checkpoint_callback(session, "finding_assessed")
-                elif session._save_path is not None:
-                    session.save()
+                else:
+                    from vulnclaw.run_context import atomic_write_json
+
+                    if session._save_path is None:
+                        key = hashlib.sha256(
+                            f"{session.started_at}:{session.target}:{session.task_id}".encode()
+                        ).hexdigest()
+                        session.set_save_path(
+                            Path(config.session.output_dir) / "evidence" / "verification"
+                            / "sessions" / key / "session.json"
+                        )
+                    atomic_write_json(session._save_path, session.model_dump(mode="json"))
             except Exception:
                 source.__dict__.update(prior.__dict__)
+                session._content_hash = content_hash
+                session._save_path = save_path
                 raise
-        candidate.report_assessment = assessment
-        candidate.verification_history = list(source.verification_history) if source else []
-        if assessment.outcome == "verified":
-            candidate.mark_verified(assessment.reason)
-        elif assessment.outcome == "rejected":
-            candidate.mark_rejected(assessment.reason)
-        else:
-            candidate.verified = False
-            candidate.verification_status = "pending"
-            candidate.verified_at = None
-            candidate.verification_note = assessment.reason
-            candidate.lifecycle_status = "needs_manual_review"
-            candidate.evidence_level = "L2"
-        if assessment.method == "poc" and assessment.artifacts:
-            candidate.poc_script = assessment.artifacts[0]
-    # SessionState's query view must point at the assessed findings, not at
-    # the source store copied through private attributes.
-    from vulnclaw.report.filter import deduplicate_report_findings
-
-    view.findings = deduplicate_report_findings(view.findings)
+        apply_assessment(candidate, assessment)
+        candidate.verification_history = copy.deepcopy(source.verification_history) if source else []
     view._vulnerabilities.findings = view.findings
-    return view
-
-
-def require_assessed(session) -> None:
-    if any(f.report_assessment is None for f in session.findings):
-        raise ValueError("Report rendering requires an independent assessment for every finding")
+    view._checkpoint_callback = None
+    return view.model_copy(deep=True)
