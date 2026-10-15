@@ -163,7 +163,7 @@ def test_target_state_moves_metadata_to_canonical_identity(sessions, tmp_path, m
     parent, child = sessions
     monkeypatch.setattr(store, 'TARGETS_DIR', tmp_path / 'targets')
     path = store.save_target_state(parent.target, parent, command='test')
-    raw = json.loads(path.read_text())
+    raw = json.loads(path.read_text(encoding='utf-8'))
     first = raw['findings'][0]
     first['finding_id'] = 'old-first'
     second = child.findings[0].model_dump(mode='json')
