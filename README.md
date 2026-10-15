@@ -321,6 +321,10 @@ vulnclaw verify session.json --poc-verify      # 独立审计并尝试 PoC（需
 非交互运行的退出码与 `summary.json` 使用当前漏洞审计结果，与 JSON/SARIF 口径一致。
 CLI `run/solve --stream` 的 finding 列表来自已登记候选，保留其严重度和验证状态。
 
+原生 TUI 的 `/run <target>` 完成任务和审计后直接生成报告，格式沿用
+`session.report_format`，并显示报告、JSON 和 SARIF 的保存路径。有运行目录时，
+产物位于其中的 `reports/`。报告导出失败会显示原因，已完成的任务和审计结果仍保留。
+
 ### 方式四：持续性渗透
 
 适用于需要长时间深度渗透的场景，以**周期循环**方式运行：
