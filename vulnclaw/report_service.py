@@ -2,13 +2,45 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
+from uuid import uuid4
+
 from vulnclaw.agent.context import SessionState
 from vulnclaw.finding_service import verify_session_file, verify_target
 from vulnclaw.findings.verification import verify_findings
 from vulnclaw.report.generator import generate_report
 from vulnclaw.target_state.store import load_target_state
 
+if TYPE_CHECKING:
+    from vulnclaw.config.schema import VulnClawConfig
+    from vulnclaw.orchestrator import OrchestratorRunResult
+
 CONTEXT_FIELDS = ("resume_meta", "resume_summary", "recon_meta", "runtime_meta", "finding_meta")
+
+
+async def generate_report_for_run(
+    run: OrchestratorRunResult, *, config: VulnClawConfig,
+) -> dict[str, str]:
+    """Export a completed run's audited snapshot without loading or auditing data."""
+    if run.audited_session is None:
+        raise ValueError("Report export requires the run's audited session snapshot")
+    output_path = None
+    if run.run_context is not None:
+        output_path = str(
+            run.run_context.run_dir / "reports"
+            / f"report_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}.md"
+        )
+    path = Path(await generate_report(
+        run.audited_session, output_path, report_format=config.session.report_format,
+    )).resolve()
+    artifacts = path.parent / (path.stem + ".artifacts") / "findings"
+    return {
+        "path": str(path),
+        "findings_json": str(artifacts / "findings.json"),
+        "findings_sarif": str(artifacts / "findings.sarif"),
+    }
 
 
 async def generate_report_from_file(session_path: str, *, config=None):
