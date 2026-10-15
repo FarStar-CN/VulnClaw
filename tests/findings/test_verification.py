@@ -147,13 +147,15 @@ async def test_report_and_machine_outputs_use_current_review(candidate, monkeypa
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *args: review())
     view = await verify_findings(state, config=config)
     path = await generate_report(view, str(config.session.output_dir / 'report.md'), llm_attack_summary='A suspected finding requires reproduction')
-    text = path.read_text()
+    text = path.read_text(encoding='utf-8')
     assert 'suspected' in text or '疑似' in text
     artifact_dir = path.parent / 'report.artifacts' / 'findings'
-    document = json.loads((artifact_dir / 'findings.json').read_text())
+    document = json.loads((artifact_dir / 'findings.json').read_text(encoding='utf-8'))
     assert document['summary']['suspected_high'] == 1
     assert document['verified'] == []
-    assert json.loads((artifact_dir / 'findings.sarif').read_text())['runs'][0]['results'] == []
+    assert json.loads(
+        (artifact_dir / 'findings.sarif').read_text(encoding='utf-8')
+    )['runs'][0]['results'] == []
 
 
 def test_export_cannot_bypass_assessment():
@@ -240,7 +242,10 @@ async def test_renderers_consume_snapshot_without_auditing_or_mutating(candidate
             view, str(config.session.output_dir / f'render-{fmt}.md'),
             report_format=fmt, llm_attack_summary='Saved conclusions',
         )
-        document = json.loads((path.parent / (path.stem + '.artifacts') / 'findings' / 'findings.json').read_text())
+        document = json.loads(
+            (path.parent / (path.stem + '.artifacts') / 'findings' / 'findings.json')
+            .read_text(encoding='utf-8')
+        )
         assert document['summary']['suspected_high'] == 1
         assert document['verified'] == []
     await generate_persistent_cycle_report(
@@ -282,7 +287,9 @@ async def test_task_completion_audits_and_persists_before_summary(candidate, mon
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *_: review())
     result = await run_agent_task(agent=agent, command='run', target=state.target,
                                   resume=False, runner=AsyncMock())
-    raw = json.loads(result.run_context.state_path(result.run_context.targets[0]).read_text())
+    raw = json.loads(
+        result.run_context.state_path(result.run_context.targets[0]).read_text(encoding='utf-8')
+    )
     assert raw['findings'][0]['assessment']['outcome'] == 'suspected_high'
     assert raw['resume_meta']['checkpoint_reason'] == 'run_complete'
     assert result.audited_session.findings[0].assessment.complete
@@ -347,7 +354,8 @@ async def test_verify_cli_and_web_endpoint_delegate_to_independent_audits(candid
     result = await asyncio.to_thread(CliRunner().invoke, cli.app,
                                     ['verify', state.target, '--target', '--poc-verify'])
     assert result.exit_code == 0, result.output
-    assert 'audited.json' in result.output
+    # Rich can wrap a long Windows path inside the filename.
+    assert 'audited.json' in ''.join(result.output.splitlines())
     monkeypatch.setattr(auth, 'verify_token', lambda _: True)
     client = pytest.importorskip('fastapi.testclient').TestClient(create_app())
     response = await asyncio.to_thread(
@@ -462,7 +470,7 @@ async def test_legacy_target_queries_use_current_assessment(candidate, monkeypat
         state.findings[0].submission_id = ''
     await verify_findings(state, config=config)
     path = store.save_target_state(state.target, state, command='test')
-    raw = json.loads(path.read_text())
+    raw = json.loads(path.read_text(encoding='utf-8'))
     # Old persisted flags conflict with the current fingerprinted assessment.
     raw['findings'][0]['verified'] = True
     raw['findings'][0]['verification_status'] = 'verified'
