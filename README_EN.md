@@ -331,6 +331,11 @@ the JSON/SARIF inclusion rules.
 CLI `run/solve --stream` emits registered candidates with their recorded severity
 and verification status.
 
+The native TUI's `/run <target>` exports a report after execution and finding audits,
+using `session.report_format`, and displays the report, JSON and SARIF paths.
+Artifacts go under the run's `reports/` directory when a run directory is available.
+Export failures display their cause while preserving the completed task and saved audits.
+
 ### Mode 4: Persistent Pentesting
 
 For long-running deep pentesting. Runs in **cyclic loops**:
