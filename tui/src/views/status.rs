@@ -4,16 +4,41 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-use crate::app::App;
+use crate::app::{App, OperationKind};
 use crate::theme;
 
 pub fn build_lines(app: &App) -> Vec<Line<'static>> {
+    let receipt = app.active_receipt.as_ref().or(app.last_receipt.as_ref());
+    let kind = receipt.map_or(OperationKind::Conversation, |receipt| receipt.kind);
     let mut lines = vec![
         Line::from(Span::styled(
-            "Workspace",
+            match kind {
+                OperationKind::Conversation => "Conversation",
+                OperationKind::Task => "Task execution",
+            },
             Style::default()
                 .fg(theme::ACTION)
                 .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!(
+                "State       {}",
+                if app.pending_execution.is_some() {
+                    "Awaiting approval"
+                } else if kind == OperationKind::Conversation
+                    && app.active_receipt.is_none()
+                    && receipt.is_some_and(|receipt| receipt.phase == "Completed")
+                {
+                    "Ready"
+                } else {
+                    receipt.map_or("Ready", |receipt| receipt.phase.as_str())
+                }
+            ),
+            Style::default().fg(if app.worker_active {
+                theme::GOLD
+            } else {
+                theme::TEXT_SOFT
+            }),
         )),
         Line::from(Span::styled(
             format!("Mode        {}", app.mode.label()),
@@ -35,10 +60,6 @@ pub fn build_lines(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(theme::TEXT_MUTED),
         )),
         Line::from(Span::styled(
-            format!("Phase       {}", app.phase),
-            Style::default().fg(theme::TEXT_MUTED),
-        )),
-        Line::from(Span::styled(
             format!(
                 "Scope       H{} P{} A{}",
                 json_array_len(&app.task_constraints, "allowed_hosts"),
@@ -55,45 +76,44 @@ pub fn build_lines(app: &App) -> Vec<Line<'static>> {
                 theme::CORAL
             }),
         )),
-        Line::from(Span::styled(
-            format!("Last run    {}", last_run_label(app.last_run.as_ref())),
-            Style::default().fg(theme::TEXT_MUTED),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Execution receipt",
-            Style::default()
-                .fg(theme::SEAFOAM)
-                .add_modifier(Modifier::BOLD),
-        )),
     ];
-    if let Some(receipt) = app.active_receipt.as_ref() {
+    if kind == OperationKind::Task {
+        if receipt.is_some_and(|receipt| receipt.phase != "Submitting") {
+            lines.push(Line::from(Span::styled(
+                format!("Phase       {}", app.phase),
+                Style::default().fg(theme::TEXT_MUTED),
+            )));
+        }
         lines.push(Line::from(Span::styled(
-            format!("LIVE  {}", receipt.phase),
-            Style::default()
-                .fg(theme::GOLD)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(Span::styled(
-            format!("Found {}", receipt.findings),
+            format!(
+                "Found       {}",
+                receipt.map_or(0, |receipt| receipt.findings)
+            ),
             Style::default().fg(theme::SUCCESS),
         )));
         lines.push(Line::from(Span::styled(
-            truncate(&receipt.command, 22),
+            format!("Last run    {}", last_run_label(app.last_run.as_ref())),
             Style::default().fg(theme::TEXT_MUTED),
         )));
-    } else if let Some(receipt) = app.last_receipt.as_ref() {
+    }
+    lines.push(Line::from(""));
+    if let Some(receipt) = receipt {
         lines.push(Line::from(Span::styled(
-            format!("{}  {} finding(s)", receipt.phase, receipt.findings),
-            Style::default().fg(theme::TEXT_SOFT),
+            match (kind, app.active_receipt.is_some()) {
+                (OperationKind::Conversation, true) => "Current message",
+                (OperationKind::Conversation, false) => "Last message",
+                (OperationKind::Task, true) => "Current command",
+                (OperationKind::Task, false) => "Last command",
+            },
+            Style::default().fg(theme::SEAFOAM),
         )));
         lines.push(Line::from(Span::styled(
-            truncate(&receipt.command, 22),
+            truncate(&receipt.input, 22),
             Style::default().fg(theme::TEXT_MUTED),
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "No command started",
+            "Natural language or / commands",
             Style::default().fg(theme::TEXT_HINT),
         )));
     }

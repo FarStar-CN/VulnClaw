@@ -7,7 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    App, COMPOSER_FRAME_ROWS, COMPOSER_STATUS_ROWS, LLM_SUGGESTION_ROWS, PALETTE_ROWS,
+    App, ExecutionMode, OperationKind, COMPOSER_FRAME_ROWS, COMPOSER_STATUS_ROWS,
+    LLM_SUGGESTION_ROWS, PALETTE_ROWS,
 };
 use crate::theme;
 use crate::views::status;
@@ -495,11 +496,6 @@ pub(crate) fn approval_max_scroll(pending: &crate::app::PendingExecution, area: 
         .saturating_sub(usize::from(body_height))
 }
 
-/// Width reserved for the left cluster before the provider badge is dropped, so
-/// a narrow terminal truncates the badge rather than the brand, mode and
-/// permission indicators.
-const HEADER_LEFT_MIN_WIDTH: u16 = 24;
-
 /// Right-aligned provider badge text, or `None` before the backend reports one.
 ///
 /// Only the provider stays in the header — the model name moved down to the
@@ -512,15 +508,26 @@ fn provider_badge(app: &App) -> Option<String> {
     Some(format!("provider: {}", app.provider.as_deref()?))
 }
 
-/// Spinner, equalizer and elapsed readout for a running task, or `None` when
-/// idle so the header stays a quiet title bar.
-fn worker_cluster(app: &App) -> Option<Line<'static>> {
+/// Conversation or task activity, with a timer only during an active operation.
+fn worker_cluster(app: &App) -> Line<'static> {
     if !app.worker_active {
-        return None;
+        return Line::from(Span::styled(
+            "Conversation",
+            Style::default().fg(theme::TEXT_MUTED),
+        ));
     }
-    Some(Line::from(vec![
+    let label = if app.pending_execution.is_some() {
+        "awaiting approval"
+    } else {
+        match app.active_receipt.as_ref().map(|receipt| receipt.kind) {
+            Some(OperationKind::Task) => "task running",
+            _ if app.mode == ExecutionMode::Plan => "planning",
+            _ => "responding",
+        }
+    };
+    Line::from(vec![
         Span::styled(
-            format!("{} running", theme::spinner_frame(true)),
+            format!("{} {label}", theme::spinner_frame(true)),
             Style::default().fg(theme::GOLD),
         ),
         Span::raw(" "),
@@ -533,13 +540,11 @@ fn worker_cluster(app: &App) -> Option<Line<'static>> {
             theme::elapsed_label(app.worker_started_at),
             Style::default().fg(theme::TEXT_SOFT),
         ),
-    ]))
+    ])
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-    // A title bar: brand left, live worker cluster centred, provider badge
-    // right. There is no `idle` text -- an idle header simply carries no
-    // cluster, because the Status view already reports the worker state.
+    // Brand left, conversation/task activity centred, provider badge right.
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -561,6 +566,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             .add_modifier(Modifier::BOLD),
     ));
     let brand_width = u16::try_from(brand.width()).unwrap_or(u16::MAX);
+    let cluster = worker_cluster(app);
+    let cluster_width = u16::try_from(cluster.width()).unwrap_or(u16::MAX);
     // The badge is a fixed-width right cluster; measure it in display cells, not
     // bytes, because provider names can contain full-width glyphs. One extra
     // column keeps the badge rail off the header's own right border.
@@ -569,8 +576,11 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         .as_deref()
         .map(|text| u16::try_from(Line::from(text).width()).unwrap_or(u16::MAX) + 5)
         .unwrap_or(0);
-    let show_badge = badge_width > 0 && inner.width >= badge_width + HEADER_LEFT_MIN_WIDTH;
-    let cluster = worker_cluster(app);
+    // Keep the activity and timer readable before spending space on provider metadata.
+    let required_width = badge_width
+        .saturating_add(brand_width)
+        .saturating_add(cluster_width);
+    let show_badge = badge_width > 0 && inner.width >= required_width;
     let panes = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -580,14 +590,12 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(inner);
     frame.render_widget(Paragraph::new(brand).style(header_bg), panes[0]);
-    if let Some(cluster) = cluster {
-        frame.render_widget(
-            Paragraph::new(cluster)
-                .alignment(Alignment::Center)
-                .style(header_bg),
-            panes[1],
-        );
-    }
+    frame.render_widget(
+        Paragraph::new(cluster)
+            .alignment(Alignment::Center)
+            .style(header_bg),
+        panes[1],
+    );
     let Some(text) = badge.filter(|_| show_badge) else {
         return;
     };

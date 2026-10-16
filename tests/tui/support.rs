@@ -121,6 +121,11 @@ for line in sys.stdin:
             result = {"mode": arguments["mode"], "message": "Mode updated"}
             control_state = state()
             control_state["execution_mode"] = arguments["mode"]
+        elif operation == "session.new":
+            current_task = None
+            current_target = ""
+            result = {"message": "New conversation started."}
+            control_state = state()
         elif operation == "config.read":
             result = {
                 "provider": "deepseek",
