@@ -1,5 +1,5 @@
 {
-  "cli.welcome": "欢迎使用 VulnClaw！输入自然语言任务开始，输入 help 查看命令，按 Ctrl+C 退出。",
+  "cli.welcome": "欢迎使用 VulnClaw！输入自然语言任务开始，输入 /help 查看命令，按 Ctrl+C 退出。",
   "cli.no_api_key": "[!] 未检测到 LLM API Key。请先运行 [bold]vulnclaw config set llm.api_key <your-key>[/]。",
   "cli.choose_provider": "    选择提供商: [bold]vulnclaw config provider <name>[/]",
   "cli.set_env_var": "    或设置环境变量: [bold]VULNCLAW_LLM_API_KEY[/]",

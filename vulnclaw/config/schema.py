@@ -515,6 +515,10 @@ class SessionConfig(BaseModel):
         default=True,
         description="Automatically generate a markdown replay report when model-led solve completes",
     )
+    conversation_auto_report: bool = Field(
+        default=True,
+        description="Export a security report when a natural-language engagement completes",
+    )
     solve_report_show: bool = Field(
         default=True,
         description="Print the generated solve replay report in the terminal after completion",

@@ -56,7 +56,6 @@ pub fn severity_style(severity: &str) -> Style {
 pub fn mode_color(label: &str) -> Color {
     match label {
         "Agent" => MODE_AGENT,
-        "YOLO" => ROSE,
         _ => TEXT_HINT,
     }
 }

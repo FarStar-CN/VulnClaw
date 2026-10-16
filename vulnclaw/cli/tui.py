@@ -54,13 +54,13 @@ from vulnclaw.config.settings import (
     save_config,
 )
 from vulnclaw.i18n import _, init_i18n
+from vulnclaw.input_service import COMMANDS
 from vulnclaw.skills.dispatcher import SkillDispatcher
 from vulnclaw.skills.flag_skills import (
     apply_flag_skill_to_tui_state,
     complete_flag_skills,
     find_flag_skill,
     parse_flag_skill_command,
-    render_flag_skill,
     render_flag_skill_compact,
 )
 from vulnclaw.skills.loader import load_skill_by_name
@@ -176,7 +176,7 @@ def rebuild_translations() -> None:
     MODES = _build_modes()
     MENU_ITEMS = _build_menu_items()
     SLASH_COMMANDS = _build_slash_commands()
-    REPL_COMMANDS = _build_repl_commands()
+    REPL_COMMANDS = dict(COMMANDS)
 
 
 CheckMode = Literal["quick", "standard", "deep", "continuous"]
@@ -886,41 +886,7 @@ def _build_slash_commands() -> dict[str, str]:
 SLASH_COMMANDS: dict[str, str] = _build_slash_commands()
 
 
-def _build_repl_commands() -> dict[str, str]:
-    """Built-in commands the classic REPL implements itself (not skills).
-
-    These have real handlers in ``_run_repl`` — unlike the wider Textual-TUI
-    ``SLASH_COMMANDS`` set, which the classic REPL cannot dispatch.
-    """
-    return {
-        "config": _("tui.slash_config"),
-        "language": _("tui.slash_lang"),
-        "wizard": _("tui.slash_wizard"),
-        # Permission-mode switcher for the execution gate (handler lives in
-        # main._run_repl_command). Distinct from the Textual-TUI /mode check
-        # depth (quick/standard/deep/continuous), hence its own label.
-        "mode": _("tui.slash_permission_mode"),
-        "experience": _("tui.slash_experience"),
-        "learn": _("tui.slash_learn"),
-        "feedback": _("tui.slash_feedback"),
-    }
-
-
-REPL_COMMANDS: dict[str, str] = _build_repl_commands()
-
-# Short aliases → canonical classic-REPL command name.
-_REPL_COMMAND_ALIASES: dict[str, str] = {
-    "cfg": "config",
-    "lang": "language",
-    "exp": "experience",
-}
-
-
-def _resolve_repl_command(name: str) -> str:
-    """Return the canonical REPL command for ``name`` (or an alias), else ``""``."""
-    key = name.strip().lower()
-    key = _REPL_COMMAND_ALIASES.get(key, key)
-    return key if key in REPL_COMMANDS else ""
+REPL_COMMANDS: dict[str, str] = dict(COMMANDS)
 
 
 def skill_display_description(skill: dict[str, Any]) -> str:
@@ -976,7 +942,6 @@ def list_repl_palette_entries(prefix: str = "") -> list[tuple[str, str]]:
         if normalized and not cmd.startswith(normalized):
             continue
         entries.append((cmd, f"Command · {desc}"))
-    entries.extend(list_skill_palette_entries(prefix))
     return entries
 
 
@@ -1080,54 +1045,10 @@ def _build_at_completer() -> Any:
 
 
 def build_repl_slash_completer() -> Any:
-    """Completer for the classic REPL: ``/`` lists commands+skills, ``/.`` flag skills.
+    """Complete the shared command grammar; skills are selected in prompts."""
+    from prompt_toolkit.completion import WordCompleter
 
-    The ``/`` menu offers the classic REPL's built-in commands (``/config``,
-    ``/language``) followed by skills. The Textual TUI's other slash commands
-    (``/mode`` etc.) are still excluded — they have no handler here.
-    """
-    from prompt_toolkit.completion import Completer, Completion
-
-    class _ReplSlashCompleter(Completer):
-        def get_completions(self, document, _complete_event):
-            text = document.text_before_cursor
-            if not text.startswith("/"):
-                return
-
-            if text.startswith("/."):
-                word = text[2:]
-                if " " in word:
-                    return
-                for skill in complete_flag_skills(word):
-                    start_position = -len(word) if word else 0
-                    yield Completion(
-                        skill.name,
-                        start_position=start_position,
-                        display=[
-                            (f"fg:{C_PRIMARY} bold", f"/.{skill.name}"),
-                            ("", "  "),
-                            (f"fg:{C_MUTED}", skill.summary),
-                        ],
-                    )
-                return
-
-            word = text[1:]
-            if " " in word:
-                # A command/skill is already chosen; the rest is free-text input.
-                return
-            for name, desc in list_repl_palette_entries(word):
-                start_position = -len(word) if word else 0
-                yield Completion(
-                    name,
-                    start_position=start_position,
-                    display=[
-                        (f"fg:{C_PRIMARY} bold", f"/{name}"),
-                        ("", "  "),
-                        (f"fg:{C_MUTED}", desc),
-                    ],
-                )
-
-    return _ReplSlashCompleter()
+    return WordCompleter(["/" + name for name in dict(COMMANDS)], sentence=True)
 
 
 def slash_completion_style_rules() -> dict[str, str]:
@@ -1155,77 +1076,6 @@ def build_repl_slash_style() -> Any:
     return Style.from_dict(slash_completion_style_rules())
 
 
-@dataclass
-class ReplSlashResult:
-    """Outcome of dispatching a ``/`` line in the classic REPL.
-
-    ``kind`` is one of:
-    - ``"run"``     — feed ``text`` to the agent as a natural-language prompt.
-    - ``"message"`` — print ``text`` and keep looping.
-    - ``"target"``  — set the REPL target to ``value`` (restore behaviour), then loop.
-    - ``"command"`` — run built-in command ``value`` with arguments ``text``.
-    """
-
-    kind: Literal["run", "message", "target", "command"]
-    text: str = ""
-    value: str = ""
-
-
-def dispatch_repl_slash(text: str) -> ReplSlashResult:
-    """Resolve a ``/`` or ``/.`` line into a request for the classic REPL.
-
-    Pure: performs no I/O and mutates no state, so the loop stays in control of
-    printing and target restoration. See :class:`ReplSlashResult`.
-    """
-    stripped = text.strip()
-
-    if stripped.startswith("/."):
-        return _dispatch_repl_flag_skill(stripped)
-
-    body = stripped[1:].strip()
-    if not body:
-        return ReplSlashResult("message", "Type a skill name after '/', e.g. /recon <task>.")
-
-    parts = body.split(maxsplit=1)
-    name = parts[0]
-    task = parts[1].strip() if len(parts) > 1 else ""
-
-    # Built-in REPL commands (/config, /language) take precedence over skills.
-    command = _resolve_repl_command(name)
-    if command:
-        return ReplSlashResult("command", value=command, text=task)
-
-    skill = load_skill_by_name(name)
-    if skill is None:
-        return ReplSlashResult("message", f"Unknown skill: /{name}")
-
-    if task:
-        return ReplSlashResult("run", f"Use VulnClaw skill {skill['name']}. {task}")
-
-    return ReplSlashResult("message", render_slash_skill_help(skill))
-
-
-def _dispatch_repl_flag_skill(text: str) -> ReplSlashResult:
-    """Light (B1) flag-skill wiring for the classic REPL.
-
-    Only ``--target`` and ``--resume``/``--no-resume`` change REPL state; every
-    other flag skill is rendered as guidance, since the classic REPL keeps no
-    persistent mode/scope to apply them to.
-    """
-    command = parse_flag_skill_command(text)
-    skill = find_flag_skill(command.query)
-    if skill is None:
-        return ReplSlashResult("message", f"Unknown flag skill: /.{command.query}")
-
-    if skill.tui_action == "target":
-        if not command.value:
-            return ReplSlashResult("message", f"{skill.canonical} needs a host value, e.g. /.target example.com")
-        return ReplSlashResult("target", value=command.value)
-
-    # Everything else (mode/scope/action flags, resume, and guidance-only flags)
-    # has no persistent home in the classic REPL, so we render it as guidance.
-    return ReplSlashResult("message", render_flag_skill(skill))
-
 
 def _dispatch_slash(text: str, session: dict[str, Any]) -> None:
     if text.startswith("/."):
@@ -1238,7 +1088,7 @@ def _dispatch_slash(text: str, session: dict[str, Any]) -> None:
     handler = _SLASH_HANDLERS.get(cmd)
     if handler:
         handler(session, args)
-    elif not dispatch_skill_slash_command(cmd, args, session):
+    else:
         session["_message"] = f"Unknown command: /{cmd}"
 
 
@@ -1266,51 +1116,6 @@ def _dispatch_flag_skill(text: str, session: dict[str, Any]) -> None:
             return
 
     _set_prompt_message(session, render_flag_skill_compact(skill))
-
-def dispatch_skill_slash_command(cmd: str, args: str, session: dict[str, Any]) -> bool:
-    """Dispatch `/skill-name [task text]` commands from the TUI."""
-    skill = load_skill_by_name(cmd)
-    if skill is None:
-        return False
-
-    if args:
-        state: TuiState = session["state"]
-        if not state.target.strip():
-            # Skills that need a preset target still warn when none is set.
-            if skill.get("requires_target", True):
-                session["_message"] = _("tui.please_set_target")
-                return True
-            # Self-discovering skills (frontmatter ``requires_target: false``,
-            # e.g. ``hackerone``) derive their target from ``args`` — a scope
-            # link. Adopt it as the draft target so the launched subprocess
-            # records a real target instead of the ``<target>`` placeholder.
-            state.target = args.strip()
-        prompt = f"Use VulnClaw skill {skill['name']}. {args.strip()}"
-        session["_nl_text"] = prompt
-        session["_nl_history"] = prompt
-        session["_action"] = "launch"
-        return True
-
-    _set_prompt_message(session, render_slash_skill_help(skill))
-    return True
-
-
-def render_slash_skill_help(skill: dict[str, Any]) -> str:
-    """Render compact help for a selected slash skill."""
-    refs = skill.get("references", [])
-    lines = [
-        f"/{skill['name']} skill",
-        skill_display_description(skill) or "No description available.",
-        f"Format: {skill.get('format', 'unknown')}",
-    ]
-    if refs:
-        ref_list = ", ".join(refs[:5])
-        if len(refs) > 5:
-            ref_list += f", ... ({len(refs)} total)"
-        lines.append(f"References: {ref_list}")
-    lines.append(f"Run with this skill: /{skill['name']} <task>")
-    return " | ".join(lines)
-
 
 @_register_handler("quit")
 @_register_handler("exit")

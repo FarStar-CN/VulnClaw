@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, get_args
+from typing import Any, Awaitable, Callable, Literal, get_args
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -15,6 +15,11 @@ from vulnclaw.orchestrator import OrchestratorRunResult, run_agent_task
 
 TaskCommand = Literal["run", "recon", "scan", "exploit", "persistent", "codescan"]
 TASK_COMMANDS = frozenset(get_args(TaskCommand))
+ACTION_ALIASES = {
+    "recon": ["recon"],
+    "scan": ["recon", "scan"],
+    "exploit": ["recon", "scan", "exploit"],
+}
 SCOPE_FIELDS = frozenset(
     {
         "only_port",
@@ -34,6 +39,7 @@ class TaskOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     engine: Literal["solve", "team", "rounds"] | None = None
+    continuous: bool = False
     scope: str | None = Field(default=None, max_length=32)
     ports: str | None = Field(default=None, max_length=512)
     max_steps: int | None = Field(default=None, ge=1, le=10000)
@@ -102,6 +108,34 @@ class TaskCreateRequest(BaseModel):
     no_import: bool = False
     options: TaskOptions = Field(default_factory=TaskOptions)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_command(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        raw = dict(value)
+        command = raw.get("command")
+        options = raw.get("options") or {}
+        if isinstance(options, TaskOptions):
+            options = options.model_dump(exclude_unset=True)
+        if not isinstance(options, dict):
+            return value
+        options = dict(options)
+        if command in ACTION_ALIASES:
+            ceiling = ACTION_ALIASES[command]
+            allowed = options.get("allow_actions")
+            if isinstance(allowed, str):
+                allowed = [item.strip() for item in allowed.split(",") if item.strip()]
+            if allowed and not set(allowed).issubset(ceiling):
+                raise ValueError(f"{command} only permits actions: {', '.join(ceiling)}")
+            options["allow_actions"] = allowed or list(ceiling)
+            raw["command"] = "run"
+        elif command == "persistent":
+            raw["command"] = "run"
+            options["continuous"] = True
+        raw["options"] = options
+        return raw
+
     @field_validator("target", "snapshot_id", "run_name", "resume_run_name", "runs_dir")
     @classmethod
     def reject_control_characters(cls, value: str | None) -> str | None:
@@ -129,6 +163,8 @@ class TaskCreateRequest(BaseModel):
                 "max_tool_rounds",
                 "max_parallel",
                 "max_rounds",
+                "continuous", "ports", "cve", "cmd", "auto_report",
+                "rounds_per_cycle", "max_cycles",
             },
             "scan": {"ports"},
             "exploit": {"cve", "cmd"},
@@ -141,11 +177,14 @@ class TaskCreateRequest(BaseModel):
             name
             for name in self.options.model_fields_set
             if getattr(self.options, name) is not None
+            and (name != "continuous" or self.options.continuous)
         }
         unsupported = supplied - common - command_fields[self.command]
         if unsupported:
             names = ", ".join(sorted(unsupported))
             raise ValueError(f"unsupported option(s) for {self.command}: {names}")
+        if not self.options.continuous and supplied & {"rounds_per_cycle", "max_cycles"}:
+            raise ValueError("cycle options require --continuous")
         return self
 
 
@@ -176,7 +215,13 @@ def task_request_from_payload(
     options = dict(raw_options)
     for field in SCOPE_FIELDS:
         if field not in options and defaults and defaults.get(field) not in (None, "", []):
-            options[field] = defaults[field]
+            default = defaults[field]
+            if field == "allow_actions" and raw.get("command") in ACTION_ALIASES:
+                allowed = _values(default)
+                default = [item for item in ACTION_ALIASES[raw["command"]] if item in allowed]
+                if not default:
+                    raise ValueError("task shorthand has no actions within the session scope")
+            options[field] = default
     raw["options"] = options
     if "resume" not in raw and defaults and "resume" in defaults:
         raw["resume"] = bool(defaults["resume"])
@@ -216,22 +261,6 @@ def build_task_prompt(request: TaskCreateRequest, constraints: TaskConstraints) 
     options = request.options
     if request.prompt:
         prompt = request.prompt
-    elif request.command == "recon":
-        prompt = f"Perform authorized reconnaissance against {request.target} without exploitation."
-    elif request.command == "scan":
-        port_hint = f", focusing on ports {options.ports}" if options.ports else ""
-        prompt = (
-            f"Perform authorized vulnerability scanning against {request.target}{port_hint} "
-            "without exploitation."
-        )
-    elif request.command == "exploit":
-        cve_hint = f" using {options.cve}" if options.cve else ""
-        prompt = (
-            f"Attempt authorized exploitation against {request.target}{cve_hint} and verify "
-            f"with command: {options.cmd or 'id'}"
-        )
-    elif request.command == "persistent":
-        prompt = f"Continuously perform an authorized pentest against {request.target} until stopped."
     elif request.command == "codescan":
         prompt = f"Perform a local static source-code security scan of {request.target}."
     else:
@@ -239,6 +268,16 @@ def build_task_prompt(request: TaskCreateRequest, constraints: TaskConstraints) 
             f"Perform an authorized {options.scope or 'full'} pentest against {request.target}. "
             "This target is explicitly in scope."
         )
+    hints = []
+    if options.continuous:
+        hints.append("Continue in cycles until completed, clarification is needed, or stopped.")
+    if options.ports:
+        hints.append(f"Focus on ports {options.ports}.")
+    if options.cve:
+        hints.append(f"Investigate {options.cve}.")
+    if options.cmd:
+        hints.append(f"Use {options.cmd!r} for authorized verification when permitted.")
+    prompt = " ".join([prompt, *hints])
     block = constraints.to_prompt_block()
     return f"{prompt}\n\n{block}" if block else prompt
 
@@ -328,7 +367,7 @@ async def run_task_action(
     options = request.options
     if request.command == "codescan":
         return await _run_codescan(task, stream_sink=stream_sink)
-    if request.command == "run":
+    if request.command == "run" and not options.continuous:
         engine = resolve_engine(agent.config, options.engine)
         if engine == "solve":
             return await agent.solve(
@@ -368,7 +407,17 @@ async def run_task_action(
             engine="rounds",
             task_constraints=task.constraints,
         )
-    if request.command == "persistent":
+    if options.continuous:
+        async def cycle_runner(prompt: str, on_step: Any) -> list[Any]:
+            cycle_request = request.model_copy(update={
+                "options": options.model_copy(update={"continuous": False}),
+            })
+            result = await run_task_action(
+                agent, PreparedTask(cycle_request, prompt, task.constraints),
+                stream_sink=stream_sink, on_event=on_event, on_step=on_step,
+            )
+            return result if isinstance(result, list) else []
+
         return await agent.persistent_pentest(
             task.prompt,
             target=request.target,
@@ -389,6 +438,8 @@ async def run_task_action(
             on_cycle_complete=on_cycle_complete,
             stream_sink=stream_sink,
             task_constraints=task.constraints,
+            engine=options.engine,
+            cycle_runner=cycle_runner,
         )
     return await agent.chat(
         task.prompt,
@@ -406,6 +457,7 @@ async def execute_task(
     on_restored: Callable[[Any], None] | None = None,
     on_legacy_import: Callable[[Any], None] | None = None,
     before_action: Callable[[], None] | None = None,
+    action_runner: Callable[[Any], Awaitable[Any]] | None = None,
     stream_sink: Any = None,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
     on_step: Callable[[int, Any], None] | None = None,
@@ -441,15 +493,18 @@ async def execute_task(
         nonlocal action_result
         if before_action is not None:
             before_action()
-        action_result = await run_task_action(
-            shared_agent,
-            task,
-            stream_sink=stream_sink,
-            on_event=on_event,
-            on_step=on_step,
-            on_cycle_step=on_cycle_step,
-            on_cycle_complete=on_cycle_complete,
-        )
+        if action_runner is not None:
+            action_result = await action_runner(shared_agent)
+        else:
+            action_result = await run_task_action(
+                shared_agent,
+                task,
+                stream_sink=stream_sink,
+                on_event=on_event,
+                on_step=on_step,
+                on_cycle_step=on_cycle_step,
+                on_cycle_complete=on_cycle_complete,
+            )
         return action_result
 
     run = await run_agent_task(

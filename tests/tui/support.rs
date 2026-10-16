@@ -12,7 +12,7 @@ const BACKEND_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKEND_EVENT_TIMEOUT: Duration = Duration::from_secs(3);
 
 const APP_BACKEND: &str = r#"
-import json, os, sys
+import json, os, sys, shlex
 
 current_task = None
 current_target = ""
@@ -32,6 +32,29 @@ def state(active=False, task_id=None, phase="idle", target=None, findings=None):
 for line in sys.stdin:
     msg = json.loads(line)
     base = {"protocol_version": 1}
+    if msg["type"] == "submit_input":
+        text = msg["payload"]["text"]
+        parts = shlex.split(text)
+        verb = parts[0].lstrip("/") if parts else ""
+        if text.startswith("/") and verb in {"run", "recon", "scan", "exploit", "persistent", "codescan"}:
+            msg["type"] = "start_task"
+            msg["payload"] = {"task": {"command": "codescan" if verb == "codescan" else "run", "target": parts[1], "prompt": text}}
+        elif text.startswith("/"):
+            msg["type"] = "control"
+            operation = {"mode": "session.mode.set", "permission": "session.permission.set", "new": "session.new", "scope": "session.scope.update"}.get(verb, "session.status")
+            args = {"mode": parts[1]} if verb in {"mode", "permission"} and len(parts) > 1 else {}
+            if verb == "scope":
+                if parts[1:] in (["reset"], ["--clear"]):
+                    operation = "session.scope.reset"
+                else:
+                    args = {"scope": {parts[i][2:].replace("-", "_"): parts[i+1] for i in range(1,len(parts),2)}}
+            msg["payload"] = {"operation": operation, "arguments": args}
+        else:
+            current_task = msg["task_id"]
+            print(json.dumps(base | {"type": "turn_started", "request_id": msg["request_id"], "task_id": current_task, "text": text, "state": state(True, current_task)}), flush=True)
+            print(json.dumps(base | {"type": "log", "task_id": current_task, "message": "Natural language response"}), flush=True)
+            print(json.dumps(base | {"type": "turn_completed", "request_id": msg["request_id"], "task_id": current_task, "result": {}, "state": state()}), flush=True)
+            continue
     if msg["type"] == "initialize":
         print(json.dumps(base | {
             "type": "ready",
@@ -39,7 +62,8 @@ for line in sys.stdin:
             "backend": {"pid": os.getpid(), "version": "test", "protocol_version": 1},
             "capabilities": {
                 "commands": ["scan", "run", "recon"],
-                "control_operations": ["config.models", "config.preset", "config.read", "config.write", "example.inspect", "session.permission.set", "session.scope.reset", "session.scope.update"],
+                "natural_language": True,
+                "control_operations": ["session.mode.set", "session.new", "config.models", "config.preset", "config.read", "config.write", "example.inspect", "session.permission.set", "session.scope.reset", "session.scope.update"],
                 "cancellation": True,
                 "authoritative_state": True,
             },
@@ -93,7 +117,11 @@ for line in sys.stdin:
                 "message": "rejected",
             }), flush=True)
             continue
-        if operation == "config.read":
+        if operation == "session.mode.set":
+            result = {"mode": arguments["mode"], "message": "Mode updated"}
+            control_state = state()
+            control_state["execution_mode"] = arguments["mode"]
+        elif operation == "config.read":
             result = {
                 "provider": "deepseek",
                 "website_url": "https://www.deepseek.com/",

@@ -256,25 +256,27 @@ vulnclaw
 [+] PoC 脚本已保存: ./pocs/CVE-202X-XXXX.py
 ```
 
-**REPL 内置命令：**
+**REPL 与原生 TUI 使用同一输入语义，普通文本默认进入自然语言：**
 
 | 命令 | 说明 |
 |------|------|
-| `target <host>` | 设置渗透测试目标 |
-| `status` | 查看当前状态 |
-| `tools` | 列出当前可用 MCP 工具 |
-| `think on/off` | 切换推理过程显示 |
-| `mode [模式]` | 查看或切换执行审批模式（ask / auto_review / full_access） |
-| `persistent` | 启动持续性渗透测试 |
-| `clear` | 清空当前会话 |
-| `help` | 显示帮助信息 |
-| `exit` / `quit` / `q` | 退出 |
+| `/run <target>` | 执行任务；`--allow-actions` 限制动作，`--continuous` 持续执行 |
+| `/recon` / `/scan` / `/exploit` / `/persistent` | 对应带约束或周期参数的 `/run` 简写 |
+| `/target <host>` / `/scope ...` | 设置目标和范围默认值 |
+| `/mode plan` / `/mode agent` | 规划或执行；新建会话默认 Agent |
+| `/permission ask` / `auto_review` / `full_access` | 独立设置执行审批策略 |
+| `/clear` / `/new` | 清理显示 / 开启新对话，保留已保存的任务文件 |
+| `/report` / `/compact` | 导出现有结果 / 压缩上下文 |
+| `/status` / `/tools` / `/think on` / `/think off` | 状态、工具和推理显示 |
+| `/help` / `/quit` | 帮助 / 退出 |
+
+技能通过 prompt 明确指定，例如“使用技能 web-pentest，检查登录流程”；未指定时自动选择。不提供 `/skill` 或 `/<技能名>` 启动语法。自然语言报告按语义及对应配置处理，明确要求生成或不生成优先于默认设置。完整架构见 [Markdown 架构文档](docs/architecture/tui-natural-language-design.md)。
 
 **自动渗透触发：** 输入包含「渗透测试」「找 flag」「爆破」等关键词 + 目标地址时，自动进入多轮自主渗透循环。`Ctrl+C` 随时中断。
 
 ### 方式二：TUI 工作台
 
-可选的终端图形化工作台，展示授权目标、检查模式、运行概览、安全边界，让用户先确认范围再启动任务。
+终端工作台默认接受自然语言，支持多轮上下文、流式工具输出、审批和取消；显式任务命令保留启动确认。
 
 ```bash
 vulnclaw tui
@@ -329,7 +331,7 @@ vulnclaw persistent 192.168.1.100 --no-report   # 不自动生成报告
 vulnclaw tui --target 192.168.1.100 --mode continuous
 
 # REPL 方式
-🦞 vulnclaw> persistent 192.168.1.100
+🦞 vulnclaw> /run 192.168.1.100 --continuous
 ```
 
 **特点：** 跨周期状态保持 / 周期报告 / 灵活中断 / 增量发现 / 可配置
@@ -625,6 +627,7 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 | `session.context_summary_max_tokens` | 3500 | 长期结构化上下文摘要的最大 token 预算 |
 | `session.context_output_reserve_tokens` | 0 | 为模型输出预留的 token；0 时取 `min(llm.max_tokens, 8192)` |
 | `session.context_compaction_audit_enabled` | true | 是否在持久化 AgentState 中记录压缩审计事件 |
+| `session.conversation_auto_report` | true | 自然语言安全测试完成后默认导出报告，明确要求优先 |
 | `session.solve_auto_report` | true | solve 目标达成后自动生成 Markdown 复盘报告 |
 | `session.solve_report_show` | true | 自动报告生成后在终端直接打印报告正文 |
 | `session.max_rounds` | 15 | 最大轮数 |

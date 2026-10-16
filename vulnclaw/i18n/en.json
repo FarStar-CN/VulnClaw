@@ -1,5 +1,5 @@
 {
-  "cli.welcome": "Welcome to VulnClaw! Enter a natural-language task to start. Type help for commands. Press Ctrl+C to exit.",
+  "cli.welcome": "Welcome to VulnClaw! Enter a natural-language task to start. Type /help for commands. Press Ctrl+C to exit.",
   "cli.no_api_key": "[!] No LLM API key detected. Run [bold]vulnclaw config set llm.api_key <your-key>[/] first.",
   "cli.choose_provider": "    Choose a provider: [bold]vulnclaw config provider <name>[/]",
   "cli.set_env_var": "    Or set env var: [bold]VULNCLAW_LLM_API_KEY[/]",

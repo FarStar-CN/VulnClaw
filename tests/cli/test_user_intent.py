@@ -1,10 +1,10 @@
 """Tests for conversational check-in routing helpers."""
 
-from vulnclaw.cli.main import _should_auto_pentest
-from vulnclaw.cli.user_intent import (
+from vulnclaw.conversation import (
     continue_task_prompt,
     is_affirmative_continue,
     is_conversational_checkin,
+    should_auto_pentest,
 )
 
 
@@ -49,10 +49,10 @@ class TestIsConversationalCheckin:
 
 class TestShouldAutoPentestRespectsCheckin:
     def test_checkin_never_enters_auto_even_with_target(self):
-        assert _should_auto_pentest("ready to begin bug hunting?", "https://hackerone.com") is False
+        assert should_auto_pentest("ready to begin bug hunting?", "https://hackerone.com") is False
 
     def test_explicit_recon_still_auto(self):
-        assert _should_auto_pentest("start recon", "https://api.example.com") is True
+        assert should_auto_pentest("start recon", "https://api.example.com") is True
 
 
 class TestContinueTaskPrompt:

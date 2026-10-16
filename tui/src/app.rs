@@ -138,18 +138,15 @@ pub fn paste_clipboard_into_composer(app: &mut App) -> bool {
 pub enum ExecutionMode {
     Plan,
     Agent,
-    Yolo,
 }
 
 impl ExecutionMode {
     pub fn next(self) -> Self {
         match self {
             // VulnClaw is a task-driven workbench: Tab cycles between the
-            // read-only plan posture and the live agent posture. YOLO is
-            // retired.
+            // read-only plan posture and the live agent posture.
             Self::Plan => Self::Agent,
             Self::Agent => Self::Plan,
-            Self::Yolo => Self::Plan,
         }
     }
 
@@ -157,7 +154,6 @@ impl ExecutionMode {
         match self {
             Self::Plan => "Plan",
             Self::Agent => "Agent",
-            Self::Yolo => "YOLO",
         }
     }
 }
@@ -643,6 +639,11 @@ const LOCAL_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/report", "show report export guidance"),
     ("/config", "configure the LLM provider"),
     ("/clear", "clear the transcript"),
+    ("/new", "start a new conversation"),
+    ("/mode ", "show or set plan | agent"),
+    ("/permission ", "show or set execution approval policy"),
+    ("/target ", "show or set the current target"),
+    ("/compact", "compact conversation context"),
     ("/help", "list available commands"),
     ("/run ", "run a task through the Python backend"),
     ("/recon ", "run a task through the Python backend"),
@@ -677,7 +678,7 @@ enum PendingRequest {
     Initialize,
     #[allow(dead_code)]
     GetState,
-    StartTask(String),
+    Input(String),
     CancelTask(String),
     Control(String),
     Shutdown,
@@ -726,6 +727,8 @@ pub struct App {
     /// Optional management operations advertised by the Python backend.
     pub backend_control_operations: Vec<String>,
     pub backend_supports_cancellation: bool,
+    pub backend_supports_natural_language: bool,
+    pub backend_input_commands: std::collections::BTreeMap<String, String>,
     pub target: String,
     pub phase: String,
     pub active_task_id: Option<String>,
@@ -808,6 +811,8 @@ impl App {
             backend_commands: Vec::new(),
             backend_control_operations: Vec::new(),
             backend_supports_cancellation: false,
+            backend_supports_natural_language: false,
+            backend_input_commands: std::collections::BTreeMap::new(),
             target: String::new(),
             phase: "idle".to_owned(),
             active_task_id: None,
@@ -877,48 +882,51 @@ impl App {
     }
 
     pub fn submit(&mut self) {
-        let command = strip_prompt_prefix(self.input.trim());
-        if command.is_empty() {
+        let text = strip_prompt_prefix(self.input.trim());
+        if text.is_empty() {
             return;
         }
-        self.record_command(&command);
-        self.push(TranscriptKind::User, format!("> {command}"));
-        self.clear_composer();
-        if command == "/help" {
-            let backend = if self.backend_commands.is_empty() {
-                "none advertised yet".to_owned()
-            } else {
-                self.backend_commands
-                    .iter()
-                    .map(|command| format!("/{command} <target>"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            self.status(format!(
-                "Backend tasks: {backend}. Local commands: /scope, /report, /config, /clear, /help. Ctrl+C aborts a running command."
-            ));
-        } else if command == "/clear" {
+        let verb = split_slash_command(&text).map(|(verb, _)| verb);
+        let executing = verb.is_none_or(is_task_verb);
+        if self.worker_active && executing {
+            self.error("An operation is running; wait or press Ctrl+C. Your draft was kept.");
+            return;
+        }
+        if text == "/clear" {
             self.transcript.clear();
             self.layout.output.scroll = 0;
             self.layout.output.follow = true;
-            self.status("Transcript cleared. Findings remain available in the inspector.");
-        } else if command == "/report" {
-            self.status(
-                "Use vulnclaw report <result.json> [--pdf] to write the report; the TUI shows findings live.",
-            );
-        } else if command == "/config" {
-            self.open_llm_settings();
-        } else if let Some((verb, arguments)) = split_slash_command(&command) {
-            if verb == "scope" {
-                self.request_scope_control(arguments);
-            } else if is_task_verb(verb) {
-                self.request_task(verb, arguments);
+        } else if text == "/quit" {
+            self.running = false;
+        } else if text == "/help" {
+            let help = if self.backend_input_commands.is_empty() {
+                LOCAL_SLASH_COMMANDS
+                    .iter()
+                    .map(|(name, desc)| format!("{name}: {desc}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             } else {
-                self.error(format!("Unknown command: {command}"));
+                self.backend_input_commands
+                    .iter()
+                    .map(|(name, desc)| format!("/{name}: {desc}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            self.status(help);
+        } else if text == "/config" {
+            self.open_llm_settings();
+        } else if let Some((verb, arguments)) = split_slash_command(&text) {
+            if is_task_verb(verb) {
+                self.request_task(verb, arguments);
+            } else if !self.send_text_input(text.clone(), false) {
+                return;
             }
-        } else {
-            self.error(format!("Unknown command: {command}"));
+        } else if !self.send_text_input(text.clone(), true) {
+            return;
         }
+        self.record_command(&text);
+        self.push(TranscriptKind::User, format!("> {text}"));
+        self.clear_composer();
     }
 
     pub fn cycle_mode(&mut self) {
@@ -1247,7 +1255,12 @@ impl App {
         if !query.starts_with('/') {
             return Vec::new();
         }
-        let backend = self.backend_commands.iter().map(|command| SlashCommand {
+        let names = if self.backend_input_commands.is_empty() {
+            self.backend_commands.clone()
+        } else {
+            self.backend_input_commands.keys().cloned().collect()
+        };
+        let backend = names.iter().map(|command| SlashCommand {
             command: format!("/{command} "),
             description: "run a task through the Python backend",
         });
@@ -1350,6 +1363,8 @@ impl App {
                     self.backend_control_operations.sort();
                     self.backend_control_operations.dedup();
                     self.backend_supports_cancellation = capabilities.cancellation;
+                    self.backend_supports_natural_language = capabilities.natural_language;
+                    self.backend_input_commands = capabilities.input_commands;
                     // Sync the client label to the backend's authoritative
                     // policy so the status bar is correct from startup.
                     if !capabilities.permission_mode.is_empty() {
@@ -1398,6 +1413,90 @@ impl App {
                     }
                     self.apply_backend_state(state);
                 }
+                BackendEvent::TurnStarted {
+                    request_id,
+                    task_id,
+                    text: _,
+                    state,
+                } => {
+                    if !self.matches_task_response(&request_id, &task_id)
+                        || !self.is_current_task(&task_id)
+                    {
+                        return;
+                    }
+                    self.apply_backend_state(state);
+                    self.update_receipt("Responding");
+                }
+                BackendEvent::TurnCompleted {
+                    request_id,
+                    task_id,
+                    result,
+                    state,
+                } => {
+                    if !self.matches_task_response(&request_id, &task_id)
+                        || !self.is_current_task(&task_id)
+                    {
+                        return;
+                    }
+                    self.apply_backend_state(state);
+                    self.clear_task_requests(&task_id);
+                    self.finish_task("Completed");
+                    if let Some(reports) =
+                        result.get("reports").and_then(serde_json::Value::as_array)
+                    {
+                        for report in reports {
+                            self.status(format!("Report saved: {}", result_text(report, "path")));
+                            let text = result_text(report, "text");
+                            if !text.is_empty() {
+                                self.push(TranscriptKind::Log, text);
+                            }
+                        }
+                    }
+                    if let Some(error) = result
+                        .get("report_error")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        self.error(format!("Report export failed: {error}"));
+                    }
+                    let output = result_text(&result, "output");
+                    if output.starts_with("[!]") {
+                        self.error(output);
+                    }
+                }
+                BackendEvent::TurnCancelled {
+                    request_id,
+                    task_id,
+                    state,
+                } => {
+                    if !self.matches_task_response(&request_id, &task_id)
+                        || !self.is_current_task(&task_id)
+                    {
+                        return;
+                    }
+                    self.apply_backend_state(state);
+                    self.clear_task_requests(&task_id);
+                    self.finish_task("Cancelled");
+                    self.status("Conversation turn cancelled. You can submit another request.");
+                }
+                BackendEvent::TurnFailed {
+                    request_id,
+                    task_id,
+                    error,
+                    state,
+                } => {
+                    if !self.matches_task_response(&request_id, &task_id)
+                        || !self.is_current_task(&task_id)
+                    {
+                        return;
+                    }
+                    self.apply_backend_state(state);
+                    self.clear_task_requests(&task_id);
+                    self.finish_task("Failed");
+                    self.error(format!(
+                        "Conversation failed: {}",
+                        result_text(&error, "message")
+                    ));
+                }
                 BackendEvent::TaskStarted {
                     request_id,
                     task_id,
@@ -1406,7 +1505,7 @@ impl App {
                 } => {
                     if !matches!(
                         self.pending_requests.get(&request_id),
-                        Some(PendingRequest::StartTask(expected)) if expected == &task_id
+                        Some(PendingRequest::Input(expected)) if expected == &task_id
                     ) {
                         self.error(format!("Unexpected task_started response: {request_id}"));
                         return;
@@ -1658,15 +1757,25 @@ impl App {
                     result,
                     state,
                 } => {
-                    if !matches!(
-                        self.pending_requests.remove(&request_id),
-                        Some(PendingRequest::Control(expected)) if expected == operation
-                    ) {
+                    let expected = self.pending_requests.remove(&request_id);
+                    if !matches!(&expected, Some(PendingRequest::Input(_)))
+                        && !matches!(&expected, Some(PendingRequest::Control(name)) if name == &operation)
+                    {
                         self.error(format!("Unexpected control response: {request_id}"));
                         return;
                     }
+                    if operation == "session.new" {
+                        self.transcript.clear();
+                        self.subagents = crate::subagents::Subagents::default();
+                    }
                     if let Some(state) = state {
                         self.apply_backend_state(state);
+                    }
+                    if let Some(report) = result.get("report") {
+                        let text = result_text(report, "text");
+                        if !text.is_empty() {
+                            self.push(TranscriptKind::Log, text);
+                        }
                     }
                     if operation == "session.permission.set" {
                         if let Some(mode_str) =
@@ -1726,14 +1835,18 @@ impl App {
                                 ));
                                 return;
                             }
-                            Some(PendingRequest::StartTask(expected)) => {
-                                if task_id.as_deref() != Some(expected.as_str()) {
+                            Some(PendingRequest::Input(expected)) => {
+                                let active =
+                                    self.active_task_id.as_deref() == Some(expected.as_str());
+                                if (active || task_id.is_some())
+                                    && task_id.as_deref() != Some(expected.as_str())
+                                {
                                     self.error(format!(
                                         "Mismatched task error response: {request_id}"
                                     ));
                                     return;
                                 }
-                                true
+                                active
                             }
                             Some(PendingRequest::CancelTask(expected)) => {
                                 if task_id.as_deref() != Some(expected.as_str()) {
@@ -1817,7 +1930,7 @@ impl App {
     fn matches_task_response(&mut self, request_id: &str, task_id: &str) -> bool {
         let matches = matches!(
             self.pending_requests.get(request_id),
-            Some(PendingRequest::StartTask(expected) | PendingRequest::CancelTask(expected))
+            Some(PendingRequest::Input(expected) | PendingRequest::CancelTask(expected))
                 if expected == task_id
         );
         if !matches {
@@ -1833,13 +1946,18 @@ impl App {
         self.pending_requests.retain(|_, pending| {
             !matches!(
                 pending,
-                PendingRequest::StartTask(expected) | PendingRequest::CancelTask(expected)
+                PendingRequest::Input(expected) | PendingRequest::CancelTask(expected)
                     if expected == task_id
             )
         });
     }
 
     fn apply_backend_state(&mut self, state: StateSnapshot) {
+        match state.execution_mode.as_str() {
+            "plan" => self.mode = ExecutionMode::Plan,
+            "agent" => self.mode = ExecutionMode::Agent,
+            _ => {}
+        }
         self.target = state.target;
         self.phase = state.phase;
         self.findings = state.findings;
@@ -1982,8 +2100,20 @@ impl App {
     }
 
     fn set_mode(&mut self, mode: ExecutionMode) {
-        self.mode = mode;
-        self.status(format!("Execution mode switched to {}.", mode.label()));
+        self.request_control(
+            "session.mode.set",
+            serde_json::json!({
+                "mode": mode.label().to_ascii_lowercase()
+            }),
+        );
+    }
+
+    pub fn restore_mode(&mut self, mode: ExecutionMode) {
+        if self.backend_ready {
+            self.set_mode(mode);
+        } else {
+            self.mode = mode;
+        }
     }
 
     fn request_task(&mut self, command: &str, arguments: &str) {
@@ -2102,33 +2232,6 @@ impl App {
         self.pending_requests
             .insert(request_id, PendingRequest::Control(operation.to_owned()));
         true
-    }
-
-    fn request_scope_control(&mut self, arguments: &str) {
-        let arguments = arguments.trim();
-        if arguments.is_empty() {
-            self.status(
-                "Usage: /scope [--only-host H] [--only-port N] [--only-path P] [--blocked-host H] [--blocked-path P] [--allow-actions A,B] [--block-actions A,B], or /scope --clear.",
-            );
-            return;
-        }
-        let (operation, payload) = if arguments == "--clear" {
-            ("session.scope.reset", serde_json::json!({}))
-        } else {
-            (
-                "session.scope.update",
-                match parse_scope_payload(arguments) {
-                    Ok(scope) => serde_json::json!({"scope": scope}),
-                    Err(error) => {
-                        self.error(error);
-                        return;
-                    }
-                },
-            )
-        };
-        if self.request_control(operation, payload) {
-            self.status("Session scope change requested.");
-        }
     }
 
     // -- /config LLM settings screen --------------------------------------
@@ -2423,44 +2526,44 @@ impl App {
     }
 
     fn start_task(&mut self, command_line: String) {
-        if self.worker_active {
-            self.error("A VulnClaw command is already running.");
-            return;
+        self.send_text_input(command_line, true);
+    }
+
+    fn send_text_input(&mut self, text: String, executing: bool) -> bool {
+        if self.worker_active && executing {
+            self.error("An operation is already running.");
+            return false;
         }
-        if !self.backend_ready {
-            self.error("The Python backend is not ready.");
-            return;
+        if !self.backend_ready || !self.backend_supports_natural_language {
+            self.error("Update the Python backend: shared text input is unavailable.");
+            return false;
         }
-        let task = match parse_task_payload(&command_line) {
-            Ok(task) => task,
-            Err(error) => {
-                self.error(error);
-                return;
-            }
-        };
-        let task_id = format!("task-{}-{}", std::process::id(), self.request_counter + 1);
+        let task_id = format!("input-{}-{}", std::process::id(), self.request_counter + 1);
         let request_id = self.next_request_id();
-        let request = ClientRequest::start_task(request_id.clone(), task_id.clone(), task);
-        self.active_receipt = Some(OperationReceipt {
-            command: command_line,
-            phase: "Submitting".to_owned(),
-            findings: 0,
-        });
-        self.worker_active = true;
-        self.worker_started_at = Some(Instant::now());
-        self.active_task_id = Some(task_id.clone());
-        let send_result = self
+        let request =
+            ClientRequest::submit_input(request_id.clone(), task_id.clone(), text.clone());
+        let sent = self
             .backend
             .as_ref()
             .ok_or_else(|| std::io::Error::other("backend disconnected"))
             .and_then(|backend| backend.send(&request));
-        if let Err(error) = send_result {
-            self.finish_task("Failed to submit");
-            self.error(format!("Could not submit task to Python backend: {error}"));
-        } else {
-            self.pending_requests
-                .insert(request_id, PendingRequest::StartTask(task_id));
+        if let Err(error) = sent {
+            self.error(format!("Could not submit input: {error}"));
+            return false;
         }
+        if executing {
+            self.active_receipt = Some(OperationReceipt {
+                command: text,
+                phase: "Submitting".to_owned(),
+                findings: 0,
+            });
+            self.worker_active = true;
+            self.worker_started_at = Some(Instant::now());
+            self.active_task_id = Some(task_id.clone());
+        }
+        self.pending_requests
+            .insert(request_id, PendingRequest::Input(task_id));
+        true
     }
 
     /// Request cancellation of the active task without terminating the backend.
@@ -2618,157 +2721,6 @@ fn is_task_verb(verb: &str) -> bool {
         verb,
         "run" | "recon" | "scan" | "exploit" | "persistent" | "codescan"
     )
-}
-
-/// Adapt a presentation-layer slash command into the structured task DTO sent
-/// over the TUI protocol.
-pub fn parse_task_payload(command_line: &str) -> Result<serde_json::Value, String> {
-    let (command, arguments) = split_slash_command(command_line)
-        .ok_or_else(|| "task must start with a slash command".to_owned())?;
-    let mut tokens = shell_words::split(arguments).map_err(|error| error.to_string())?;
-    if tokens.is_empty() || tokens[0].starts_with('-') {
-        return Err(format!("/{command} requires a target"));
-    }
-    let target = tokens.remove(0);
-    let (root, options) = parse_option_fields(&tokens)?;
-    let mut task = serde_json::Map::from_iter([
-        (
-            "command".to_owned(),
-            serde_json::Value::String(command.to_owned()),
-        ),
-        ("target".to_owned(), serde_json::Value::String(target)),
-        ("options".to_owned(), serde_json::Value::Object(options)),
-    ]);
-    task.extend(root);
-    Ok(serde_json::Value::Object(task))
-}
-
-/// Parse `/scope` arguments into the backend's structured scope options.
-pub fn parse_scope_payload(arguments: &str) -> Result<serde_json::Value, String> {
-    let tokens = shell_words::split(arguments).map_err(|error| error.to_string())?;
-    let (root, options) = parse_option_fields(&tokens)?;
-    if !root.is_empty() {
-        return Err("scope accepts scope options only".to_owned());
-    }
-    const ALLOWED: &[&str] = &[
-        "only_port",
-        "only_host",
-        "only_path",
-        "blocked_host",
-        "blocked_path",
-        "allow_actions",
-        "block_actions",
-    ];
-    if let Some(field) = options
-        .keys()
-        .find(|field| !ALLOWED.contains(&field.as_str()))
-    {
-        return Err(format!(
-            "unsupported scope option: --{}",
-            field.replace('_', "-")
-        ));
-    }
-    Ok(serde_json::Value::Object(options))
-}
-
-type JsonObject = serde_json::Map<String, serde_json::Value>;
-type ParsedOptionFields = (JsonObject, JsonObject);
-
-fn parse_option_fields(tokens: &[String]) -> Result<ParsedOptionFields, String> {
-    let mut root = serde_json::Map::new();
-    let mut options = serde_json::Map::new();
-    let mut index = 0;
-    while index < tokens.len() {
-        let raw = tokens[index].as_str();
-        let (name, inline) = raw
-            .split_once('=')
-            .map_or((raw, None), |(name, value)| (name, Some(value)));
-        let boolean = matches!(
-            name,
-            "--resume"
-                | "--no-resume"
-                | "--mount"
-                | "--repair"
-                | "--force-fresh"
-                | "--no-import"
-                | "--no-report"
-        );
-        let value = if boolean {
-            if inline.is_some() {
-                return Err(format!("{name} does not accept a value"));
-            }
-            None
-        } else if let Some(value) = inline {
-            Some(value.to_owned())
-        } else {
-            index += 1;
-            Some(
-                tokens
-                    .get(index)
-                    .ok_or_else(|| format!("{name} requires a value"))?
-                    .to_owned(),
-            )
-        };
-
-        match name {
-            "--resume" => root.insert("resume".into(), true.into()),
-            "--no-resume" => root.insert("resume".into(), false.into()),
-            "--mount" | "--repair" | "--force-fresh" | "--no-import" => {
-                root.insert(name.trim_start_matches("--").replace('-', "_"), true.into())
-            }
-            "--no-report" => options.insert("auto_report".into(), false.into()),
-            "--prompt" | "--snapshot" | "--run-name" | "--resume-run" | "--runs-dir"
-            | "--target-type" => {
-                let field = match name {
-                    "--snapshot" => "snapshot_id",
-                    "--resume-run" => "resume_run_name",
-                    _ => name.trim_start_matches("--"),
-                }
-                .replace('-', "_");
-                root.insert(field, value.unwrap().into())
-            }
-            "--target" => {
-                root.entry("additional_targets")
-                    .or_insert_with(|| serde_json::json!([]))
-                    .as_array_mut()
-                    .expect("additional_targets is an array")
-                    .push(value.unwrap().into());
-                None
-            }
-            "--allow-actions" | "--block-actions" => options.insert(
-                name.trim_start_matches("--").replace('-', "_"),
-                serde_json::Value::Array(
-                    value
-                        .unwrap()
-                        .split(',')
-                        .filter(|item| !item.trim().is_empty())
-                        .map(|item| item.trim().into())
-                        .collect(),
-                ),
-            ),
-            "--only-port" | "--max-steps" | "--max-directions" | "--max-tool-rounds"
-            | "--max-parallel" | "--max-rounds" | "--rounds" | "-r" | "--cycles" | "-c" => {
-                let number = value
-                    .unwrap()
-                    .parse::<u64>()
-                    .map_err(|_| format!("{name} must be an integer"))?;
-                let field = match name {
-                    "--rounds" | "-r" => "rounds_per_cycle",
-                    "--cycles" | "-c" => "max_cycles",
-                    _ => name.trim_start_matches("--"),
-                }
-                .replace('-', "_");
-                options.insert(field, number.into())
-            }
-            _ if name.starts_with("--") => options.insert(
-                name.trim_start_matches("--").replace('-', "_"),
-                value.unwrap().into(),
-            ),
-            _ => return Err(format!("unsupported option: {name}")),
-        };
-        index += 1;
-    }
-    Ok((root, options))
 }
 
 fn normalize_backend_command(command: String) -> Option<String> {

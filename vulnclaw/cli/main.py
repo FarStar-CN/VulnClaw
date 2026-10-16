@@ -1,4 +1,4 @@
-﻿"""VulnClaw CLI main entry point with REPL and sub-commands."""
+"""VulnClaw CLI main entry point with REPL and sub-commands."""
 
 # ruff: noqa: E402
 
@@ -79,9 +79,7 @@ from vulnclaw.config.settings import (
 from vulnclaw.config.token_provider import has_llm_credentials
 from vulnclaw.i18n import _
 from vulnclaw.i18n.phases import localized_phase_name
-from vulnclaw.repl_runner import run_repl_call
 from vulnclaw.target_state.store import (
-    apply_target_state_to_agent,
     clear_target_state,
     diff_target_state_snapshots,
     get_target_state_preview,
@@ -130,31 +128,6 @@ def _emit_solve_report_if_completed(agent: Any, config: Any) -> str:
 # 鈹€鈹€ REPL 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
-def _prepare_repl_target(
-    agent, requested_target: str, current_target: Optional[str], current_phase: str
-) -> tuple[str, str, bool]:
-    """Prepare REPL state for a target switch and optionally restore history."""
-    target = requested_target.strip()
-    if not target:
-        return current_target or "", current_phase, False
-
-    if current_target and current_target != target:
-        console.print(
-            _("cli.target_switch").format(from_target = current_target,to_target = target) #数据库存在i18n字符串 未使用
-        )
-        agent.reset_context()
-        current_phase = agent.session_state.phase.value
-
-    restore_result = apply_target_state_to_agent(agent, target)
-    current_phase = restore_result.phase or agent.session_state.phase.value
-    return target, current_phase, restore_result.restored
-
-
-async def _run_repl_agent_call(agent, *, call, after_result) -> None:
-    """Run a REPL agent call and hand each result back to a caller hook."""
-    await run_repl_call(call=call, after_result=after_result)
-
-
 def _localized_phase_label(phase: Any) -> str:
     """Return a display-only phase label for the active UI language."""
     raw = getattr(phase, "value", phase)
@@ -162,7 +135,7 @@ def _localized_phase_label(phase: Any) -> str:
 
 
 def _make_repl_prompt_session() -> Any:
-    """Build a prompt_toolkit session with the skill palette, or None if unavailable.
+    """Build a prompt_toolkit session with command completion, or None if unavailable.
 
     Returns None when stdin is not a TTY (pipes, CI, ``--once`` smoke tests) or
     prompt_toolkit cannot attach, so the REPL falls back to plain input.
@@ -238,7 +211,7 @@ def _read_repl_line(
 def _run_repl_command(
     name: str,
     args: str,
-    agent: Any,
+    application: Any,
     config: Any,
     *,
     mcp_manager: Any = None,
@@ -254,7 +227,7 @@ def _run_repl_command(
         # The editor writes to disk; reload and rebind the running agent so
         # provider/model/key changes take effect without restarting.
         new_config = load_config()
-        agent.apply_config(new_config)
+        application.apply_config(new_config)
         console.print(
             f"[green]✓[/] {_('cli.config_reloaded')}: "
             f"{new_config.llm.provider}/{new_config.llm.model}"
@@ -262,37 +235,7 @@ def _run_repl_command(
         return new_config
 
     if name == "language":
-        return _repl_switch_language(args, agent, config)
-
-    if name == "mode":
-        from vulnclaw.agent.exec_gate import get_execution_gate
-
-        gate = get_execution_gate(config)
-        target = args.strip().lower()
-        if not target:
-            console.print(
-                f"[bold]Permission mode[/]: {gate.mode} "
-                "(ask | auto_review | full_access)"
-            )
-            return config
-        try:
-            new_mode = gate.set_mode(target, source="cli")
-        except ValueError as exc:
-            console.print(f"[red]✗[/] {exc}")
-            return config
-        console.print(f"[green]✓[/] Permission mode set to [bold]{new_mode}[/]")
-        if new_mode == "auto_review":
-            console.print(
-                "[yellow]⚠ auto_review: trusted read-only commands run without "
-                "approval; everything else still prompts. Extend the table via "
-                "safety.trusted_commands.[/]"
-            )
-        elif new_mode == "full_access":
-            console.print(
-                "[yellow]⚠ full_access executes without per-request approval; "
-                "injected content can drive arbitrary execution.[/]"
-            )
-        return config
+        return _repl_switch_language(args, application, config)
 
     if name == "wizard":
         from vulnclaw.cli.wizard import run_setup_wizard
@@ -300,11 +243,11 @@ def _run_repl_command(
         result = run_setup_wizard(
             console=console,
             mcp_manager=mcp_manager,
-            agent=agent,
+            agent=application.agent,
         )
-        if result.config is not None:
-            return result.config
-        return load_config()
+        new_config = result.config if result.config is not None else load_config()
+        application.apply_config(new_config)
+        return new_config
 
     if name == "experience":
         _repl_experience(args)
@@ -451,7 +394,7 @@ def _repl_feedback(args: str, config: Any) -> None:
     )
 
 
-def _repl_switch_language(args: str, agent: Any, config: Any) -> Any:
+def _repl_switch_language(args: str, application: Any, config: Any) -> Any:
     """Switch the interface language from the classic REPL."""
     from vulnclaw.cli.tui import _SUPPORTED_LANGUAGES, rebuild_translations
     from vulnclaw.i18n import init_i18n
@@ -469,549 +412,115 @@ def _repl_switch_language(args: str, agent: Any, config: Any) -> Any:
     save_config(config)
     init_i18n(lang=lang if lang != "auto" else None, config=config)
     rebuild_translations()
-    agent.apply_config(config)
+    application.apply_config(config)
     console.print(f"[green]✓[/] {_('cli.language_set_to')} [bold]{lang}[/].")
     return config
 
 
 def _run_repl() -> None:
-    """Run the interactive REPL loop."""
-    from vulnclaw.agent.core import AgentCore
-    from vulnclaw.mcp.lifecycle import MCPLifecycleManager
+    """Render the shared application input flow in a classic terminal."""
+    from vulnclaw.application import ApplicationSession, ApplicationStreamSink
+    from vulnclaw.cli.approval_channel import install_cli_approval_channel
+    from vulnclaw.input_service import InputRequest
 
     _print_banner()
-
     config = load_config()
-    if not has_llm_credentials(config.llm):
-        console.print(_("cli.no_api_key"))
-        console.print(_("cli.choose_provider"))
-        console.print(_("cli.set_env_var"))
-        console.print()
-        console.print(_("cli.offline_mode"))
+    loop = asyncio.new_event_loop()
+    application = None
+    try:
+        application = loop.run_until_complete(ApplicationSession.open(config))
+        install_cli_approval_channel(config)
+        console.print(_("cli.welcome"))
+        prompt_session = _make_repl_prompt_session()
+        terminal = TerminalStreamSink(console, config.session.show_thinking)
 
-    # Initialize MCP lifecycle manager
-    mcp_manager = MCPLifecycleManager(config)
-    started = mcp_manager.start_enabled_servers()
-    console.print(_("cli.mcp_registered", count=started))
-    # Report any servers that failed to attach so the user knows immediately
-    for srv_name, srv_state in mcp_manager.registry.get_all_servers().items():
-        if srv_state.health_status in ("degraded", "unavailable") and srv_state.execution_mode in ("placeholder",):
-            err_msg = getattr(srv_state, "error", "") or ""
-            if err_msg:
-                console.print(f"[yellow]  ⚠ {srv_name}: {err_msg[:120]}[/yellow]")
+        def render(event_type: str, **fields: Any) -> None:
+            if event_type == "log":
+                terminal.on_content_token(fields.get("message", ""))
+            elif event_type == "reasoning":
+                terminal.on_thinking_token(fields.get("text", ""))
+            elif event_type == "tool_call":
+                terminal.on_tool_call(fields.get("tool", ""), fields.get("arguments", ""))
+            elif event_type == "tool_result":
+                terminal.on_tool_result(fields.get("result", ""))
+            elif event_type == "status":
+                terminal.on_status(fields.get("status", ""))
+            elif event_type == "subagent":
+                console.print(str(fields))
 
-    # Initialize agent
-    agent = AgentCore(config, mcp_manager)
-
-    # ExecutionGate: interactive REPL on a real TTY gets the trusted
-    # approval channel; dangerous-tool executions prompt y/N.
-    from vulnclaw.cli.approval_channel import install_cli_approval_channel
-
-    install_cli_approval_channel(config)
-
-    console.print(_("cli.welcome"))
-    console.print()
-
-    # Track current target
-    current_target: Optional[str] = None
-    current_phase: str = "Ready"
-    exit_requested = False
-    auto_mode_active = False
-    _last_ctrlc_time = 0.0
-    last_auto_input: str = ""
-
-    # Interactive slash palette: skills under '/', flag skills under '/.'.
-    # Falls back to plain input when there is no TTY (pipes, CI smoke tests).
-    _pt_session = _make_repl_prompt_session()
-
-    while True:
-        try:
-            # Read input (slash palette when interactive, plain prompt otherwise)
-            user_input = _read_repl_line(
-                _pt_session, current_target, current_phase, auto_mode_active
-            ).strip()
-
-            if not user_input:
-                if last_auto_input:
-                    user_input = last_auto_input
-                    console.print(f"[dim]↻ f{_('cli.resuming_auto_pentest')}: {last_auto_input[:60]}...[/]")
-                else:
-                    continue
-
-            if user_input.lower() in ("/compact", "compact"):
-                summary = agent.context.compact_messages(note="User requested /compact.")
-                console.print(
-                    _("cli.compressed_earlier_context").format(var_001 = len(summary))
-                )
-                continue
-
-            # Handle slash commands: '/' selects a skill, '/.' a flag skill.
-            if user_input.startswith("/"):
-                from vulnclaw.cli.tui import dispatch_repl_slash
-
-                result = dispatch_repl_slash(user_input)
-                if result.kind == "message":
-                    console.print(result.text)
-                    continue
-                if result.kind == "target":
-                    current_target, current_phase, restored_loaded = _prepare_repl_target(
-                        agent, result.value, current_target, current_phase
-                    )
-                    if restored_loaded:
-                        console.print(_("cli.target_restored", target=current_target))
-                    console.print(_("cli.target_set", target=current_target))
-                    continue
-                if result.kind == "command":
-                    config = _run_repl_command(
-                        result.value,
-                        result.text,
-                        agent,
-                        config,
-                        mcp_manager=mcp_manager,
-                    )
-                    continue
-                # result.kind == "run": fall through with the rewritten prompt.
-                user_input = result.text
-
-            # Handle built-in commands
-            cmd_lower = user_input.lower()
-
-            if cmd_lower in ("exit", "quit", "q"):
-                console.print(_("cli.bye"))
-                break
-
-            elif cmd_lower == "help":
-                _print_help()
-                continue
-
-            elif cmd_lower == "status":
-                _print_status(agent, mcp_manager, current_target, current_phase, config)
-                continue
-
-            elif cmd_lower.startswith("target "):
-                current_target, current_phase, restored_loaded = _prepare_repl_target(
-                    agent,
-                    user_input[7:].strip(),
-                    current_target,
-                    current_phase,
-                )
-                if restored_loaded:
-                    console.print(_("cli.target_restored", target=current_target))
-                console.print(_("cli.target_set", target=current_target))
-                continue
-
-            elif cmd_lower == "clear":
-                current_target = None
-                current_phase = "Ready"
-                auto_mode_active = False
-                last_auto_input = ""
-                agent.reset_context()
-                console.print(_("cli.conversation_cleared"))
-                continue
-
-            elif cmd_lower == "tools":
-                tools = mcp_manager.list_available_tools()
-                if tools:
-                    console.print(_("cli.available_tools"))
-                    for tool in tools:
-                        console.print(f"  - {tool}")
-                else:
-                    console.print(_("cli.no_tools"))
-                continue
-
-            elif cmd_lower.startswith("report"):
-                report_target = user_input[len("report") :].strip() or current_target
-                if not report_target:
-                    console.print(_("cli.no_target_for_report"))
-                    continue
-
-                report_path = _generate_report_for_target(
-                    report_target,
-                    current_session=agent.session_state
-                    if agent.session_state.target == report_target
-                    else None,
-                    report_format=config.session.report_format,
-                )
-                console.print(_("cli.report_generated", path=report_path))
-                continue
-
-            elif cmd_lower.startswith("persistent"):
-                explicit_target = user_input[len("persistent") :].strip()
-                persistent_target = explicit_target or current_target
-                if not persistent_target:
-                    console.print(
-                        _("cli.host_no_set")
-                    )
-                    continue
-
-                current_target, current_phase, restored_loaded = _prepare_repl_target(
-                    agent,
-                    persistent_target,
-                    current_target,
-                    current_phase,
-                )
-                persistent_target = current_target
-                if restored_loaded:
-                    console.print(_("cli.target_restored", target=persistent_target))
-
-                from vulnclaw.agent.core import PersistentCycleResult
-
-                rounds_per_cycle = config.session.persistent_rounds_per_cycle
-                max_cycles = config.session.persistent_max_cycles
-                auto_report = config.session.persistent_auto_report
-
-                console.print(
-                    Panel(
-                        f"Target: [bold]{persistent_target}[/]\n"
-                        f"Rounds per cycle: [bold]{rounds_per_cycle}[/]\n"
-                        f"Max cycles: [bold]{max_cycles}[/]\n"
-                        f"Auto report: {'[green]on[/]' if auto_report else '[yellow]off[/]'}",
-                        title="Persistent Pentest",
-                        border_style="cyan",
-                    )
-                )
-
-                persistent_prompt = (
-                    f"Perform an authorized persistent penetration test against {persistent_target}. "
-                    + _("cli.target_within_range_and_explicitly_authorized")
-                )
-
-                all_cycle_results: list[PersistentCycleResult] = []
-
-                def _on_persistent_step(round_num: int, cycle_num: int, result) -> None:
-                    console.print(f"[dim]-- Cycle {cycle_num} | Round {round_num} --[/]")
-                    # TerminalStreamSink 已实时流式显示，回调不重复打印
-                    console.print()
-                    nonlocal current_target, current_phase
-                    if result.target:
-                        current_target = result.target
-                    if result.phase:
-                        current_phase = result.phase
-
-                def _on_persistent_cycle(
-                    cycle_num: int, cycle_result: PersistentCycleResult
-                ) -> None:
-                    all_cycle_results.append(cycle_result)
-                    console.print(
-                        Panel(
-                            f"Cycle {cycle_num} completed\n"
-                            f"   Total findings: {cycle_result.total_findings}\n"
-                            f"   New findings: {cycle_result.new_findings}\n"
-                            f"   Report: {cycle_result.report_path or 'not generated'}",
-                            title=f"Cycle {cycle_num}",
-                            border_style="green" if cycle_result.new_findings == 0 else "red",
-                        )
-                    )
-                    console.print()
-
-                try:
-
-                    async def _run_persistent():
-                        await mcp_manager._preinit_chrome_devtools()
-                        sink = TerminalStreamSink(console, config.session.show_thinking)
-                        return await agent.persistent_pentest(
-                            user_input=persistent_prompt,
-                            target=persistent_target,
-                            rounds_per_cycle=rounds_per_cycle,
-                            max_cycles=max_cycles,
-                            auto_report=auto_report,
-                            on_cycle_step=_on_persistent_step,
-                            on_cycle_complete=_on_persistent_cycle,
-                            stream_sink=sink,
-                        )
-
-                    asyncio.run(_run_persistent())
-                    if auto_report and not all_cycle_results:
-                        partial_report = _generate_report_for_target(
-                            persistent_target,
-                            current_session=agent.session_state,
-                            report_format=config.session.report_format,
-                        )
-                        console.print(_("cli.partial_report", path=partial_report))
-                except KeyboardInterrupt:
-                    console.print(f"\n{_('persistent.interrupted_message')}")
-                    if agent.session_state.findings:
-                        try:
-                            final_report = _generate_report_for_target(
-                                persistent_target,
-                                current_session=agent.session_state,
-                                report_format=config.session.report_format,
-                            )
-                            console.print(_("persistent.final_report", path=final_report))
-                        except Exception as exc:
-                            console.print(_("persistent.failed_final_report", exc=exc))
-
-                # Summary
-                tf = len(agent.session_state.findings)
-                console.print(
-                    _("persistent.finished_summary", cycles=len(all_cycle_results), findings=tf)
-                )
-                continue
-
-            elif cmd_lower == "think":
-                # Toggle think tag display
-                config.session.show_thinking = not config.session.show_thinking
-                state_str = (
-                    "[green]shown[/]" if config.session.show_thinking else "[yellow]hidden[/]"
-                )
-                console.print(f"[*] Thinking visibility: {state_str}")
-                console.print(_("cli.thinking_toggle_hint"))
-                continue
-
-            elif cmd_lower == "think on":
-                config.session.show_thinking = True
-                console.print(_("cli.thinking_shown"))
-                continue
-
-            elif cmd_lower == "think off":
-                config.session.show_thinking = False
-                console.print(_("cli.thinking_hidden"))
-                continue
-
-            # Handle auto mode persistence: exit auto mode on explicit commands
-            if auto_mode_active and user_input.lower().strip() in (
-                "chat", "manual", "exit auto", "单轮", "手动",
-            ):
-                auto_mode_active = False
-                last_auto_input = ""
-                console.print(_("cli.auto_mode_exited"))
-                is_auto_mode = False
-            elif auto_mode_active:
-                from vulnclaw.cli.user_intent import (
-                    continue_task_prompt,
-                    is_affirmative_continue,
-                    is_conversational_checkin,
-                )
-
-                # Sticky auto mode must not swallow readiness check-ins
-                # ("ready to begin?") — answer first via single-turn chat.
-                if is_conversational_checkin(user_input):
-                    is_auto_mode = False
-                elif is_affirmative_continue(user_input):
-                    is_auto_mode = True
-                    user_input = continue_task_prompt(last_auto_input, current_target)
-                else:
-                    is_auto_mode = True
-            else:
-                # Route to agent and detect whether this should be an autonomous loop
-                is_auto_mode = _should_auto_pentest(user_input, current_target)
-
-            # Detect target switch and reset context if the user mentions a new target
-            new_target = _extract_target_from_input(user_input)
-            if new_target and current_target and new_target != current_target:
-                console.print(_("cli.target_switch", from_target=current_target, to_target=new_target))
-                current_target = new_target
-                current_phase = "Recon"
-                agent.reset_context()
-                # Reset auto mode on target switch
-                auto_mode_active = False
-                last_auto_input = ""
-
-            # Save last auto input for resume on empty Enter
-            if is_auto_mode:
-                last_auto_input = user_input
-
+        sink = ApplicationStreamSink(render, "repl", show_thinking=config.session.show_thinking)
+        last_interrupt = None
+        while True:
+            text = None
             try:
-                if is_auto_mode:
-                    # Autonomous pentest loop
-                    console.print(_("cli.enter_auto_mode"))
-                    console.print()
-
-                    # 默认走目标驱动 solve 引擎；engine=rounds 时回退到旧固定轮数循环
-                    if getattr(config.session, "engine", "solve") == "solve":
-                        async def _run_auto():
-                            await mcp_manager._preinit_chrome_devtools()
-                            sink = TerminalStreamSink(console, config.session.show_thinking)
-
-                            async def call():
-                                return await agent.solve(
-                                    user_input,
-                                    target=current_target,
-                                    max_steps=config.session.solve_max_steps,
-                                    max_tool_rounds=config.session.solve_max_tool_rounds,
-                                    stream_sink=sink,
-                                    on_event=_make_solve_event_printer(console),
-                                )
-
-                            async def after_result(result):
-                                agent_state = agent.context.state.agent_state.get_summary()
-                                done = agent_state.get("completed")
-                                console.print()
-                                console.print(
-                                    Panel(
-                                        f"{_('cli.goal_achieved') if done else _('cli.goal_not_achieved')} — "
-                                        f"steps={agent_state.get('steps', 0)} "
-                                        f"evidence={agent_state.get('evidence', 0)} "
-                                        f"tools={agent_state.get('tool_calls', 0)}\n"
-                                        f"{_('cli.reason')}: {agent_state.get('complete_reason') or _('cli.reason_not_complete')}",
-                                        title="Solve",
-                                        border_style="green" if done else "yellow",
-                                    )
-                                )
-                                if done:
-                                    _emit_solve_report_if_completed(agent, config)
-
-                            await _run_repl_agent_call(agent, call=call, after_result=after_result)
-
-                        asyncio.run(_run_auto())
-                        auto_mode_active = True
-                        console.print(_("cli.auto_mode_hint"))
-                        continue
-
-                    async def _run_auto():
-                        sink = TerminalStreamSink(console, config.session.show_thinking)
-                        async def call():
-                            def on_step(round_num, result):
-                                nonlocal current_target, current_phase
-                                console.print(f"[dim]-- Round {round_num} --[/]")
-                                console.print()
-                                if result.target:
-                                    current_target = result.target
-                                if result.phase:
-                                    current_phase = result.phase
-
-                            return await agent.auto_pentest(
-                                user_input,
-                                target=current_target,
-                                max_rounds=config.session.max_rounds,
-                                on_step=on_step,
-                                stream_sink=sink,
-                            )
-
-                        async def after_result(results):
-                            if results:
-                                total_findings = len(agent.session_state.findings)
-                                total_steps = len(agent.session_state.executed_steps)
-                                console.print()
-                                console.print(
-                                    Panel(
-                                        f"{_('auto_pentest.finished')}\n"
-                                        f"{_('auto_pentest.rounds', rounds=len(results))}\n"
-                                        f"{_('auto_pentest.steps', steps=total_steps)}\n"
-                                        f"{_('auto_pentest.findings', findings=total_findings)}",
-                                        title=_("auto_pentest.title"),
-                                        border_style="green" if total_findings == 0 else "red",
-                                    )
-                                )
-
-                                if any(
-                                    token in user_input.lower()
-                                    for token in (
-                                        "输出",
-                                        "保存",
-                                        "写到",
-                                        "导出",
-                                        "save",
-                                        "write",
-                                        "export",
-                                    )
-                                ):
-                                    _auto_save_recon_report(agent, user_input, config)
-
-                        await _run_repl_agent_call(agent, call=call, after_result=after_result)
-
-                    asyncio.run(_run_auto())
-                    auto_mode_active = True
-                    console.print(_("cli.auto_mode_hint"))
-
-                else:
-                    # Single-turn chat
-                    async def _run_agent():
-                        await mcp_manager._preinit_chrome_devtools()
-                        sink = TerminalStreamSink(console, config.session.show_thinking)
-                        async def call():
-                            return await agent.chat(user_input, target=current_target, stream_sink=sink)
-
-                        async def after_result(result):
-                            nonlocal current_target, current_phase
-                            if result:
-                                if result.target:
-                                    current_target = result.target
-                                if result.phase:
-                                    current_phase = result.phase
-                                # 流式输出已由 TerminalStreamSink 实时显示；仅补印 sink 未显示的错误
-                                if result.output and result.output.startswith("[!]"):
-                                    _print_agent_output(result.output, config)
-
-                        await _run_repl_agent_call(agent, call=call, after_result=after_result)
-
-                    asyncio.run(_run_agent())
-
+                conversation = application.conversation
+                text = _read_repl_line(
+                    prompt_session, conversation.target, conversation.phase, conversation.auto_mode,
+                ).strip()
+                last_interrupt = None
+                if not text:
+                    continue
+                result = loop.run_until_complete(application.submit_input(
+                    InputRequest(text=text), stream_sink=sink, _runner=application._task_runner,
+                ))
+                if isinstance(result, dict):
+                    if result.get("kind") == "display":
+                        if result["operation"] == "quit":
+                            break
+                        console.clear()
+                    elif result.get("kind") == "adapter":
+                        config = _run_repl_command(
+                            result["operation"], result["text"], application, application.config,
+                            mcp_manager=application.runtime.mcp_manager,
+                        )
+                    elif "result" in result:
+                        if result["operation"] == "session.status":
+                            _print_status(application.agent, application.runtime.mcp_manager,
+                                          conversation.target, conversation.phase, application.config)
+                        else:
+                            console.print(result["result"].get("message", result["result"]))
+                        report = result["result"].get("report", {})
+                        if report.get("text"):
+                            console.print(Text(report["text"]))
+                    else:
+                        if result.get("status"):
+                            console.print(f"Task {result['status']}")
+                        for report in result.get("reports", []):
+                            console.print(f"Report saved: {report['path']}")
+                            if report.get("text"):
+                                console.print(Text(report["text"]))
+                        if result.get("report"):
+                            console.print(f"Report saved: {result['report']['path']}")
+                        if result.get("report_error"):
+                            console.print(f"Report export failed: {result['report_error']}")
+                        if str(result.get("output", "")).startswith("[!]"):
+                            console.print(result["output"])
+                terminal.on_stream_end()
             except KeyboardInterrupt:
-                if is_auto_mode:
-                    auto_mode_active = False
-                    console.print()
-                    console.print(_("cli.interrupted"))
-                    console.print(_("cli.auto_resume_hint"))
+                loop.run_until_complete(application.cancel())
+                if text is None:
+                    now = time.monotonic()
+                    if last_interrupt is not None and now - last_interrupt < 3.0:
+                        console.print(_("cli.bye"))
+                        break
+                    last_interrupt = now
+                    console.print(_("cli.press_again"))
                 else:
-                    console.print(f"\n{_('cli.interrupted')}")
-            except Exception as e:
-                # Escape Rich markup chars in exception message to prevent MarkupError
-                from rich.markup import escape as rich_escape
-
-                console.print(_("cli.error", msg=rich_escape(format_llm_user_error(e))))
-
-        except KeyboardInterrupt:
-            now = time.monotonic()
-            if exit_requested and (now - _last_ctrlc_time) < 3.0:
-                console.print(_("cli.bye"))
+                    console.print("Interrupted. Enter another request or /quit.")
+            except EOFError:
                 break
-            exit_requested = True
-            _last_ctrlc_time = now
-            console.print(f"\n{_('cli.press_again')}")
-        except EOFError:
-            break
-
-    # Cleanup — suppress SIGINT to prevent re-trigger during threading shutdown
-    import signal
-
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    mcp_manager.stop_all()
-    console.print("[dim]MCP services stopped.[/]")
+            except Exception as exc:
+                if text is None:
+                    raise
+                console.print(f"[!] {format_llm_user_error(exc)}")
+    finally:
+        try:
+            if application is not None:
+                loop.run_until_complete(application.close())
+        finally:
+            loop.close()
 
 
-def _print_help() -> None:
-    """Print REPL help."""
-    help_text = f"""
- [bold]{_("help.commands")}[/]:
-  {_("help.target")}
-  {_("help.status")}
-  {_("help.tools")}
-  {_("help.report")}
-  {_("help.think")}
-  {_("help.think_on_off")}
-  {_("help.mode")}
-  {_("help.persistent")}
-  {_("help.persistent_host")}
-  {_("help.clear")}
-  {_("help.chat")}
-  {_("help.help")}
-  {_("help.exit")}
-
- [bold]{_("help.auto_mode")}[/]:
-  {_("help.auto_mode_desc")}
-  {_("help.auto_mode_example")}
-  {_("help.auto_mode_stays")}
-
- [bold]{_("help.persistent_mode")}[/]:
-  {_("help.persistent_mode_desc")}
-  {_("help.persistent_cli")}
-  {_("help.persistent_repl")}
-
- [bold]{_("help.learning")}[/]:
-  {_("help.learning_desc")}
-  {_("help.learning_experience")}
-  {_("help.learning_learn")}
-  {_("help.learning_feedback")}
-
- [bold]{_("help.examples")}[/]:
-  {_("help.example_pentest")}
-  {_("help.example_scan")}
-  {_("help.example_vuln")}
-  {_("help.example_exploit")}
-  {_("help.example_report")}
-"""
-    console.print(Panel(help_text, title=_("help.title"), border_style="cyan"))
 
 
 def _print_status(agent, mcp_manager, target, phase, config) -> None:
@@ -1297,6 +806,13 @@ def run(
         "--stream",
         help="Emit newline-delimited JSON events (status/log/finding/complete) for the Rust TUI",
     ),
+    continuous: bool = typer.Option(False, "--continuous", help="Repeat execution in cycles"),
+    rounds_per_cycle: Optional[int] = typer.Option(None, "--rounds-per-cycle"),
+    max_cycles: Optional[int] = typer.Option(None, "--max-cycles"),
+    no_report: bool = typer.Option(False, "--no-report", help="Disable automatic report exports"),
+    ports: Optional[str] = typer.Option(None, "--ports"),
+    cve: Optional[str] = typer.Option(None, "--cve"),
+    cmd: Optional[str] = typer.Option(None, "--cmd"),
 ) -> None:
     """Run a full authorized pentest workflow.
 
@@ -1360,7 +876,9 @@ def run(
         snapshot_id=snapshot,
         **run_context,
         options=TaskOptions(
-            engine=engine,
+            engine=engine, continuous=continuous,
+            rounds_per_cycle=rounds_per_cycle, max_cycles=max_cycles,
+            auto_report=False if no_report else None, ports=ports, cve=cve, cmd=cmd,
             scope=scope,
             max_steps=profile.max_steps,
             max_directions=profile.max_directions,
@@ -1411,6 +929,14 @@ def run(
                 task,
                 stream_sink=sink,
                 on_event=on_event,
+                on_cycle_step=lambda round_num, cycle_num, result: (
+                    console.print(f"Cycle {cycle_num}, round {round_num}")
+                    if not non_interactive else None
+                ),
+                on_cycle_complete=lambda cycle_num, result: (
+                    console.print(f"Cycle {cycle_num}: report={result.report_path or 'none'}")
+                    if not non_interactive else None
+                ),
                 on_step=lambda r, res: (
                     _print_agent_output(
                         f"[dim]Round {r}[/]: {res.output[:200]}...", shared_config
@@ -1435,6 +961,7 @@ def run(
             resume=resume,
             snapshot=snapshot,
             runner=runner,
+            task=task,
             **run_context,
         )
         return result
@@ -1492,8 +1019,9 @@ def run(
         total_findings = orchestrated.summary["findings_count"]
         console.print(_("cli.pentest_finished", findings=total_findings))
 
-    report_path = _generate_report_for_target(target, output_path=output)
-    console.print(_("cli.report_generated", path=report_path))
+    if not no_report and getattr(orchestrated, "status", "completed") == "completed":
+        report_path = _generate_report_for_target(target, output_path=output)
+        console.print(_("cli.report_generated", path=report_path))
 
 
 @app.command()
@@ -1640,413 +1168,49 @@ def solve(
             _emit_solve_report_if_completed(live_agent, config)
 
 
-@app.command()
-def persistent(
-    target: str = typer.Argument(..., help="Target host/IP/URL"),
-    rounds: int = typer.Option(
-        0, "--rounds", "-r", help="Rounds per cycle (0=use config, default 100)"
-    ),
-    cycles: int = typer.Option(0, "--cycles", "-c", help="Max cycles (0=use config, default 10)"),
-    no_report: bool = typer.Option(
-        False, "--no-report", help="Disable auto report after each cycle"
-    ),
-    # [新增] 2026-06-10 Nyaecho - TUI自然语言驱动: 允许通过 --prompt 传入自定义提示词覆盖自动生成的prompt
-    prompt: Optional[str] = typer.Option(
-        None, "--prompt", help="Custom natural language prompt (overrides auto-generated prompt)"
-    ),
-    only_port: Optional[int] = typer.Option(
-        None, "--only-port", help="Restrict testing to a single port"
-    ),
-    only_host: Optional[str] = typer.Option(
-        None, "--only-host", help="Restrict testing to a single host"
-    ),
-    only_path: Optional[str] = typer.Option(
-        None, "--only-path", help="Restrict testing to a single path"
-    ),
-    blocked_host: Optional[str] = typer.Option(
-        None, "--blocked-host", help="Explicitly blocked host"
-    ),
-    blocked_path: Optional[str] = typer.Option(
-        None, "--blocked-path", help="Explicitly blocked path"
-    ),
-    allow_actions: Optional[str] = typer.Option(
-        None, "--allow-actions", help="Comma-separated allowed actions"
-    ),
-    block_actions: Optional[str] = typer.Option(
-        None, "--block-actions", help="Comma-separated blocked actions"
-    ),
-    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
-    snapshot: Optional[str] = typer.Option(
-        None, "--snapshot", help="Resume from a specific target snapshot id"
-    ),
-    run_name: Optional[str] = typer.Option(
-        None, "--run-name", help="Explicit name for a new run directory"
-    ),
-    resume_run: Optional[str] = typer.Option(
-        None, "--resume-run", help="Resume an exact run by run name"
-    ),
-    runs_dir: Optional[str] = typer.Option(None, "--runs-dir", help="Run-directory root"),
-    additional_targets: Optional[list[str]] = typer.Option(
-        None, "--target", help="Additional target to include in this run"
-    ),
-    target_type: Optional[str] = typer.Option(None, "--target-type", help="Override target type"),
-    mount: bool = typer.Option(False, "--mount", help="Use mount ingress mode"),
-    repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
-    force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
-    no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
-) -> None:
-    """Run a persistent authorized pentest across multiple cycles."""
-    from vulnclaw.agent.core import PersistentCycleResult
-
-    config = load_config()
-    if not has_llm_credentials(config.llm):
-        err_console.print("[!] Configure LLM credentials first (api_key or auth_mode).")
-        raise typer.Exit(1)
-
-    # Resolve parameters (CLI override -> config defaults)
-    rounds_per_cycle = rounds if rounds > 0 else config.session.persistent_rounds_per_cycle
-    max_cycles = cycles if cycles > 0 else config.session.persistent_max_cycles
-    auto_report = config.session.persistent_auto_report and not no_report
-
-    console.print(
-        Panel(
-            f"Target: [bold]{target}[/]\n"
-            f"Rounds per cycle: [bold]{rounds_per_cycle}[/]\n"
-            f"Max cycles: [bold]{max_cycles}[/] {'(unlimited)' if max_cycles == 0 else ''}\n"
-            f"Auto report: {'[green]on[/]' if auto_report else '[yellow]off[/]'}\n"
-            f"Max total rounds: [bold]{rounds_per_cycle * max_cycles if max_cycles > 0 else 'unlimited'}[/]",
-            title="Persistent Pentest",
-            border_style="cyan",
-        )
-    )
-
-    run_context = _run_context_kwargs(
-        run_name=run_name,
-        resume_run_name=resume_run,
-        runs_dir=runs_dir,
-        additional_targets=additional_targets,
-        target_type=target_type,
-        mount=mount,
-        repair=repair,
-        force_fresh=force_fresh,
-        no_import=no_import,
-    )
-    task_request = TaskCreateRequest(
-        command="persistent",
-        target=target,
-        prompt=prompt,
-        resume=resume,
-        snapshot_id=snapshot,
-        **run_context,
-        options=TaskOptions(
-            rounds_per_cycle=rounds_per_cycle,
-            max_cycles=max_cycles,
-            auto_report=auto_report,
-            **_scope_option_kwargs(locals()),
-        ),
-    )
-    try:
-        task = prepare_task(task_request)
-    except ValueError as exc:
-        err_console.print(f"[!] {exc}")
-        raise typer.Exit(1) from exc
-
-    # Track stats
-    all_cycle_results: list[PersistentCycleResult] = []
-    interrupted = False
-
-    def _on_cycle_step(round_num: int, cycle_num: int, result) -> None:
-        """Real-time output for each step within a cycle."""
-        console.print(f"[dim]-- Cycle {cycle_num} | Round {round_num} --[/]")
-        # TerminalStreamSink 已实时流式显示，回调不重复打印
-        console.print()
-
-    def _on_cycle_complete(cycle_num: int, cycle_result: PersistentCycleResult) -> None:
-        """Callback after each cycle completes."""
-        all_cycle_results.append(cycle_result)
-        console.print(
-            Panel(
-                f"Cycle {cycle_num} completed\n"
-                f"   Steps executed: {cycle_result.total_steps}\n"
-                f"   Total findings: {cycle_result.total_findings}\n"
-                f"   New findings: {cycle_result.new_findings}\n"
-                f"   Report: {cycle_result.report_path or 'not generated'}",
-                title=f"Cycle {cycle_num} Result",
-                border_style="green" if cycle_result.new_findings == 0 else "red",
-            )
-        )
-        console.print()
-
-    async def _run():
-        async def runner(agent, _config):
-            sink = TerminalStreamSink(console, _config.session.show_thinking)
-            return await run_task_action(
-                agent,
-                task,
-                on_cycle_step=_on_cycle_step,
-                on_cycle_complete=_on_cycle_complete,
-                stream_sink=sink,
-            )
-
-        return await _run_cli_orchestrated_task(
-            command="persistent",
-            target=target,
-            resume=resume,
-            snapshot=snapshot,
-            runner=runner,
-            **run_context,
-        )
-
-    try:
-        orchestrated = asyncio.run(_run())
-    except KeyboardInterrupt:
-        interrupted = True
-        console.print("\n[!] User interrupted persistent pentest")
-        orchestrated = None
-
-    summary = (
-        orchestrated.summary
-        if orchestrated
-        else {
-            "findings_count": 0,
-            "executed_steps": 0,
-        }
-    )
-    total_findings = summary["findings_count"]
-    total_steps = summary["executed_steps"]
-    completed_cycles = len(all_cycle_results)
-
-    console.print()
-    console.print(
-        Panel(
-            f"{'Interrupted by user' if interrupted else 'Testing completed'}\n\n"
-            f"  Completed cycles: [bold]{completed_cycles}[/]\n"
-            f"  Steps executed: [bold]{total_steps}[/]\n"
-            f"  Findings: [bold]{total_findings}[/]",
-            title="Persistent Pentest Summary",
-            border_style="red" if total_findings > 0 else "green",
-        )
-    )
-
-    if auto_report and all_cycle_results:
-        console.print("\n[bold]Cycle Reports[/]:")
-        for cr in all_cycle_results:
-            if cr.report_path and "failed" not in str(cr.report_path).lower():
-                console.print(f"  Cycle {cr.cycle_num}: {cr.report_path}")
 
 
-@app.command()
-def recon(
-    target: str = typer.Argument(..., help="Target host/IP/URL"),
-    # [新增] 2026-06-10 Nyaecho - TUI自然语言驱动: 允许通过 --prompt 传入自定义提示词覆盖自动生成的prompt
-    prompt: Optional[str] = typer.Option(
-        None, "--prompt", help="Custom natural language prompt (overrides auto-generated prompt)"
-    ),
-    only_port: Optional[int] = typer.Option(
-        None, "--only-port", help="Restrict testing to a single port"
-    ),
-    only_host: Optional[str] = typer.Option(
-        None, "--only-host", help="Restrict testing to a single host"
-    ),
-    only_path: Optional[str] = typer.Option(
-        None, "--only-path", help="Restrict testing to a single path"
-    ),
-    blocked_host: Optional[str] = typer.Option(
-        None, "--blocked-host", help="Explicitly blocked host"
-    ),
-    blocked_path: Optional[str] = typer.Option(
-        None, "--blocked-path", help="Explicitly blocked path"
-    ),
-    allow_actions: Optional[str] = typer.Option(
-        None, "--allow-actions", help="Comma-separated allowed actions"
-    ),
-    block_actions: Optional[str] = typer.Option(
-        None, "--block-actions", help="Comma-separated blocked actions"
-    ),
-    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
-    snapshot: Optional[str] = typer.Option(
-        None, "--snapshot", help="Resume from a specific target snapshot id"
-    ),
-    run_name: Optional[str] = typer.Option(
-        None, "--run-name", help="Explicit name for a new run directory"
-    ),
-    resume_run: Optional[str] = typer.Option(
-        None, "--resume-run", help="Resume an exact run by run name"
-    ),
-    runs_dir: Optional[str] = typer.Option(None, "--runs-dir", help="Run-directory root"),
-    additional_targets: Optional[list[str]] = typer.Option(
-        None, "--target", help="Additional target to include in this run"
-    ),
-    target_type: Optional[str] = typer.Option(None, "--target-type", help="Override target type"),
-    mount: bool = typer.Option(False, "--mount", help="Use mount ingress mode"),
-    repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
-    force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
-    no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
-    stream: bool = typer.Option(
-        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
-    ),
-) -> None:
-    """Run reconnaissance only."""
-    run_context = _run_context_kwargs(
-        run_name=run_name,
-        resume_run_name=resume_run,
-        runs_dir=runs_dir,
-        additional_targets=additional_targets,
-        target_type=target_type,
-        mount=mount,
-        repair=repair,
-        force_fresh=force_fresh,
-        no_import=no_import,
-    )
-    task_request = TaskCreateRequest(
-        command="recon",
-        target=target,
-        prompt=prompt,
-        resume=resume,
-        snapshot_id=snapshot,
-        **run_context,
-        options=TaskOptions(**_scope_option_kwargs(locals())),
-    )
-    try:
-        task = prepare_task(task_request)
-    except ValueError as exc:
-        err_console.print(f"[!] {exc}")
-        raise typer.Exit(1) from exc
-
-    async def _run():
-        async def runner(agent, _config):
-            if stream:
-                from vulnclaw.cli._helpers import JsonlStreamSink
-
-                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
-            else:
-                sink = TerminalStreamSink(console, _config.session.show_thinking)
-            # TerminalStreamSink 已实时流式显示，不重复 console.print
-            return await run_task_action(agent, task, stream_sink=sink)
-
-        await _run_cli_orchestrated_task(
-            command="recon",
-            target=target,
-            resume=resume,
-            snapshot=snapshot,
-            runner=runner,
-            **run_context,
-        )
-
-    asyncio.run(_run())
-    if stream:
-        from vulnclaw.cli._helpers import emit_complete_event
-
-        emit_complete_event(sys.stdout, summary="recon done", findings=[])
 
 
-@app.command()
-def scan(
-    target: str = typer.Argument(..., help="Target host/IP/URL"),
-    ports: Optional[str] = typer.Option(None, help="Port range, e.g. 80,443,8080"),
-    # [新增] 2026-06-10 Nyaecho - TUI自然语言驱动: 允许通过 --prompt 传入自定义提示词覆盖自动生成的prompt
-    prompt: Optional[str] = typer.Option(
-        None, "--prompt", help="Custom natural language prompt (overrides auto-generated prompt)"
-    ),
-    only_port: Optional[int] = typer.Option(
-        None, "--only-port", help="Restrict testing to a single port"
-    ),
-    only_host: Optional[str] = typer.Option(
-        None, "--only-host", help="Restrict testing to a single host"
-    ),
-    only_path: Optional[str] = typer.Option(
-        None, "--only-path", help="Restrict testing to a single path"
-    ),
-    blocked_host: Optional[str] = typer.Option(
-        None, "--blocked-host", help="Explicitly blocked host"
-    ),
-    blocked_path: Optional[str] = typer.Option(
-        None, "--blocked-path", help="Explicitly blocked path"
-    ),
-    allow_actions: Optional[str] = typer.Option(
-        None, "--allow-actions", help="Comma-separated allowed actions"
-    ),
-    block_actions: Optional[str] = typer.Option(
-        None, "--block-actions", help="Comma-separated blocked actions"
-    ),
-    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
-    snapshot: Optional[str] = typer.Option(
-        None, "--snapshot", help="Resume from a specific target snapshot id"
-    ),
-    run_name: Optional[str] = typer.Option(
-        None, "--run-name", help="Explicit name for a new run directory"
-    ),
-    resume_run: Optional[str] = typer.Option(
-        None, "--resume-run", help="Resume an exact run by run name"
-    ),
-    runs_dir: Optional[str] = typer.Option(None, "--runs-dir", help="Run-directory root"),
-    additional_targets: Optional[list[str]] = typer.Option(
-        None, "--target", help="Additional target to include in this run"
-    ),
-    target_type: Optional[str] = typer.Option(None, "--target-type", help="Override target type"),
-    mount: bool = typer.Option(False, "--mount", help="Use mount ingress mode"),
-    repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
-    force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
-    no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
-    stream: bool = typer.Option(
-        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
-    ),
-) -> None:
-    """Run vulnerability scanning only."""
-    run_context = _run_context_kwargs(
-        run_name=run_name,
-        resume_run_name=resume_run,
-        runs_dir=runs_dir,
-        additional_targets=additional_targets,
-        target_type=target_type,
-        mount=mount,
-        repair=repair,
-        force_fresh=force_fresh,
-        no_import=no_import,
-    )
-    task_request = TaskCreateRequest(
-        command="scan",
-        target=target,
-        prompt=prompt,
-        resume=resume,
-        snapshot_id=snapshot,
-        **run_context,
-        options=TaskOptions(
-            ports=ports,
-            **_scope_option_kwargs(locals()),
-        ),
-    )
-    try:
-        task = prepare_task(task_request)
-    except ValueError as exc:
-        err_console.print(f"[!] {exc}")
-        raise typer.Exit(1) from exc
 
-    async def _run():
-        async def runner(agent, _config):
-            if stream:
-                from vulnclaw.cli._helpers import JsonlStreamSink
 
-                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
-            else:
-                sink = TerminalStreamSink(console, _config.session.show_thinking)
-            # TerminalStreamSink 已实时流式显示，不重复 console.print
-            return await run_task_action(agent, task, stream_sink=sink)
 
-        await _run_cli_orchestrated_task(
-            command="scan",
-            target=target,
-            resume=resume,
-            snapshot=snapshot,
-            runner=runner,
-            **run_context,
-        )
 
-    asyncio.run(_run())
-    if stream:
-        from vulnclaw.cli._helpers import emit_complete_event
+def _register_run_alias(name: str) -> None:
+    """Use run's Typer parser and callback for every shorthand."""
+    def invoke_alias(ctx: typer.Context) -> None:
+        from typer.main import get_command
 
-        emit_complete_event(sys.stdout, summary="scan done", findings=[])
+        canonical = get_command(app).commands["run"]
+        aliases = {"--rounds": "--rounds-per-cycle", "-r": "--rounds-per-cycle",
+                   "--cycles": "--max-cycles", "-c": "--max-cycles"}
+        arguments = []
+        for token in ctx.args:
+            flag, equals, value = token.partition("=")
+            arguments.append(aliases.get(flag, flag) + (equals + value if equals else ""))
+        with canonical.make_context("run", arguments, parent=ctx.parent) as run_context:
+            values = run_context.params
+            try:
+                request = TaskCreateRequest(
+                    command=name, target=values["target"],
+                    options=TaskOptions(allow_actions=values.get("allow_actions")),
+                )
+            except ValueError as exc:
+                err_console.print(f"[!] {exc}")
+                raise typer.Exit(1) from exc
+            values["allow_actions"] = ",".join(request.options.allow_actions or []) or None
+            if name == "persistent":
+                values["continuous"] = True
+            canonical.invoke(run_context)
+
+    app.command(
+        name, help=f"Shorthand for run ({name}); accepts run options. See: vulnclaw run --help.",
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    )(invoke_alias)
+
+
+for _alias in ("recon", "scan", "exploit", "persistent"):
+    _register_run_alias(_alias)
 
 
 @app.command("network-scan")
@@ -2269,115 +1433,6 @@ def network_scan(
         emit_complete_event(sys.stdout, summary="network scan done", findings=[])
 
 
-@app.command()
-def exploit(
-    target: str = typer.Argument(..., help="Target host/IP/URL"),
-    cve: Optional[str] = typer.Option(None, help="Specific CVE to exploit"),
-    cmd: str = typer.Option("id", help="Command to execute for verification"),
-    # [新增] 2026-06-10 Nyaecho - TUI自然语言驱动: 允许通过 --prompt 传入自定义提示词覆盖自动生成的prompt
-    prompt: Optional[str] = typer.Option(
-        None, "--prompt", help="Custom natural language prompt (overrides auto-generated prompt)"
-    ),
-    only_port: Optional[int] = typer.Option(
-        None, "--only-port", help="Restrict testing to a single port"
-    ),
-    only_host: Optional[str] = typer.Option(
-        None, "--only-host", help="Restrict testing to a single host"
-    ),
-    only_path: Optional[str] = typer.Option(
-        None, "--only-path", help="Restrict testing to a single path"
-    ),
-    blocked_host: Optional[str] = typer.Option(
-        None, "--blocked-host", help="Explicitly blocked host"
-    ),
-    blocked_path: Optional[str] = typer.Option(
-        None, "--blocked-path", help="Explicitly blocked path"
-    ),
-    allow_actions: Optional[str] = typer.Option(
-        None, "--allow-actions", help="Comma-separated allowed actions"
-    ),
-    block_actions: Optional[str] = typer.Option(
-        None, "--block-actions", help="Comma-separated blocked actions"
-    ),
-    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
-    snapshot: Optional[str] = typer.Option(
-        None, "--snapshot", help="Resume from a specific target snapshot id"
-    ),
-    run_name: Optional[str] = typer.Option(
-        None, "--run-name", help="Explicit name for a new run directory"
-    ),
-    resume_run: Optional[str] = typer.Option(
-        None, "--resume-run", help="Resume an exact run by run name"
-    ),
-    runs_dir: Optional[str] = typer.Option(None, "--runs-dir", help="Run-directory root"),
-    additional_targets: Optional[list[str]] = typer.Option(
-        None, "--target", help="Additional target to include in this run"
-    ),
-    target_type: Optional[str] = typer.Option(None, "--target-type", help="Override target type"),
-    mount: bool = typer.Option(False, "--mount", help="Use mount ingress mode"),
-    repair: bool = typer.Option(False, "--repair", help="Repair a corrupt run"),
-    force_fresh: bool = typer.Option(False, "--force-fresh", help="Start a fresh run"),
-    no_import: bool = typer.Option(False, "--no-import", help="Do not import legacy state"),
-    stream: bool = typer.Option(
-        False, "--stream", help="Emit newline-delimited JSON events for the Rust TUI"
-    ),
-) -> None:
-    """Run exploitation only."""
-    run_context = _run_context_kwargs(
-        run_name=run_name,
-        resume_run_name=resume_run,
-        runs_dir=runs_dir,
-        additional_targets=additional_targets,
-        target_type=target_type,
-        mount=mount,
-        repair=repair,
-        force_fresh=force_fresh,
-        no_import=no_import,
-    )
-    task_request = TaskCreateRequest(
-        command="exploit",
-        target=target,
-        prompt=prompt,
-        resume=resume,
-        snapshot_id=snapshot,
-        **run_context,
-        options=TaskOptions(
-            cve=cve,
-            cmd=cmd,
-            **_scope_option_kwargs(locals()),
-        ),
-    )
-    try:
-        task = prepare_task(task_request)
-    except ValueError as exc:
-        err_console.print(f"[!] {exc}")
-        raise typer.Exit(1) from exc
-
-    async def _run():
-        async def runner(agent, _config):
-            if stream:
-                from vulnclaw.cli._helpers import JsonlStreamSink
-
-                sink = JsonlStreamSink(sys.stdout, _config.session.show_thinking)
-            else:
-                sink = TerminalStreamSink(console, _config.session.show_thinking)
-            # TerminalStreamSink 已实时流式显示，不重复 console.print
-            return await run_task_action(agent, task, stream_sink=sink)
-
-        await _run_cli_orchestrated_task(
-            command="exploit",
-            target=target,
-            resume=resume,
-            snapshot=snapshot,
-            runner=runner,
-            **run_context,
-        )
-
-    asyncio.run(_run())
-    if stream:
-        from vulnclaw.cli._helpers import emit_complete_event
-
-        emit_complete_event(sys.stdout, summary="exploit done", findings=[])
 
 
 @app.command()
@@ -3313,140 +2368,6 @@ def target_state_clear_cmd(
 # 鈹€鈹€ Auto-pentest detection 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
-def _should_auto_pentest(user_input: str, current_target: Optional[str]) -> bool:
-    """Determine if user input should trigger autonomous pentest loop.
-
-    Triggers when:
-    - User explicitly asks for a full pentest with a target
-    - User mentions a target plus action keywords like "渗透测试" or "打一下"
-    - User asks to solve a CTF / find a flag with a target
-    - User asks for information gathering / recon / OSINT with a target
-    - A target is present + multi-step task indicators
-    """
-    from vulnclaw.cli.user_intent import is_conversational_checkin
-
-    # Readiness / meta questions (e.g. "ready to begin bug hunting?") get a
-    # spoken answer first — never jump straight into the solve tool loop.
-    if is_conversational_checkin(user_input):
-        return False
-
-    input_lower = user_input.lower()
-
-    # Explicit auto-mode triggers
-    auto_keywords = [
-        "渗透测试",
-        "进行渗透",
-        "做渗透",
-        "打一下",
-        "全面测试",
-        "pentest",
-        "full test",
-        "auto",
-        "自主渗透模式",
-        "自主模式",
-        "找出flag",
-        "找到flag",
-        "拿flag",
-        "get flag",
-        "find flag",
-        "解题",
-        "做题",
-        "挑战",
-        "challenge",
-        "ctf",
-        "弱口令",
-        "爆破",
-        "绕过",
-        "bypass",
-        "brute",
-        "搜集",
-        "收集",
-        "信息收集",
-        "侦察",
-        "recon",
-        "reconnaissance",
-        "社工",
-        "osint",
-        "情报",
-        "intelligence",
-        "分析目标",
-        "目标分析",
-        "资产发现",
-        "目录扫描",
-        "探测",
-        "探索",
-        "调查",
-        "investigate",
-        "enumerate",
-        "全面分析",
-        "深度分析",
-        "详细分析",
-        "全面扫描",
-        "子域名",
-        "subdomain",
-    ]
-
-    # Single-step queries should NOT trigger auto mode
-    single_step_keywords = [
-        "生成报告",
-        "report",
-        "help",
-        "帮助",
-    ]
-
-    # If it's clearly a single-step query, don't auto-loop
-    # But if it also has auto keywords, still go auto (e.g. "收集信息并生成报告")
-    if any(kw in input_lower for kw in single_step_keywords) and not any(
-        kw in input_lower for kw in auto_keywords
-    ):
-        return False
-
-    # If it has auto-mode keywords, trigger auto loop
-    if any(kw in input_lower for kw in auto_keywords):
-        # Must have a target (either in input or already set)
-        has_target = bool(current_target) or bool(_extract_target_from_input(user_input))
-        return has_target
-
-    # Fallback: has target + multi-step task -> auto
-    has_target = bool(current_target) or bool(_extract_target_from_input(user_input))
-    if has_target:
-        multi_step_indicators = [
-            "并",
-            "然后",
-            "输出",
-            "保存",
-            "写到",
-            "导出",
-            "所有",
-            "全部",
-            "完整",
-            "详细",
-        ]
-        if any(ind in input_lower for ind in multi_step_indicators):
-            return True
-
-    return False
-
-
-def _extract_target_from_input(user_input: str) -> Optional[str]:
-    """Extract target from user input string."""
-    import re
-
-    # Try to find URL (with optional port)
-    url_match = re.search(r"(https?://[a-zA-Z0-9][-a-zA-Z0-9.:]*)", user_input)
-    if url_match:
-        return url_match.group(1).rstrip("/")
-    # Try to find IP address
-    ip_match = re.search(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", user_input)
-    if ip_match:
-        return ip_match.group(1)
-    # Try to find domain
-    domain_match = re.search(r"([a-zA-Z0-9][-a-zA-Z0-9]*(?:\.[a-zA-Z0-9][-a-zA-Z0-9]*)+)", user_input)
-    if domain_match:
-        return domain_match.group(1)
-    return None
-
-
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -3548,41 +2469,6 @@ def _resume_saved_run(
     asyncio.run(_run())
 
 
-def _auto_save_recon_report(agent, user_input: str, config) -> None:
-    """Auto-save a recon report after auto_pentest completes when user requested file output."""
-    import re
-    from datetime import datetime
-
-    try:
-        state = agent.session_state
-        target = state.target or "unknown"
-
-        # Determine output path
-        # Check if user specified a path
-        path_match = re.search(
-            r"(?:保存到|写到|输出到|导出到|save to|write to|output to|export to)\s*([^\s,，]+)",
-            user_input,
-            re.IGNORECASE,
-        )
-        if path_match:
-            output_path = path_match.group(1)
-        else:
-            safe_name = re.sub(r"[^\w]", "_", target)[:30]
-            date_str = datetime.now().strftime("%Y%m%d_%H%M")
-            output_path = str(config.session.output_dir / f"{safe_name}_recon_{date_str}.md")
-
-        from vulnclaw.report.generator import generate_report
-
-        generate_report(
-            state,
-            output_path,
-            report_format=config.session.report_format,
-        )
-
-        console.print(f"\n[+] Recon report saved: {output_path}")
-
-    except Exception as e:
-        console.print(f"\n[!] Failed to auto-save report: {e}")
 
 
 @app.command()

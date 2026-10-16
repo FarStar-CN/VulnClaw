@@ -345,6 +345,13 @@ def test_on_disk_schema_covers_every_v1_message_shape() -> None:
         "status": "running",
     })
 
+    examples = schema_path.parent / "examples" / "tui-v1-session.jsonl"
+    messages.extend(
+        message for line in examples.read_text().splitlines()
+        if (message := json.loads(line))["type"] in {
+            "submit_input", "turn_started", "turn_completed", "turn_cancelled", "turn_failed",
+        }
+    )
     for message in messages:
         validator.validate(message)
 

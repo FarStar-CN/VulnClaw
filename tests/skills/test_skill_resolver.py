@@ -100,9 +100,9 @@ class TestExplicit:
         assert s.primary == "ctf-web"
         assert s.confidence == 1.0
 
-    def test_slash_command_wins(self, resolver):
-        # /ctf-crypto should win even though the text screams web/sqli.
-        s = resolver.resolve(SkillQuery.from_input("/ctf-crypto sql注入 xss rce 测试"))
+    def test_chinese_prompt_skill_wins(self, resolver):
+        # An explicitly named prompt skill wins over automatic routing.
+        s = resolver.resolve(SkillQuery.from_input("使用技能 ctf-crypto，sql注入 xss rce 测试"))
         assert s.primary == "ctf-crypto"
 
     def test_explicit_unknown_skill_ignored(self, resolver):

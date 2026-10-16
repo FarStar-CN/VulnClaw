@@ -309,6 +309,8 @@ async def persistent_pentest(
     # stream_sink 由 core.py 透传入，传给 agent.auto_pentest() 实现流式输出
     stream_sink: Any = None,
     task_constraints: TaskConstraints | None = None,
+    engine: str | None = None,
+    cycle_runner: Any = None,
 ) -> list[PersistentCycleResult]:
     cycle_results: list[PersistentCycleResult] = []
 
@@ -353,25 +355,27 @@ async def persistent_pentest(
                 rendered = agent.context.state.task_constraints.to_prompt_block()
                 if rendered:
                     constraints_block = f"\n\n{rendered}"
-            selected_engine = resolve_engine(agent.config)
-            results = await agent.auto_pentest(
-                user_input=(
-                    _(
-                        "agent.loop.persistent_cycle",
-                        cycle=cycle_num,
-                        target=agent.context.state.target or _("agent.loop.unknown"),
-                    )
-                    + constraints_block
-                    if cycle_num > 1
-                    else user_input
-                ),
-                target=agent.context.state.target,
-                max_rounds=rounds_per_cycle,
-                on_step=_make_step_callback(cycle_num),
-                # 透传 stream_sink，使 persistent 模式也支持流式输出
-                stream_sink=stream_sink,
-                task_constraints=agent.context.state.task_constraints,
+            selected_engine = resolve_engine(agent.config, engine)
+            cycle_prompt = (
+                _(
+                    "agent.loop.persistent_cycle",
+                    cycle=cycle_num,
+                    target=agent.context.state.target or _("agent.loop.unknown"),
+                ) + constraints_block
+                if cycle_num > 1 else user_input
             )
+            if cycle_runner is not None:
+                results = await cycle_runner(cycle_prompt, _make_step_callback(cycle_num))
+            else:
+                results = await agent.auto_pentest(
+                    user_input=cycle_prompt,
+                    target=agent.context.state.target,
+                    max_rounds=rounds_per_cycle,
+                    on_step=_make_step_callback(cycle_num),
+                    stream_sink=stream_sink,
+                    task_constraints=agent.context.state.task_constraints,
+                    engine=selected_engine,
+                )
             cycle_results_list = results if results else cycle_results_list
             if selected_engine == "solve":
                 agent_state = agent.context.state.agent_state
