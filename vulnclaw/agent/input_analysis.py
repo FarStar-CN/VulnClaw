@@ -8,10 +8,8 @@ from typing import Optional
 from vulnclaw.agent.context import PentestPhase, TaskConstraints
 from vulnclaw.i18n import _
 
-# A ``/skill`` launch is dispatched as the prompt ``Use VulnClaw skill <name>. …``
-# (see ``dispatch_skill_slash_command``). Captured so we can tell a self-discovering
-# skill launch apart from an ordinary target-first task.
-_SKILL_LAUNCH_RE = re.compile(r"^\s*Use VulnClaw skill\s+([A-Za-z0-9_-]+)\.", re.IGNORECASE)
+# Explicit skill prompts can describe a discovery seed rather than a scan target.
+_SKILL_LAUNCH_RE = re.compile(r"^\s*(?:Use VulnClaw skill\s+|使用技能\s*)([A-Za-z0-9_-]+)", re.IGNORECASE)
 
 
 def _is_self_discovering_skill_launch(text: str) -> bool:

@@ -261,25 +261,27 @@ No-args startup opens the 🦞 interactive shell for natural-language use:
 [+] PoC saved: ./pocs/CVE-202X-XXXX.py
 ```
 
-**REPL Built-in Commands:**
+**The REPL and native TUI share input semantics. Plain text is natural language:**
 
-| Command | Description |
-|---------|-------------|
-| `target <host>` | Set pentest target |
-| `status` | View current state |
-| `tools` | List available MCP tools |
-| `think on/off` | Toggle thinking process display |
-| `mode [mode]` | Show or switch the execution approval mode (ask / auto_review / full_access) |
-| `persistent` | Start persistent pentesting |
-| `clear` | Clear current session |
-| `help` | Show help |
-| `exit` / `quit` / `q` | Exit |
+| Command | Behavior |
+|---------|----------|
+| `/run <target>` | Execute a task; `--allow-actions` limits actions, `--continuous` repeats cycles |
+| `/recon` / `/scan` / `/exploit` / `/persistent` | Shorthands for constrained or continuous `/run` |
+| `/target <host>` / `/scope ...` | Set the target and scope defaults |
+| `/mode plan` / `/mode agent` | Plan or execute; new sessions default to Agent |
+| `/permission ask` / `auto_review` / `full_access` | Set execution approval independently |
+| `/clear` / `/new` | Clear the display / start a new conversation; saved tasks remain |
+| `/report` / `/compact` | Export existing results / compact context |
+| `/status` / `/tools` / `/think on` / `/think off` | Status, tools, reasoning display |
+| `/help` / `/quit` | Help / exit |
+
+Select skills in the prompt, for example `Use VulnClaw skill web-pentest. Inspect login.` Automatic selection remains available. There is no `/skill` or `/<skill-name>` launch syntax. Natural-language reports use the requested meaning and configured defaults; explicit requests override defaults. See the [Markdown architecture](docs/architecture/tui-natural-language-design.md).
 
 **Auto Pentest Trigger:** Keywords like "pentest", "find flag", "bruteforce" + a target address auto-enter the multi-round autonomous loop. `Ctrl+C` to interrupt anytime.
 
 ### Mode 2: TUI Workbench
 
-Optional terminal UI workbench showing authorized target, check mode, runtime overview, and safety boundary — confirm scope before launching.
+The terminal workbench accepts natural language by default, with conversation context, streamed tool output, approvals and cancellation. Explicit task commands keep their launch confirmation.
 
 ```bash
 vulnclaw tui
@@ -358,7 +360,7 @@ vulnclaw persistent 192.168.1.100 --no-report   # disable auto-report
 vulnclaw tui --target 192.168.1.100 --mode continuous
 
 # REPL mode
-🦞 vulnclaw> persistent 192.168.1.100
+🦞 vulnclaw> /run 192.168.1.100 --continuous
 ```
 
 **Features:** Cross-cycle state / Cycle reports / Graceful interrupt / Incremental discovery / Fully configurable
@@ -680,6 +682,7 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 | `subagent.leaf_max_tool_rounds` | 4 | Max tool follow-up rounds per leaf agent |
 | `subagent.max_model_tokens_per_solve` | 8000000 | Solve-wide model-token ceiling for all descendant agents |
 | `subagent.max_model_tokens_per_group` | 1000000 | Shared token ceiling for one Leader and all its leaves |
+| `session.conversation_auto_report` | true | Export when natural-language security work completes; explicit requests override this default |
 | `session.solve_auto_report` | true | Generate a Markdown replay report when solve completes |
 | `session.solve_report_show` | true | Print the generated solve report body in the terminal |
 | `session.max_rounds` | 15 | Max rounds |

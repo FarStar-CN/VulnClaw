@@ -11,7 +11,7 @@ fn session_round_trip_preserves_composer_history_and_posture() {
     let mut source = App::new_disconnected(sender);
     source.insert_text("/help");
     source.submit();
-    source.cycle_mode();
+    source.mode = ExecutionMode::Plan;
     source.permission = PermissionMode::FullAccess;
     let state = SessionState::from_app(&source);
 
@@ -72,4 +72,15 @@ fn legacy_permission_is_read_but_never_applied() {
     assert_eq!(app.permission, PermissionMode::AutoReview);
     assert_eq!(app.mode, ExecutionMode::Plan);
     assert_eq!(app.command_history, vec!["/help"]);
+}
+
+#[test]
+fn legacy_yolo_becomes_agent_without_changing_permission() {
+    let state: SessionState =
+        serde_json::from_value(serde_json::json!({"mode": "YOLO", "history": []})).unwrap();
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    state.apply(&mut app);
+    assert_eq!(app.mode, ExecutionMode::Agent);
+    assert_eq!(app.permission, PermissionMode::Ask);
 }

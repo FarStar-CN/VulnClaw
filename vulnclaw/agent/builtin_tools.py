@@ -1184,6 +1184,18 @@ async def execute_runtime_diff_probe(agent: AgentContext, args: dict[str, Any]) 
 
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
     """Execute a tool call via MCP manager or built-in tools."""
+    from vulnclaw.agent.execution_context import current_execution
+
+    execution = current_execution()
+    if execution.mode == "plan":
+        return "[!] Plan mode does not permit tool execution. Switch to Agent mode."
+    if tool_name == "conversation_report":
+        if execution.report is None or agent._subagent_ctx.depth != 0:
+            return "[!] Conversation reports are available only to the main conversation agent."
+        try:
+            return json.dumps(await execution.report(args), ensure_ascii=False)
+        except ValueError as exc:
+            return f"[!] {exc}"
     violation = role_tool_violation(
         getattr(agent, "active_role", None),
         tool_name,

@@ -675,7 +675,7 @@ class TestWebServices:
             def session_state(self):
                 return self.context.state
 
-            async def chat(self, prompt, target=None, **kwargs):
+            async def solve(self, prompt, target=None, **kwargs):
                 return type("Result", (), {"output": "hello", "phase": "Recon"})()
 
         events: list[str] = []
@@ -788,16 +788,13 @@ class TestWebServices:
         assert prepare_task(request).constraints.allowed_ports == [443]
 
     def test_shared_task_service_rejects_explicit_action_conflict(self):
-        from vulnclaw.task_service import prepare_task
         from vulnclaw.web.schemas import TaskCreateRequest, TaskOptions
 
-        request = TaskCreateRequest(
-            command="exploit",
-            target="https://example.com",
-            options=TaskOptions(allow_actions=["recon"]),
-        )
-        with pytest.raises(ValueError, match="outside allowed actions"):
-            prepare_task(request)
+        with pytest.raises(ValueError, match="only permits actions"):
+            TaskCreateRequest(
+                command="recon", target="https://example.com",
+                options=TaskOptions(allow_actions=["exploit"]),
+            )
 
     @pytest.mark.asyncio
     async def test_web_task_service_initializes_i18n_from_config_language(

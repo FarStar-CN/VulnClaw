@@ -81,13 +81,13 @@ ALLOWED_SPAWN_SITES: dict[str, str] = {
     "vulnclaw/agent/builtin_tools.py:622:subprocess.run": (
         "fixed Windows taskkill fallback for the gated process runner"
     ),
-    "vulnclaw/agent/builtin_tools.py:1623:subprocess.run": (
+    "vulnclaw/agent/builtin_tools.py:1630:subprocess.run": (
         "fixed Windows nmap path lookup"
     ),
-    "vulnclaw/agent/builtin_tools.py:1702:subprocess.run": (
+    "vulnclaw/agent/builtin_tools.py:1709:subprocess.run": (
         "structured argv nmap execution constrained by the nmap tool schema"
     ),
-    "vulnclaw/agent/builtin_tools.py:1710:subprocess.run": (
+    "vulnclaw/agent/builtin_tools.py:1717:subprocess.run": (
         "structured argv non-privileged nmap retry"
     ),
     "vulnclaw/findings/poc.py:215:asyncio.create_subprocess_exec": (
@@ -97,16 +97,16 @@ ALLOWED_SPAWN_SITES: dict[str, str] = {
     "vulnclaw/cli/tui.py:500:subprocess.call": (
         "operator control plane: native TUI binary launcher"
     ),
-    "vulnclaw/cli/tui.py:1749:subprocess.run": (
+    "vulnclaw/cli/tui.py:1553:subprocess.run": (
         "operator control plane: fixed version diagnostic"
     ),
-    "vulnclaw/cli/tui.py:2631:subprocess.run": (
+    "vulnclaw/cli/tui.py:2439:subprocess.run": (
         "operator control plane: Windows Get-Clipboard via powershell for /config paste"
     ),
-    "vulnclaw/cli/tui.py:2667:subprocess.run": (
+    "vulnclaw/cli/tui.py:2475:subprocess.run": (
         "operator control plane: Unix pbpaste/wl-paste/xclip/xsel for /config paste"
     ),
-    "vulnclaw/cli/main.py:2773:subprocess.run": (
+    "vulnclaw/cli/main.py:1794:subprocess.run": (
         "operator control plane: fixed Node.js version diagnostic"
     ),
     # First-run setup wizard (merged from dev): operator-driven fixed argv

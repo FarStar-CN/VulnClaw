@@ -39,11 +39,11 @@ impl SessionState {
     }
 
     pub fn apply(self, app: &mut App) {
-        app.mode = match self.mode.as_str() {
-            "Agent" => ExecutionMode::Agent,
-            "YOLO" => ExecutionMode::Yolo,
+        let mode = match self.mode.as_str() {
+            "Agent" | "YOLO" => ExecutionMode::Agent,
             _ => ExecutionMode::Plan,
         };
+        app.restore_mode(mode);
         // Python is the only business-state source. Legacy transcript/findings
         // are intentionally ignored; a backend state event hydrates them.
         let _ = (

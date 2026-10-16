@@ -426,6 +426,19 @@ class AgentCore:
         active_role_prompt = role_prompt_block(self.active_role)
         if active_role_prompt:
             prompt = f"{prompt}\n\n{active_role_prompt}"
+        from vulnclaw.agent.execution_context import current_execution
+
+        execution = current_execution()
+        if execution.mode == "plan":
+            prompt += "\nPlan mode: explain and plan only. Do not execute tools or export files."
+        elif execution.report is not None:
+            prompt += (
+                "\nUse conversation_report to express the user's report intent. Classify CTF/"
+                "solution replays as replay and security assessments as security. Preserve "
+                "requirements across continuations. Honor requests not to generate reports. "
+                "Progress summaries and explanations are normal replies. Export existing "
+                "results directly when requested; do not repeat testing just to make a report."
+            )
         return prompt
 
     def _get_active_skill_context(self, user_input: Optional[str] = None) -> Optional[str]:
@@ -654,6 +667,8 @@ class AgentCore:
         # stream_sink 由 main.py 传入，逐级透传到 call_llm_auto_stream 实现流式输出
         stream_sink: Optional["StreamSink"] = None,
         task_constraints: Optional[TaskConstraints] = None,
+        engine: Optional[str] = None,
+        cycle_runner: Any = None,
     ) -> list["PersistentCycleResult"]:
         """Persistent penetration test — runs cycles of auto_pentest until stopped."""
         return await run_persistent_pentest(
@@ -667,6 +682,8 @@ class AgentCore:
             on_cycle_complete,
             stream_sink=stream_sink,
             task_constraints=task_constraints,
+            engine=engine,
+            cycle_runner=cycle_runner,
         )
 
     def _detect_phase_from_output(self, output: str) -> Optional[PentestPhase]:
@@ -730,6 +747,11 @@ class AgentCore:
 
     def _build_openai_tools(self) -> list[dict]:
         """Build OpenAI function calling schema from MCP tools + built-in tools."""
+        from vulnclaw.agent.execution_context import current_execution, report_tool_schema
+
+        execution = current_execution()
+        if execution.mode == "plan":
+            return []
         cfg = getattr(self.config, "subagent", None)
         session_kind = str(
             getattr(getattr(self.context, "state", None), "session_kind", "")
@@ -743,11 +765,14 @@ class AgentCore:
                 or session_kind == "group_leader"
             )
         )
-        return build_openai_tools(
+        tools = build_openai_tools(
             self.mcp_manager,
             active_role=self.active_role,
             include_subagent_tool=include_subagent_tool,
         )
+        if execution.report is not None and self._subagent_ctx.depth == 0:
+            tools.append(report_tool_schema())
+        return tools
 
     # ── Python code executor ─────────────────────────────────────────
 

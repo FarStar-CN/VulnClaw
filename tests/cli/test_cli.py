@@ -200,10 +200,15 @@ class TestCLI:
         assert "LLM Probe" in result.output
 
     def test_recon_resumes_target_state(self, runner, monkeypatch, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
         import vulnclaw.orchestrator as orchestrator_mod
         import vulnclaw.target_state.store as store_mod
         from vulnclaw.agent.context import PentestPhase, SessionState
         from vulnclaw.cli.main import app
+        monkeypatch.setattr("vulnclaw.cli.main.has_llm_credentials", lambda _: True)
+        monkeypatch.setattr("vulnclaw.agent.core.AgentCore.solve", AsyncMock(return_value=SimpleNamespace(completed=False)))
 
         monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
         state = SessionState(target="https://example.com")
@@ -213,9 +218,9 @@ class TestCLI:
         calls: list[tuple[str, str | None]] = []
         original_apply = orchestrator_mod.apply_target_state_to_agent
 
-        def tracking_apply(agent, target, snapshot_id=None):
+        def tracking_apply(agent, target, snapshot_id=None, **kwargs):
             calls.append((target, snapshot_id))
-            return original_apply(agent, target, snapshot_id=snapshot_id)
+            return original_apply(agent, target, snapshot_id=snapshot_id, **kwargs)
 
         monkeypatch.setattr(orchestrator_mod, "apply_target_state_to_agent", tracking_apply)
 
@@ -225,9 +230,14 @@ class TestCLI:
         assert calls == [("https://example.com", None)]
 
     def test_recon_no_resume_skips_target_state(self, runner, monkeypatch, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
         import vulnclaw.target_state.store as store_mod
         from vulnclaw.agent.context import PentestPhase, SessionState
         from vulnclaw.cli.main import app
+        monkeypatch.setattr("vulnclaw.cli.main.has_llm_credentials", lambda _: True)
+        monkeypatch.setattr("vulnclaw.agent.core.AgentCore.solve", AsyncMock(return_value=SimpleNamespace(completed=False)))
 
         monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
         state = SessionState(target="https://example.com")
@@ -263,7 +273,7 @@ class TestCLI:
         )
         monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "stop_all", lambda self: None)
 
-        def fake_apply(agent, target: str, snapshot_id=None):
+        def fake_apply(agent, target: str, snapshot_id=None, **_kwargs):
             restored = None
             if target == "https://old.example":
                 restored = old_state
@@ -306,13 +316,14 @@ class TestCLI:
             observed["phase"] = self.context.state.phase.value
             return []
 
-        monkeypatch.setattr(cli_main, "apply_target_state_to_agent", fake_apply)
+        monkeypatch.setattr("vulnclaw.conversation.apply_target_state_to_agent", fake_apply)
+        monkeypatch.setattr("vulnclaw.orchestrator.apply_target_state_to_agent", fake_apply)
         monkeypatch.setattr(agent_core.AgentCore, "persistent_pentest", fake_persistent_pentest)
 
         result = runner.invoke(
             app,
             ["repl"],
-            input="target https://old.example\npersistent https://new.example\nexit\n",
+            input="/target https://old.example\n/persistent https://new.example\n/quit\n",
         )
 
         assert result.exit_code == 0
@@ -354,17 +365,18 @@ class TestCLI:
         )
         monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "stop_all", lambda self: None)
         monkeypatch.setattr(
-            cli_main, "_generate_report_for_target", AsyncMock(side_effect=lambda target, **kwargs: "C:/tmp/report.md")
+            "vulnclaw.report_service.export_report",
+            __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(return_value={"path": "C:/tmp/report.md"})
         )
 
         result = runner.invoke(
             app,
             ["repl"],
-            input="target https://example.com\nreport https://example.com\nexit\n",
+            input="/target https://example.com\n/report\n/quit\n",
         )
 
         assert result.exit_code == 0
-        assert "Report generated" in result.output or "报告已生成" in result.output
+        assert "Report saved" in result.output
         assert "report.md" in result.output
 
     def test_run_uses_shared_orchestrator(self, runner, monkeypatch):
@@ -378,7 +390,7 @@ class TestCLI:
 
         called: list[tuple[str, str]] = []
 
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner):
+        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
             called.append((command, target))
             return type("RunResult", (), {"summary": {"findings_count": 3}})()
 
@@ -481,8 +493,8 @@ class TestCLI:
         config.llm.api_key = "test-key"
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
 
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner):
-            return type("RunResult", (), {"summary": {"findings_count": 2}, "audited_session": audited})()
+        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
+            return type("RunResult", (), {"summary": {"findings_count": 2}})()
 
         monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
 
@@ -511,8 +523,8 @@ class TestCLI:
         config.llm.api_key = "test-key"
         monkeypatch.setattr(cli_main, "load_config", lambda: config)
 
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner):
-            return type("RunResult", (), {"summary": {"findings_count": 0}, "audited_session": audited})()
+        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
+            return type("RunResult", (), {"summary": {"findings_count": 0}})()
 
         monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
 
@@ -575,7 +587,7 @@ class TestCLI:
             def apply_task_constraints(self, _constraints):
                 return None
 
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner):
+        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
             await runner(DummyAgent(), config)
             return type("RunResult", (), {"summary": {"findings_count": 0}})()
 
@@ -605,7 +617,7 @@ class TestCLI:
 
         prompts = []
 
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner):
+        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
             class DummyAgent:
                 def __init__(self, agent_config):
                     self.config = agent_config
@@ -648,7 +660,7 @@ class TestCLI:
 
         prompts = []
 
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner):
+        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
             class DummyAgent:
                 def __init__(self, agent_config):
                     self.config = agent_config
@@ -721,6 +733,7 @@ class TestCLI:
 
         class DummyAgent:
             def __init__(self):
+                self.config = config
                 self.context = type(
                     "Ctx", (), {"state": type("State", (), {"target": "https://example.com"})()}
                 )()
@@ -731,7 +744,7 @@ class TestCLI:
                 assert kwargs["on_cycle_complete"] is not None
                 return []
 
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner):
+        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
             await runner(DummyAgent(), config)
             return type("Result", (), {"summary": {"findings_count": 0, "executed_steps": 0}})()
 
@@ -742,7 +755,7 @@ class TestCLI:
         )
         assert result.exit_code == 0
 
-    def test_repl_persistent_interrupt_generates_final_report(self, runner, monkeypatch):
+    def test_repl_persistent_interrupt_returns_to_prompt(self, runner, monkeypatch):
         import vulnclaw.agent.core as agent_core
         import vulnclaw.cli.main as cli_main
         import vulnclaw.mcp.lifecycle as lifecycle_mod
@@ -763,7 +776,7 @@ class TestCLI:
         finding = VulnerabilityFinding(title="SQLi", severity="High", vuln_type="SQLi")
         state.add_finding(finding)
 
-        def fake_apply(agent, target: str, snapshot_id=None):
+        def fake_apply(agent, target: str, snapshot_id=None, **_kwargs):
             agent.context.state = state
             return type(
                 "Restore",
@@ -781,7 +794,8 @@ class TestCLI:
         async def fake_persistent_pentest(self, user_input: str, target=None, **kwargs):
             raise KeyboardInterrupt()
 
-        monkeypatch.setattr(cli_main, "apply_target_state_to_agent", fake_apply)
+        monkeypatch.setattr("vulnclaw.conversation.apply_target_state_to_agent", fake_apply)
+        monkeypatch.setattr("vulnclaw.orchestrator.apply_target_state_to_agent", fake_apply)
         monkeypatch.setattr(agent_core.AgentCore, "persistent_pentest", fake_persistent_pentest)
         monkeypatch.setattr(
             cli_main, "_generate_report_for_target", AsyncMock(side_effect=lambda target, **kwargs: "C:/tmp/final.md")
@@ -790,12 +804,11 @@ class TestCLI:
         result = runner.invoke(
             app,
             ["repl"],
-            input="persistent https://example.com\nexit\n",
+            input="/persistent https://example.com\n/quit\n",
         )
 
         assert result.exit_code == 0
-        assert "Final report" in result.output or "最终报告" in result.output
-        assert "final.md" in result.output
+        assert "interrupted" in result.output
 
     def test_target_state_list_and_clear(self, runner, monkeypatch, tmp_path):
         import vulnclaw.target_state.store as store_mod
@@ -848,22 +861,6 @@ class TestCLI:
         assert result_diff.exit_code == 0
         assert "Target Diff" in result_diff.output
 
-    @pytest.mark.asyncio
-    async def test_repl_runner_executes_post_hook(self):
-        from vulnclaw.repl_runner import run_repl_call
-
-        observed = []
-
-        async def call():
-            observed.append("call")
-            return "hello"
-
-        async def after_result(result):
-            observed.append(f"after:{result}")
-
-        result = await run_repl_call(call=call, after_result=after_result)
-        assert result == "hello"
-        assert observed == ["call", "after:hello"]
 
     def _patch_repl_chat(self, monkeypatch):
         """Patch the classic REPL so a fake ``AgentCore.chat`` drives it."""
@@ -894,7 +891,7 @@ class TestCLI:
 
         monkeypatch.setattr(agent_core.AgentCore, "chat", fake_chat)
 
-        result = runner.invoke(app, ["repl"], input="hey\nexit\n")
+        result = runner.invoke(app, ["repl"], input="hey\n/quit\n")
 
         assert result.exit_code == 0
         assert "[!] Agent 错误: boom" in result.output
@@ -915,7 +912,7 @@ class TestCLI:
 
         monkeypatch.setattr(agent_core.AgentCore, "chat", fake_chat)
 
-        result = runner.invoke(app, ["repl"], input="hey\nexit\n")
+        result = runner.invoke(app, ["repl"], input="hey\n/quit\n")
 
         assert result.exit_code == 0
         assert result.output.count("streamed answer") == 1
@@ -1301,80 +1298,17 @@ class TestCLI:
         assert "run" in entries
         assert "quit" in entries
 
-    def test_tui_skill_slash_without_args_shows_skill_help(self):
+    def test_tui_skill_slash_is_unknown(self):
         import vulnclaw.cli.tui as tui_mod
 
         session = {"state": tui_mod.TuiState(), "_message": "", "_prompt": None}
 
         tui_mod._dispatch_slash("/ctf-web", session)
 
-        assert session["_prompt"][0] == "message"
-        assert "/ctf-web skill" in session["_prompt"][1]
+        assert session["_message"] == "Unknown command: /ctf-web"
 
-    def test_skill_slash_with_args_requires_target_by_default(self, monkeypatch):
-        import vulnclaw.cli.tui as tui_mod
 
-        monkeypatch.setattr(
-            tui_mod,
-            "load_skill_by_name",
-            lambda name: {"name": name, "requires_target": True},
-        )
-        session = {"state": tui_mod.TuiState(), "_message": "", "_prompt": None}
 
-        handled = tui_mod.dispatch_skill_slash_command("needs-target", "go", session)
-
-        assert handled is True
-        assert session["_message"] == tui_mod._("tui.please_set_target")
-        assert session.get("_action") != "launch"
-
-    def test_self_discovering_skill_launches_without_target(self, monkeypatch):
-        import vulnclaw.cli.tui as tui_mod
-
-        # A skill declaring ``requires_target: false`` (e.g. hackerone) discovers
-        # its target from args, so it launches with no preset target.
-        monkeypatch.setattr(
-            tui_mod,
-            "load_skill_by_name",
-            lambda name: {"name": name, "requires_target": False},
-        )
-        session = {"state": tui_mod.TuiState(), "_message": "", "_prompt": None}
-
-        handled = tui_mod.dispatch_skill_slash_command(
-            "hackerone", "https://hackerone.com/example", session
-        )
-
-        assert handled is True
-        assert session["_action"] == "launch"
-        assert (
-            session["_nl_text"]
-            == "Use VulnClaw skill hackerone. https://hackerone.com/example"
-        )
-        # The scope link stands in as the target so the launched subprocess
-        # records a real target rather than the "<target>" placeholder.
-        assert session["state"].target == "https://hackerone.com/example"
-
-    def test_self_discovering_skill_keeps_preset_target(self, monkeypatch):
-        import vulnclaw.cli.tui as tui_mod
-
-        monkeypatch.setattr(
-            tui_mod,
-            "load_skill_by_name",
-            lambda name: {"name": name, "requires_target": False},
-        )
-        session = {
-            "state": tui_mod.TuiState(target="https://preset.example"),
-            "_message": "",
-            "_prompt": None,
-        }
-
-        handled = tui_mod.dispatch_skill_slash_command(
-            "hackerone", "https://hackerone.com/example", session
-        )
-
-        assert handled is True
-        assert session["_action"] == "launch"
-        # An already-set target is respected, not overwritten by the args.
-        assert session["state"].target == "https://preset.example"
 
     def test_tui_runtime_diagnostic_panel_renders_environment_summary(self, monkeypatch):
         import vulnclaw.cli.tui as tui_mod
@@ -1597,70 +1531,13 @@ class TestClassicReplSlashPalette:
         finally:
             init_i18n()
 
-    def test_bare_slash_prompts_for_a_skill_name(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
 
-        result = dispatch_repl_slash("/")
 
-        assert result.kind == "message"
-        assert "skill name" in result.text
 
-    def test_unknown_skill_reports_error(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
 
-        result = dispatch_repl_slash("/not-a-real-skill")
 
-        assert result.kind == "message"
-        assert "Unknown skill" in result.text
 
-    def test_skill_without_task_shows_help(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
 
-        result = dispatch_repl_slash("/recon")
-
-        assert result.kind == "message"
-        assert "recon" in result.text
-
-    def test_skill_with_task_rewrites_to_agent_prompt(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
-
-        result = dispatch_repl_slash("/recon scan the box")
-
-        assert result.kind == "run"
-        assert result.text == "Use VulnClaw skill recon. scan the box"
-
-    def test_flag_target_sets_target(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
-
-        result = dispatch_repl_slash("/.target example.com")
-
-        assert result.kind == "target"
-        assert result.value == "example.com"
-
-    def test_flag_target_without_value_asks_for_host(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
-
-        result = dispatch_repl_slash("/.target")
-
-        assert result.kind == "message"
-        assert "host value" in result.text
-
-    def test_non_target_flag_is_guidance_only(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
-
-        # B1 wiring: mode/scope flags render guidance, they do not mutate state.
-        result = dispatch_repl_slash("/.mode")
-
-        assert result.kind == "message"
-        assert "/.mode" in result.text
-
-    def test_unknown_flag_skill_reports_error(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
-
-        result = dispatch_repl_slash("/.zzz-not-a-flag")
-
-        assert result.kind == "message"
-        assert "Unknown flag skill" in result.text
 
     def test_completer_offers_commands_and_skills_on_bare_slash(self):
         from prompt_toolkit.document import Document
@@ -1672,7 +1549,7 @@ class TestClassicReplSlashPalette:
 
         assert len(completions) == len(list_repl_palette_entries())
         # Built-in commands come first, ahead of the skills.
-        assert [c.text for c in completions[:3]] == ["config", "language", "wizard"]
+        assert {"/run", "/new", "/mode", "/config"}.issubset({c.text for c in completions})
 
     def test_completion_style_keeps_terminal_background(self):
         from vulnclaw.cli.tui import build_repl_slash_style
@@ -1739,73 +1616,73 @@ class TestClassicReplSlashPalette:
         assert rules["completion-menu.completion.current"].endswith("noreverse")
 
     def test_config_command_dispatches(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
+        from vulnclaw.input_service import InputRequest, parse_input
 
-        result = dispatch_repl_slash("/config")
+        result = parse_input(InputRequest(text="/config"))
 
-        assert result.kind == "command"
-        assert result.value == "config"
+        assert result.kind == "adapter"
+        assert result.operation == "config"
         assert result.text == ""
 
     def test_config_alias_dispatches(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
+        from vulnclaw.input_service import InputRequest, parse_input
 
-        result = dispatch_repl_slash("/cfg")
+        result = parse_input(InputRequest(text="/cfg"))
 
-        assert result.kind == "command"
-        assert result.value == "config"
+        assert result.kind == "adapter"
+        assert result.operation == "config"
 
     def test_language_command_carries_argument(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
+        from vulnclaw.input_service import InputRequest, parse_input
 
-        result = dispatch_repl_slash("/language en")
+        result = parse_input(InputRequest(text="/language en"))
 
-        assert result.kind == "command"
-        assert result.value == "language"
+        assert result.kind == "adapter"
+        assert result.operation == "language"
         assert result.text == "en"
 
     def test_language_alias_dispatches(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
+        from vulnclaw.input_service import InputRequest, parse_input
 
-        result = dispatch_repl_slash("/lang")
+        result = parse_input(InputRequest(text="/lang"))
 
-        assert result.kind == "command"
-        assert result.value == "language"
+        assert result.kind == "adapter"
+        assert result.operation == "language"
 
     def test_experience_command_dispatches_without_args(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
+        from vulnclaw.input_service import InputRequest, parse_input
 
-        result = dispatch_repl_slash("/experience")
+        result = parse_input(InputRequest(text="/experience"))
 
-        assert result.kind == "command"
-        assert result.value == "experience"
+        assert result.kind == "adapter"
+        assert result.operation == "experience"
         assert result.text == ""
 
     def test_experience_alias_and_subcommand_carry_args(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
+        from vulnclaw.input_service import InputRequest, parse_input
 
-        result = dispatch_repl_slash("/exp show L1")
+        result = parse_input(InputRequest(text="/exp show L1"))
 
-        assert result.kind == "command"
-        assert result.value == "experience"
+        assert result.kind == "adapter"
+        assert result.operation == "experience"
         assert result.text == "show L1"
 
     def test_learn_command_carries_run_name(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
+        from vulnclaw.input_service import InputRequest, parse_input
 
-        result = dispatch_repl_slash("/learn my-run")
+        result = parse_input(InputRequest(text="/learn my-run"))
 
-        assert result.kind == "command"
-        assert result.value == "learn"
+        assert result.kind == "adapter"
+        assert result.operation == "learn"
         assert result.text == "my-run"
 
     def test_feedback_command_carries_full_argument(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
+        from vulnclaw.input_service import InputRequest, parse_input
 
-        result = dispatch_repl_slash("/feedback my-run 4 solid recon coverage")
+        result = parse_input(InputRequest(text="/feedback my-run 4 solid recon coverage"))
 
-        assert result.kind == "command"
-        assert result.value == "feedback"
+        assert result.kind == "adapter"
+        assert result.operation == "feedback"
         assert result.text == "my-run 4 solid recon coverage"
 
     def test_experience_and_learn_and_feedback_in_palette(self):
@@ -1822,8 +1699,8 @@ class TestClassicReplSlashPalette:
         entries = tui_mod.list_repl_palette_entries()
         names = [name for name, _ in entries]
 
-        assert names[:2] == ["config", "language"]
-        assert "recon" in names  # skills still follow the commands
+        assert {"config", "language", "run", "new"}.issubset(names)
+        assert "recon" in names  # run shorthand, not a skill
 
     def test_run_repl_command_routes_experience_to_handler(self, monkeypatch):
         import vulnclaw.cli.main as main_mod
