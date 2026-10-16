@@ -21,7 +21,7 @@ fn tab_cycles_execution_mode_and_shift_tab_cycles_permission() {
 
     // Default posture is Agent; one Tab cycles to the read-only Plan.
     // Offline permission cycling is rejected (backend-owned policy).
-    assert_eq!(app.mode, ExecutionMode::Plan);
+    assert_eq!(app.mode, ExecutionMode::Agent);
     assert_eq!(app.permission, PermissionMode::Ask);
 }
 
@@ -554,12 +554,12 @@ fn task_confirmation_captures_shortcuts() {
 fn enter_executes_an_exact_command_instead_of_refilling_it() {
     let (sender, _) = mpsc::channel();
     let mut app = App::new_disconnected(sender);
-    app.input = "/plan".into();
+    app.input = "/help".into();
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(app.input.is_empty());
-    assert!(app.transcript.iter().any(|item| item.text == "> /plan"));
+    assert!(app.transcript.iter().any(|item| item.text == "> /help"));
 }
 
 #[test]

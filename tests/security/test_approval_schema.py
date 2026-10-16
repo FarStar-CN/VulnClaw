@@ -42,7 +42,7 @@ class TestApprovalRequiredSchema:
         assert event["question"] == "legacy ask_user question"
 
     def test_full_tui_channel_payload_roundtrip(self):
-        """The exact payload TuiApprovalChannel emits must serialize cleanly."""
+        """The exact payload EventApprovalChannel emits must serialize cleanly."""
         from vulnclaw.agent.exec_gate import ApprovalView
 
         view = ApprovalView(

@@ -29,6 +29,15 @@ pub struct ClientRequest {
 }
 
 impl ClientRequest {
+    pub fn submit_input(request_id: String, task_id: String, text: String) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            kind: "submit_input",
+            request_id,
+            task_id: Some(task_id),
+            payload: serde_json::json!({"text": text}),
+        }
+    }
     pub fn initialize(request_id: String, bootstrap: Value) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
@@ -120,6 +129,10 @@ pub struct RuntimeInfo {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct BackendCapabilities {
+    #[serde(default)]
+    pub natural_language: bool,
+    #[serde(default)]
+    pub input_commands: std::collections::BTreeMap<String, String>,
     pub commands: Vec<String>,
     #[serde(default)]
     pub control_operations: Vec<String>,
@@ -139,6 +152,8 @@ pub struct BackendTaskState {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct StateSnapshot {
+    #[serde(default)]
+    pub execution_mode: String,
     pub target: String,
     pub phase: String,
     pub task_constraints: Value,
@@ -161,6 +176,29 @@ where
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BackendEvent {
+    TurnStarted {
+        request_id: String,
+        task_id: String,
+        text: String,
+        state: StateSnapshot,
+    },
+    TurnCompleted {
+        request_id: String,
+        task_id: String,
+        result: Value,
+        state: StateSnapshot,
+    },
+    TurnCancelled {
+        request_id: String,
+        task_id: String,
+        state: StateSnapshot,
+    },
+    TurnFailed {
+        request_id: String,
+        task_id: String,
+        error: Value,
+        state: StateSnapshot,
+    },
     Ready {
         request_id: String,
         backend: BackendInfo,

@@ -3,8 +3,7 @@ use vulnclaw_tui::workbench::ViewId;
 
 use crate::support::AppHarness;
 use vulnclaw_tui::app::{
-    parse_scope_payload, parse_task_payload, strip_prompt_prefix, App, ExecutionMode,
-    PermissionMode, TranscriptItem, TranscriptKind,
+    strip_prompt_prefix, App, ExecutionMode, PermissionMode, TranscriptItem, TranscriptKind,
 };
 
 fn push_log(app: &mut App, text: impl Into<String>) {
@@ -144,14 +143,15 @@ fn scope_command_routes_to_capability_gated_control() {
     assert!(app
         .transcript
         .iter()
-        .any(|item| item.text.contains("Usage: /scope")));
+        .any(|item| item.text.contains("shared text input is unavailable")));
 
+    app.clear_composer();
     app.insert_text("/scope --only-port 443");
     app.submit();
     assert!(app
         .transcript
         .iter()
-        .any(|item| { item.text.contains("The Python backend is not ready") }));
+        .any(|item| { item.text.contains("shared text input is unavailable") }));
     assert!(!app
         .transcript
         .iter()
@@ -171,6 +171,8 @@ fn ready_event_hydrates_backend_capabilities() {
             "config.read",
             "config.write",
             "example.inspect",
+            "session.mode.set",
+            "session.new",
             "session.permission.set",
             "session.scope.reset",
             "session.scope.update"
@@ -213,6 +215,7 @@ fn authoritative_state_replaces_and_clears_every_business_field() {
         vulnclaw_tui::protocol::BackendEvent::State {
             request_id: None,
             state: vulnclaw_tui::protocol::StateSnapshot {
+                execution_mode: "agent".to_owned(),
                 target: String::new(),
                 phase: String::new(),
                 task_constraints: serde_json::json!({"allowed_ports": [443]}),
@@ -281,6 +284,7 @@ fn task_event_summaries_never_override_authoritative_state() {
                     "target": "summary.test"
                 }),
                 state: vulnclaw_tui::protocol::StateSnapshot {
+                    execution_mode: "agent".to_owned(),
                     target: "authoritative.test".into(),
                     phase: "recon".into(),
                     task_constraints: serde_json::json!({
@@ -321,6 +325,7 @@ fn task_event_summaries_never_override_authoritative_state() {
                 result: serde_json::json!({}),
                 findings: vec![summary_finding],
                 state: vulnclaw_tui::protocol::StateSnapshot {
+                    execution_mode: "agent".to_owned(),
                     target: "authoritative.test".into(),
                     phase: "reporting".into(),
                     task_constraints: harness.app.task_constraints.clone(),
@@ -348,7 +353,7 @@ fn mode_and_permission_cycles_are_independent() {
     // Default posture is Agent; one Tab cycles to the read-only Plan.
     // Permission now requires a connected backend (the server owns the
     // authoritative policy), so offline cycling must keep the posture.
-    assert_eq!(app.mode, ExecutionMode::Plan);
+    assert_eq!(app.mode, ExecutionMode::Agent);
     assert_eq!(app.permission, PermissionMode::Ask);
 }
 
@@ -446,26 +451,6 @@ fn task_requires_a_target() {
         .transcript
         .iter()
         .any(|item| item.text.contains("requires a target")));
-}
-
-#[test]
-fn task_command_is_only_a_presentation_adapter_for_the_structured_dto() {
-    let task = parse_task_payload(
-        "/scan https://app.test/admin --ports 80,443 --only-port 443 --no-resume",
-    )
-    .unwrap();
-
-    assert_eq!(task["command"], "scan");
-    assert_eq!(task["target"], "https://app.test/admin");
-    assert_eq!(task["resume"], false);
-    assert_eq!(task["options"]["ports"], "80,443");
-    assert_eq!(task["options"]["only_port"], 443);
-}
-
-#[test]
-fn scope_adapter_rejects_non_scope_fields() {
-    let error = parse_scope_payload("--engine solve").unwrap_err();
-    assert!(error.contains("unsupported scope option"));
 }
 
 #[test]
@@ -1092,4 +1077,45 @@ fn typing_narrows_a_long_model_list_without_capping_it() {
     assert_eq!(matches.len(), 10);
     assert_eq!(matches[0], "model-10");
     assert_eq!(matches[9], "model-19");
+}
+
+#[test]
+fn natural_language_is_submitted_and_streamed() {
+    let mut harness = AppHarness::connected();
+    harness.app.insert_text("解释之前的发现");
+    harness.app.submit();
+    assert!(harness.app.worker_active);
+    harness.apply_next();
+    harness.apply_next();
+    harness.apply_next();
+    assert!(!harness.app.worker_active);
+    assert!(harness
+        .app
+        .transcript
+        .iter()
+        .any(|item| item.text.contains("Natural language response")));
+}
+
+#[test]
+fn busy_natural_language_submission_keeps_draft() {
+    let mut harness = AppHarness::connected();
+    start_task(&mut harness, "running.test");
+    harness.app.insert_text("补充要求");
+    harness.app.submit();
+    assert_eq!(harness.app.input, "补充要求");
+}
+
+#[test]
+fn task_text_reaches_backend_without_frontend_option_parsing() {
+    let mut harness = AppHarness::connected();
+    let input = "/run example.test --prompt \"使用技能 web-pentest\" --allow-actions recon,scan";
+    harness.app.insert_text(input);
+    harness.app.submit();
+    harness.app.confirm_task();
+    match harness.apply_next() {
+        vulnclaw_tui::protocol::BackendEvent::TaskStarted { task, .. } => {
+            assert_eq!(task["prompt"], input);
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
 }

@@ -90,3 +90,4 @@ docs/
 .projectHelp/
 # Rust TUI build artifacts
 tui/target/
+.archify/

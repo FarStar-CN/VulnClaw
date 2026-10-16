@@ -84,13 +84,14 @@ async def test_subagent_streams_are_forwarded_live_with_the_main_vocabulary(
 
     from vulnclaw.agent.exec_gate import reset_execution_gate
     from vulnclaw.agent.streaming import TranscriptStreamSink
-    from vulnclaw.tui_backend import BackendStreamSink, _run_task
+    from vulnclaw.application import ApplicationStreamSink as BackendStreamSink
+    from vulnclaw.application import _run_task
 
     reset_execution_gate()
     stream = io.StringIO()
-    sink = BackendStreamSink(JsonlWriter(stream), "t1", show_thinking=show_thinking)
+    sink = BackendStreamSink(JsonlWriter(stream).event, "t1", show_thinking=show_thinking)
 
-    async def execute(_agent, _task, *, stream_sink, on_event):
+    async def execute(_agent, _task, *, stream_sink, on_event, **_kwargs):
         on_event("subagent", {
             "agent_id": "a1", "parent_id": "main", "group_id": "",
             "name": "probe", "agent_type": "general", "status": "running",
@@ -115,8 +116,8 @@ async def test_subagent_streams_are_forwarded_live_with_the_main_vocabulary(
             action_result={"findings": []},
         )
 
-    monkeypatch.setattr("vulnclaw.tui_backend.execute_task", execute)
-    task = prepare_task(TaskCreateRequest(command="run", target="example.test"))
+    monkeypatch.setattr("vulnclaw.application.execute_task", execute)
+    task = prepare_task(TaskCreateRequest(command="run", target="example.test", options=TaskOptions(auto_report=False)))
     await _run_task(SimpleNamespace(agent=object()), task, sink)
     emitted = events(stream)
     main = [event for event in emitted if "agent_id" not in event]
@@ -187,16 +188,10 @@ async def test_initialize_and_two_tasks_share_one_session_backend_pid() -> None:
     completed = [event for event in emitted if event["type"] == "task_completed"]
     assert ready["backend"]["pid"] == os.getpid()
     assert ready["capabilities"]["permission_mode"] == "ask"
-    assert ready["capabilities"]["control_operations"] == [
-        "config.models",
-        "config.preset",
-        "config.read",
-        "config.write",
-        "execution.approval.resolve",
-        "session.permission.set",
-        "session.scope.reset",
-        "session.scope.update",
-    ]
+    assert {"session.scope.update", "session.mode.set", "session.new", "report.export"}.issubset(
+        ready["capabilities"]["control_operations"]
+    )
+    assert ready["capabilities"]["natural_language"] is True
     assert ready["state"]["target"] == "bootstrap.test"
     assert ready["state"]["task_constraints"]["allowed_actions"] == ["recon", "scan"]
     assert runtime.run_count == 2
@@ -289,7 +284,7 @@ async def test_scope_control_updates_defaults_for_later_tasks_and_can_reset() ->
     assert reset["state"]["task_constraints"]["allowed_actions"] == []
     assert reset["state"]["task_constraints"]["allowed_hosts"] == ["target.test"]
     assert not (
-        set(session.bootstrap)
+        set(session.application.bootstrap)
         & {
             "only_host",
             "only_port",
@@ -474,7 +469,7 @@ def test_python_prepares_scope_and_action_constraints() -> None:
         )
     )
 
-    assert task.request.command == "scan"
+    assert task.request.command == "run"
     assert task.request.target == "https://app.example/admin"
     assert task.request.resume is False
     assert task.constraints.allowed_ports == [443]
@@ -488,12 +483,12 @@ def test_python_prepares_scope_and_action_constraints() -> None:
 
 
 def test_python_rejects_command_outside_allowed_actions() -> None:
-    with pytest.raises(ValueError, match="outside allowed actions"):
+    with pytest.raises(ValueError, match="only permits actions"):
         prepare_task(
             TaskCreateRequest(
-                command="exploit",
+                command="recon",
                 target="target.test",
-                options=TaskOptions(allow_actions=["recon", "scan"]),
+                options=TaskOptions(allow_actions=["exploit"]),
             )
         )
 

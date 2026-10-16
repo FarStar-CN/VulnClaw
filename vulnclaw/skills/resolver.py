@@ -7,7 +7,7 @@ of the :class:`SkillQuery`, so selection is testable and auditable — no LLM in
 the loop.
 
 Design contract:
-- Explicit invocation (``/ctf-web`` or ``Use VulnClaw skill ctf-web``) always
+- Explicit invocation in the prompt (``Use VulnClaw skill ctf-web``) always
   wins.
 - Otherwise profiles are scored by metadata signals first, aliases second.
 - ``pentest-flow`` is a fallback only for pentest-like input; unrelated,
@@ -64,10 +64,9 @@ _PENTEST_SIGNALS = (
 )
 
 _EXPLICIT_USE_RE = re.compile(
-    r"\buse\s+vulnclaw\s+skill\s+([A-Za-z0-9][A-Za-z0-9_-]*)\b",
+    r"(?:\buse\s+vulnclaw\s+skill\s+|使用技能\s*[`\"']?)([A-Za-z0-9][A-Za-z0-9_-]*)\b",
     re.IGNORECASE,
 )
-_SLASH_RE = re.compile(r"(?:^|\s)/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 
 # ── Typed objects ───────────────────────────────────────────────────
@@ -253,10 +252,6 @@ class SkillResolver:
     def _detect_explicit(self, query: SkillQuery, combined: str) -> Optional[str]:
         if query.explicit_skill and query.explicit_skill in self._catalog:
             return query.explicit_skill
-        for match in _SLASH_RE.finditer(query.text or ""):
-            candidate = match.group(1).lower()
-            if candidate in self._catalog:
-                return candidate
         return None
 
     def _explicit_selection(

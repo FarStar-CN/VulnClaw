@@ -64,7 +64,7 @@ def _install_fake_run(
     findings = findings if findings is not None else []
     monkeypatch.setattr(cli_main, "load_config", _config_with_creds)
 
-    async def fake_orchestrated(*, command, target, resume, snapshot, runner):
+    async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
         shared_config = VulnClawConfig()
         agent = _FakeAgent(findings, shared_config)
         if captured is not None:

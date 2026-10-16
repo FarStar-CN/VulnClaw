@@ -167,6 +167,7 @@ export interface ReportContentView {
 }
 
 export interface TaskOptions {
+  continuous?: boolean;
   max_rounds?: number;
   rounds_per_cycle?: number;
   max_cycles?: number;

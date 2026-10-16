@@ -495,40 +495,36 @@ async def _run_cli_orchestrated_task(
     resume: bool,
     snapshot: Optional[str],
     runner: Any,
+    task: Any = None,
     **run_context: Any,
 ) -> Any:
-    """Run a CLI task through the shared orchestrator helpers."""
-
-    from vulnclaw.agent.core import AgentCore
+    """Adapt terminal callbacks to the shared in-process application session."""
+    from vulnclaw.application import ApplicationSession
     from vulnclaw.cli.approval_channel import install_cli_approval_channel
     from vulnclaw.config.settings import load_config
-    from vulnclaw.mcp.lifecycle import MCPLifecycleManager
-    from vulnclaw.orchestrator import run_agent_task
 
     config = load_config()
     install_cli_approval_channel(config)
-    mcp_manager = MCPLifecycleManager(config)
-    mcp_manager.start_enabled_servers()
-    agent = AgentCore(config, mcp_manager)
-
+    session = await ApplicationSession.open(config)
     try:
         def on_restored(restore_result: Any) -> None:
             console.print(
                 f"[*] Restored saved target state: [bold]{restore_result.target or target}[/]"
             )
 
-        return await run_agent_task(
-            agent=agent,
-            command=command,
-            target=target,
-            resume=resume,
-            snapshot_id=snapshot,
+        if task is not None:
+            execution = await session.run_task(
+                task, on_restored=on_restored,
+                action_runner=lambda agent: runner(agent, session.config),
+            )
+            return execution.run
+        return await session.run_orchestrated(
+            command=command, target=target, resume=resume, snapshot_id=snapshot,
             on_restored=on_restored,
-            runner=lambda shared_agent: runner(shared_agent, config),
-            **run_context,
+            runner=lambda agent: runner(agent, session.config), **run_context,
         )
     finally:
         import signal
 
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        mcp_manager.stop_all()
+        await session.close()

@@ -3,7 +3,7 @@
 Keyword-selected skills remain optional reference indexes (body not injected);
 ``load_skill_reference`` is still model-chosen for supporting docs.
 
-Explicit launches (``/skill`` or ``Use VulnClaw skill X``) inject the primary
+Explicit launches (``使用技能 X`` or ``Use VulnClaw skill X``) inject the primary
 skill body so workflow skills such as ``hackerone`` actually execute.
 
 Resolving once per turn is deliberate: the recorded provenance attached to
@@ -142,7 +142,7 @@ def apply_skill_selection(state: Any, user_input: Optional[str] = None) -> Optio
     """Resolve, record provenance on ``state``, and return skill prompt context.
 
     Keyword-selected skills stay optional indexes (body not injected). Explicit
-    slash / "Use VulnClaw skill" launches inject the primary skill body so
+    "Use VulnClaw skill" prompts inject the primary skill body so
     workflow skills such as ``hackerone`` are actually executable.
     """
 
@@ -174,7 +174,7 @@ def get_active_skill_context(user_input: Optional[str] = None, **kwargs: Any) ->
 
 
 def _is_explicit_selection(selection: SkillSelection) -> bool:
-    """True when the user explicitly launched this skill (slash or Use-skill)."""
+    """True when the user explicitly launched this skill in the prompt."""
     if "explicit" in (selection.signals or []):
         return True
     reason = (selection.reason or "").lower()
@@ -212,7 +212,7 @@ def _format_explicit_skill_context(
     parts: list[str] = [
         f"## Active skill (explicit invocation) — `{selection.primary}`",
         (
-            "The operator launched this skill deliberately via a slash command or "
+            "The operator launched this skill deliberately in the prompt: "
             '"Use VulnClaw skill ...". Follow its workflow as the primary plan unless '
             "the user overrides it. Do not reverse-engineer scope hosts (for example "
             "do not run js_recon against hackerone.com)."

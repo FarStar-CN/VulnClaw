@@ -84,8 +84,9 @@ async def test_shared_orchestrator_installs_approval_before_agent(monkeypatch):
 
         def start_enabled_servers(self):
             events.append("mcp_start")
+            return 0
 
-        def stop_all(self):
+        async def astop_all(self):
             events.append("mcp_stop")
 
     class FakeAgent:
@@ -93,6 +94,7 @@ async def test_shared_orchestrator_installs_approval_before_agent(monkeypatch):
             assert received is config
             assert isinstance(manager, FakeMCP)
             events.append("agent_init")
+            self.session_state = SimpleNamespace(target=None)
 
     async def fake_run_agent_task(**kwargs):
         events.append("orchestrator")

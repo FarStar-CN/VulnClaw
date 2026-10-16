@@ -14,13 +14,14 @@ from jsonschema import Draft202012Validator, ValidationError
 PROTOCOL_VERSION = 1
 
 CLIENT_MESSAGE_TYPES = frozenset(
-    {"initialize", "start_task", "cancel_task", "get_state", "control", "shutdown"}
+    {"initialize", "start_task", "submit_input", "cancel_task", "get_state", "control", "shutdown"}
 )
-TASK_CLIENT_MESSAGE_TYPES = frozenset({"start_task", "cancel_task"})
+TASK_CLIENT_MESSAGE_TYPES = frozenset({"start_task", "submit_input", "cancel_task"})
 
 SERVER_EVENT_TYPES = frozenset(
     {
         "ready",
+        "turn_started", "turn_completed", "turn_cancelled", "turn_failed",
         "state",
         "task_started",
         "status",

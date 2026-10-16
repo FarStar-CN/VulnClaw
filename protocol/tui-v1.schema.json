@@ -95,6 +95,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "continuous": { "type": "boolean" },
         "engine": { "enum": ["solve", "team", "rounds"] },
         "scope": { "type": ["string", "null"], "maxLength": 32 },
         "ports": { "type": ["string", "null"], "maxLength": 512 },
@@ -231,6 +232,7 @@
     "clientMessage": {
       "unevaluatedProperties": false,
       "oneOf": [
+        { "$ref": "#/$defs/submitInputRequest" },
         { "$ref": "#/$defs/initializeRequest" },
         { "$ref": "#/$defs/startTaskRequest" },
         { "$ref": "#/$defs/cancelTaskRequest" },
@@ -240,6 +242,53 @@
       ]
     },
 
+    "submitInputRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/taskRequestEnvelope" },
+        { "properties": {
+          "type": { "const": "submit_input" },
+          "payload": {
+            "type": "object", "additionalProperties": false, "required": ["text"],
+            "properties": { "text": { "type": "string", "minLength": 1, "maxLength": 32768 } }
+          }
+        } }
+      ]
+    },
+    "turnStartedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/taskEventEnvelope" },
+        { "required": ["request_id", "text", "state"], "properties": {
+          "type": { "const": "turn_started" }, "text": { "type": "string" },
+          "state": { "$ref": "#/$defs/stateSnapshot" }
+        } }
+      ]
+    },
+    "turnCompletedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/taskEventEnvelope" },
+        { "required": ["request_id", "result", "state"], "properties": {
+          "type": { "const": "turn_completed" }, "result": { "type": "object" },
+          "state": { "$ref": "#/$defs/stateSnapshot" }
+        } }
+      ]
+    },
+    "turnCancelledEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/taskEventEnvelope" },
+        { "required": ["request_id", "state"], "properties": {
+          "type": { "const": "turn_cancelled" }, "state": { "$ref": "#/$defs/stateSnapshot" }
+        } }
+      ]
+    },
+    "turnFailedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/taskEventEnvelope" },
+        { "required": ["request_id", "error", "state"], "properties": {
+          "type": { "const": "turn_failed" }, "error": { "$ref": "#/$defs/structuredError" },
+          "state": { "$ref": "#/$defs/stateSnapshot" }
+        } }
+      ]
+    },
     "taskConstraints": {
       "type": "object",
       "additionalProperties": false,
@@ -325,6 +374,7 @@
         "constraint_violations"
       ],
       "properties": {
+        "execution_mode": { "enum": ["plan", "agent"] },
         "target": { "type": "string" },
         "phase": { "type": "string" },
         "task_constraints": { "$ref": "#/$defs/taskConstraints" },
@@ -359,6 +409,8 @@
       "additionalProperties": false,
       "required": ["commands", "cancellation", "authoritative_state"],
       "properties": {
+        "natural_language": { "type": "boolean" },
+        "input_commands": { "type": "object", "additionalProperties": { "type": "string" } },
         "commands": {
           "type": "array",
           "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
@@ -390,6 +442,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "report": { "type": ["object", "null"] },
+        "report_error": { "type": ["string", "null"] },
         "command": { "type": "string" },
         "target": { "type": "string" },
         "status": { "type": "string" },
@@ -669,6 +723,10 @@
     "serverEvent": {
       "unevaluatedProperties": false,
       "oneOf": [
+        { "$ref": "#/$defs/turnStartedEvent" },
+        { "$ref": "#/$defs/turnCompletedEvent" },
+        { "$ref": "#/$defs/turnCancelledEvent" },
+        { "$ref": "#/$defs/turnFailedEvent" },
         { "$ref": "#/$defs/readyEvent" },
         { "$ref": "#/$defs/stateEvent" },
         { "$ref": "#/$defs/taskStartedEvent" },

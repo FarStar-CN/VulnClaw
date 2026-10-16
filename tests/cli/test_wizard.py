@@ -157,11 +157,11 @@ class TestPlanFromStatus:
         assert "Burp MCP" in plan["todo"]
 
     def test_repl_slash_routes_to_command(self):
-        from vulnclaw.cli.tui import dispatch_repl_slash
+        from vulnclaw.input_service import InputRequest, parse_input
 
-        result = dispatch_repl_slash("/wizard")
-        assert result.kind == "command"
-        assert result.value == "wizard"
+        result = parse_input(InputRequest(text="/wizard"))
+        assert result.kind == "adapter"
+        assert result.operation == "wizard"
 
     def test_palette_lists_wizard(self):
         from vulnclaw.cli.tui import REPL_COMMANDS, list_repl_palette_entries
