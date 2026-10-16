@@ -8,37 +8,17 @@ use crate::app::{App, OperationKind};
 use crate::theme;
 
 pub fn build_lines(app: &App) -> Vec<Line<'static>> {
-    let receipt = app.active_receipt.as_ref().or(app.last_receipt.as_ref());
-    let kind = receipt.map_or(OperationKind::Conversation, |receipt| receipt.kind);
+    let receipt = app
+        .active_receipt
+        .as_ref()
+        .or(app.last_receipt.as_ref())
+        .filter(|receipt| receipt.kind == OperationKind::Task);
     let mut lines = vec![
         Line::from(Span::styled(
-            match kind {
-                OperationKind::Conversation => "Conversation",
-                OperationKind::Task => "Task execution",
-            },
+            "Workspace",
             Style::default()
                 .fg(theme::ACTION)
                 .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            format!(
-                "State       {}",
-                if app.pending_execution.is_some() {
-                    "Awaiting approval"
-                } else if kind == OperationKind::Conversation
-                    && app.active_receipt.is_none()
-                    && receipt.is_some_and(|receipt| receipt.phase == "Completed")
-                {
-                    "Ready"
-                } else {
-                    receipt.map_or("Ready", |receipt| receipt.phase.as_str())
-                }
-            ),
-            Style::default().fg(if app.worker_active {
-                theme::GOLD
-            } else {
-                theme::TEXT_SOFT
-            }),
         )),
         Line::from(Span::styled(
             format!("Mode        {}", app.mode.label()),
@@ -77,44 +57,55 @@ pub fn build_lines(app: &App) -> Vec<Line<'static>> {
             }),
         )),
     ];
-    if kind == OperationKind::Task {
-        if receipt.is_some_and(|receipt| receipt.phase != "Submitting") {
+    if let Some(receipt) = receipt {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Task execution",
+            Style::default()
+                .fg(theme::SEAFOAM)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "State       {}",
+                if app.pending_execution.is_some() {
+                    "Awaiting approval"
+                } else {
+                    receipt.phase.as_str()
+                }
+            ),
+            Style::default().fg(if app.worker_active {
+                theme::GOLD
+            } else {
+                theme::TEXT_SOFT
+            }),
+        )));
+        if receipt.phase != "Submitting" {
             lines.push(Line::from(Span::styled(
                 format!("Phase       {}", app.phase),
                 Style::default().fg(theme::TEXT_MUTED),
             )));
         }
         lines.push(Line::from(Span::styled(
-            format!(
-                "Found       {}",
-                receipt.map_or(0, |receipt| receipt.findings)
-            ),
+            format!("Found       {}", receipt.findings),
             Style::default().fg(theme::SUCCESS),
         )));
         lines.push(Line::from(Span::styled(
             format!("Last run    {}", last_run_label(app.last_run.as_ref())),
             Style::default().fg(theme::TEXT_MUTED),
         )));
-    }
-    lines.push(Line::from(""));
-    if let Some(receipt) = receipt {
+        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            match (kind, app.active_receipt.is_some()) {
-                (OperationKind::Conversation, true) => "Current message",
-                (OperationKind::Conversation, false) => "Last message",
-                (OperationKind::Task, true) => "Current command",
-                (OperationKind::Task, false) => "Last command",
+            if app.active_receipt.is_some() {
+                "Current command"
+            } else {
+                "Last command"
             },
             Style::default().fg(theme::SEAFOAM),
         )));
         lines.push(Line::from(Span::styled(
             truncate(&receipt.input, 22),
             Style::default().fg(theme::TEXT_MUTED),
-        )));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "Natural language or / commands",
-            Style::default().fg(theme::TEXT_HINT),
         )));
     }
     lines
