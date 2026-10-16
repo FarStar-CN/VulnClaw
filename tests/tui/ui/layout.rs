@@ -394,8 +394,8 @@ fn header_badge_is_absent_before_the_backend_reports() {
 #[test]
 fn header_drops_the_badge_before_truncating_the_left_cluster() {
     let app = app_with_provider(Some("DeepSeek"), Some("deepseek-chat"), true);
-    // Wide enough for the left cluster plus the badge minimum, but not both.
-    let mut terminal = Terminal::new(TestBackend::new(40, 28)).unwrap();
+    // Too narrow for both the brand and provider badge.
+    let mut terminal = Terminal::new(TestBackend::new(20, 28)).unwrap();
 
     terminal.draw(|frame| render(frame, &app)).unwrap();
 
@@ -573,18 +573,24 @@ fn header_centres_the_live_cluster_between_brand_and_badge() {
     let mut app = app_with_provider(Some("DeepSeek"), Some("deepseek-chat"), true);
     app.worker_active = true;
     app.worker_started_at = Some(Instant::now());
+    app.active_receipt = Some(OperationReceipt {
+        kind: OperationKind::Task,
+        input: "/run app.test".into(),
+        phase: "Running".into(),
+        findings: 0,
+    });
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
 
     terminal.draw(|frame| render(frame, &app)).unwrap();
 
     let header = row_text(&terminal, 1);
-    assert!(header.contains("responding"), "got {header:?}");
+    assert!(header.contains("task running"), "got {header:?}");
     assert!(header.contains('⏱'), "the elapsed readout must be back");
 
     // Centred in the gap between the brand and the badge.
     let brand_end = header.find("VulnClaw").expect("brand") + "VulnClaw".len();
     let badge_start = header.find("provider:").expect("badge");
-    let cluster_start = header.find("responding").expect("cluster");
+    let cluster_start = header.find("task running").expect("cluster");
     let cluster_end = header.find("00:").expect("elapsed") + 5;
     let cluster_mid = (cluster_start + cluster_end) / 2;
     let gap_mid = (brand_end + badge_start) / 2;
@@ -593,24 +599,23 @@ fn header_centres_the_live_cluster_between_brand_and_badge() {
         "cluster mid {cluster_mid} should sit near {gap_mid}: {header:?}"
     );
 
-    // Idle returns to the conversation entry without an execution timer.
+    // Idle carries no execution state or timer.
     app.worker_active = false;
     terminal.draw(|frame| render(frame, &app)).unwrap();
     let idle = row_text(&terminal, 1);
     assert!(!idle.contains("running"), "got {idle:?}");
     assert!(!idle.contains("idle"), "got {idle:?}");
-    assert!(idle.contains("Conversation"), "got {idle:?}");
+    assert!(!idle.contains("Conversation"), "got {idle:?}");
     assert!(!idle.contains('⏱'), "got {idle:?}");
     assert!(idle.contains("VulnClaw"));
     assert!(idle.contains("provider: DeepSeek"));
 }
 
 #[test]
-fn header_distinguishes_planning_and_explicit_tasks() {
+fn header_only_displays_activity_for_explicit_tasks() {
     let mut app = app_with_provider(Some("DeepSeek"), Some("deepseek-chat"), true);
     app.worker_active = true;
     app.worker_started_at = Some(Instant::now());
-    app.mode = ExecutionMode::Plan;
     app.active_receipt = Some(OperationReceipt {
         kind: OperationKind::Conversation,
         input: "制定测试计划".into(),
@@ -618,15 +623,19 @@ fn header_distinguishes_planning_and_explicit_tasks() {
         findings: 0,
     });
     for width in [60, 120] {
-        app.mode = ExecutionMode::Plan;
         app.active_receipt.as_mut().unwrap().kind = OperationKind::Conversation;
         app.pending_execution = None;
         let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
 
+        app.worker_active = false;
         terminal.draw(|frame| render(frame, &app)).unwrap();
-        let header = row_text(&terminal, 1);
-        assert!(header.contains("planning"), "{header}");
-        assert!(!header.contains("task"), "{header}");
+        let idle = row_text(&terminal, 1);
+        for mode in [ExecutionMode::Agent, ExecutionMode::Plan] {
+            app.mode = mode;
+            app.worker_active = true;
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            assert_eq!(row_text(&terminal, 1), idle);
+        }
 
         app.mode = ExecutionMode::Agent;
         app.active_receipt.as_mut().unwrap().kind = OperationKind::Task;

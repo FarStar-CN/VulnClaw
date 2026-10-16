@@ -30,10 +30,13 @@ fn conversation_status_does_not_inherit_task_metadata() {
 
     harness.app.insert_text("解释之前的发现");
     harness.app.submit();
+    let settings = status_text(&harness.app);
     for _ in 0..3 {
         let text = status_text(&harness.app);
-        assert!(text.contains("Conversation"), "{text}");
-        assert!(!text.contains("Execution receipt"), "{text}");
+        assert_eq!(text, settings);
+        assert!(text.contains("Mode        Agent"), "{text}");
+        assert!(!text.contains("Conversation"), "{text}");
+        assert!(!text.contains("State"), "{text}");
         assert!(!text.contains("Phase"), "{text}");
         assert!(!text.contains("Last run"), "{text}");
         assert!(!text.contains("Found"), "{text}");
@@ -41,10 +44,9 @@ fn conversation_status_does_not_inherit_task_metadata() {
         harness.apply_next();
     }
     let text = status_text(&harness.app);
-    assert!(text.contains("Conversation"), "{text}");
-    assert!(text.contains("State       Ready"), "{text}");
-    assert!(text.contains("Last message"), "{text}");
-    assert!(!text.contains("finding(s)"), "{text}");
+    assert_eq!(text, settings);
+    assert!(!text.contains("message"), "{text}");
+    assert!(!text.contains("解释之前的发现"), "{text}");
 
     harness.app.insert_text("/clear");
     harness.app.submit();
@@ -69,8 +71,8 @@ fn new_conversation_clears_the_previous_activity() {
     harness.apply_next();
 
     let text = status_text(&harness.app);
-    assert!(text.contains("Conversation"), "{text}");
-    assert!(text.contains("Ready"), "{text}");
+    assert!(text.contains("Workspace"), "{text}");
+    assert!(!text.contains("State"), "{text}");
     assert!(!text.contains("complete.test"), "{text}");
     assert!(harness.app.last_receipt.is_none());
     assert_eq!(

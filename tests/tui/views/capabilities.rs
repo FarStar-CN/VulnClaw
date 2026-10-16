@@ -115,7 +115,7 @@ fn the_status_view_no_longer_carries_the_capability_tree() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(status.contains("Conversation"));
+    assert!(status.contains("Workspace"));
     assert!(!status.contains("Capabilities"));
     assert!(!status.contains("├──"));
 }
