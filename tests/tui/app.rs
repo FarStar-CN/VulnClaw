@@ -3,7 +3,8 @@ use vulnclaw_tui::workbench::ViewId;
 
 use crate::support::AppHarness;
 use vulnclaw_tui::app::{
-    strip_prompt_prefix, App, ExecutionMode, PermissionMode, TranscriptItem, TranscriptKind,
+    strip_prompt_prefix, App, ExecutionMode, OperationKind, PermissionMode, TranscriptItem,
+    TranscriptKind,
 };
 
 fn push_log(app: &mut App, text: impl Into<String>) {
@@ -1085,10 +1086,18 @@ fn natural_language_is_submitted_and_streamed() {
     harness.app.insert_text("解释之前的发现");
     harness.app.submit();
     assert!(harness.app.worker_active);
+    assert_eq!(
+        harness.app.active_receipt.as_ref().unwrap().kind,
+        OperationKind::Conversation
+    );
     harness.apply_next();
     harness.apply_next();
     harness.apply_next();
     assert!(!harness.app.worker_active);
+    assert_eq!(
+        harness.app.last_receipt.as_ref().unwrap().kind,
+        OperationKind::Conversation
+    );
     assert!(harness
         .app
         .transcript

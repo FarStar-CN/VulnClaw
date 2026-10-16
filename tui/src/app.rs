@@ -666,9 +666,16 @@ pub const PALETTE_ROWS: u16 = 6;
 /// Rows the blocking task-confirmation box occupies.
 pub const CONFIRM_BOX_ROWS: u16 = 3;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationKind {
+    Conversation,
+    Task,
+}
+
 #[derive(Clone, Debug)]
 pub struct OperationReceipt {
-    pub command: String,
+    pub kind: OperationKind,
+    pub input: String,
     pub phase: String,
     pub findings: usize,
 }
@@ -918,10 +925,10 @@ impl App {
         } else if let Some((verb, arguments)) = split_slash_command(&text) {
             if is_task_verb(verb) {
                 self.request_task(verb, arguments);
-            } else if !self.send_text_input(text.clone(), false) {
+            } else if !self.send_text_input(text.clone(), None) {
                 return;
             }
-        } else if !self.send_text_input(text.clone(), true) {
+        } else if !self.send_text_input(text.clone(), Some(OperationKind::Conversation)) {
             return;
         }
         self.record_command(&text);
@@ -1425,7 +1432,10 @@ impl App {
                         return;
                     }
                     self.apply_backend_state(state);
-                    self.update_receipt("Responding");
+                    if let Some(receipt) = self.active_receipt.as_mut() {
+                        receipt.kind = OperationKind::Conversation;
+                    }
+                    self.update_response_receipt();
                 }
                 BackendEvent::TurnCompleted {
                     request_id,
@@ -1440,7 +1450,7 @@ impl App {
                     }
                     self.apply_backend_state(state);
                     self.clear_task_requests(&task_id);
-                    self.finish_task("Completed");
+                    self.finish_operation("Completed");
                     if let Some(reports) =
                         result.get("reports").and_then(serde_json::Value::as_array)
                     {
@@ -1475,7 +1485,7 @@ impl App {
                     }
                     self.apply_backend_state(state);
                     self.clear_task_requests(&task_id);
-                    self.finish_task("Cancelled");
+                    self.finish_operation("Cancelled");
                     self.status("Conversation turn cancelled. You can submit another request.");
                 }
                 BackendEvent::TurnFailed {
@@ -1491,7 +1501,7 @@ impl App {
                     }
                     self.apply_backend_state(state);
                     self.clear_task_requests(&task_id);
-                    self.finish_task("Failed");
+                    self.finish_operation("Failed");
                     self.error(format!(
                         "Conversation failed: {}",
                         result_text(&error, "message")
@@ -1521,6 +1531,7 @@ impl App {
                     self.worker_started_at = Some(Instant::now());
                     self.apply_backend_state(state);
                     if let Some(receipt) = self.active_receipt.as_mut() {
+                        receipt.kind = OperationKind::Task;
                         let command = task["command"].as_str().unwrap_or("task");
                         receipt.phase = format!("{command} running");
                     }
@@ -1573,7 +1584,7 @@ impl App {
                         return;
                     }
                     if agent_id.is_none() {
-                        self.update_receipt("Running");
+                        self.update_response_receipt();
                     }
                     self.push_stream(agent_id, TranscriptKind::Log, line, append);
                 }
@@ -1605,7 +1616,7 @@ impl App {
                         return;
                     }
                     if agent_id.is_none() {
-                        self.update_receipt("Running");
+                        self.update_response_receipt();
                     }
                     self.push_stream(
                         agent_id,
@@ -1702,7 +1713,7 @@ impl App {
                     }
                     self.apply_backend_state(state);
                     self.clear_task_requests(&task_id);
-                    self.finish_task("Completed");
+                    self.finish_operation("Completed");
                     let run_name = result
                         .get("run")
                         .and_then(|run| run.get("name"))
@@ -1742,7 +1753,7 @@ impl App {
                     }
                     self.apply_backend_state(state);
                     self.clear_task_requests(&task_id);
-                    self.finish_task("Cancelled");
+                    self.finish_operation("Cancelled");
                     self.status("VulnClaw task cancelled; backend session remains available.");
                 }
                 BackendEvent::TaskFailed {
@@ -1759,7 +1770,7 @@ impl App {
                     }
                     self.apply_backend_state(state);
                     self.clear_task_requests(&task_id);
-                    self.finish_task("Failed");
+                    self.finish_operation("Failed");
                     let message = error
                         .get("message")
                         .and_then(serde_json::Value::as_str)
@@ -1782,6 +1793,9 @@ impl App {
                     if operation == "session.new" {
                         self.transcript.clear();
                         self.subagents = crate::subagents::Subagents::default();
+                        self.active_receipt = None;
+                        self.last_receipt = None;
+                        self.layout.view_mut(ViewId::Status).scroll = 0;
                     }
                     if let Some(state) = state {
                         self.apply_backend_state(state);
@@ -1890,7 +1904,7 @@ impl App {
                             self.error("Mismatched active task error response.");
                             return;
                         }
-                        self.finish_task("Rejected");
+                        self.finish_operation("Rejected");
                     }
                     self.error(format!("Backend {code}: {message}"));
                     if let Some(operation) = failed_config_operation {
@@ -2085,7 +2099,7 @@ impl App {
         }
     }
 
-    fn finish_task(&mut self, phase: &str) {
+    fn finish_operation(&mut self, phase: &str) {
         self.worker_active = false;
         self.worker_started_at = None;
         self.active_task_id = None;
@@ -2541,11 +2555,11 @@ impl App {
     }
 
     fn start_task(&mut self, command_line: String) {
-        self.send_text_input(command_line, true);
+        self.send_text_input(command_line, Some(OperationKind::Task));
     }
 
-    fn send_text_input(&mut self, text: String, executing: bool) -> bool {
-        if self.worker_active && executing {
+    fn send_text_input(&mut self, text: String, kind: Option<OperationKind>) -> bool {
+        if self.worker_active && kind.is_some() {
             self.error("An operation is already running.");
             return false;
         }
@@ -2566,9 +2580,10 @@ impl App {
             self.error(format!("Could not submit input: {error}"));
             return false;
         }
-        if executing {
+        if let Some(kind) = kind {
             self.active_receipt = Some(OperationReceipt {
-                command: text,
+                kind,
+                input: text,
                 phase: "Submitting".to_owned(),
                 findings: 0,
             });
@@ -2663,6 +2678,15 @@ impl App {
         if let Some(receipt) = self.active_receipt.as_mut() {
             receipt.phase = phase.into();
         }
+    }
+
+    fn update_response_receipt(&mut self) {
+        let phase = match self.active_receipt.as_ref().map(|receipt| receipt.kind) {
+            Some(OperationKind::Task) => "Running",
+            _ if self.mode == ExecutionMode::Plan => "Planning",
+            _ => "Responding",
+        };
+        self.update_receipt(phase);
     }
 
     fn record_command(&mut self, command: &str) {
