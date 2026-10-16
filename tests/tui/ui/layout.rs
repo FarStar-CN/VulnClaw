@@ -4,7 +4,7 @@ use std::time::Instant;
 use ratatui::{backend::TestBackend, Terminal};
 
 use vulnclaw_tui::{
-    app::{App, PendingExecution},
+    app::{App, ExecutionMode, OperationKind, OperationReceipt, PendingExecution},
     ui::layout::render,
 };
 
@@ -578,13 +578,13 @@ fn header_centres_the_live_cluster_between_brand_and_badge() {
     terminal.draw(|frame| render(frame, &app)).unwrap();
 
     let header = row_text(&terminal, 1);
-    assert!(header.contains("running"), "got {header:?}");
+    assert!(header.contains("responding"), "got {header:?}");
     assert!(header.contains('⏱'), "the elapsed readout must be back");
 
     // Centred in the gap between the brand and the badge.
     let brand_end = header.find("VulnClaw").expect("brand") + "VulnClaw".len();
     let badge_start = header.find("provider:").expect("badge");
-    let cluster_start = header.find("running").expect("cluster");
+    let cluster_start = header.find("responding").expect("cluster");
     let cluster_end = header.find("00:").expect("elapsed") + 5;
     let cluster_mid = (cluster_start + cluster_end) / 2;
     let gap_mid = (brand_end + badge_start) / 2;
@@ -593,14 +593,53 @@ fn header_centres_the_live_cluster_between_brand_and_badge() {
         "cluster mid {cluster_mid} should sit near {gap_mid}: {header:?}"
     );
 
-    // An idle header carries no cluster and no idle placeholder.
+    // Idle returns to the conversation entry without an execution timer.
     app.worker_active = false;
     terminal.draw(|frame| render(frame, &app)).unwrap();
     let idle = row_text(&terminal, 1);
     assert!(!idle.contains("running"), "got {idle:?}");
     assert!(!idle.contains("idle"), "got {idle:?}");
+    assert!(idle.contains("Conversation"), "got {idle:?}");
+    assert!(!idle.contains('⏱'), "got {idle:?}");
     assert!(idle.contains("VulnClaw"));
     assert!(idle.contains("provider: DeepSeek"));
+}
+
+#[test]
+fn header_distinguishes_planning_and_explicit_tasks() {
+    let mut app = app_with_provider(Some("DeepSeek"), Some("deepseek-chat"), true);
+    app.worker_active = true;
+    app.worker_started_at = Some(Instant::now());
+    app.mode = ExecutionMode::Plan;
+    app.active_receipt = Some(OperationReceipt {
+        kind: OperationKind::Conversation,
+        input: "制定测试计划".into(),
+        phase: "Planning".into(),
+        findings: 0,
+    });
+    for width in [60, 120] {
+        app.mode = ExecutionMode::Plan;
+        app.active_receipt.as_mut().unwrap().kind = OperationKind::Conversation;
+        app.pending_execution = None;
+        let mut terminal = Terminal::new(TestBackend::new(width, 28)).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let header = row_text(&terminal, 1);
+        assert!(header.contains("planning"), "{header}");
+        assert!(!header.contains("task"), "{header}");
+
+        app.mode = ExecutionMode::Agent;
+        app.active_receipt.as_mut().unwrap().kind = OperationKind::Task;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let header = row_text(&terminal, 1);
+        assert!(header.contains("task running"), "{header}");
+
+        app.pending_execution = Some(pending_execution("whoami".into()));
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let header = row_text(&terminal, 1);
+        assert!(header.contains("awaiting approval"), "{header}");
+        assert!(header.contains('⏱'), "{header}");
+    }
 }
 
 fn settings_screen() -> vulnclaw_tui::app::LlmSettings {
