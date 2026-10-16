@@ -764,13 +764,49 @@ fn the_palette_lists_each_backend_verb_once() {
         unique.len(),
         "the local fallback must not repeat a verb the backend advertises: {commands:?}"
     );
-    // The backend's verbs still lead, followed by local-only helpers. `/run`
-    // and `/recon` live in both lists and must appear once each.
+    // Task commands precede report export. `/run` and `/recon` live in both
+    // lists and must appear once each.
     assert_eq!(
         commands,
         ["/run ", "/recon ", "/report"],
         "got {commands:?}"
     );
+}
+
+#[test]
+fn the_palette_uses_backend_descriptions_and_unique_command_names() {
+    let (sender, _) = mpsc::channel();
+    let mut app = App::new_disconnected(sender);
+    app.backend_input_commands = std::collections::BTreeMap::from([
+        (
+            "clear".into(),
+            "Clear the display; keep the conversation".into(),
+        ),
+        (
+            "new".into(),
+            "Start a new conversation; keep configuration and scope defaults".into(),
+        ),
+        (
+            "report".into(),
+            "Export existing results; --kind security | replay; --output PATH".into(),
+        ),
+        (
+            "run".into(),
+            "Execute a task; --allow-actions limits actions; --continuous repeats cycles".into(),
+        ),
+        ("mode".into(), "Show or set plan | agent".into()),
+    ]);
+    app.insert_text("/");
+
+    let commands = app.suggested_commands();
+    for (name, description) in &app.backend_input_commands {
+        let matches: Vec<_> = commands
+            .iter()
+            .filter(|item| item.command.trim_end() == format!("/{name}"))
+            .collect();
+        assert_eq!(matches.len(), 1, "duplicate /{name}: {matches:?}");
+        assert_eq!(matches[0].description, *description);
+    }
 }
 
 #[test]

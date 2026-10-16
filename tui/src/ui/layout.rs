@@ -7,8 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    App, ExecutionMode, OperationKind, COMPOSER_FRAME_ROWS, COMPOSER_STATUS_ROWS,
-    LLM_SUGGESTION_ROWS, PALETTE_ROWS,
+    App, OperationKind, COMPOSER_FRAME_ROWS, COMPOSER_STATUS_ROWS, LLM_SUGGESTION_ROWS,
+    PALETTE_ROWS,
 };
 use crate::theme;
 use crate::views::status;
@@ -508,22 +508,20 @@ fn provider_badge(app: &App) -> Option<String> {
     Some(format!("provider: {}", app.provider.as_deref()?))
 }
 
-/// Conversation or task activity, with a timer only during an active operation.
+/// Activity and timer for explicit tasks. Chat adds no status to the title bar.
 fn worker_cluster(app: &App) -> Line<'static> {
-    if !app.worker_active {
-        return Line::from(Span::styled(
-            "Conversation",
-            Style::default().fg(theme::TEXT_MUTED),
-        ));
+    if !app.worker_active
+        || !app
+            .active_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.kind == OperationKind::Task)
+    {
+        return Line::default();
     }
     let label = if app.pending_execution.is_some() {
         "awaiting approval"
     } else {
-        match app.active_receipt.as_ref().map(|receipt| receipt.kind) {
-            Some(OperationKind::Task) => "task running",
-            _ if app.mode == ExecutionMode::Plan => "planning",
-            _ => "responding",
-        }
+        "task running"
     };
     Line::from(vec![
         Span::styled(
@@ -544,7 +542,7 @@ fn worker_cluster(app: &App) -> Line<'static> {
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
-    // Brand left, conversation/task activity centred, provider badge right.
+    // Brand left, explicit task activity centred, provider badge right.
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -932,7 +930,10 @@ fn render_command_palette(frame: &mut Frame, app: &App, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled(item.command.as_str(), Style::default().fg(theme::ACTION)),
                 Span::raw("  "),
-                Span::styled(item.description, Style::default().fg(theme::TEXT_MUTED)),
+                Span::styled(
+                    item.description.as_str(),
+                    Style::default().fg(theme::TEXT_MUTED),
+                ),
             ]))
         })
         .collect::<Vec<_>>();
@@ -999,7 +1000,15 @@ fn render_hotbar(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.worker_active {
         (
-            " Running — Ctrl+C abort | Tab mode | ↑/↓ scroll | Ctrl+Y copy view",
+            if app
+                .active_receipt
+                .as_ref()
+                .is_some_and(|receipt| receipt.kind == OperationKind::Task)
+            {
+                " Running — Ctrl+C abort | Tab mode | ↑/↓ scroll | Ctrl+Y copy view"
+            } else {
+                " Ctrl+C abort | Tab mode | ↑/↓ scroll | Ctrl+Y copy view"
+            },
             Style::default().fg(theme::TEXT_HINT),
         )
     } else {

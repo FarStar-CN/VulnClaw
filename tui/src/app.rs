@@ -625,32 +625,38 @@ pub struct TranscriptItem {
 #[derive(Clone, Debug)]
 pub struct SlashCommand {
     pub command: String,
-    pub description: &'static str,
+    pub description: String,
 }
 
-/// Slash commands rendered locally in the TUI composer palette. The first
-/// five are presentation-layer helpers; the remainder mirror the task verbs
-/// advertised by the Python backend via `capabilities.commands`. Keeping them
-/// here ensures the palette is never empty (or misleadingly tiny) while the
-/// backend is still initializing, and gives users a discoverable path to the
-/// core pentest workflows even if the capability handshake is delayed.
-const LOCAL_SLASH_COMMANDS: &[(&str, &str)] = &[
+/// TUI display order, completion text and fallback descriptions.
+/// Shared command descriptions come from `capabilities.input_commands` once ready.
+const SLASH_COMMANDS: &[(&str, &str)] = &[
+    (
+        "/run ",
+        "execute a task with action limits and optional continuous cycles",
+    ),
+    ("/recon ", "run --allow-actions recon"),
+    ("/scan ", "run --allow-actions recon,scan"),
+    ("/exploit ", "run --allow-actions recon,scan,exploit"),
+    ("/persistent ", "run --continuous"),
+    ("/codescan ", "scan local source without an LLM"),
+    (
+        "/report",
+        "export existing results as a security or replay report",
+    ),
+    ("/target ", "show or set the current target"),
     ("/scope ", "update session scope defaults"),
-    ("/report", "show report export guidance"),
-    ("/config", "configure the LLM provider"),
-    ("/clear", "clear the transcript"),
-    ("/new", "start a new conversation"),
     ("/mode ", "show or set plan | agent"),
     ("/permission ", "show or set execution approval policy"),
-    ("/target ", "show or set the current target"),
+    ("/new", "start a new conversation"),
+    ("/clear", "clear the transcript"),
     ("/compact", "compact conversation context"),
+    ("/status", "show backend session state"),
+    ("/tools", "list available tools"),
+    ("/think ", "show or hide reasoning output"),
+    ("/config", "configure the LLM provider"),
     ("/help", "list available commands"),
-    ("/run ", "run a task through the Python backend"),
-    ("/recon ", "run a task through the Python backend"),
-    ("/scan ", "run a task through the Python backend"),
-    ("/exploit ", "run a task through the Python backend"),
-    ("/persistent ", "run a task through the Python backend"),
-    ("/codescan ", "run a task through the Python backend"),
+    ("/quit", "exit the client"),
 ];
 
 const MAX_COMMAND_HISTORY: usize = 50;
@@ -906,19 +912,12 @@ impl App {
         } else if text == "/quit" {
             self.running = false;
         } else if text == "/help" {
-            let help = if self.backend_input_commands.is_empty() {
-                LOCAL_SLASH_COMMANDS
-                    .iter()
-                    .map(|(name, desc)| format!("{name}: {desc}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            } else {
-                self.backend_input_commands
-                    .iter()
-                    .map(|(name, desc)| format!("/{name}: {desc}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
+            let help = self
+                .available_commands()
+                .iter()
+                .map(|item| format!("{}: {}", item.command.trim_end(), item.description))
+                .collect::<Vec<_>>()
+                .join("\n");
             self.status(help);
         } else if text == "/config" {
             self.open_llm_settings();
@@ -1262,31 +1261,57 @@ impl App {
         if !query.starts_with('/') {
             return Vec::new();
         }
+        self.available_commands()
+            .into_iter()
+            .filter(|item| item.command.starts_with(&query))
+            .collect()
+    }
+
+    fn available_commands(&self) -> Vec<SlashCommand> {
         let names = if self.backend_input_commands.is_empty() {
             self.backend_commands.clone()
         } else {
             self.backend_input_commands.keys().cloned().collect()
         };
-        let backend = names.iter().map(|command| SlashCommand {
-            command: format!("/{command} "),
-            description: "run a task through the Python backend",
+        let backend = names.iter().map(|name| {
+            let verb = format!("/{name}");
+            let fallback = SLASH_COMMANDS
+                .iter()
+                .find(|(command, _)| command.trim_end() == verb);
+            SlashCommand {
+                command: fallback
+                    .map_or_else(|| format!("{verb} "), |(command, _)| (*command).to_owned()),
+                description: self
+                    .backend_input_commands
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        fallback
+                            .map_or("execute a backend task", |(_, description)| *description)
+                            .to_owned()
+                    }),
+            }
         });
-        let local = LOCAL_SLASH_COMMANDS
+        let local = SLASH_COMMANDS
             .iter()
             .map(|(command, description)| SlashCommand {
                 command: (*command).to_owned(),
-                description,
+                description: (*description).to_owned(),
             });
-        // `LOCAL_SLASH_COMMANDS` repeats the backend's task verbs so the
-        // palette is never empty before the capability handshake lands. Once
-        // the backend reports them the same verb would appear twice, so keep
-        // the first (authoritative) occurrence and drop the local fallback.
+        // Completion whitespace is presentation, not part of command identity.
+        // Backend entries lead so their descriptions override the fallback.
         let mut seen = HashSet::new();
-        backend
+        let mut commands: Vec<_> = backend
             .chain(local)
-            .filter(|item| item.command.starts_with(&query))
-            .filter(|item| seen.insert(item.command.clone()))
-            .collect()
+            .filter(|item| seen.insert(item.command.trim_end().to_owned()))
+            .collect();
+        commands.sort_by_key(|item| {
+            SLASH_COMMANDS
+                .iter()
+                .position(|(command, _)| command.trim_end() == item.command.trim_end())
+                .unwrap_or(usize::MAX)
+        });
+        commands
     }
 
     pub fn select_next_command(&mut self, down: bool) {

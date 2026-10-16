@@ -128,7 +128,7 @@ sequenceDiagram
 
 同一会话只有一个活动执行。JSONL 收发不会等待整轮模型结束；审批、取消及允许的控制请求保持可用。忙时新执行请求明确拒绝，TUI 保留未提交文本。取消后保留已有上下文及续接要求，下一次输入可继续工作。
 
-TUI 展示层按 `turn_*` 与 `task_*` 事件区分对话和任务。主侧栏默认展示 Conversation、响应状态及当前或上一条消息，普通对话不带出历史任务的阶段、发现数量和 run 记录；显式任务展示 Task execution 及这些执行信息。顶部在空闲时展示 Conversation，活动期间区分 responding、planning、task running 与 awaiting approval，并保留计时。窄终端优先保留活动信息；`/clear` 保留状态，`/new` 清除旧回执。
+TUI 展示层按 `turn_*` 与 `task_*` 事件区分对话和任务。聊天期间主侧栏只保留工作区设置，不额外展示对话状态或消息摘要，顶部保持品牌和服务商信息。显式任务在侧栏展示 Task execution、阶段、发现数量和 run 记录，顶部展示 task running 或 awaiting approval 及计时。窄终端优先保留任务活动信息；`/clear` 保留状态，`/new` 清除旧回执。
 
 普通自然语言不强制创建具名 run。显式任务继续保存 run、checkpoint、evidence 和目标状态。`/new` 不删除这些文件。
 
