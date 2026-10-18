@@ -724,6 +724,7 @@ pub struct App {
     pub show_reasoning: bool,
     pub running: bool,
     pub worker_active: bool,
+    pub waiting_for_input: bool,
     /// One persistent Python backend for the entire terminal session.
     pub backend: Option<BackendHandle>,
     pub backend_ready: bool,
@@ -815,6 +816,7 @@ impl App {
             show_reasoning: true,
             running: true,
             worker_active: false,
+            waiting_for_input: false,
             backend: None,
             backend_ready: false,
             backend_pid: None,
@@ -901,7 +903,8 @@ impl App {
         }
         let verb = split_slash_command(&text).map(|(verb, _)| verb);
         let executing = verb.is_none_or(is_task_verb);
-        if self.worker_active && executing {
+        let answering = verb.is_none() && self.waiting_for_input;
+        if self.worker_active && executing && !answering {
             self.error("An operation is running; wait or press Ctrl+C. Your draft was kept.");
             return;
         }
@@ -1448,18 +1451,22 @@ impl App {
                 BackendEvent::TurnStarted {
                     request_id,
                     task_id,
-                    text: _,
+                    text,
                     state,
                 } => {
                     if !self.matches_task_response(&request_id, &task_id)
-                        || !self.is_current_task(&task_id)
+                        || (self.worker_active && !self.is_current_task(&task_id))
                     {
                         return;
                     }
                     self.apply_backend_state(state);
-                    if let Some(receipt) = self.active_receipt.as_mut() {
-                        receipt.kind = OperationKind::Conversation;
-                    }
+                    self.active_receipt = Some(OperationReceipt {
+                        kind: OperationKind::Conversation,
+                        input: text,
+                        phase: "Running".to_owned(),
+                        findings: self.findings.len(),
+                    });
+                    self.worker_started_at = Some(Instant::now());
                     self.update_response_receipt();
                 }
                 BackendEvent::TurnCompleted {
@@ -1945,6 +1952,7 @@ impl App {
                 self.backend_supports_cancellation = false;
                 self.pending_requests.clear();
                 self.worker_active = false;
+                self.waiting_for_input = false;
                 self.worker_started_at = None;
                 if let Some(mut receipt) = self.active_receipt.take() {
                     receipt.phase = "Backend disconnected".to_owned();
@@ -2001,6 +2009,7 @@ impl App {
         self.phase = state.phase;
         self.findings = state.findings;
         self.worker_active = state.task.active;
+        self.waiting_for_input = state.task.waiting_for_input;
         self.active_task_id = state.task.task_id;
         self.task_constraints = state.task_constraints;
         self.last_run = state.last_run;
@@ -2569,7 +2578,10 @@ impl App {
     }
 
     fn send_text_input(&mut self, text: String, kind: Option<OperationKind>) -> bool {
-        if self.worker_active && kind.is_some() {
+        let queued_answer = self.worker_active
+            && self.waiting_for_input
+            && kind == Some(OperationKind::Conversation);
+        if self.worker_active && kind.is_some() && !queued_answer {
             self.error("An operation is already running.");
             return false;
         }
@@ -2590,7 +2602,11 @@ impl App {
             self.error(format!("Could not submit input: {error}"));
             return false;
         }
-        if let Some(kind) = kind {
+        if queued_answer {
+            self.waiting_for_input = false;
+            self.status("Reply accepted for submission; waiting for the current turn to finish.");
+        } else if let Some(kind) = kind {
+            self.waiting_for_input = false;
             self.active_receipt = Some(OperationReceipt {
                 kind,
                 input: text,

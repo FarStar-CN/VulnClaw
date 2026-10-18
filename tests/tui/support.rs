@@ -17,12 +17,12 @@ import json, os, sys, shlex
 current_task = None
 current_target = ""
 
-def state(active=False, task_id=None, phase="idle", target=None, findings=None):
+def state(active=False, task_id=None, phase="idle", target=None, findings=None, waiting=False):
     return {
         "target": current_target if target is None else target,
         "phase": phase,
         "task_constraints": {},
-        "task": {"active": active, "task_id": task_id},
+        "task": {"active": active, "task_id": task_id, "waiting_for_input": waiting},
         "last_run": None,
         "findings": findings or [],
         "evidence": [],
@@ -50,6 +50,9 @@ for line in sys.stdin:
                     args = {"scope": {parts[i][2:].replace("-", "_"): parts[i+1] for i in range(1,len(parts),2)}}
             msg["payload"] = {"operation": operation, "arguments": args}
         else:
+            if current_target == "ask.test" and current_task:
+                print(json.dumps(base | {"type": "task_completed", "request_id": current_request, "task_id": current_task, "result": {}, "findings": [], "state": state(waiting=False)}), flush=True)
+                print(json.dumps(base | {"type": "state", "task_id": current_task, "state": state()}), flush=True)
             current_task = msg["task_id"]
             print(json.dumps(base | {"type": "turn_started", "request_id": msg["request_id"], "task_id": current_task, "text": text, "state": state(True, current_task)}), flush=True)
             print(json.dumps(base | {"type": "log", "task_id": current_task, "message": "Natural language response"}), flush=True)
@@ -78,6 +81,7 @@ for line in sys.stdin:
         }), flush=True)
     elif msg["type"] == "start_task":
         current_task = msg["task_id"]
+        current_request = msg["request_id"]
         current_target = msg["payload"]["task"]["target"]
         print(json.dumps(base | {
             "type": "task_started",
@@ -86,7 +90,10 @@ for line in sys.stdin:
             "task": msg["payload"]["task"],
             "state": state(True, current_task, "running"),
         }), flush=True)
-        if current_target == "complete.test":
+        if current_target == "ask.test":
+            print(json.dumps(base | {"type": "log", "task_id": current_task, "message": "May I continue?"}), flush=True)
+            print(json.dumps(base | {"type": "state", "task_id": current_task, "state": state(True, current_task, waiting=True)}), flush=True)
+        elif current_target == "complete.test":
             finding = {"id": "f1", "severity": "high", "title": "Test finding", "target": current_target}
             print(json.dumps(base | {
                 "type": "task_completed",
