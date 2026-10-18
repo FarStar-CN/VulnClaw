@@ -94,13 +94,22 @@ TaskRunner = Callable[[Any, PreparedTask, "ApplicationStreamSink"], Awaitable[di
 class ApplicationStreamSink(TranscriptStreamSink):
     """Adapt AgentCore streaming callbacks to application events."""
 
-    def __init__(self, emit: Callable[..., None], task_id: str, *, show_thinking: bool) -> None:
+    def __init__(
+        self, emit: Callable[..., None], task_id: str, *, show_thinking: bool,
+        question_ready: Callable[[], None] | None = None,
+    ) -> None:
         self._emit_event = emit
         self._task_id = task_id
+        self._question_ready = question_ready
         super().__init__(self._event, show_thinking=show_thinking)
 
     def _event(self, event_type: str, **fields: Any) -> None:
         self._emit_event(event_type, task_id=self._task_id, **fields)
+
+    def on_question(self, question: str) -> None:
+        self.on_content_token(question)
+        if self._question_ready is not None:
+            self._question_ready()
 
 
 class ApplicationSession:
@@ -131,6 +140,15 @@ class ApplicationSession:
         self.last_run: dict[str, Any] | None = None
         self.mode = "agent"
         self.conversation: ConversationState | None = None
+        self._queued_input: tuple[str, str, str] | None = None
+        self._answer_in_progress = False
+
+    def publish_input_state(self) -> None:
+        self.emit("state", task_id=self.active_task_id, state=self.state_snapshot())
+
+    def question_ready(self) -> None:
+        self._answer_in_progress = False
+        self.publish_input_state()
 
     @classmethod
     async def open(cls, config: Any = None) -> "ApplicationSession":
@@ -201,6 +219,32 @@ class ApplicationSession:
             self.conversation.target = request.target
             self.conversation.last_auto_input = task.prompt
             self.conversation.auto_mode = request.command == "run"
+            self.conversation.engagement_completed = False
+            self.conversation.task = None
+            if self.conversation.auto_mode:
+                from vulnclaw.config.schema import resolve_engine
+
+                session = self.config.session
+                defaults = {
+                    "engine": resolve_engine(self.config, request.options.engine),
+                    "max_steps": session.solve_max_steps,
+                    "max_tool_rounds": session.solve_max_tool_rounds,
+                    "max_parallel": session.solve_max_parallel,
+                    "max_rounds": session.max_rounds,
+                    "rounds_per_cycle": session.persistent_rounds_per_cycle,
+                    "max_cycles": session.persistent_max_cycles,
+                    "auto_report": (
+                        session.persistent_auto_report if request.options.continuous else True
+                    ),
+                }
+                options = request.options.model_copy(update={
+                    name: value for name, value in defaults.items()
+                    if getattr(request.options, name) is None
+                })
+                self.conversation.task = PreparedTask(
+                    request.model_copy(update={"options": options}), task.prompt, task.constraints,
+                )
+                self.conversation.report.preference = "required" if options.auto_report else "suppress"
         agent = getattr(self.runtime, "agent", None)
         if agent is not None:
             agent.session_state.target = request.target
@@ -250,9 +294,13 @@ class ApplicationSession:
             )
 
             async def converse() -> Any:
-                if self.mode == "agent":
-                    await self.runtime.mcp_manager._preinit_chrome_devtools()
-                return await run_conversation(self, parsed.text, sink)
+                self._answer_in_progress = bool(self.conversation.pending_questions)
+                try:
+                    if self.mode == "agent":
+                        await self.runtime.mcp_manager._preinit_chrome_devtools()
+                    return await run_conversation(self, parsed.text, sink)
+                finally:
+                    self._answer_in_progress = False
 
             return await self._foreground(self.current_target, converse)
         if self.mode == "plan":
@@ -436,11 +484,13 @@ class ApplicationSession:
         sink = ApplicationStreamSink(
             self.emit,
             task_id,
+            question_ready=self.question_ready,
             show_thinking=bool(
                 getattr(getattr(self.runtime, "config", None), "session", None)
                 and getattr(self.runtime.config.session, "show_thinking", False)
             ),
         )
+        succeeded = False
         try:
             result = await self.submit_input(
                 InputRequest(task=task.request),
@@ -464,6 +514,7 @@ class ApplicationSession:
                 state=self.state_snapshot(active=False),
             )
             self.emit("state", task_id=task_id, state=self.state_snapshot(active=False))
+            succeeded = True
         except asyncio.CancelledError:
             sink.on_stream_end()
             self.emit(
@@ -482,9 +533,27 @@ class ApplicationSession:
                 state=self.state_snapshot(active=False),
             )
         finally:
-            self.active_task_id = None
-            self.cancel_request_id = None
-            self.active_task = None
+            self._finish_active_input(succeeded)
+
+    def _finish_active_input(self, succeeded: bool) -> None:
+        self.active_task_id = None
+        self.cancel_request_id = None
+        self.active_task = None
+        self._answer_in_progress = False
+        queued, self._queued_input = self._queued_input, None
+        if queued is None:
+            return
+        request_id, task_id, text = queued
+        if not succeeded:
+            self.emit(
+                "error", request_id=request_id, task_id=task_id,
+                code="continuation_cancelled",
+                message="The waiting task failed or was cancelled; submit the reply again to retry.",
+            )
+            return
+        self.active_task_id = task_id
+        self._answer_in_progress = bool(self.conversation.pending_questions)
+        self.active_task = asyncio.create_task(self._execute_turn(request_id, task_id, text))
 
     async def _start_input(
         self,
@@ -519,6 +588,16 @@ class ApplicationSession:
             if parsed.kind != "conversation":
                 raise ValueError(f"/{parsed.operation} requires client interaction")
             if self.active_task is not None and not self.active_task.done():
+                if (
+                    self.mode == "agent"
+                    and self.conversation.auto_mode
+                    and self.conversation.pending_questions
+                    and self._queued_input is None
+                    and not self._answer_in_progress
+                ):
+                    self._queued_input = (request_id, task_id or "", text)
+                    self.publish_input_state()
+                    return
                 raise ApplicationError("task_busy", "an operation is already active")
         except ValueError as exc:
             raise ApplicationError(
@@ -529,6 +608,7 @@ class ApplicationSession:
             ) from exc
         self.active_task_id = task_id
         self.cancel_request_id = None
+        self._answer_in_progress = bool(self.conversation.pending_questions)
         self.active_task = asyncio.create_task(self._execute_turn(request_id, task_id or "", text))
 
     async def _execute_turn(self, request_id: str, task_id: str, text: str) -> None:
@@ -540,6 +620,7 @@ class ApplicationSession:
         gate = get_execution_gate()
         previous_channel = gate.channel
         gate.install_channel(EventApprovalChannel(sink))
+        self._answer_in_progress = bool(self.conversation.pending_questions)
         self.emit(
             "turn_started",
             request_id=request_id,
@@ -547,6 +628,7 @@ class ApplicationSession:
             text=text,
             state=self.state_snapshot(),
         )
+        succeeded = False
         try:
             result = await self.submit_input(InputRequest(text=text), stream_sink=sink)
             sink.on_stream_end()
@@ -557,6 +639,7 @@ class ApplicationSession:
                 result=result,
                 state=self.state_snapshot(active=False),
             )
+            succeeded = True
         except asyncio.CancelledError:
             sink.on_stream_end()
             self.emit(
@@ -579,9 +662,7 @@ class ApplicationSession:
                 gate.install_channel(previous_channel)
             else:
                 gate.uninstall_channel()
-            self.active_task = None
-            self.active_task_id = None
-            self.cancel_request_id = None
+            self._finish_active_input(succeeded)
 
     async def _cancel_task(
         self,
@@ -930,9 +1011,8 @@ class ApplicationSession:
             await result
 
     async def wait_for_idle(self) -> None:
-        task = self.active_task
-        if task is not None:
-            await task
+        while self.active_task is not None:
+            await self.active_task
 
     def state_snapshot(self, *, active: bool | None = None) -> dict[str, Any]:
         if active is None:
@@ -978,6 +1058,11 @@ class ApplicationSession:
                     }
                 )
         state["task"] = {"active": active, "task_id": self.active_task_id if active else None}
+        state["task"]["waiting_for_input"] = bool(
+            self.mode == "agent" and self.conversation and self.conversation.auto_mode
+            and self.conversation.pending_questions and self._queued_input is None
+            and not self._answer_in_progress
+        )
         state["last_run"] = self.last_run
         return _json_safe(state)
 
@@ -1052,7 +1137,7 @@ async def _run_task(
         elif kind == "error":
             sink._event("log", message=f"error: {payload.get('error', '')}")
         elif kind == "ask_user":
-            sink.on_content_token(str(payload.get("question", "")))
+            sink.on_question(str(payload.get("question", "")))
         elif kind == "completed":
             sink._event("status", status="goal reached")
         elif kind == "no_path":

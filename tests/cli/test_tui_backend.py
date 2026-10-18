@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
+from vulnclaw.config.schema import VulnClawConfig
 from vulnclaw.task_service import TaskCreateRequest, TaskOptions, prepare_task
 from vulnclaw.tui_backend import BackendSession
 from vulnclaw.tui_protocol import JsonlWriter, ProtocolError, decode_client_message
@@ -17,6 +18,7 @@ from vulnclaw.tui_protocol import JsonlWriter, ProtocolError, decode_client_mess
 
 class FakeRuntime:
     def __init__(self) -> None:
+        self.config = VulnClawConfig()
         self.stop_calls = 0
         self.run_count = 0
 

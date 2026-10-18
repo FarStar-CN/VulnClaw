@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from vulnclaw.target_state.store import apply_target_state_to_agent
+
+if TYPE_CHECKING:
+    from vulnclaw.task_service import PreparedTask
 
 _AFFIRMATIVE = frozenset(
     {
@@ -35,6 +38,8 @@ _AFFIRMATIVE = frozenset(
         "是",
         "是的",
         "继续",
+        "确认",
+        "确认继续",
         "开始",
         "干",
         "搞起",
@@ -285,6 +290,7 @@ class ConversationTurn:
     auto: bool
     exited_auto: bool = False
     previous_target: str | None = None
+    answering: bool = False
 
 
 @dataclass
@@ -298,6 +304,12 @@ class ConversationState:
     last_auto_input: str = ""
     report: ReportRequest = field(default_factory=ReportRequest)
     engagement_completed: bool = False
+    task: PreparedTask | None = None
+
+    @property
+    def pending_questions(self) -> list[str]:
+        state = getattr(getattr(self.agent, "session_state", None), "agent_state", None)
+        return getattr(state, "pending_questions", [])
 
     def prepare_target(self, requested_target: str) -> bool:
         target = requested_target.strip()
@@ -306,6 +318,7 @@ class ConversationState:
         if self.target and self.target != target:
             self.agent.reset_context()
             self.report = ReportRequest()
+            self.task = None
         restored = apply_target_state_to_agent(self.agent, target)
         self.target = target
         self.phase = restored.phase or self.agent.session_state.phase.value
@@ -319,8 +332,10 @@ class ConversationState:
         self.agent.reset_context()
         self.report = ReportRequest()
         self.engagement_completed = False
+        self.task = None
 
     def prepare_turn(self, text: str) -> ConversationTurn:
+        answering = self.auto_mode and bool(self.pending_questions)
         exited = self.auto_mode and text.lower().strip() in (
             "chat",
             "manual",
@@ -331,19 +346,23 @@ class ConversationState:
         if exited:
             self.auto_mode = False
             self.last_auto_input = ""
+            self.task = None
             auto = False
+            answering = False
+        elif answering:
+            auto = True
         elif self.auto_mode:
             auto = not is_conversational_checkin(text) and (
                 is_affirmative_continue(text)
                 or should_auto_pentest(text, self.target)
                 or bool(_OPERATIONAL_ACTION_RE.search(text))
             )
-            if auto and is_affirmative_continue(text):
-                text = continue_task_prompt(self.last_auto_input, self.target)
         else:
             auto = should_auto_pentest(text, self.target)
         previous = None
-        detected = extract_target_from_input(text)
+        # Only new user text can select a target. An answer belongs to the
+        # waiting task, even when it supplies a URL or other concrete details.
+        detected = None if answering else extract_target_from_input(text)
         if detected and self.target and detected != self.target:
             previous = self.target
             self.target = detected
@@ -352,11 +371,22 @@ class ConversationState:
             self.auto_mode = False
             self.last_auto_input = ""
             self.report = ReportRequest()
+            self.task = None
         if detected:
             self.target = detected
+        if answering:
+            prior = self.task.prompt if self.task else self.last_auto_input
+            text = (
+                f"Continue the prior task.\nPrior task: {prior}\n\n"
+                + "Pending questions:\n"
+                + "\n".join(self.pending_questions)
+                + f"\n\nUser reply: {text}"
+            )
+        elif auto and is_affirmative_continue(text):
+            text = continue_task_prompt(self.last_auto_input, self.target)
         if auto:
             self.last_auto_input = text
-        return ConversationTurn(text, auto, exited, previous)
+        return ConversationTurn(text, auto, exited, previous, answering)
 
 
 async def run_conversation(application: Any, text: str, sink: Any) -> dict[str, Any]:
@@ -381,7 +411,7 @@ async def run_conversation(application: Any, text: str, sink: Any) -> dict[str, 
             application.bootstrap,
         ).model_dump()
     constraints = _turn_constraints(
-        TaskConstraints.model_validate(application.current_constraints), turn.text
+        TaskConstraints.model_validate(application.current_constraints), text
     )
     application.current_constraints = constraints.model_dump()
     application.current_target = conversation.target or application.current_target
@@ -427,6 +457,7 @@ async def run_conversation(application: Any, text: str, sink: Any) -> dict[str, 
                 sink._event(event_type, **event)
         elif kind == "ask_user":
             sink.on_content_token(str(payload.get("question", "")))
+            application.question_ready()
         elif kind in {"error", "no_path", "agent_step", "completed"}:
             sink.on_status(f"{kind}: {payload}")
 
@@ -444,7 +475,24 @@ async def run_conversation(application: Any, text: str, sink: Any) -> dict[str, 
             from vulnclaw.config.schema import resolve_engine
 
             engine = resolve_engine(config)
-            if engine == "solve":
+            if turn.answering:
+                # The reply is recorded by solve in the normal message history.
+                # Consume the waiting state only after scope validation succeeds.
+                conversation.pending_questions.clear()
+            if conversation.task is not None:
+                from vulnclaw.task_service import PreparedTask, run_task_action
+
+                task = conversation.task
+                result = await run_task_action(
+                    agent, PreparedTask(task.request, turn.text, constraints),
+                    stream_sink=sink, on_event=on_event,
+                )
+                completed = bool(
+                    getattr(result, "completed", False) or agent.session_state.agent_state.completed
+                )
+                if isinstance(result, list) and result:
+                    completed = completed or not getattr(result[-1], "should_continue", True)
+            elif engine == "solve":
                 result = await agent.solve(
                     turn.text,
                     target=conversation.target,
@@ -504,6 +552,7 @@ async def run_conversation(application: Any, text: str, sink: Any) -> dict[str, 
         # Keep the last kind for /report; next engagement starts with defaults.
         request.preference = "default"
         conversation.engagement_completed = True
+        conversation.task = None
     output = str(getattr(result, "output", "") or "")
     return {
         "output": output,
