@@ -52,6 +52,72 @@ fn start_task(harness: &mut AppHarness, target: &str) -> (String, String) {
 }
 
 #[test]
+fn active_task_keeps_confirmation_in_the_composer_instead_of_submitting_a_reply() {
+    let mut harness = AppHarness::connected();
+    let (_, task_id) = start_task(&mut harness, "lab.test");
+    harness.app.insert_text("yes");
+    harness.app.submit();
+
+    assert!(harness.app.worker_active);
+    assert_eq!(
+        harness.app.active_task_id.as_deref(),
+        Some(task_id.as_str())
+    );
+    assert_eq!(harness.app.input, "yes");
+    assert!(harness
+        .app
+        .transcript
+        .iter()
+        .any(|item| item.text.contains("An operation is running")));
+}
+
+#[test]
+fn waiting_task_submits_an_answer_without_replacing_the_operation_during_cleanup() {
+    let mut harness = AppHarness::connected();
+    let (_, original_id) = start_task(&mut harness, "ask.test");
+    harness.apply_next(); // question
+    harness.apply_next(); // authoritative waiting state
+    assert!(harness.app.worker_active);
+    assert!(harness.app.waiting_for_input);
+
+    harness.app.insert_text("确认继续");
+    harness.app.submit();
+    assert!(harness.app.input.is_empty());
+    assert!(!harness.app.waiting_for_input);
+    assert_eq!(
+        harness.app.active_task_id.as_deref(),
+        Some(original_id.as_str())
+    );
+
+    harness.apply_next(); // original task completes
+    harness.apply_next(); // final original state
+    assert!(!harness.app.worker_active);
+    let answer_id = match harness.apply_next() {
+        vulnclaw_tui::protocol::BackendEvent::TurnStarted { task_id, .. } => task_id,
+        event => panic!("expected turn_started, got {event:?}"),
+    };
+    assert_ne!(answer_id, original_id);
+    assert_eq!(
+        harness.app.active_task_id.as_deref(),
+        Some(answer_id.as_str())
+    );
+    assert!(harness.app.worker_active);
+    assert_eq!(
+        harness.app.active_receipt.as_ref().unwrap().input,
+        "确认继续"
+    );
+    harness.apply_next(); // response
+    harness.apply_next(); // turn completes
+    assert!(!harness.app.worker_active);
+    assert!(harness.app.active_task_id.is_none());
+    assert!(!harness
+        .app
+        .transcript
+        .iter()
+        .any(|item| item.text.contains("Unexpected")));
+}
+
+#[test]
 fn strip_prompt_prefix_tolerates_pasted_transcript_prefix() {
     assert_eq!(
         strip_prompt_prefix("You  > /run https://example.com"),
@@ -222,6 +288,7 @@ fn authoritative_state_replaces_and_clears_every_business_field() {
                 task_constraints: serde_json::json!({"allowed_ports": [443]}),
                 findings: Vec::new(),
                 task: vulnclaw_tui::protocol::BackendTaskState {
+                    waiting_for_input: false,
                     active: false,
                     task_id: None,
                 },
@@ -292,6 +359,7 @@ fn task_event_summaries_never_override_authoritative_state() {
                         "allowed_hosts": ["authoritative.test"]
                     }),
                     task: vulnclaw_tui::protocol::BackendTaskState {
+                        waiting_for_input: false,
                         active: true,
                         task_id: Some(task_id.clone()),
                     },
@@ -332,6 +400,7 @@ fn task_event_summaries_never_override_authoritative_state() {
                     task_constraints: harness.app.task_constraints.clone(),
                     findings: vec![authoritative_finding],
                     task: vulnclaw_tui::protocol::BackendTaskState {
+                        waiting_for_input: false,
                         active: false,
                         task_id: None,
                     },

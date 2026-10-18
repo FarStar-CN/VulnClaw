@@ -146,6 +146,8 @@ pub struct BackendCapabilities {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct BackendTaskState {
     pub active: bool,
+    #[serde(default)]
+    pub waiting_for_input: bool,
     #[serde(deserialize_with = "deserialize_required_option")]
     pub task_id: Option<String>,
 }

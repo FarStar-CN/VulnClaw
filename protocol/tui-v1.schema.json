@@ -357,6 +357,7 @@
       "required": ["active", "task_id"],
       "properties": {
         "active": { "type": "boolean" },
+        "waiting_for_input": { "type": "boolean" },
         "task_id": { "type": ["string", "null"] }
       }
     },
