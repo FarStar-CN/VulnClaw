@@ -674,6 +674,15 @@ async def execute_shell_command(agent: AgentContext, args: dict[str, Any]) -> st
     model_reason = str(args.get("assessment_reason") or "").strip()[:300]
 
     gate = get_execution_gate(getattr(agent, "config", None))
+    if gate.mode == "read_only":
+        from vulnclaw.agent.command_classifier import read_only_argv
+
+        if shell_name:
+            return "[!] Read-Only does not permit a custom shell"
+        try:
+            argv = read_only_argv(command)
+        except ValueError as exc:
+            return f"[!] Read-Only: {exc}"
     outcome = await gate.authorize(
         GateRequest(
             kind="shell",
@@ -1184,11 +1193,13 @@ async def execute_runtime_diff_probe(agent: AgentContext, args: dict[str, Any]) 
 
 async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, Any]) -> str:
     """Execute a tool call via MCP manager or built-in tools."""
-    from vulnclaw.agent.execution_context import current_execution
+    from vulnclaw.agent.exec_gate import get_execution_gate
+    from vulnclaw.agent.execution_context import READ_ONLY_TOOLS, current_execution
 
     execution = current_execution()
-    if execution.mode == "plan":
-        return "[!] Plan mode does not permit tool execution. Switch to Agent mode."
+    if (get_execution_gate(getattr(agent, "config", None)).mode == "read_only"
+            and tool_name not in READ_ONLY_TOOLS):
+        return f"[!] Read-Only does not permit {tool_name}; choose another permission to execute."
     if tool_name == "conversation_report":
         if execution.report is None or agent._subagent_ctx.depth != 0:
             return "[!] Conversation reports are available only to the main conversation agent."

@@ -1,9 +1,9 @@
 import type { SessionTransport } from "../transport/backend";
 import type {
   ApprovalRequiredEvent, Bootstrap, ClientMessage, Finding, MessageSnapshot,
-  ServerEvent, StateSnapshot, SubagentEvent, TaskRequest,
+  RuntimeInfo, ServerEvent, StateSnapshot, SubagentEvent, TaskRequest,
 } from "../transport/protocol.generated";
-import type { ThemeId } from "../theme/palette";
+import { permissionOrder, type ThemeId } from "../theme/palette";
 
 export function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -42,16 +42,15 @@ export type Card = {
 export type Entry = { kind: "message"; id: string } | { kind: "card"; id: string };
 export type Overlay =
   | { kind: "task"; preview: Record<string, unknown>; original: string }
-  | { kind: "config"; document: Record<string, unknown> }
-  | { kind: "wizard"; document: Record<string, unknown> }
+  | { kind: "config" | "llm"; document: Record<string, unknown> }
   | { kind: "reader"; messageId: string; raw: boolean }
-  | { kind: "messages" | "agents" | "findings" | "chain" }
   | { kind: "data"; title: string; data: unknown; format: "text" | "markdown" };
 
 export class SessionController {
   version = 0;
   connected = false;
   state: StateSnapshot | null = null;
+  runtime: RuntimeInfo | null = null;
   commands: Record<string, string> = {};
   taskCommands: string[] = [];
   skills: string[] = [];
@@ -61,19 +60,23 @@ export class SessionController {
   agents = new Map<string, SubagentEvent>();
   findings: Finding[] = [];
   approvals: ApprovalRequiredEvent[] = [];
+  approvalDeadlines = new Map<string, number>();
   permission = "ask";
   source = "main";
   activity: "task" | "conversation" | null = null;
   taskLabel = "";
   taskStatus = "";
+  startedAt: number | null = null;
+  inputFocused = true;
+  composerRows = 1;
+  completionRows = 0;
+  permissionPending = false;
   theme: ThemeId = "blue";
   showReasoning = true;
   overlay: Overlay | null = null;
   notice = "Starting Python session…";
   draft = "";
   history: string[] = [];
-  historyIndex = 0;
-  historyDraft = "";
   onExit: () => void = () => {};
   onPreferences: () => void = () => {};
   onHistoryRetry: (() => void) | null = null;
@@ -121,11 +124,14 @@ export class SessionController {
     });
   }
   clearDisplay(): void { for (const entry of this.entries) this.hidden.add(entry.id); this.changed(); }
-  recall(previous: boolean): void {
-    if (this.historyIndex === this.history.length) this.historyDraft = this.draft;
-    this.historyIndex = Math.max(0, Math.min(this.history.length, this.historyIndex + (previous ? -1 : 1)));
-    this.draft = this.history[this.historyIndex] ?? this.historyDraft;
+  cyclePermission(): void {
+    if (this.permissionPending || !this.connected) return;
+    this.permissionPending = true;
     this.changed();
+    const modes = permissionOrder;
+    void this.control("session.permission.set", { mode: modes[(modes.indexOf(this.permission as typeof modes[number]) + 1) % modes.length] })
+      .catch((error: unknown) => this.notify(String(error)))
+      .finally(() => { this.permissionPending = false; this.changed(); });
   }
   async submit(text: string): Promise<void> {
     if (!text.trim()) return;
@@ -133,13 +139,8 @@ export class SessionController {
     if (command === "/history-retry" && this.onHistoryRetry) {
       this.onHistoryRetry(); this.draft = ""; this.changed(); return;
     }
-    if (command === "/reports") { this.action("report.read"); this.draft = ""; this.changed(); return; }
-    if (["/messages", "/agents", "/findings", "/chain"].includes(command)) {
-      this.overlay = { kind: command.slice(1) as "messages" | "agents" | "findings" | "chain" };
-      this.draft = ""; this.changed(); return;
-    }
     if (command === "/theme") {
-      const theme = text.trim().split(/\s+/)[1];
+      const theme = text.trim().split(/\s+/)[1]?.toLowerCase();
       if (!theme) this.setTheme(this.theme === "blue" ? "orange" : "blue");
       else if (theme === "blue" || theme === "orange") this.setTheme(theme);
       else this.notify("Use /theme blue or /theme orange");
@@ -148,18 +149,21 @@ export class SessionController {
     if (command === "/quit") { this.onExit(); return; }
     if (command === "/clear") { this.clearDisplay(); this.draft = ""; this.changed(); return; }
     if (!this.connected) { this.notify("Backend is disconnected"); return; }
+    if (command === "/config" && text.trim() === command) { this.action("config.read"); this.draft = ""; this.changed(); return; }
+    if (command === "/settings") { this.action("config.document"); this.draft = ""; this.changed(); return; }
     const executing = !command.startsWith("/") || this.taskCommands.includes(command.slice(1));
     const answering = !command.startsWith("/") && this.state?.task.waiting_for_input;
     if (this.state?.task.active && executing && !answering) {
       this.notify("An operation is active. Cancel it or wait for completion."); return;
     }
     if (this.history.at(-1) !== text) this.history.push(text);
-    this.historyIndex = this.history.length;
+    this.history = this.history.slice(-50);
     try {
       if (command.startsWith("/") && this.taskCommands.includes(command.slice(1))) {
         const preview = await this.control("task.preview", { text });
         this.overlay = { kind: "task", preview, original: text };
       } else {
+        if (!command.startsWith("/") && !answering) this.activity = null;
         this.send({ protocol_version: 2, type: "submit_input", request_id: this.id(),
           task_id: this.id(), payload: { text } });
         this.draft = "";
@@ -168,9 +172,12 @@ export class SessionController {
     } catch (error) { this.notify(String(error)); }
   }
   startTask(task: TaskRequest): void {
+    if (this.permission === "read_only") { this.notify("Read-Only: change permission before running a task."); return; }
     try {
       this.send({ protocol_version: 2, type: "start_task", request_id: this.id(),
         task_id: this.id(), payload: { task } });
+      this.activity = "task"; this.taskStatus = "Submitting";
+      this.taskLabel = `/${task.command} ${task.target}`;
       this.overlay = null; this.draft = ""; this.changed();
     } catch (error) { this.notify(String(error)); }
   }
@@ -187,18 +194,20 @@ export class SessionController {
   readMessage = (messageId: string): void => { this.overlay = { kind: "reader", messageId, raw: false }; this.changed(); };
 
   private showControl(operation: string, result: Record<string, unknown>): void {
-    if (operation === "config.document") this.overlay = { kind: "config", document: result };
-    else if (operation === "setup.status") this.overlay = { kind: "wizard", document: result };
-    else if (operation === "report.export" || operation === "report.read") {
+    if (operation === "config.read") this.overlay = { kind: "llm", document: result };
+    else if (operation === "config.document") this.overlay = { kind: "config", document: result };
+    else if (operation === "report.export") {
       const report = record(result.report);
       this.overlay = { kind: "data", title: String(report.path ?? "Report"), data: report.text ?? result, format: report.text && report.format !== "text" ? "markdown" : "text" };
-    } else if (operation.startsWith("experience.") || ["learn", "feedback", "session.tools", "session.help", "session.status", "session.scope.read"].includes(operation)) {
+    } else if (operation.startsWith("experience.") || ["learn", "feedback", "session.tools", "session.help", "session.scope.read"].includes(operation)) {
       this.overlay = { kind: "data", title: operation, data: result, format: "text" };
     }
     if (typeof result.message === "string") this.notice = result.message;
   }
   private hydrate(state: StateSnapshot): void {
     this.state = state;
+    if (state.permission_mode) this.permission = state.permission_mode;
+    if (state.runtime) this.runtime = state.runtime;
     this.findings = state.findings;
     if (state.messages) {
       const current = new Set(state.messages.map((message) => message.message_id));
@@ -221,14 +230,17 @@ export class SessionController {
   receive = (event: ServerEvent): void => {
     if (event.type === "ready") {
       this.connected = true; this.commands = event.capabilities.input_commands ?? {};
-      this.taskCommands = event.capabilities.commands;
+      this.taskCommands = event.capabilities.authoritative_state ? event.capabilities.commands : [];
       this.permission = event.capabilities.permission_mode ?? "ask";
-      this.skills = event.runtime.skills; this.notice = `Python ${event.backend.pid} · ${event.runtime.provider}/${event.runtime.model}`;
+      this.runtime = event.runtime;
+      this.skills = event.runtime.skills; this.notice = "";
     }
     if ("state" in event && event.state) this.hydrate(event.state);
     switch (event.type) {
-      case "task_started": this.activity = "task"; this.taskLabel = `${event.task.command} ${event.task.target}`; this.taskStatus = "Running"; break;
-      case "turn_started": this.activity = "conversation"; break;
+      case "task_started":
+        this.activity = "task"; this.taskLabel = `/${event.task.command} ${event.task.target}`; this.taskStatus = "Running";
+        this.startedAt = Date.now(); this.source = "main"; this.agents.clear(); break;
+      case "turn_started": this.activity = "conversation"; this.startedAt = Date.now(); break;
       case "message": {
         let message = this.messages.get(event.message_id);
         if (event.operation === "append") {
@@ -246,20 +258,35 @@ export class SessionController {
       case "tool_call": this.card(event.agent_id ?? "main", "tool_call", event.tool, event.arguments, "json"); break;
       case "tool_result": this.card(event.agent_id ?? "main", "tool_result", "Tool result", event.result, event.format ?? "text"); break;
       case "log": this.card(event.agent_id ?? "main", "log", "Log", event.message); break;
-      case "status": this.notice = event.status; break;
+      case "status": this.card(event.agent_id ?? "main", "status", "Status", event.status); break;
       case "subagent": this.agents.set(event.agent_id, event); break;
       case "finding": {
         const index = this.findings.findIndex((finding) => finding.id === event.finding.id);
         if (index < 0) this.findings.push(event.finding); else this.findings[index] = event.finding;
         break;
       }
-      case "approval_required": this.approvals.push(event); break;
-      case "approval_closed": this.approvals = this.approvals.filter((item) => item.request_hash !== event.request_hash); this.notice = `Approval ${event.status}`; break;
+      case "approval_required":
+        this.approvals.push(event);
+        if (event.request_hash) this.approvalDeadlines.set(event.request_hash,
+          event.expires_in_seconds !== undefined ? Date.now() + event.expires_in_seconds * 1000 : Date.parse(event.expires_at ?? ""));
+        break;
+      case "approval_closed": this.approvals = this.approvals.filter((item) => item.request_hash !== event.request_hash); this.approvalDeadlines.delete(event.request_hash); this.notice = `Approval ${event.status}`; break;
       case "control_result": {
         const result = record(event.result);
         const requested = event.request_id ? this.requests.has(event.request_id) : false;
         if (event.request_id) { this.requests.get(event.request_id)?.resolve(result); this.requests.delete(event.request_id); }
         if (event.operation === "session.permission.set" && typeof result.mode === "string") this.permission = result.mode;
+        if (event.operation === "session.think" && typeof result.show_thinking === "boolean") this.showReasoning = result.show_thinking;
+        if (event.operation === "config.write" && this.runtime) this.runtime = { ...this.runtime,
+          provider: String(result.provider ?? this.runtime.provider), model: String(result.model ?? this.runtime.model), config_ready: result.config_ready === true };
+        if (event.operation === "config.update") {
+          const config = record(result.config), llm = record(config.llm);
+          if (this.runtime) this.runtime = { ...this.runtime, provider: String(llm.provider ?? this.runtime.provider), model: String(llm.model ?? this.runtime.model) };
+          const mode = record(config.safety).permission_mode;
+          if (typeof mode === "string") this.permission = mode;
+          const thinking = record(config.session).show_thinking;
+          if (typeof thinking === "boolean") this.showReasoning = thinking;
+        }
         if (event.operation === "session.new") { this.messages.clear(); this.cards.clear(); this.entries = []; this.agents.clear(); this.source = "main"; this.activity = null; this.taskLabel = ""; this.taskStatus = ""; }
         if (!requested) this.showControl(event.operation, result);
         break;

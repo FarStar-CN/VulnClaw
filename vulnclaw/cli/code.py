@@ -30,9 +30,12 @@ def code_scan(
     fail_on: Literal["verified", "any", "never"] = typer.Option("verified", "--fail-on"),
 ):
     def operation():
+        from vulnclaw.agent.exec_gate import get_execution_gate
         from vulnclaw.codescan.report import format_result
         from vulnclaw.codescan.scanner import scan_code
-        from vulnclaw.config.settings import RUNS_DIR
+        from vulnclaw.config.settings import RUNS_DIR, load_config
+
+        get_execution_gate(load_config()).require_execution("code scanning")
 
         if not Path(path).exists():
             raise CommandError("path_not_found", f"Path not found: {path}")

@@ -173,8 +173,16 @@ class AgentCore:
             context.search_max_chars = config.session.memory_search_max_chars
             memory_store = getattr(context, "memory_store", None)
             if memory_store is not None:
+                directory = config.session.output_dir / "memory"
+                if memory_store.store_dir.resolve() != directory.resolve():
+                    replacement = MemoryStore(store_dir=directory)
+                    replacement.session_id = memory_store.session_id
+                    context.memory_store = memory_store = replacement
                 memory_store.archive_max_bytes = config.session.memory_archive_max_bytes
                 memory_store.archive_max_files = config.session.memory_archive_max_files
+            context.vault_output_dir = config.session.output_dir
+            if context.vault is not None:
+                context.vault.set_output_dir(config.session.output_dir)
             context._trim()
 
     def _reset_runtime_state(
@@ -429,8 +437,13 @@ class AgentCore:
         from vulnclaw.agent.execution_context import current_execution
 
         execution = current_execution()
-        if execution.mode == "plan":
-            prompt += "\nPlan mode: explain and plan only. Do not execute tools or export files."
+        from vulnclaw.agent.exec_gate import get_execution_gate
+
+        if get_execution_gate(self.config).mode == "read_only":
+            prompt += (
+                "\nRead-Only: analyze and plan using existing evidence and supported local reads. "
+                "Do not modify files, probe targets, launch testing tasks or export reports."
+            )
         elif execution.report is not None:
             prompt += (
                 "\nUse conversation_report to express the user's report intent. Classify CTF/"
@@ -749,11 +762,14 @@ class AgentCore:
 
     def _build_openai_tools(self) -> list[dict]:
         """Build OpenAI function calling schema from MCP tools + built-in tools."""
-        from vulnclaw.agent.execution_context import current_execution, report_tool_schema
+        from vulnclaw.agent.exec_gate import get_execution_gate
+        from vulnclaw.agent.execution_context import (
+            READ_ONLY_TOOLS,
+            current_execution,
+            report_tool_schema,
+        )
 
         execution = current_execution()
-        if execution.mode == "plan":
-            return []
         cfg = getattr(self.config, "subagent", None)
         session_kind = str(
             getattr(getattr(self.context, "state", None), "session_kind", "")
@@ -772,6 +788,8 @@ class AgentCore:
             active_role=self.active_role,
             include_subagent_tool=include_subagent_tool,
         )
+        if get_execution_gate(self.config).mode == "read_only":
+            return [tool for tool in tools if tool["function"]["name"] in READ_ONLY_TOOLS]
         if execution.report is not None and self._subagent_ctx.depth == 0:
             tools.append(report_tool_schema())
         return tools

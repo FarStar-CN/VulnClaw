@@ -129,6 +129,33 @@ class MCPLifecycleManager(ProbeMixin):
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         await self.astop_all()
 
+    async def apply_config(self, config: VulnClawConfig) -> None:
+        """Reconcile edited servers while keeping unchanged connections alive."""
+        previous = self.config
+        changed = {
+            name for name in previous.mcp.servers.keys() | config.mcp.servers.keys()
+            if previous.mcp.servers.get(name) != config.mcp.servers.get(name)
+        }
+        self.config = config
+        if previous.safety.tool_max_concurrent != config.safety.tool_max_concurrent:
+            self._server_call_gates.clear()
+        for name in sorted(changed):
+            await self.astop_server(name)
+            self.registry.unregister_server(name)
+            self._runtime_tool_aliases = {
+                key: value for key, value in self._runtime_tool_aliases.items() if key[0] != name
+            }
+            self._server_call_gates = {
+                key: value for key, value in self._server_call_gates.items() if key[1] != name
+            }
+            server = config.mcp.servers.get(name)
+            if server is not None and server.enabled:
+                self.registry.register_server(name)
+                try:
+                    self._start_server(name, server)
+                except Exception as exc:
+                    self.registry.set_server_error(name, str(exc), error_type="startup_error")
+
     def set_task_constraints(self, constraints: Any) -> None:
         """Attach current task constraints for tool-level enforcement."""
         self._task_constraints = constraints
@@ -551,6 +578,10 @@ class MCPLifecycleManager(ProbeMixin):
             "session": session,
             "context_manager": cm,
         }
+        self.registry.set_server_execution_mode(server_name, "sdk")
+        self.registry.set_server_attach_result(server_name, attempted=True, succeeded=True)
+        self.registry.set_server_running(server_name, running=True)
+        self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
         return session
 
     async def _get_or_create_persistent_http_session(self, server_name: str) -> Any:

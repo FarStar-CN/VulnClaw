@@ -152,7 +152,7 @@ class _Pending:
 
 
 class ExecutionGate:
-    VALID_MODES = ("ask", "auto_review", "full_access")
+    VALID_MODES = ("read_only", "ask", "auto_review", "full_access")
 
     def __init__(
         self,
@@ -191,6 +191,25 @@ class ExecutionGate:
     def has_trusted_channel(self) -> bool:
         return self.channel is not None
 
+    def apply_config(self, safety: Any, *, source: str = "local") -> None:
+        """Refresh policy without replacing the trusted channel or pending decisions."""
+        from vulnclaw.agent.command_classifier import parse_trusted_commands
+
+        trusted, warnings = parse_trusted_commands(
+            list(getattr(safety, "trusted_commands", []) or [])
+        )
+        mode = str(getattr(safety, "permission_mode", "ask") or "ask").strip().lower()
+        self.set_mode(mode if mode in self.VALID_MODES else "ask", source=source)
+        self.timeout_seconds = max(1, int(
+            getattr(safety, "approval_timeout_seconds", 300) or 300
+        ))
+        self.trusted_commands = trusted
+        if warnings:
+            import sys
+
+            for warning in warnings:
+                print(f"[!] {warning}", file=sys.stderr)
+
 
     def set_mode(self, mode: str, *, source: str = "local") -> str:
         """Switch the active policy. Validation only — nothing is recorded."""
@@ -200,7 +219,13 @@ class ExecutionGate:
                 f"invalid permission mode {mode!r}; expected one of {', '.join(self.VALID_MODES)}"
             )
         self.mode = normalized
+        if normalized == "read_only":
+            self.expire_all_pending("denied")
         return self.mode
+
+    def require_execution(self, action: str) -> None:
+        if self.mode == "read_only":
+            raise ValueError(f"Read-Only does not permit {action}")
 
     async def _notify_closed(self, request_hash: str, status: str) -> None:
         """Tell the channel the pending left the queue (modal cleanup hook).
@@ -265,6 +290,9 @@ class ExecutionGate:
 
     async def authorize(self, request: GateRequest, *, run_id: str = "") -> GateOutcome:
         self.stats["requested"] += 1
+
+        if self.mode == "read_only":
+            return self._authorize_read_only(request)
 
         # ── full_access: everything runs unattended ──────────────────────
         if self.mode == "full_access":
@@ -335,6 +363,8 @@ class ExecutionGate:
         pending: _Pending | None = None
         try:
             async with self._approval_lock:
+                if self.mode == "read_only":
+                    return self._authorize_read_only(request)
                 # The channel may have been removed while this request waited
                 # behind another approval. Re-check immediately before exposing
                 # the request and fail closed without starting a stale timeout.
@@ -392,6 +422,8 @@ class ExecutionGate:
                 # for passive channels. Active channels settle from their return
                 # value. Either path updates the same pending before cleanup.
                 async with self._lock:
+                    if self.mode == "read_only":
+                        pending.state = "denied"
                     if pending.state == "pending":
                         pending.state = {
                             "approve": "approved",
@@ -408,6 +440,20 @@ class ExecutionGate:
                 if pending is not None and self._pending_by_hash.get(request_hash) is pending:
                     self._pending_by_hash.pop(request_hash, None)
                 self._inflight_hashes.discard(request_hash)
+
+    @staticmethod
+    def _authorize_read_only(request: GateRequest) -> GateOutcome:
+        from vulnclaw.agent.command_classifier import read_only_argv
+
+        if request.kind == "shell":
+            try:
+                read_only_argv(request.display)
+                return GateOutcome(True, "approved")
+            except ValueError as exc:
+                reason = str(exc)
+        else:
+            reason = "interpreters and active probes are not read-only"
+        return GateOutcome(False, "read_only", message=f"Read-Only: {reason}")
 
     async def _settle(self, pending: _Pending, request_hash: str, state: str) -> None:
         async with self._lock:
@@ -427,33 +473,10 @@ def get_execution_gate(config: Any = None) -> ExecutionGate:
     """Return the process-wide gate, creating it with config-derived settings."""
     global _default_gate
     if _default_gate is None:
-        timeout = 300
-        mode = "ask"
-        trusted: tuple[tuple[str, ...], ...] = ()
-        warnings: list[str] = []
+        _default_gate = ExecutionGate()
         safety = getattr(config, "safety", None)
         if safety is not None:
-            timeout = int(getattr(safety, "approval_timeout_seconds", 300) or 300)
-            mode = str(getattr(safety, "permission_mode", "ask") or "ask").strip().lower()
-            from vulnclaw.agent.command_classifier import parse_trusted_commands
-
-            trusted, warnings = parse_trusted_commands(
-                list(getattr(safety, "trusted_commands", []) or [])
-            )
-        try:
-            _default_gate = ExecutionGate(
-                timeout_seconds=timeout,
-                mode=mode,
-                trusted_commands=trusted,
-            )
-        except ValueError:
-            # Unknown persisted value: fail safe to per-request approval.
-            _default_gate = ExecutionGate(timeout_seconds=timeout)
-        if warnings:
-            import sys
-
-            for warning in warnings:
-                print(f"[!] {warning}", file=sys.stderr)
+            _default_gate.apply_config(safety)
     return _default_gate
 
 

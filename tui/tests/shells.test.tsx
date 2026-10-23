@@ -9,14 +9,14 @@ import { TuiShell } from "../src/shells/TuiShell";
 import { ReplShell } from "../src/shells/ReplShell";
 import { finalFrame } from "./render-helpers";
 
-const emptyState = (): StateSnapshot => ({ execution_mode: "agent", target: "example.test", phase: "idle", task_constraints: {},
+const emptyState = (): StateSnapshot => ({ permission_mode: "ask", target: "example.test", phase: "idle", task_constraints: {},
   task: { active: false, task_id: null }, last_run: null, findings: [], evidence: [], constraint_violations: [] });
 function session() {
   const controller = new SessionController();
   const requests: ClientMessage[] = [];
   controller.attach({ send(request) { requests.push(request); }, async close() {} });
   controller.connected = true; controller.state = emptyState();
-  controller.commands = { run: "Run a task", help: "Help", config: "Configure", wizard: "Setup" };
+  controller.commands = { run: "Run a task", help: "Help", config: "Configure" };
   controller.taskCommands = ["run"]; controller.skills = ["web-pentest"];
   return { controller, requests };
 }
@@ -113,9 +113,9 @@ test("TUI: native pane drag commits across columns and collapse restores the pan
   const setup = await testRender(<TuiShell controller={controller} workbench={workbench} />, { width: 120, height: 40, kittyKeyboard: true });
   try {
     await finalFrame(setup);
-    const pane = setup.renderer.root.findDescendantById("status-pane")!;
+    const title = setup.renderer.root.findDescendantById("title-status")!;
     const destination = setup.renderer.root.findDescendantById("subagents-pane")!;
-    await act(async () => { await setup.mockMouse.pressDown(pane.x + 2, pane.y); await setup.mockMouse.emitMouseEvent("drag", destination.x + 5, destination.y + destination.height - 2); });
+    await act(async () => { await setup.mockMouse.pressDown(title.x + 3, title.y); await setup.mockMouse.emitMouseEvent("drag", destination.x + 5, destination.y + destination.height - 2); });
     expect(await finalFrame(setup)).toContain("Status");
     expect(workbench.gesture?.kind).toBe("move"); expect(saves).toBe(0);
     await act(async () => { await setup.mockMouse.release(destination.x + 5, destination.y + destination.height - 2); });
@@ -133,50 +133,43 @@ test("TUI: native pane drag commits across columns and collapse restores the pan
 });
 
 test("TUI: finding selection resets only its detail scroll and focused subagents choose the reading source", async () => {
-  const { controller, requests } = session(); const workbench = new WorkbenchState(); workbench.layout.focus = "findings";
-  controller.findings = [{ id: "f1", target: "synthetic.test", title: "First finding", severity: "High", description: "# First\n\n" + "long detail\n\n".repeat(70) },
+  const { controller, requests } = session(); const workbench = new WorkbenchState(); workbench.layout.focus = "findings"; controller.inputFocused = false;
+  controller.findings = [{ id: "f1", target: "synthetic.test", title: "First finding", severity: "High", evidence_refs: [{ kind: "http", path: "evidence/first.json" }], description: "# First\n\n" + "long detail\n\n".repeat(70) },
     { id: "f2", target: "synthetic.test", title: "Second finding", severity: "Low", description: "# Second\n\nEvidence remains readable" }];
   controller.receive({ protocol_version: 2, type: "subagent", task_id: "t", agent_id: "child", parent_id: "main", group_id: "", name: "Child reader", agent_type: "general", status: "running" });
   const setup = await testRender(<TuiShell controller={controller} workbench={workbench} />, { width: 120, height: 44, kittyKeyboard: true });
   try {
     await finalFrame(setup);
-    await act(async () => { setup.mockInput.pressKey("\x1b[6~"); }); await finalFrame(setup);
-    const details = setup.renderer.root.findDescendantById("findings-scroll") as ScrollBoxRenderable;
-    expect(details.scrollTop).toBeGreaterThan(0);
-    await act(async () => { setup.mockInput.pressArrow("down"); }); await finalFrame(setup);
-    expect(setup.renderer.root.findDescendantById("finding-f2")).toBeDefined();
-    expect((setup.renderer.root.findDescendantById("findings-scroll") as ScrollBoxRenderable).scrollTop).toBe(0);
+    await act(async () => { setup.mockInput.pressEnter(); });
+    expect(await finalFrame(setup)).toContain("evidence/first.json");
+    await act(async () => { setup.mockInput.pressArrow("down"); });
+    expect(await finalFrame(setup)).toContain("Second finding");
     await act(async () => { setup.mockInput.pressArrow("right", { ctrl: true }); }); await finalFrame(setup);
     expect(String(workbench.layout.focus)).toBe("subagents");
     await act(async () => { setup.mockInput.pressArrow("down"); }); await finalFrame(setup);
     await act(async () => { setup.mockInput.pressEnter(); }); await finalFrame(setup);
     expect(controller.source).toBe("child");
     expect(requests.filter((request) => request.type === "submit_input")).toHaveLength(0);
-    await act(async () => { setup.mockInput.pressKey("F5"); });
-    expect(await finalFrame(setup)).toContain("Attack chain");
-    await act(async () => { setup.mockInput.pressEscape(); }); await finalFrame(setup);
-    expect(controller.overlay).toBeNull();
   } finally { await act(async () => { await setup.dispose(); }); }
 });
 
-for (const mode of ["tui", "repl"] as const) test(`${mode}: shared history, backend mode controls and multiline submission keep their input contexts`, async () => {
-  const { controller, requests } = session(); controller.history = ["first", "second"]; controller.historyIndex = 2; controller.draft = "retained draft";
+for (const mode of ["tui", "repl"] as const) test(`${mode}: permission cycling and multiline input preserve their contexts without history completion`, async () => {
+  const { controller, requests } = session(); controller.history = ["first", "second"]; controller.draft = "retained draft";
   const shell = mode === "tui" ? <TuiShell controller={controller} workbench={new WorkbenchState()} /> : <ReplShell controller={controller} />;
   const setup = await testRender(shell, { width: 100, height: 36, screenMode: mode === "repl" ? "split-footer" : "alternate-screen", footerHeight: 12, externalOutputMode: mode === "repl" ? "capture-stdout" : "passthrough", kittyKeyboard: true });
   try {
     await finalFrame(setup);
     await act(async () => { setup.mockInput.pressKey("p", { ctrl: true }); }); await finalFrame(setup);
-    expect(controller.draft).toBe("second");
+    expect(controller.draft).toBe("retained draft");
     await act(async () => { setup.mockInput.pressKey("n", { ctrl: true }); }); await finalFrame(setup);
     expect(controller.draft).toBe("retained draft");
     const thinking = controller.showReasoning;
     await act(async () => { setup.mockInput.pressKey("t", { ctrl: true }); }); await finalFrame(setup);
-    expect(controller.showReasoning).toBe(!thinking); expect(controller.draft).toBe("retained draft");
+    expect(controller.showReasoning).toBe(thinking); expect(controller.draft).toBe("retained draft");
     await act(async () => { setup.mockInput.pressTab(); setup.mockInput.pressTab({ shift: true }); });
     const controls = requests.filter((request) => request.type === "control");
-    expect(controls.some((request) => request.payload?.operation === "session.mode.set" && record(request.payload.arguments).mode === "plan")).toBe(true);
     expect(controls.some((request) => request.payload?.operation === "session.permission.set" && record(request.payload.arguments).mode === "auto_review")).toBe(true);
-    expect(controller.state?.execution_mode).toBe("agent"); expect(controller.permission).toBe("ask");
+    expect(controller.permission).toBe("ask");
     await act(async () => { setup.mockInput.pressEscape(); }); await finalFrame(setup);
     await act(async () => { await setup.mockInput.typeText("line one"); setup.mockInput.pressEnter({ shift: true }); await setup.mockInput.typeText("line two"); });
     await finalFrame(setup);
@@ -194,11 +187,17 @@ test("TUI: conversation and new-session status do not inherit the previous task 
   const setup = await testRender(<TuiShell controller={controller} workbench={new WorkbenchState()} />, { width: 120, height: 40 });
   function status() {
     const pane = setup.renderer.root.findDescendantById("status-scroll") as ScrollBoxRenderable;
-    return pane.getChildren().map((node) => "plainText" in node ? String(node.plainText) : "").join("\n");
+    const text = (node: import("@opentui/core").Renderable): string => "plainText" in node
+      ? String(node.plainText) : node.getChildren().map(text).join(" ");
+    return pane.getChildren().map(text).join("\n");
   }
   try {
     await finalFrame(setup);
     expect(status()).toContain("Task execution"); expect(status()).toContain("previous-task");
+    await act(async () => { controller.startTask({ command: "run", target: "next.test" }); }); await finalFrame(setup);
+    expect(status()).toContain("Submitting"); expect(status()).not.toContain("reporting");
+    await act(async () => { await controller.submit("Explain the results"); }); await finalFrame(setup);
+    expect(status()).not.toContain("Task execution");
     await act(async () => { controller.receive({ protocol_version: 2, type: "turn_started", request_id: "turn", task_id: "conversation", text: "Explain the results", state: taskState }); });
     await finalFrame(setup);
     expect(status()).toContain("Workspace"); expect(status()).not.toContain("Task execution"); expect(status()).not.toContain("reporting"); expect(status()).not.toContain("previous-task");

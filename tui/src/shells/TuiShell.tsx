@@ -1,34 +1,50 @@
 import { useTerminalDimensions } from "@opentui/react";
+import stringWidth from "string-width";
 import type { SessionController } from "../session/controller";
 import type { WorkbenchState } from "../workbench/layout";
+import { geometry, TUI_HEADER_ROWS, tuiChromeHeight } from "../workbench/layout";
 import { Workbench } from "../workbench/Workbench";
 import { Composer } from "../components/Composer";
 import { OverlayLayer } from "../components/OverlayLayer";
+import { PermissionStatus } from "../components/PermissionStatus";
 import { palettes } from "../theme/palette";
+import { elapsed, equalizer, spinner, useClock } from "../theme/activity";
 import { visibleText } from "../components/content";
 import { useSession } from "./useSession";
 import { useSessionKeys } from "./useSessionKeys";
-import { completions } from "../session/completions";
 
 export function TuiShell({ controller, workbench }: { controller: SessionController; workbench: WorkbenchState }) {
   useSession(controller); useSessionKeys(controller, "tui", workbench);
   const { width, height } = useTerminalDimensions();
   const p = palettes[controller.theme];
-  const completionRows = controller.overlay || controller.approvals.length ? 0 : Math.min(5, completions(controller).length);
-  const composerHeight = Math.min(5, Math.max(2, controller.draft.split("\n").length)) + 2 + completionRows;
-  const available = Math.max(1, height - 3 - composerHeight - 2);
+  const busy = controller.state?.task.active ?? false;
+  const now = useClock(busy || controller.approvals.length > 0);
+  const available = Math.max(1, height - tuiChromeHeight(controller.composerRows, controller.completionRows));
+  const tooSmall = geometry(width, available, workbench.layout).tooSmall;
+  const activity = busy && controller.activity === "task"
+    ? `${spinner(now)} ${controller.approvals.length ? "awaiting approval" : "task running"} ${equalizer(now)} ${elapsed(controller.startedAt, now)}` : "";
+  const provider = controller.runtime ? `provider: ${controller.runtime.config_ready ? controller.runtime.provider : "not configured"}` : "";
+  const showProvider = !!provider && width >= 17 + stringWidth(activity) + stringWidth(provider);
+  const focusHint = controller.inputFocused ? "Enter submit · Shift+Enter newline · Tab complete · Shift+Tab permission"
+    : workbench.layout.focus === "subagents" ? "↑↓ select agent · Enter view · Ctrl+←/→ pane"
+      : workbench.layout.focus === "findings" ? "↑↓ select finding · Enter evidence · Ctrl+←/→ pane"
+        : workbench.layout.focus === "capabilities" ? "Enter expand/collapse MCP · ↑↓/PgUp/PgDn scroll · Ctrl+←/→ pane"
+        : "↑↓/PgUp/PgDn scroll · Ctrl+←/→ pane · type to compose";
+  const hint = workbench.gesture ? `${workbench.gesture.kind === "move" ? "Move pane · Release to dock" : "Resize panes · Release to save"} · Esc cancel`
+    : controller.permissionPending ? "Changing permission…"
+      : controller.notice || (busy ? `Ctrl+C cancel · ${focusHint}` : focusHint);
   return <box width="100%" height="100%" flexDirection="column" backgroundColor={p.background}>
-    <box border borderColor={p.border} height={3} flexShrink={0} flexDirection="row" gap={2}>
-      <text fg={p.accent}>VulnClaw</text>
-      <text onMouseDown={() => controller.action("config.document")}>[Config]</text>
-      <text onMouseDown={() => controller.action("setup.status")}>[Setup]</text>
-      <text onMouseDown={() => controller.action("report.read")}>[Report]</text>
-      <text onMouseDown={() => { controller.overlay = { kind: "messages" }; controller.changed(); }}>[Messages]</text>
+    <box id="terminal-header" border={["top", "left", "right"]} borderColor={p.border} backgroundColor={p.panel} height={TUI_HEADER_ROWS} flexShrink={0} flexDirection="row">
+      <text bg={p.action} fg={p.background}><b> VulnClaw </b></text>
+      <box flexGrow={1} alignItems="center"><text fg={p.signal}>{visibleText(activity)}</text></box>
+      {showProvider && <text fg={p.soft}>{visibleText(`│ ${provider} │ `)}</text>}
     </box>
-    <Workbench controller={controller} model={workbench} width={width} height={available} />
-    <Composer controller={controller} active={!controller.overlay && !controller.approvals.length} />
-    <text fg={p.accent}>{visibleText(`${controller.state?.execution_mode ?? "agent"} · ${controller.permission} · ${controller.state?.target || "No target"} · ${controller.state?.task.active ? "running" : "ready"}`)}</text>
-    <text fg={p.muted}>{visibleText(controller.notice || "Tab mode · Shift+Tab permissions · Ctrl+←/→ focus · Ctrl+C cancel/exit · F5 chain")}</text>
+    <Workbench controller={controller} model={workbench} width={width} height={available} now={now} />
+    {!tooSmall && <>
+      <Composer controller={controller} active={!controller.overlay && !controller.approvals.length} joined />
+      <PermissionStatus controller={controller} />
+    </>}
+    <text id="hotbar" height={1} flexShrink={0} fg={p.muted} bg={p.panel}>{visibleText(hint)}</text>
     <OverlayLayer controller={controller} width={width} />
   </box>;
 }

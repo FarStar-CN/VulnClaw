@@ -7,7 +7,7 @@ import { PythonBackend } from "./transport/backend";
 import { ReplShell } from "./shells/ReplShell";
 import { TuiShell } from "./shells/TuiShell";
 import { WorkbenchState } from "./workbench/layout";
-import { clientDirectory, loadPreferences, restoreClientSession, writeJson } from "./platform/preferences";
+import { clientDirectory, loadPreferences, restoreClientSession, saveClientSession, writeJson } from "./platform/preferences";
 import type { Bootstrap } from "./transport/protocol.generated";
 
 const { values } = parseArgs({ args: Bun.argv.slice(2), options: {
@@ -26,11 +26,10 @@ const workbench = new WorkbenchState(() => {
     .catch((error: unknown) => controller.notify(`Preferences save failed: ${String(error)}`));
 });
 controller.onPreferences = workbench.persist;
-let restoredMode: "plan" | "agent" | null = null;
 try {
   const preferences = await loadPreferences(directory);
   controller.theme = preferences.theme; workbench.layout = preferences.layout;
-  restoredMode = await restoreClientSession(controller, directory);
+  await restoreClientSession(controller, directory);
 } catch (error) { controller.notice = `Preferences load failed: ${String(error)}`; }
 const renderer = await createCliRenderer({
   screenMode: values.mode === "repl" ? "split-footer" : "alternate-screen",
@@ -40,16 +39,13 @@ const root = createRoot(renderer);
 let closing: Promise<void> | null = null;
 let backend: PythonBackend | null = null;
 const close = (): Promise<void> => closing ??= (async () => {
-  try { await backend?.close(); await writes; }
+  try { await backend?.close(); await writes; await saveClientSession(controller, directory); }
   finally { root.unmount(); await destroyTreeSitterClient(); renderer.destroy(); await renderer.closed; }
 })();
 controller.onExit = () => { void close().catch((error: unknown) => { process.stderr.write(String(error) + "\n"); process.exitCode = 1; }); };
 try {
   flushSync(() => root.render(values.mode === "repl" ? <ReplShell controller={controller} /> : <TuiShell controller={controller} workbench={workbench} />));
-  backend = new PythonBackend((event) => {
-    controller.receive(event);
-    if (event.type === "ready" && restoredMode) { const mode = restoredMode; restoredMode = null; controller.action("session.mode.set", { mode }); }
-  }, controller.disconnect, { onDiagnostic: (message) => controller.receive({
+  backend = new PythonBackend(controller.receive, controller.disconnect, { onDiagnostic: (message) => controller.receive({
     protocol_version: 2, type: "log", task_id: "backend", message,
   }) });
   const bootstrap = JSON.parse(process.env.VULNCLAW_TERMINAL_BOOTSTRAP ?? "{}") as Bootstrap;

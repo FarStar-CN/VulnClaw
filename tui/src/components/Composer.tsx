@@ -1,45 +1,113 @@
 import { useEffect, useRef, useState } from "react";
-import { type TextareaRenderable } from "@opentui/core";
-import { useKeyboard } from "@opentui/react";
+import { BorderChars, MouseButton, type TextareaRenderable } from "@opentui/core";
+import { useKeyboard, useRenderer } from "@opentui/react";
 import type { SessionController } from "../session/controller";
 import { palettes } from "../theme/palette";
 import { visibleText } from "./content";
-import { completions } from "../session/completions";
+import { completions, completionDescription } from "../session/completions";
+import { pasteText } from "../platform/clipboard";
 
-export function Composer({ controller, active }: { controller: SessionController; active: boolean }) {
+export function Composer({ controller, active, joined = false }: { controller: SessionController; active: boolean; joined?: boolean }) {
   const editor = useRef<TextareaRenderable>(null);
+  const syncedDraft = useRef(controller.draft);
+  const renderer = useRenderer();
   const [selected, setSelected] = useState(0);
+  const selectedRef = useRef(0);
+  const cycle = useRef<{ candidates: string[]; selected: number; applied: string } | null>(null);
   const p = palettes[controller.theme];
-  const query = controller.draft.trimStart();
-  const candidates = completions(controller);
+  if (cycle.current && cycle.current.applied !== controller.draft) cycle.current = null;
+  const candidates = cycle.current?.candidates ?? completions(controller);
   useEffect(() => {
-    if (editor.current && editor.current.plainText !== controller.draft) editor.current.setText(controller.draft);
-  }, [controller.draft]);
-  useEffect(() => { setSelected(0); }, [query]);
-  useKeyboard((key) => {
-    if (!active || controller.approvals.length || controller.overlay) return;
-    if (candidates.length && ["up", "down"].includes(key.name)) {
-      key.preventDefault(); key.stopPropagation();
-      setSelected((index) => (index + (key.name === "up" ? -1 : 1) + candidates.length) % candidates.length);
+    const rows = active && candidates.length ? Math.min(5, candidates.length) + 1 : 0;
+    if (rows !== controller.completionRows) { controller.completionRows = rows; controller.changed(); }
+  }, [active, candidates.length, controller]);
+  const selection = Math.min(selected, Math.max(0, candidates.length - 1));
+  useEffect(() => {
+    // Native edit notifications can arrive after render; only write external draft changes back.
+    if (editor.current && syncedDraft.current !== controller.draft) {
+      syncedDraft.current = controller.draft;
+      if (editor.current.plainText !== controller.draft) {
+        editor.current.setText(controller.draft);
+        editor.current.gotoBufferEnd();
+      }
     }
-    if (key.name === "return" && !key.shift && candidates.length && candidates[selected] !== query) {
+    if (!cycle.current) { selectedRef.current = 0; setSelected(0); }
+  }, [controller.draft]);
+  useEffect(() => {
+    const resize = () => {
+      if (!editor.current || editor.current.isDestroyed) return;
+      const rows = Math.max(1, Math.min(5, editor.current.editorView.getTotalVirtualLineCount()));
+      if (rows !== controller.composerRows) { controller.composerRows = rows; controller.changed(); }
+    };
+    renderer.on("frame", resize);
+    return () => { renderer.off("frame", resize); };
+  }, [renderer, controller]);
+  function apply(index: number, items = candidates) {
+    const value = items[index]; if (!value) return;
+    const applied = value + " ";
+    cycle.current = { candidates: items, selected: index, applied };
+    selectedRef.current = index; setSelected(index); controller.inputFocused = true; controller.draft = applied;
+    syncedDraft.current = applied;
+    editor.current?.setText(applied); editor.current?.gotoBufferEnd();
+    controller.changed();
+  }
+  useKeyboard((key) => {
+    if (!active || key.defaultPrevented || controller.approvals.length || controller.overlay) return;
+    if (cycle.current && cycle.current.applied !== controller.draft) cycle.current = null;
+    const options = cycle.current?.candidates ?? completions(controller);
+    const current = Math.min(selectedRef.current, Math.max(0, options.length - 1));
+    if (key.name === "tab" && !key.shift) {
       key.preventDefault(); key.stopPropagation();
-      controller.draft = candidates[selected] + " "; controller.changed();
+      if (options.length) apply(cycle.current ? (cycle.current.selected + 1) % options.length : current, options);
+      return;
+    }
+    if (!controller.inputFocused) return;
+    if (options.length && ["up", "down"].includes(key.name) && !key.ctrl) {
+      key.preventDefault(); key.stopPropagation();
+      const index = (current + (key.name === "up" ? -1 : 1) + options.length) % options.length;
+      selectedRef.current = index; setSelected(index); if (cycle.current) cycle.current.selected = index;
+    }
+    if (key.name === "return" && !key.shift && options.length && options[current] !== controller.draft.trim()) {
+      key.preventDefault(); key.stopPropagation(); apply(current, options);
     }
   });
-  return <box id="composer-pane" border borderColor={p.accent} flexDirection="column" flexShrink={0}>
-    {active && candidates.length > 0 && <box flexDirection="column" maxHeight={5}>
-      {candidates.slice(Math.max(0, selected - 4), Math.max(5, selected + 1)).map((candidate) =>
-        <text key={candidate} fg={candidate === candidates[selected] ? p.accent : p.muted}>{visibleText(candidate)}</text>)}
+  const begin = Math.max(0, selection - 4);
+  const showMenu = active && candidates.length > 0;
+  return <box id="composer-pane" backgroundColor={p.plate}
+    flexDirection="column" flexShrink={0} onMouseDown={() => { controller.inputFocused = true; controller.changed(); }}>
+    {showMenu && <box id="completion-menu" flexDirection="column" backgroundColor={p.panel}
+      border={joined ? ["left", "right"] : false} borderColor={p.border}>
+      <text fg={p.accent}>{`Commands · ${selection + 1}/${candidates.length}`}</text>
+      {candidates.slice(begin, begin + 5).map((candidate) => <text key={candidate}
+        fg={candidate === candidates[selection] ? p.action : p.muted}
+        bg={candidate === candidates[selection] ? p.plate : p.panel}
+        onMouseDown={(event) => { event.stopPropagation(); apply(candidates.indexOf(candidate)); }}>
+        {visibleText(`${candidate === candidates[selection] ? "›" : " "} ${candidate}  ${completionDescription(controller, candidate)}`)}
+      </text>)}
     </box>}
-    <textarea id="composer-editor" ref={editor} focused={active} height={Math.min(5, Math.max(2, controller.draft.split("\n").length))}
-      initialValue={controller.draft} placeholder="Ask a question or /help · Shift+Enter for a new line"
-      backgroundColor={p.background} textColor={p.text}
-      keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }]}
-      onContentChange={() => {
-        const current = editor.current;
-        if (!current || current.isDestroyed || current.plainText === controller.draft) return;
-        controller.draft = current.plainText; controller.changed();
-      }} onSubmit={() => { void controller.submit(editor.current?.plainText ?? ""); }} />
+    <box id="composer-input" border={joined ? showMenu ? true : ["left", "right", "bottom"] : ["top", "bottom"]} borderColor={p.border}
+      customBorderChars={joined ? { ...BorderChars.single, topLeft: "├", topRight: "┤" } : undefined}
+      flexDirection="row" height={controller.composerRows + (joined && !showMenu ? 1 : 2)} flexShrink={0}>
+      <text fg={p.action}>{" > "}</text>
+      <textarea id="composer-editor" ref={editor} focused={active && controller.inputFocused} flexGrow={1}
+        height={controller.composerRows} wrapMode="word" initialValue={controller.draft}
+        onMouseDown={(event) => {
+          if (!active || event.button !== MouseButton.RIGHT) return;
+          event.preventDefault(); event.stopPropagation();
+          controller.inputFocused = true; controller.changed();
+          void pasteText(renderer).then((text) => {
+            if (!controller.overlay && !controller.approvals.length && editor.current && !editor.current.isDestroyed) editor.current.insertText(text);
+          }).catch((error: unknown) => controller.notify(String(error)));
+        }}
+        placeholder="Ask a question, / for commands, @ for skills"
+        backgroundColor={p.plate} textColor={p.text}
+        keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }]}
+        onContentChange={() => {
+          const current = editor.current;
+          if (!current || current.isDestroyed || current.plainText === controller.draft) return;
+          cycle.current = null; selectedRef.current = 0; setSelected(0);
+          controller.draft = current.plainText; syncedDraft.current = current.plainText; controller.changed();
+        }} onSubmit={() => { cycle.current = null; void controller.submit(editor.current?.plainText ?? ""); }} />
+    </box>
   </box>;
 }

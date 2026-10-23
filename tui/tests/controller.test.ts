@@ -10,6 +10,26 @@ const message = (id: string, source: string, text: string): MessageEvent => ({
   role: "assistant", format: "markdown", operation: "append", text,
 });
 
+test("backend readiness clears the startup notice and retains provider metadata", () => {
+  const controller = new SessionController();
+  controller.receive({ protocol_version: 2, type: "ready", backend: { pid: 12345, version: "fixture", protocol_version: 2 },
+    capabilities: { commands: [], authoritative_state: true, cancellation: true },
+    runtime: { config_ready: true, provider: "fixture", model: "fixture-model", mcp_started: 0, skills: [] }, state: state() });
+  expect(controller.connected).toBe(true);
+  expect(controller.notice).toBe("");
+  expect(controller.runtime?.model).toBe("fixture-model");
+});
+
+test("saved settings synchronize the backend permission and reasoning display", () => {
+  const controller = new SessionController();
+  controller.receive({ protocol_version: 2, type: "control_result", request_id: "settings",
+    operation: "config.update", result: { config: {
+      safety: { permission_mode: "read_only" }, session: { show_thinking: false },
+    } } });
+  expect(controller.permission).toBe("read_only");
+  expect(controller.showReasoning).toBe(false);
+});
+
 test("MD-05/07/08/09: lifecycle, source isolation, tool order and failed partial text", () => {
   const controller = new SessionController();
   controller.receive(message("one", "main", "```py\n"));
@@ -86,7 +106,7 @@ test("busy tasks allow backend controls and answers, while rejecting another tas
   requests.length = 0;
   controller.connected = true; controller.taskCommands = ["run"];
   controller.state = { ...state(), task: { active: true, task_id: "busy" } };
-  await controller.submit("/status");
+  await controller.submit("/tools");
   expect(requests.at(-1)?.type).toBe("submit_input");
   controller.state.task.waiting_for_input = true;
   controller.draft = "/run another.test";

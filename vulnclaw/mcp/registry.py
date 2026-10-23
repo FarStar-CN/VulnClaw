@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, Field
 
@@ -69,6 +69,11 @@ class MCPRegistry:
         self._servers: dict[str, MCPServerState] = {}
         self._tools: dict[str, MCPToolSchema] = {}  # tool_name -> schema
         self._server_tools: dict[str, list[str]] = {}  # server_name -> [tool_names]
+        self.on_state_change: Callable[[], None] | None = None
+
+    def _state_changed(self) -> None:
+        if self.on_state_change is not None:
+            self.on_state_change()
 
     def register_server(self, name: str) -> None:
         """Register a new MCP server."""
@@ -79,22 +84,27 @@ class MCPRegistry:
     def set_server_running(self, name: str, running: bool, pid: Optional[int] = None) -> None:
         """Update server running state."""
         if name in self._servers:
+            changed = (self._servers[name].running, self._servers[name].pid) != (running, pid)
             self._servers[name].running = running
             self._servers[name].pid = pid
             if running:
                 from datetime import datetime
 
                 self._servers[name].started_at = datetime.now().isoformat()
+            if changed:
+                self._state_changed()
 
     def set_server_execution_mode(self, name: str, mode: str) -> None:
         """Update server execution mode: local/sdk/subprocess/sse/placeholder."""
-        if name in self._servers:
+        if name in self._servers and self._servers[name].execution_mode != mode:
             self._servers[name].execution_mode = mode
+            self._state_changed()
 
     def set_server_health(self, name: str, health_status: str) -> None:
         """Update server health status."""
-        if name in self._servers:
+        if name in self._servers and self._servers[name].health_status != health_status:
             self._servers[name].health_status = health_status
+            self._state_changed()
 
     def set_server_attach_result(self, name: str, attempted: bool, succeeded: bool) -> None:
         """Record whether a real attach/connect attempt was made."""
@@ -107,7 +117,7 @@ class MCPRegistry:
         if name in self._servers:
             self._servers[name].error = error
             self._servers[name].last_error_type = error_type
-            self._servers[name].health_status = "degraded"
+            self.set_server_health(name, "degraded")
 
     HEALTH_WINDOW_SIZE = 20
 
@@ -122,11 +132,11 @@ class MCPRegistry:
         if success:
             state.success_count += 1
             if state.health_status == "unknown":
-                state.health_status = "healthy"
+                self.set_server_health(name, "healthy")
         else:
             state.failure_count += 1
             if state.health_status == "unknown":
-                state.health_status = "degraded"
+                self.set_server_health(name, "degraded")
 
         if latency_ms is not None and latency_ms >= 0:
             state.total_latency_ms += latency_ms
@@ -225,7 +235,8 @@ class MCPRegistry:
             for tool_name in self._server_tools[name]:
                 self._tools.pop(tool_name, None)
             del self._server_tools[name]
-        self._servers.pop(name, None)
+        if self._servers.pop(name, None) is not None:
+            self._state_changed()
 
     def clear_server_tools(self, server_name: str) -> None:
         """Clear all currently registered tools for a server."""

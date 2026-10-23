@@ -731,6 +731,9 @@ def test_persistent_stdio_shutdown_has_no_cross_task_error():
         # Mimic one REPL question: a real stdio session is created lazily.
         session = await m._get_or_create_persistent_stdio_session("echo")
         await session.call_tool("echo", arguments={"text": "hi"})
+        state = m.registry.get_all_servers()["echo"]
+        assert state.running is True
+        assert state.health_status == HealthStatus.HEALTHY.value
 
     # A fresh event loop per request is exactly what the REPL does; its teardown
     # (shutdown_asyncgens) is where the cross-task error used to surface.

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { type SessionController, record } from "../session/controller";
 import type { TaskRequest } from "../transport/protocol.generated";
 import { FormPanel, type FormRow } from "./FormPanel";
@@ -9,18 +9,23 @@ export function TaskForm({ controller, initial, original, active }: {
   const [preview, setPreview] = useState(initial);
   const [raw, setRaw] = useState(original);
   const [busy, setBusy] = useState(false);
+  const cancelled = useRef(false);
+  useEffect(() => () => { cancelled.current = true; }, []);
+  function dismiss() { cancelled.current = true; controller.dismiss(); }
   const task = record(preview.task);
   const options = record(task.options);
   const cycleDraft = useRef({ rounds: options.rounds_per_cycle, cycles: options.max_cycles });
   const errors = record(preview.errors);
   const presets = (Array.isArray(preview.presets) ? preview.presets : []).map(record);
-  const allActions = [...new Set(presets.flatMap((preset) => Array.isArray(preset.actions) ? preset.actions.map(String) : []))];
+  const allActions = Array.isArray(preview.available_actions) ? preview.available_actions.map(String) : [];
   const allowed = Array.isArray(options.allow_actions) ? options.allow_actions.map(String) : [];
   const [reportEdited, setReportEdited] = useState(record(preview.defaults).auto_report_explicit === true);
   async function validate(next: Record<string, unknown>, confirm = false) {
+    if (confirm && controller.permission === "read_only") { controller.notify("Read-Only: change permission before running a task."); return; }
     setBusy(true);
     try {
       const result = await controller.control("task.preview", Object.keys(next).length ? { task: next } : { text: raw });
+      if (cancelled.current) return;
       setPreview((previous) => ({ ...previous, ...result,
         task: result.task ?? (Object.keys(next).length ? next : previous.task),
       }));
@@ -63,7 +68,7 @@ export function TaskForm({ controller, initial, original, active }: {
   }
   const fields: [string, string, FormRow["type"]?][] = [
     ["target", "Target URL"], ["options.only_host", "Allow hosts", "text"],
-    ["options.blocked_host", "Block hosts", "text"], ["options.allowed_ports", "Allow ports (JSON or comma-separated)", "text"],
+    ["options.blocked_host", "Block hosts", "text"], ["options.allowed_ports", "Allow ports", "text"],
     ["options.blocked_ports", "Block ports", "text"], ["options.only_path", "Allow paths", "text"],
     ["options.blocked_path", "Block paths", "text"],
   ];
@@ -71,23 +76,24 @@ export function TaskForm({ controller, initial, original, active }: {
     const name = key.replace(/^options\./, "");
     let value = key.startsWith("options.") ? options[name] : task[name];
     if (type === "text") value = Array.isArray(value) ? value.join(",") : value ?? "";
-    return { key, label, value, type, error: typeof errors[name] === "string" ? errors[name] : undefined };
+    return { key, label, value, type, error: typeof errors[name] === "string" ? errors[name] : undefined,
+      section: key === "options.only_host" ? "Access rules" : key === "options.poc_verify" ? "Options" : undefined };
   }
   const rows: FormRow[] = task.command === "codescan" ? [field("target", "Source path", "text")] : Object.keys(task).length ? [
     ...fields.map(([key, label, type]) => field(key, label, type)),
-    { key: "preset", label: "Action preset", value: presets.find((preset) =>
+    { key: "preset", label: "Action preset", section: "Allow actions", value: presets.find((preset) =>
       Array.isArray(preset.actions) && preset.actions.length === allowed.length && preset.actions.every((action) => allowed.includes(String(action))))?.name ?? "Custom",
       choices: presets.map((preset) => preset.name) },
-    ...allActions.map((action) => ({ key: `action.${action}`, label: `  ${action}`, value: allowed.includes(action) })),
-    field("options.continuous", "Continuous execution"),
+    ...allActions.map((action) => ({ key: `action.${action}`, label: `  ${action === "post_exploitation" ? "post_exploit" : action}`, value: allowed.includes(action), error: typeof errors.allow_actions === "string" ? errors.allow_actions : undefined })),
+    { ...field("options.continuous", "Execution"), section: "Run settings", choices: [false, true], choiceLabels: ["Once", "Continuous"] },
     ...(options.continuous ? [field("options.rounds_per_cycle", "Rounds per cycle", "number"),
-      field("options.max_cycles", "Max cycles (0 = until cancelled)", "number")] : []),
-    field("options.poc_verify", "Verify via PoC"), field("options.auto_report", "Auto report"), field("resume", "Resume target history"),
-    field("prompt", "Additional instructions", "text"),
-    ...["snapshot_id", "run_name", "resume_run_name", "runs_dir"].map((key) => field(key, key, "text")),
+      { ...field("options.max_cycles", "Max cycles", "number"), displayValue: options.max_cycles === 0 ? "unlimited (0)" : undefined }] : []),
+    field("options.poc_verify", "Verify via PoC"), field("options.auto_report", "Auto report"), field("resume", "Resume"),
+    ...(task.prompt ? [field("prompt", "Additional instructions", "text")] : []),
   ] : [{ key: "raw", label: "Task command", value: raw, type: "text", error: typeof errors.target === "string" ? errors.target : undefined }];
-  rows.push({ key: "confirm", label: "Confirm execution (Ctrl+S)", action: () => { void validate(task, true); } },
-    { key: "cancel", label: "Cancel", action: () => controller.dismiss() });
+  rows.push({ key: "confirm", label: "Confirm execution (Y)", footer: true, disabled: controller.permission === "read_only", action: () => { void validate(task, true); } },
+    { key: "cancel", label: "Cancel (N)", footer: true, action: dismiss });
   return <FormPanel title="Task overview" theme={controller.theme} active={active} busy={busy} rows={rows} confirmKeys
-    onChange={change} onSave={() => { void validate(task, true); }} onCancel={() => controller.dismiss()} />;
+    notice={controller.permission === "read_only" ? "Read-Only: change permission before running a task." : undefined}
+    onChange={change} onSave={() => { void validate(task, true); }} onCancel={dismiss} />;
 }

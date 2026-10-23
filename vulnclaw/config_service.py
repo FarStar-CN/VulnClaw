@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from vulnclaw.config.schema import BUILTIN_MCP_SERVERS, VulnClawConfig
+from vulnclaw.config.schema import BUILTIN_MCP_SERVERS, ENGINE_CHOICES, VulnClawConfig
 from vulnclaw.config.settings import list_providers, load_config, save_config
 
 _SECRET_NAMES = {
@@ -59,9 +59,11 @@ def config_document(config: VulnClawConfig | None = None) -> dict[str, Any]:
                 collect(item, child)
 
     collect(config.model_dump(mode="json"))
+    schema = VulnClawConfig.model_json_schema()
+    schema["$defs"]["SessionConfig"]["properties"]["engine"]["enum"] = list(ENGINE_CHOICES)
     return {
         "config": masked_config(config.model_dump(mode="json")),
-        "schema": VulnClawConfig.model_json_schema(),
+        "schema": schema,
         "providers": list_providers(),
         "builtin_servers": list(BUILTIN_MCP_SERVERS),
         "secret_paths": secret_paths,
@@ -71,7 +73,11 @@ def config_document(config: VulnClawConfig | None = None) -> dict[str, Any]:
 def update_config(
     changes: dict[str, Any], *, config: VulnClawConfig | None = None
 ) -> VulnClawConfig:
-    """Apply explicit dotted-path edits; omitted and masked fields never overwrite secrets."""
+    """Apply dotted-path edits, preserving masked credentials.
+
+    Secret-list items may use {"$keep": index} to retain a saved item when
+    earlier items are removed; references are resolved before schema validation.
+    """
     if not isinstance(changes, dict) or not changes:
         raise ValueError("provide a non-empty changes object")
     raw = deepcopy((config or load_config()).model_dump(mode="json"))
@@ -108,8 +114,16 @@ def _preserve_masked(value: Any, existing: Any, name: str) -> Any:
             for key, item in value.items()
         }
     if isinstance(value, list) and isinstance(existing, list):
-        return [
-            _preserve_masked(item, existing[index] if index < len(existing) else None, name)
-            for index, item in enumerate(value)
-        ]
+        result = []
+        for index, item in enumerate(value):
+            if name.lower() in _SECRET_NAMES and isinstance(item, dict) and "$keep" in item:
+                source = item["$keep"]
+                if set(item) != {"$keep"} or type(source) is not int or not 0 <= source < len(existing):
+                    raise ValueError("invalid saved credential reference")
+                result.append(deepcopy(existing[source]))
+            else:
+                result.append(_preserve_masked(
+                    item, existing[index] if index < len(existing) else None, name,
+                ))
+        return result
     return value

@@ -57,14 +57,14 @@ async def execute_management(application: Any, operation: str, args: dict[str, A
         return config_document(config)
     if operation == "config.update":
         updated = update_config(args.get("changes"), config=config)
-        application.apply_config(updated)
+        await application.apply_config(updated)
         return {"message": "Configuration saved.", **config_document(updated)}
     if operation == "language.set":
         language = args.get("language")
         if language not in {"en", "zh", "auto"}:
             raise ValueError("language must be en, zh or auto")
         updated = update_config({"session.language": language}, config=config)
-        application.apply_config(updated)
+        await application.apply_config(updated)
         from vulnclaw.i18n import init_i18n
 
         init_i18n(lang=language if language != "auto" else None, config=updated)

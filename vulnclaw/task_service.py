@@ -495,6 +495,9 @@ async def execute_task(
     on_cycle_complete: Callable[[int, Any], None] | None = None,
 ) -> TaskExecution:
     """Run a structured task through shared persistence and execution semantics."""
+    from vulnclaw.agent.exec_gate import get_execution_gate
+
+    get_execution_gate(getattr(agent, "config", None)).require_execution("task execution")
 
     request = task.request
     action_result: Any = None

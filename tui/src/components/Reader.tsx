@@ -28,10 +28,10 @@ export function Reader({ controller, title, text, format, active, width, message
     if (key.name === "[" && blocks.length) { setCode((value) => (value + blocks.length - 1) % blocks.length); key.preventDefault(); }
     if (key.name === "]" && blocks.length) { setCode((value) => (value + 1) % blocks.length); key.preventDefault(); }
   });
-  return <box id="reader-pane" title={visibleText(title)} border borderColor={p.accent} flexDirection="column" flexGrow={1} minHeight={0}>
+  return <box id="reader-pane" title={visibleText(title)} border borderColor={p.accent} backgroundColor={p.panel} flexDirection="column" flexGrow={1} minHeight={0}>
     <scrollbox id="reader-scroll" flexGrow={1} scrollX={false} focused={active}>
       {format === "markdown" && !raw ? <MarkdownBody id={`reader-${messageId ?? "document"}`} text={text} width={width - 4} theme={controller.theme} />
-        : <text wrapMode="word">{visibleText(text)}</text>}
+        : <text wrapMode="word" fg={p.text}>{visibleText(text)}</text>}
     </scrollbox>
     <text fg={p.muted}>{`V raw/render · M copy source${blocks.length ? ` · C copy code ${code + 1}/${blocks.length} · [ ] choose code` : ""} · Esc close`}</text>
   </box>;

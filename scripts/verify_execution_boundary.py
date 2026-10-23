@@ -84,35 +84,23 @@ ALLOWED_SPAWN_SITES: dict[str, str] = {
     'vulnclaw/agent/builtin_tools.py:622:subprocess.run': (
         'fixed Windows taskkill fallback for the gated process runner'
     ),
-    'vulnclaw/agent/builtin_tools.py:1635:subprocess.run': (
+    'vulnclaw/agent/builtin_tools.py:1646:subprocess.run': (
         'fixed Windows nmap path lookup'
     ),
-    'vulnclaw/agent/builtin_tools.py:1714:subprocess.run': (
+    'vulnclaw/agent/builtin_tools.py:1725:subprocess.run': (
         'structured argv nmap execution constrained by the nmap tool schema'
     ),
-    'vulnclaw/agent/builtin_tools.py:1722:subprocess.run': (
+    'vulnclaw/agent/builtin_tools.py:1733:subprocess.run': (
         'structured argv non-privileged nmap retry'
     ),
     'vulnclaw/findings/poc.py:215:asyncio.create_subprocess_exec': (
         'fixed reviewed PoC verification program run as a subprocess after ExecutionGate approval; plan and scope are re-checked before the spawn'
-    ),
-    'vulnclaw/setup_service.py:253:subprocess.run': (
-        'fixed java -version probe during wizard Java detection'
-    ),
-    'vulnclaw/setup_service.py:519:subprocess.Popen': (
-        'launch local Chrome with fixed argv for remote debugging'
     ),
     'vulnclaw/agent/network_scan.py:431:subprocess.run': (
         'fixed local wireless-interface diagnostic'
     ),
     'vulnclaw/agent/network_scan.py:472:subprocess.run': (
         'fixed local IPv4-interface diagnostic'
-    ),
-    'vulnclaw/setup_service.py:30:asyncio.create_subprocess_exec': (
-        'operator control plane: fixed Java installer and constant PortSwigger repository build commands; never model-accessible'
-    ),
-    'vulnclaw/setup_service.py:42:asyncio.create_subprocess_exec': (
-        'operator control plane: fixed Windows taskkill to reap a cancelled setup process tree'
     ),
 }
 

@@ -410,7 +410,7 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
         config.safety.python_execute_audit_enabled = v.lower() in ("1", "true", "yes", "on")
     if v := os.environ.get("VULNCLAW_SAFETY_PERMISSION_MODE"):
         candidate = v.strip().lower()
-        if candidate in ("ask", "auto_review", "full_access"):
+        if candidate in ("read_only", "ask", "auto_review", "full_access"):
             config.safety.permission_mode = candidate
     if v := os.environ.get("VULNCLAW_SAFETY_APPROVAL_TIMEOUT_SECONDS"):
         with suppress(ValueError):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
@@ -342,11 +342,12 @@ class SafetyConfig(BaseModel):
         default=5,
         description="Max number of tool calls executed concurrently per round (1=serial)",
     )
-    permission_mode: str = Field(
+    permission_mode: Literal["read_only", "ask", "auto_review", "full_access"] = Field(
         default="ask",
         description=(
             "Execution approval policy for dangerous tools: "
-            "ask (default, approve every request), auto_review, full_access"
+            "read_only (supported reads only), ask (default, approve every request), "
+            "auto_review, full_access"
         ),
     )
     approval_timeout_seconds: int = Field(

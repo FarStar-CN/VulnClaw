@@ -36,6 +36,7 @@ class Runtime:
         )
         self.mcp_manager = SimpleNamespace(
             _preinit_chrome_devtools=AsyncMock(),
+            apply_config=AsyncMock(),
             registry=SimpleNamespace(get_all_servers=lambda: {}),
         )
         self.stop_calls = 0
@@ -214,7 +215,7 @@ async def test_conversation_uses_current_config_without_task_orchestration(monke
 
     config = VulnClawConfig()
     config.llm.model = "replacement-model"
-    session.apply_config(config)
+    await session.apply_config(config)
     assert session.config is runtime.agent.config is config
     from vulnclaw.input_service import InputRequest
 

@@ -421,6 +421,8 @@ async def run_conversation(application: Any, text: str, sink: Any) -> dict[str, 
     async def report_action(arguments: dict[str, Any]) -> dict[str, Any]:
         action = arguments.get("action")
         kind = arguments.get("kind", conversation.report.kind)
+        if application.permission_mode == "read_only":
+            raise ValueError("Read-Only does not export reports")
         if action not in {"default", "required", "suppress", "export"}:
             raise ValueError("report action must be default, required, suppress or export")
         if kind not in {"security", "replay"}:
@@ -461,8 +463,8 @@ async def run_conversation(application: Any, text: str, sink: Any) -> dict[str, 
         elif kind in {"error", "no_path", "agent_step", "completed"}:
             sink.on_status(f"{kind}: {payload}")
 
-    with execution_context(ExecutionContext(application.mode, report_action)):
-        if application.mode == "plan" or not turn.auto:
+    with execution_context(ExecutionContext(report=report_action)):
+        if application.permission_mode == "read_only" or not turn.auto:
             result = await agent.chat(
                 turn.text,
                 target=conversation.target,
@@ -519,6 +521,10 @@ async def run_conversation(application: Any, text: str, sink: Any) -> dict[str, 
             conversation.auto_mode = not completed
 
     state = agent.session_state
+    if application.permission_mode != "read_only":
+        from vulnclaw.findings.verification import verify_findings
+
+        await verify_findings(state, config=config)
     conversation.target = state.target or conversation.target
     phase = getattr(state.phase, "value", state.phase)
     conversation.phase = str(phase)

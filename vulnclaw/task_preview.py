@@ -39,7 +39,7 @@ def preview_task(arguments: dict, *, defaults: dict, config: Any) -> dict:
         return {
             "task": request.model_dump(mode="json", exclude_none=True),
             "constraints": task.constraints.model_dump(mode="json"),
-            "actions": [], "presets": [], "defaults": {}, "errors": {},
+            "actions": [], "available_actions": [], "presets": [], "defaults": {}, "errors": {},
         }
 
     options = request.options
@@ -126,6 +126,7 @@ def preview_task(arguments: dict, *, defaults: dict, config: Any) -> dict:
         "task": request.model_dump(mode="json", exclude_none=True),
         "constraints": constraints.model_dump(mode="json"),
         "actions": actions,
+        "available_actions": list(TEST_ACTIONS),
         "presets": [{"name": name, "actions": list(actions)}
                     for name, actions in ACTION_PRESETS.items()],
         "defaults": {

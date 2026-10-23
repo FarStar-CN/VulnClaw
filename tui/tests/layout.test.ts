@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { defaultLayout, geometry, moveView, normalizeLayout, WorkbenchState } from "../src/workbench/layout";
+import { defaultLayout, geometry, moveView, normalizeLayout, resizeLayout, WorkbenchState } from "../src/workbench/layout";
 
 test("layout preserves pane ownership, supports an empty secondary column and rejects an empty primary", () => {
   const layout = defaultLayout();
@@ -46,10 +46,55 @@ test("collapsed panes restore height and normalization keeps exactly one of each
   const workbench = new WorkbenchState();
   const bounds = geometry(100, 24, workbench.layout);
   workbench.collapse("status", bounds);
-  expect(geometry(100, 24, workbench.layout).views.find((view) => view.id === "status")?.height).toBe(1);
+  expect(geometry(100, 24, workbench.layout).views.find((view) => view.id === "status")?.height).toBe(2);
   workbench.collapse("status", geometry(100, 24, workbench.layout));
-  expect(geometry(100, 24, workbench.layout).views.find((view) => view.id === "status")?.height).toBe(12);
+  expect(geometry(100, 24, workbench.layout).views.find((view) => view.id === "status")?.height).toBe(19);
   workbench.layout.secondary.push({ id: "status", collapsed: true, expandedHeight: 1 });
   normalizeLayout(workbench.layout);
   expect(new Set([...workbench.layout.primary, ...workbench.layout.secondary].map((view) => view.id)).size).toBe(4);
+});
+
+test("MCP disclosure restores custom heights and leaves room for both counters on short terminals", () => {
+  const workbench = new WorkbenchState();
+  const capabilities = workbench.layout.primary.find((view) => view.id === "capabilities")!;
+  capabilities.expandedHeight = 10;
+  workbench.toggleMcp(geometry(120, 24, workbench.layout));
+  expect(capabilities.mcpExpanded).toBe(true); expect(capabilities.expandedHeight).toBe(14);
+  const short = geometry(64, 9, workbench.layout);
+  expect(short.tooSmall).toBe(false);
+  expect(short.views.find((view) => view.id === "capabilities")?.height).toBe(5);
+  workbench.toggleMcp(short);
+  expect(capabilities.mcpExpanded).toBe(false); expect(capabilities.expandedHeight).toBe(10);
+});
+
+test("shared borders and title rows fit minimum terminals with expanded or collapsed panes", () => {
+  for (const mode of ["default", "expanded", "collapsed", "empty-secondary"] as const) {
+    const workbench = new WorkbenchState();
+    if (mode === "expanded") workbench.layout.primary[1].mcpExpanded = true;
+    if (mode === "collapsed") for (const view of [...workbench.layout.primary, ...workbench.layout.secondary]) view.collapsed = true;
+    if (mode === "empty-secondary") workbench.layout.primary.push(...workbench.layout.secondary.splice(0));
+    const minimum = geometry(120, 24, workbench.layout);
+    const bounds = geometry(minimum.minimumWidth, minimum.minimumHeight, workbench.layout);
+    expect(bounds.tooSmall).toBe(false);
+    expect(geometry(minimum.minimumWidth - 1, minimum.minimumHeight, workbench.layout).tooSmall).toBe(true);
+    expect(geometry(minimum.minimumWidth, minimum.minimumHeight - 1, workbench.layout).tooSmall).toBe(true);
+    for (const view of bounds.views) {
+      expect(view.content.x).toBeGreaterThan(0); expect(view.content.y).toBeGreaterThan(0);
+      expect(view.content.x + view.content.width).toBeLessThanOrEqual(minimum.minimumWidth - 1);
+      expect(view.content.y + view.content.height).toBeLessThanOrEqual(minimum.minimumHeight - 1);
+      expect(view.content.height).toBeGreaterThanOrEqual(1);
+    }
+    const cells = new Set<string>();
+    for (const border of bounds.borders) for (let y = 0; y < border.rect.height; y++) for (let x = 0; x < border.rect.width; x++) {
+      const key = `${border.rect.x + x},${border.rect.y + y}`;
+      expect(cells.has(key)).toBe(false); cells.add(key);
+    }
+    for (const { sash } of bounds.sashes) {
+      const layout = structuredClone(workbench.layout);
+      resizeLayout(layout, bounds, sash, -1000, 1000);
+      const resized = geometry(minimum.minimumWidth, minimum.minimumHeight, layout);
+      expect(resized.tooSmall).toBe(false);
+      expect(resized.views.every((view) => view.content.width > 0 && view.content.height > 0)).toBe(true);
+    }
+  }
 });

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from vulnclaw.agent.context import SessionState
-from vulnclaw.agent.exec_gate import reset_execution_gate
+from vulnclaw.agent.exec_gate import get_execution_gate, reset_execution_gate
 from vulnclaw.agent.execution_context import current_execution
 from vulnclaw.application import ApplicationSession
 from vulnclaw.config.schema import VulnClawConfig
@@ -43,7 +43,7 @@ class Runtime:
         self.calls = []
 
         async def chat(text, *, target=None, **kwargs):
-            self.calls.append((text, target, current_execution().mode, kwargs["task_constraints"]))
+            self.calls.append((text, target, get_execution_gate(self.config).mode, kwargs["task_constraints"]))
             self.agent.session_state.target = target
             return SimpleNamespace(output="answer")
 
@@ -131,19 +131,19 @@ async def test_natural_language_keeps_scope_and_creates_no_run(monkeypatch):
     await session.close()
 
 
-async def test_mode_is_backend_owned_and_separate_from_permission():
+async def test_read_only_is_the_backend_owned_permission():
     runtime = Runtime()
     session = await open_application(runtime)
-    assert session.mode == "agent"
+    assert session.permission_mode == "ask"
     await session.submit_input(InputRequest(text="/permission full_access"))
-    await session.submit_input(InputRequest(text="/mode plan"))
+    await session.submit_input(InputRequest(text="/permission read_only"))
     await session.submit_input(InputRequest(text="制定下一步计划"))
-    assert runtime.calls[0][2] == "plan"
-    assert session.permission_mode == "full_access"
+    assert runtime.calls[0][2] == "read_only"
+    assert session.permission_mode == "read_only"
     for text in ("/run example.test", "/codescan .", "/report"):
-        with pytest.raises(ValueError, match="Plan mode"):
+        with pytest.raises(ValueError, match="Read-Only"):
             await session.submit_input(InputRequest(text=text))
-    with pytest.raises(ValueError, match="plan or agent"):
+    with pytest.raises(ValueError, match="Unknown command"):
         await session.submit_input(InputRequest(text="/mode yolo"))
     await session.close()
 

@@ -33,22 +33,20 @@ export async function loadPreferences(directory = clientDirectory()): Promise<{ 
   const raw = record(saved.layout);
   const views = (value: unknown): View[] => Array.isArray(value) ? value.map((item) => {
     const row = record(item);
-    return { id: row.id as ViewId, collapsed: row.collapsed === true, expandedHeight: Number(row.expandedHeight ?? 0) };
+    return { id: row.id as ViewId, collapsed: row.collapsed === true, expandedHeight: Number(row.expandedHeight ?? 0),
+      ...(row.id === "capabilities" ? { mcpExpanded: row.mcpExpanded === true } : {}) };
   }) : [];
   return { theme: saved.theme === "orange" ? "orange" : "blue", layout: normalizeLayout({
     primaryWidth: Number(raw.primaryWidth), secondaryWidth: Number(raw.secondaryWidth),
     primary: views(raw.primary), secondary: views(raw.secondary), focus: raw.focus as ViewId,
   }) };
 }
-export async function restoreClientSession(controller: SessionController, directory = clientDirectory()): Promise<"plan" | "agent" | null> {
+export async function restoreClientSession(controller: SessionController, directory = clientDirectory()): Promise<void> {
   const saved = await readJson(join(directory, "session.json"));
-  if (!saved) return null;
+  if (!saved) return;
   controller.history = Array.isArray(saved.history) ? saved.history.filter((item): item is string => typeof item === "string") : [];
-  controller.historyIndex = controller.history.length;
-  // Legacy permission/transcript/findings/messages fields never enter the backend or model.
-  if (["Agent", "YOLO", "agent"].includes(String(saved.mode))) return "agent";
-  return saved.mode === "Plan" || saved.mode === "plan" ? "plan" : null;
+  // Legacy mode/permission/transcript/findings/messages never enter the backend or model.
 }
 export async function saveClientSession(controller: SessionController, directory = clientDirectory()): Promise<void> {
-  await writeJson(join(directory, "session.json"), { mode: controller.state?.execution_mode === "plan" ? "Plan" : "Agent", history: controller.history });
+  await writeJson(join(directory, "session.json"), { history: controller.history });
 }

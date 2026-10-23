@@ -39,6 +39,7 @@ def test_preview_resolves_real_defaults_without_mutating_inputs(config):
         defaults=defaults, config=config,
     )
     assert result["errors"] == {}
+    assert result["available_actions"] == list(TEST_ACTIONS)
     assert result["task"]["options"] == {
         "engine": "team", "continuous": True, "rounds_per_cycle": 37,
         "max_cycles": 0, "auto_report": False, "poc_verify": True, "only_port": 443,

@@ -21,8 +21,10 @@ extensions are validated against the banned-name list at load time.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import shutil
 from dataclasses import dataclass
 from typing import Callable
 
@@ -94,6 +96,36 @@ SAFE_COMMANDS: dict[str, Callable[[list[str]], str | None] | None] = {
     "jq": None, "tree": None, "who": None, "w": None,
     "uptime": None, "free": None, "lscpu": None, "ss": None,
 }
+
+# Commands whose supported argument forms only read local data. Execute these
+# directly from the system search path: shell expansion, user PATH executables
+# and operator trusted prefixes do not establish read-only behavior.
+READ_ONLY_COMMANDS = frozenset({
+    "ls", "pwd", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep",
+    "find", "stat", "du", "df", "id", "whoami", "uname", "diff", "cmp",
+    "cut", "tr", "tac", "rev", "basename", "dirname", "readlink",
+    "md5sum", "sha1sum", "sha256sum", "sha512sum",
+})
+
+
+def read_only_argv(command: str) -> list[str]:
+    """Resolve one supported local read, without invoking a shell."""
+    reason = _scan_unsupported(command)
+    if reason:
+        raise ValueError(reason)
+    segments = _split_segments(command)
+    if len(segments) != 1 or any(char in command for char in ";|&\n"):
+        raise ValueError("Read-Only accepts one local read command at a time")
+    tokens = shlex.split(command)
+    if not tokens or tokens[0] not in READ_ONLY_COMMANDS:
+        raise ValueError("command is not a supported local read")
+    rule = SAFE_COMMANDS[tokens[0]]
+    if rule and (reason := rule(tokens)):
+        raise ValueError(reason)
+    executable = shutil.which(tokens[0], path=os.defpath)
+    if executable is None:
+        raise ValueError("system read command is unavailable on this platform")
+    return [executable, *tokens[1:]]
 
 # Basenames that must never be auto-approved, mirroring Codex's
 # BANNED_PREFIX_SUGGESTIONS: shells, interpreters, privilege/file-destroying

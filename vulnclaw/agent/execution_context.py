@@ -10,8 +10,15 @@ from typing import Any, Awaitable, Callable, Iterator
 
 @dataclass(frozen=True)
 class ExecutionContext:
-    mode: str = "agent"
     report: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
+
+
+# One definition shared by model schemas and dispatch. Unknown external MCP
+# tools are excluded; their own annotations cannot authorize local changes.
+READ_ONLY_TOOLS = frozenset({
+    "evidence_list", "evidence_view", "evidence_search", "load_skill_reference",
+    "memory_search", "shell_command",
+})
 
 
 _CONTEXT: ContextVar[ExecutionContext] = ContextVar("execution_context", default=ExecutionContext())

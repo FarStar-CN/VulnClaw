@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { useRenderer, useTerminalDimensions } from "@opentui/react";
 import type { SessionController } from "../session/controller";
 import { palettes } from "../theme/palette";
+import { PermissionStatus } from "../components/PermissionStatus";
 import { Composer } from "../components/Composer";
 import { Transcript, type ReadingPosition } from "../components/Transcript";
 import { OverlayLayer } from "../components/OverlayLayer";
@@ -32,7 +33,7 @@ export function ReplShell({ controller }: { controller: SessionController }) {
   return <box width="100%" height="100%" flexDirection="column" backgroundColor={p.background}>
     <Transcript controller={controller} width={width - 2} entries={pending} positions={positions} />
     <Composer controller={controller} active={!controller.overlay && !controller.approvals.length} />
-    <text fg={p.accent}>{visibleText(`${controller.state?.target || "No target"} · ${controller.state?.execution_mode ?? "agent"} · ${controller.permission} · ${controller.state?.task.active ? "running" : "ready"}`)}</text>
+    <PermissionStatus controller={controller} />
     <text fg={p.muted}>{visibleText(queue.error ? `${queue.error} · /history-retry resumes pending output` : controller.notice)}</text>
     <OverlayLayer controller={controller} width={width} />
   </box>;

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -59,10 +59,10 @@ def test_repl_management_commands_share_explicit_operations(name, text, operatio
 
 async def test_saved_config_applies_to_live_application(monkeypatch):
     monkeypatch.setattr("vulnclaw.config_service.save_config", lambda _config: None)
-    application = SimpleNamespace(config=VulnClawConfig(), apply_config=Mock())
+    application = SimpleNamespace(config=VulnClawConfig(), apply_config=AsyncMock())
     result = await execute_management(application, "config.update", {"changes": {"session.language": "zh"}})
     assert result["config"]["session"]["language"] == "zh"
-    application.apply_config.assert_called_once()
+    application.apply_config.assert_awaited_once()
 
 
 async def test_long_management_operation_keeps_state_available_and_is_cancelled_on_close(monkeypatch):
@@ -119,3 +119,24 @@ def test_container_edits_preserve_masked_secrets_and_allow_server_deletion(monke
     assert updated.mcp.servers["retained"].transport.env["CREDENTIAL"] == "synthetic-value"
     assert updated.llm.api_keys == ["synthetic-key-one", "replacement"]
     assert len(saved) == 1
+
+
+def test_secret_list_edits_retain_the_selected_saved_key_after_removal(monkeypatch):
+    monkeypatch.setattr("vulnclaw.config_service.save_config", lambda _config: None)
+    config = VulnClawConfig()
+    config.llm.api_keys = ["first-synthetic-key", "second-synthetic-key"]
+    updated = update_config({"llm.api_keys": [{"$keep": 1}, "replacement"]}, config=config)
+    assert updated.llm.api_keys == ["second-synthetic-key", "replacement"]
+    assert config.llm.api_keys == ["first-synthetic-key", "second-synthetic-key"]
+    assert config_document(updated)["config"]["llm"]["api_keys"] == ["***", "***"]
+
+
+@pytest.mark.parametrize("reference", [-1, 2, True, "1"])
+def test_invalid_saved_key_reference_does_not_save(monkeypatch, reference):
+    save = Mock()
+    monkeypatch.setattr("vulnclaw.config_service.save_config", save)
+    config = VulnClawConfig()
+    config.llm.api_keys = ["synthetic-key"]
+    with pytest.raises(ValueError, match="invalid saved credential reference"):
+        update_config({"llm.api_keys": [{"$keep": reference}]}, config=config)
+    save.assert_not_called()

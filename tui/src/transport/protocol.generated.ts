@@ -989,7 +989,6 @@ export interface ControlPayload {
   arguments: {};
 }
 export interface StateSnapshot {
-  execution_mode?: "plan" | "agent";
   target: string;
   phase: string;
   task_constraints: TaskConstraints;
@@ -999,6 +998,8 @@ export interface StateSnapshot {
   evidence: EvidenceRef[];
   constraint_violations: string[];
   messages?: MessageSnapshot[];
+  permission_mode?: "read_only" | "ask" | "auto_review" | "full_access";
+  runtime?: RuntimeInfo;
 }
 export interface TaskConstraints {
   allowed_ports?: number[];
@@ -1061,6 +1062,19 @@ export interface MessageSnapshot {
   text: string;
   status: "streaming" | "completed" | "cancelled" | "failed";
 }
+export interface RuntimeInfo {
+  config_ready: boolean;
+  provider: string;
+  model: string;
+  mcp_started: number;
+  skills: string[];
+  mcp_ready?: number;
+  mcp_servers?: {
+    name: string;
+    ready: boolean;
+  }[];
+  skills_loaded?: number;
+}
 export interface StructuredError {
   code: string;
   message: string;
@@ -1079,14 +1093,7 @@ export interface Capabilities {
   control_operations?: string[];
   cancellation: boolean;
   authoritative_state: boolean;
-  permission_mode?: "ask" | "auto_review" | "full_access";
-}
-export interface RuntimeInfo {
-  config_ready: boolean;
-  provider: string;
-  model: string;
-  mcp_started: number;
-  skills: string[];
+  permission_mode?: "read_only" | "ask" | "auto_review" | "full_access";
 }
 export interface TaskResult {
   report?: {

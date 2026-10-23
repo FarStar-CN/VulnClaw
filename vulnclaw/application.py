@@ -18,6 +18,7 @@ from vulnclaw.management_service import (
     adapter_operation,
     execute_management,
 )
+from vulnclaw.mcp.registry import MCPRegistry
 from vulnclaw.report_service import generate_report_for_run
 from vulnclaw.task_service import (
     SCOPE_FIELDS,
@@ -58,17 +59,14 @@ SUPPORTED_CONTROL_OPERATIONS = MANAGEMENT_OPERATIONS | frozenset(
         "config.preset",
         "config.models",
         "config.write",
-        "session.mode.set",
         "session.new",
         "session.target.set",
         "session.compact",
-        "session.status",
         "session.tools",
         "session.help",
         "session.think",
         "session.scope.read",
         "report.export",
-        "report.read",
         "task.preview",
     }
 )
@@ -162,11 +160,11 @@ class ApplicationSession:
         self.current_target = ""
         self.current_constraints: dict[str, Any] = {}
         self.last_run: dict[str, Any] | None = None
-        self.last_report: dict[str, Any] | None = None
-        self.mode = "agent"
         self.conversation: ConversationState | None = None
         self._queued_input: tuple[str, str, str] | None = None
         self._answer_in_progress = False
+        self._mcp_registry: MCPRegistry | None = None
+        self._mcp_state_update: asyncio.Handle | None = None
 
     def _publish(self, event_type: str, **fields: Any) -> None:
         if event_type == "message":
@@ -197,6 +195,11 @@ class ApplicationSession:
     def publish_input_state(self) -> None:
         self.emit("state", task_id=self.active_task_id, state=self.state_snapshot())
 
+    def _publish_mcp_state(self) -> None:
+        self._mcp_state_update = None
+        if not self._closed:
+            self.publish_input_state()
+
     def question_ready(self) -> None:
         self._answer_in_progress = False
         self.publish_input_state()
@@ -220,9 +223,15 @@ class ApplicationSession:
     def config(self) -> Any:
         return self.runtime.config
 
-    def apply_config(self, config: Any) -> None:
+    async def apply_config(self, config: Any) -> None:
+        from vulnclaw.agent.exec_gate import get_execution_gate
+
         self.agent.apply_config(config)
         self.runtime.config = config
+        get_execution_gate(config).apply_config(config.safety, source=self.source)
+        manager = getattr(self.runtime, "mcp_manager", None)
+        if manager is not None:
+            await manager.apply_config(config)
 
     @property
     def permission_mode(self) -> str:
@@ -233,9 +242,11 @@ class ApplicationSession:
     def set_permission_mode(self, mode: str) -> str:
         from vulnclaw.agent.exec_gate import get_execution_gate
 
-        return get_execution_gate(getattr(self.runtime, "config", None)).set_mode(
+        result = get_execution_gate(getattr(self.runtime, "config", None)).set_mode(
             mode, source=self.source
         )
+        self.config.safety.permission_mode = result
+        return result
 
     async def _foreground(self, target: str, call: Callable[[], Awaitable[Any]]) -> Any:
         self._require_initialized("local")
@@ -352,16 +363,16 @@ class ApplicationSession:
             async def converse() -> Any:
                 self._answer_in_progress = bool(self.conversation.pending_questions)
                 try:
-                    if self.mode == "agent":
+                    if self.permission_mode != "read_only":
                         await self.runtime.mcp_manager._preinit_chrome_devtools()
                     return await run_conversation(self, parsed.text, sink)
                 finally:
                     self._answer_in_progress = False
 
             return await self._foreground(self.current_target, converse)
-        if self.mode == "plan":
+        if self.permission_mode == "read_only":
             raise ApplicationError(
-                "plan_mode", "Plan mode does not execute tasks. Use /mode agent."
+                "read_only", "Read-Only does not execute tasks. Change /permission to run."
             )
         raw = parsed.task
         if isinstance(raw, TaskCreateRequest):
@@ -382,8 +393,8 @@ class ApplicationSession:
         """Execute existing dedicated CLI use cases with shared runtime ownership."""
         from vulnclaw.orchestrator import run_agent_task
 
-        if self.mode == "plan":
-            raise ApplicationError("plan_mode", "Plan mode does not execute tasks.")
+        if self.permission_mode == "read_only":
+            raise ApplicationError("read_only", "Read-Only does not execute tasks.")
         return await self._foreground(
             arguments["target"],
             lambda: run_agent_task(agent=self.agent, **arguments),
@@ -458,6 +469,16 @@ class ApplicationSession:
         self.current_constraints = _model_dump(initial_constraints)
         created = self._runtime_factory()
         self.runtime = await created if inspect.isawaitable(created) else created
+        registry = getattr(getattr(self.runtime, "mcp_manager", None), "registry", None)
+        if isinstance(registry, MCPRegistry):
+            self._mcp_registry = registry
+            loop = asyncio.get_running_loop()
+
+            def queue_mcp_state() -> None:
+                if not self._closed and self._mcp_state_update is None:
+                    self._mcp_state_update = loop.call_soon(self._publish_mcp_state)
+
+            registry.on_state_change = lambda: loop.call_soon_threadsafe(queue_mcp_state)
         agent = getattr(self.runtime, "agent", None)
         if agent is not None:
             agent.session_state.target = self.current_target or None
@@ -500,10 +521,10 @@ class ApplicationSession:
         self._require_initialized(request_id, task_id)
         if self.active_control is not None and not self.active_control.done():
             raise ApplicationError("operation_busy", "a management operation is active", request_id=request_id, task_id=task_id)
-        if self.mode == "plan":
+        if self.permission_mode == "read_only":
             raise ApplicationError(
-                "plan_mode",
-                "Plan mode does not execute tasks.",
+                "read_only",
+                "Read-Only does not execute tasks.",
                 request_id=request_id,
                 task_id=task_id,
             )
@@ -570,8 +591,6 @@ class ApplicationSession:
                 if isinstance(finding, dict):
                     self.emit("finding", task_id=task_id, finding=finding)
             self.last_run = _json_safe(result if isinstance(result, dict) else {})
-            if self.last_run.get("report"):
-                self.last_report = self.last_run["report"]
             self.emit(
                 "task_completed",
                 request_id=request_id,
@@ -662,7 +681,7 @@ class ApplicationSession:
                 raise ApplicationError("operation_busy", "a management operation is active")
             if self.active_task is not None and not self.active_task.done():
                 if (
-                    self.mode == "agent"
+                    self.permission_mode != "read_only"
                     and self.conversation.auto_mode
                     and self.conversation.pending_questions
                     and self._queued_input is None
@@ -708,8 +727,6 @@ class ApplicationSession:
         succeeded = False
         try:
             result = await self.submit_input(InputRequest(text=text), stream_sink=sink)
-            if isinstance(result, dict) and result.get("reports"):
-                self.last_report = result["reports"][-1]
             sink.on_stream_end()
             self.emit(
                 "turn_completed",
@@ -820,24 +837,16 @@ class ApplicationSession:
         """Extension point for feature-owned management operations."""
 
         if operation in MANAGEMENT_OPERATIONS:
-            return await execute_management(self, operation, arguments), None
+            result = await execute_management(self, operation, arguments)
+            return result, self.state_snapshot() if operation == "config.update" else None
 
         if operation == "task.preview":
             from vulnclaw.task_preview import preview_task
 
             return preview_task(arguments, defaults=self.bootstrap, config=self.config), None
 
-        if operation in {"session.mode.set", "session.permission.set"} and not arguments.get(
-            "mode"
-        ):
-            mode = self.mode if operation == "session.mode.set" else self.permission_mode
-            return {"mode": mode, "message": mode}, self.state_snapshot()
-        if operation == "session.mode.set":
-            mode = str(arguments.get("mode", "")).lower()
-            if mode not in {"plan", "agent"}:
-                raise ValueError("mode must be plan or agent")
-            self.mode = mode
-            return {"mode": mode, "message": f"Execution mode: {mode}"}, self.state_snapshot()
+        if operation == "session.permission.set" and not arguments.get("mode"):
+            return {"mode": self.permission_mode}, self.state_snapshot()
         if operation == "session.new":
             if self.config.session.auto_save:
                 self.agent._maybe_auto_save_session()
@@ -867,8 +876,6 @@ class ApplicationSession:
                 "scope": _session_scope_defaults(self.bootstrap),
                 "message": str(_session_scope_defaults(self.bootstrap)),
             }, self.state_snapshot()
-        if operation == "session.status":
-            return {"message": str(self.state_snapshot())}, self.state_snapshot()
         if operation == "session.help":
             return {
                 "message": "\n".join(f"/{name}: {desc}" for name, desc in COMMANDS.items())
@@ -882,10 +889,11 @@ class ApplicationSession:
                 raise ValueError("/think accepts on or off")
             current = self.config.session.show_thinking
             self.config.session.show_thinking = not current if not value else value == "on"
-            return {"message": f"Reasoning display: {self.config.session.show_thinking}"}, None
+            return {"message": f"Reasoning display: {self.config.session.show_thinking}",
+                    "show_thinking": self.config.session.show_thinking}, None
         if operation == "report.export":
-            if self.mode == "plan":
-                raise ValueError("Plan mode does not export reports. Use /mode agent.")
+            if self.permission_mode == "read_only":
+                raise ValueError("Read-Only does not export reports. Change /permission to export.")
             from vulnclaw.report_service import export_report
 
             report = await export_report(
@@ -895,30 +903,17 @@ class ApplicationSession:
                 output=arguments.get("output"),
                 partial=not self.conversation.engagement_completed,
             )
-            self.last_report = report
             return {"report": report, "message": f"Report saved: {report['path']}"}, None
-
-        if operation == "report.read":
-            from pathlib import Path
-
-            report = self.last_report or (self.last_run or {}).get("report")
-            if not report or not report.get("path"):
-                raise ValueError("No report is available. Export one with /report first.")
-            path = Path(report["path"])
-            if path.suffix.lower() not in {".md", ".markdown", ".txt", ".html"}:
-                raise ValueError("This report is a binary artifact; open its path with an external viewer.")
-            return {"report": {"path": str(path), "text": path.read_text(encoding="utf-8"),
-                               "format": "markdown" if path.suffix.lower() in {".md", ".markdown"} else "text"}}, None
 
         if operation == "session.permission.set":
             mode = str(arguments.get("mode") or "").strip().lower()
-            if mode not in {"ask", "auto_review", "full_access"}:
-                raise ValueError("mode must be one of: ask, auto_review, full_access")
+            if mode not in {"read_only", "ask", "auto_review", "full_access"}:
+                raise ValueError("mode must be one of: read_only, ask, auto_review, full_access")
             new_mode = self.set_permission_mode(mode)
             return {
                 "message": f"Permission mode set to {new_mode}.",
                 "mode": new_mode,
-            }, None
+            }, self.state_snapshot()
 
         if operation == "execution.approval.resolve":
             from vulnclaw.agent.exec_gate import get_execution_gate
@@ -1001,6 +996,7 @@ class ApplicationSession:
                 raise ValueError("config.write requires an initialised runtime")
 
             config = load_config()
+            config.safety.permission_mode = self.permission_mode
             apply_llm_form(
                 config,
                 provider=str(arguments.get("provider") or ""),
@@ -1015,7 +1011,7 @@ class ApplicationSession:
             save_config(config)
             # Rebind the live runtime so the new provider/model/key takes effect
             # without restarting the TUI (mirrors the classic REPL `/config`).
-            self.apply_config(config)
+            await self.apply_config(config)
             return {
                 "message": f"Saved {config.llm.provider}/{config.llm.model}.",
                 "provider": config.llm.provider,
@@ -1119,6 +1115,11 @@ class ApplicationSession:
             except asyncio.CancelledError:
                 pass
         self._closed = True
+        if self._mcp_registry is not None:
+            self._mcp_registry.on_state_change = None
+        if self._mcp_state_update is not None:
+            self._mcp_state_update.cancel()
+            self._mcp_state_update = None
         if self.runtime is None:
             return
         stop = getattr(self.runtime, "stop", None)
@@ -1136,7 +1137,8 @@ class ApplicationSession:
         if active is None:
             active = self.active_task is not None and not self.active_task.done()
         state = {
-            "execution_mode": self.mode,
+            "permission_mode": self.permission_mode,
+            "runtime": _runtime_metadata(self.runtime),
             "target": self.current_target,
             "phase": "idle",
             "task_constraints": self.current_constraints,
@@ -1178,7 +1180,7 @@ class ApplicationSession:
                 )
         state["task"] = {"active": active, "task_id": self.active_task_id if active else None}
         state["task"]["waiting_for_input"] = bool(
-            self.mode == "agent" and self.conversation and self.conversation.auto_mode
+            self.permission_mode != "read_only" and self.conversation and self.conversation.auto_mode
             and self.conversation.pending_questions and self._queued_input is None
             and not self._answer_in_progress
         )
@@ -1294,6 +1296,7 @@ async def _run_task(
         task.request.command == "run"
         and result.status == "completed"
         and task.request.options.auto_report is not False
+        and get_execution_gate(runtime.config).mode != "read_only"
     ):
         sink.on_status("Generating report...")
         try:
@@ -1369,18 +1372,41 @@ def _runtime_metadata(runtime: Any) -> dict[str, Any]:
             list_core_skills,
             list_custom_skills,
             list_specialized_skills,
+            load_skill_by_name,
         )
 
-        configured = _llm_configured(llm)
-        skills = sorted(set(list_core_skills() + list_specialized_skills() + list_custom_skills()))
-    except Exception:
-        configured = False
+        names = sorted(set(list_core_skills() + list_specialized_skills() + list_custom_skills()))
         skills = []
+        for name in names:
+            try:
+                if load_skill_by_name(name):
+                    skills.append(name)
+            except (OSError, ValueError):
+                continue
+    except Exception:
+        skills = []
+    manager = getattr(runtime, "mcp_manager", None)
+    registry = getattr(manager, "registry", None)
+    servers = registry.get_all_servers() if registry is not None else {}
+    configured = getattr(getattr(config, "mcp", None), "servers", {})
+    mcp_servers = []
+    for name, server_config in sorted(configured.items()):
+        if not server_config.enabled:
+            continue
+        server = servers.get(name)
+        mcp_servers.append({
+            "name": name,
+            "ready": bool(server is not None and server.health_status == "healthy"
+                          and (server.running or server.execution_mode == "local")),
+        })
     return {
-        "config_ready": configured,
+        "config_ready": _llm_configured(llm),
         "provider": str(getattr(llm, "provider", "unknown")),
         "model": str(getattr(llm, "model", "unknown")),
         "mcp_started": int(getattr(runtime, "mcp_started", 0)),
+        "mcp_ready": sum(server["ready"] for server in mcp_servers),
+        "mcp_servers": mcp_servers,
+        "skills_loaded": len(skills),
         "skills": skills,
     }
 

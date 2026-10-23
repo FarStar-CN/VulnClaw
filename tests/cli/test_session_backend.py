@@ -196,7 +196,7 @@ async def test_initialize_and_two_tasks_share_one_session_backend_pid() -> None:
     completed = [event for event in emitted if event["type"] == "task_completed"]
     assert ready["backend"]["pid"] == os.getpid()
     assert ready["capabilities"]["permission_mode"] == "ask"
-    assert {"session.scope.update", "session.mode.set", "session.new", "report.export"}.issubset(
+    assert {"session.scope.update", "session.permission.set", "session.new", "report.export"}.issubset(
         ready["capabilities"]["control_operations"]
     )
     assert ready["capabilities"]["natural_language"] is True
@@ -797,8 +797,20 @@ async def test_config_models_requires_a_base_url_and_a_key() -> None:
     assert caught.value.code == "invalid_control"
 
 
+@pytest.fixture
+def isolated_permission_gate():
+    from vulnclaw.agent.exec_gate import reset_execution_gate
+
+    reset_execution_gate()
+    yield
+    reset_execution_gate()
+
+
 @pytest.mark.asyncio
-async def test_config_write_persists_and_rebinds_the_agent(monkeypatch) -> None:
+@pytest.mark.parametrize("permission", ["ask", "read_only"])
+async def test_config_write_persists_and_rebinds_the_agent(
+    monkeypatch, permission, isolated_permission_gate,
+) -> None:
     import vulnclaw.config.settings as settings_mod
 
     saved: list[Any] = []
@@ -809,6 +821,9 @@ async def test_config_write_persists_and_rebinds_the_agent(monkeypatch) -> None:
     runtime = FakeConfigRuntime()
     session = BackendSession(JsonlWriter(stream), runtime_factory=lambda: runtime)
     await session.handle(request("initialize", "r-init"))
+    await session.handle(request("control", "r-permission", payload={
+        "operation": "session.permission.set", "arguments": {"mode": permission},
+    }))
 
     await session.handle(
         request(
@@ -836,6 +851,8 @@ async def test_config_write_persists_and_rebinds_the_agent(monkeypatch) -> None:
     # The live runtime adopts the new config so no restart is needed.
     assert runtime.config.llm.model == "deepseek-v4-pro"
     assert runtime.agent.applied[0].llm.model == "deepseek-v4-pro"
+    assert saved[0].safety.permission_mode == permission
+    assert runtime.config.safety.permission_mode == permission
 
 
 @pytest.mark.asyncio

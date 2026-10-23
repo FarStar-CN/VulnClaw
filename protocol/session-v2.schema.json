@@ -1068,12 +1068,6 @@
         "constraint_violations"
       ],
       "properties": {
-        "execution_mode": {
-          "enum": [
-            "plan",
-            "agent"
-          ]
-        },
         "target": {
           "type": "string"
         },
@@ -1115,6 +1109,18 @@
           "items": {
             "$ref": "#/$defs/messageSnapshot"
           }
+        },
+        "permission_mode": {
+          "type": "string",
+          "enum": [
+            "read_only",
+            "ask",
+            "auto_review",
+            "full_access"
+          ]
+        },
+        "runtime": {
+          "$ref": "#/$defs/runtimeInfo"
         }
       }
     },
@@ -1181,6 +1187,7 @@
         },
         "permission_mode": {
           "enum": [
+            "read_only",
             "ask",
             "auto_review",
             "full_access"
@@ -1217,6 +1224,30 @@
           "items": {
             "type": "string"
           }
+        },
+        "mcp_ready": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mcp_servers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "ready"],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "ready": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "skills_loaded": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
