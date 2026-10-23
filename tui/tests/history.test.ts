@@ -1,5 +1,7 @@
 import { expect, test, spyOn } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
+import { RGBA, TextRenderable, type Renderable } from "@opentui/core";
+import { configureThemes, defaultThemeConfig } from "../src/theme/palette";
 import { HistoryQueue } from "../src/scrollback/history";
 import { SessionController } from "../src/session/controller";
 
@@ -60,4 +62,39 @@ test("MD-10/15: long output resumes unsubmitted batches after an admission failu
     expect(output.split("new-session-body")).toHaveLength(2);
     for (let index = 0; index < 300; index++) expect(output.split(`line-${String(index).padStart(3, "0")}`)).toHaveLength(2);
   } finally { spy.mockRestore(); queue.dispose(); await setup.dispose(); }
+});
+
+test("new plain REPL history adopts the saved text color", async () => {
+  configureThemes(defaultThemeConfig);
+  const setup = await createTestRenderer({ width: 60, height: 24, footerHeight: 8,
+    screenMode: "split-footer", externalOutputMode: "capture-stdout" });
+  const controller = new SessionController();
+  controller.applyConfigDocument({ config: { terminal: { theme: "blue", themes: {
+    ...defaultThemeConfig.themes, blue: { ...defaultThemeConfig.themes.blue, text: "#123456" },
+  } } } });
+  const colors: RGBA[] = [];
+  const original = setup.renderer.createScrollbackSurface.bind(setup.renderer);
+  const inspect = spyOn(setup.renderer, "createScrollbackSurface").mockImplementation(options => {
+    const surface = original(options);
+    const settle = surface.settle.bind(surface);
+    surface.settle = async timeout => {
+      await settle(timeout);
+      function visit(node: Renderable) {
+        if (node instanceof TextRenderable && node.plainText.includes("historyvalue")) colors.push(node.fg);
+        for (const child of node.getChildren()) visit(child);
+      }
+      visit(surface.root);
+    };
+    return surface;
+  });
+  const queue = new HistoryQueue(setup.renderer, controller);
+  try {
+    const event = { protocol_version: 2, type: "message", message_id: "history", source: "main",
+      role: "assistant", format: "text", task_id: "fixture" } as const;
+    controller.receive({ ...event, operation: "append", text: "historyvalue" });
+    controller.receive({ ...event, operation: "end", status: "completed" });
+    await queue.drain(); await setup.renderOnce();
+    expect(setup.externalOutput.takeText()).toContain("historyvalue");
+    expect(colors).toEqual([RGBA.fromHex("#123456")]);
+  } finally { inspect.mockRestore(); queue.dispose(); await setup.dispose(); configureThemes(defaultThemeConfig); }
 });

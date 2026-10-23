@@ -23,7 +23,7 @@ test("saving model credentials refreshes provider readiness immediately", async 
       llm: { provider: "custom", model: "replacement", api_key: "***", auth_mode: "static" },
     } },
   });
-  await saved;
+  controller.applyConfigDocument(await saved);
   expect(controller.runtime?.model).toBe("replacement");
   expect(controller.runtime?.config_ready).toBe(true);
 });

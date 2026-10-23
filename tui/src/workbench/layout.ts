@@ -12,7 +12,7 @@ export const SIDE_MIN = 16, OUTPUT_MIN = 24, VIEW_MIN = 3;
 export const MCP_LIST_ROWS = 4;
 export const TUI_HEADER_ROWS = 2;
 export function tuiChromeHeight(composerRows: number, completionRows: number): number {
-  return TUI_HEADER_ROWS + composerRows + (completionRows ? 2 : 1) + completionRows + 2;
+  return TUI_HEADER_ROWS + composerRows + 2 + completionRows + 2;
 }
 const minimumHeight = (view: View) => view.id === "capabilities" ? view.mcpExpanded ? 5 : 4 : VIEW_MIN;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
@@ -106,8 +106,8 @@ export function geometry(width: number, height: number, state: LayoutState): Geo
       const lines = horizontal.filter((line) => line.y === y && x >= line.x && x <= line.end);
       const before = lines.some((line) => line.x < x), after = lines.some((line) => line.end > x);
       if (!before && !after) return "│";
-      if (x === 0) return "├";
-      if (x === width - 1) return "┤";
+      if (x === 0) return y === height - 1 ? "└" : "├";
+      if (x === width - 1) return y === height - 1 ? "┘" : "┤";
       if (y === 0) return "┬";
       if (y === height - 1) return "┴";
       return before && after ? "┼" : before ? "┤" : "├";

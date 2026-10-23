@@ -24,7 +24,7 @@ function session() {
   return { controller, requests };
 }
 
-test("MCP disclosure targets only its label and triangle, uses green/red names, and follows backend state", async () => {
+test("MCP disclosure targets only its label and chevron, uses green/red names, and follows backend state", async () => {
   const { controller, requests } = session(); const workbench = new WorkbenchState();
   controller.draft = "retained draft";
   const setup = await testRender(<TuiShell controller={controller} workbench={workbench} />,
@@ -36,14 +36,16 @@ test("MCP disclosure targets only its label and triangle, uses green/red names, 
     return finalFrame(setup);
   }
   try {
-    expect(await finalFrame(setup)).toMatch(/MCP\s+2\/4/);
+    expect(await finalFrame(setup)).toMatch(/〉MCP\s+2\/4/);
     expect(node("capabilities-pane").height).toBe(4);
     await click("mcp-count");
     const toggle = node("mcp-toggle");
+    const toggleWidth = toggle.width;
     await act(async () => { await setup.mockMouse.click(toggle.x + toggle.width + 2, toggle.y); });
     await finalFrame(setup);
     expect(setup.renderer.root.findDescendantById("capabilities-scroll")).toBeUndefined();
-    await click("mcp-toggle", 2);
+    expect(await click("mcp-toggle", 1)).toMatch(/﹀MCP\s+2\/4/);
+    expect(node("mcp-toggle").width).toBe(toggleWidth);
     expect(node("capabilities-pane").height).toBe(8);
     expect(controller.draft).toBe("retained draft"); expect(workbench.gesture).toBeNull();
     for (const theme of ["blue", "orange"] as const) {
@@ -111,7 +113,7 @@ test("MCP list scrolls with wheel and keyboard while both counters remain visibl
     const pane = setup.renderer.root.findDescendantById("capabilities-pane")!;
     const skills = setup.renderer.root.findDescendantById("skills-count")!;
     expect(skills.y).toBeLessThan(pane.y + pane.height);
-    expect(frame.split("\n")[pane.y + pane.height]).toMatch(/^├─+┴/);
+    expect(frame.split("\n")[pane.y + pane.height]).toMatch(/^└─+┴/);
     expect(frame).not.toContain("Not ready");
   } finally { await act(async () => { await setup.dispose(); }); }
 });

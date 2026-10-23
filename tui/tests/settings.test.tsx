@@ -6,10 +6,12 @@ import { ConfigForm } from "../src/components/ConfigForm";
 import { record, SessionController } from "../src/session/controller";
 import { withValue } from "../src/components/config-fields";
 import { finalFrame } from "./render-helpers";
+import { configureThemes, defaultThemeConfig, palettes } from "../src/theme/palette";
 
 function fixture() {
   return {
     config: {
+      terminal: structuredClone(defaultThemeConfig),
       llm: { provider: "old", website_url: "", base_url: "https://old.test", model: "old-model", api_key: "***",
         api_keys: ["***", "***"], temperature: 0.1, max_tokens: 4096 },
       session: { language: "auto", show_thinking: false, auto_save: true, output_dir: "./output", runs_dir: null,
@@ -26,6 +28,8 @@ function fixture() {
         permission_mode: { type: "string", enum: ["read_only", "ask", "auto_review", "full_access"] },
       } },
     }, $defs: {
+      TerminalTheme: { type: "object", properties: Object.fromEntries(Object.keys(defaultThemeConfig.themes.blue)
+        .map((key) => [key, { type: "string", pattern: "^#[0-9a-fA-F]{6}$" }])) },
       Session: { type: "object", properties: {
         engine: { type: "string", enum: ["solve", "team", "rounds"] },
         runs_dir: { anyOf: [{ type: "string" }, { type: "null" }] },
@@ -82,7 +86,7 @@ async function settings() {
   async function save() {
     await act(async () => { setup.mockInput.pressKey("s", { ctrl: true }); }); return finalFrame(setup);
   }
-  async function dispose() { control.mockRestore(); await act(async () => { await setup.dispose(); }); }
+  async function dispose() { control.mockRestore(); await act(async () => { await setup.dispose(); }); configureThemes(defaultThemeConfig); }
   await finalFrame(setup);
   return { ...setup, controller, control, requests, click, activate, edit, save, dispose };
 }
@@ -183,6 +187,70 @@ test("MCP services use typed fields and item editors, preserve other services an
     expect(record(record(servers.custom).transport).env).toEqual({ TOKEN: "synthetic-secret" });
     await setup.activate("custom"); await setup.activate("delete-server"); await setup.save();
     expect(Object.keys(record(setup.requests.at(-1)?.["mcp.servers"]))).toEqual(["existing"]);
+  } finally { await setup.dispose(); }
+});
+
+test("theme edits stay independent, retain failed drafts and take effect only after saving", async () => {
+  const setup = await settings();
+  try {
+    await setup.click("settings-category-themes");
+    expect(await finalFrame(setup)).not.toContain("Shared colors");
+    await setup.activate("blue");
+    await setup.edit("color-transcript", "#223344");
+    expect(palettes.blue.transcript).toBe("#1e2127");
+    await setup.activate("apply-theme");
+    await setup.activate("orange");
+    expect(await finalFrame(setup)).toContain("#1e2127");
+    await act(async () => { setup.mockInput.pressEscape(); }); await finalFrame(setup);
+    setup.control.mockRejectedValueOnce(new Error("theme write failed"));
+    expect(await setup.save()).toContain("theme write failed");
+    expect(palettes.blue.transcript).toBe("#1e2127");
+    expect(await setup.save()).toContain("Configuration saved.");
+    const themes = record(setup.requests.at(-1)?.["terminal.themes"]);
+    expect(record(themes.blue).transcript).toBe("#223344");
+    expect(record(themes.orange).transcript).toBe("#1e2127");
+    expect(Object.keys(record(themes.blue))).toHaveLength(24);
+    expect(palettes.blue.transcript).toBe("#223344");
+    expect(palettes.orange.transcript).toBe("#1e2127");
+    expect(setup.controller.draft).toBe("composer draft");
+  } finally { await setup.dispose(); }
+});
+
+test("new themes copy the current palette, validate names and colors and save the active edit once", async () => {
+  const setup = await settings();
+  try {
+    await setup.click("settings-category-themes"); await setup.activate("add-theme");
+    await setup.edit("theme-name", "blue"); await setup.activate("apply-theme");
+    expect(await finalFrame(setup)).toContain("already exists"); expect(setup.requests).toHaveLength(0);
+    await setup.edit("theme-name", "forest");
+    await setup.edit("color-action", "#88cc99");
+    await setup.edit("color-transcript", "invalid", false);
+    expect(await setup.save()).toContain("must match"); expect(setup.requests).toHaveLength(0);
+    await act(async () => { setup.mockInput.pressEscape(); }); await finalFrame(setup);
+    await setup.edit("color-transcript", "#233029", false);
+    expect(await setup.save()).toContain("Configuration saved.");
+    expect(setup.requests).toHaveLength(1);
+    expect(record(record(setup.requests[0]["terminal.themes"]).forest)).toEqual({
+      ...defaultThemeConfig.themes.blue, action: "#88cc99", transcript: "#233029",
+    });
+    expect(palettes.blue.action).toBe("#7aa2f7");
+    await setup.activate("forest"); await setup.activate("use-theme");
+    expect(setup.controller.theme).toBe("blue");
+    await setup.save(); expect(setup.controller.theme).toBe("forest");
+    expect(setup.requests.at(-1)).toEqual({ "terminal.theme": "forest" });
+    await setup.activate("forest");
+    await act(async () => { setup.resize(64, 22); }); await finalFrame(setup);
+    const footer = setup.renderer.root.findDescendantById("settings-footer")!;
+    expect(footer.y + footer.height).toBeLessThanOrEqual(22);
+  } finally { await setup.dispose(); }
+});
+
+test("rapid theme list navigation opens the focused row", async () => {
+  const setup = await settings();
+  try {
+    await setup.click("settings-category-themes");
+    await act(async () => { setup.mockInput.pressKey("\x1b[B\x1b[B\r"); });
+    expect(await finalFrame(setup)).toContain("New theme");
   } finally { await setup.dispose(); }
 });
 

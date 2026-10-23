@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
+from .terminal import TerminalConfig
+
 # ── LLM Provider Presets ────────────────────────────────────────────
 
 
@@ -627,6 +629,7 @@ class VulnClawConfig(BaseModel):
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     subagent: SubagentConfig = Field(default_factory=SubagentConfig)
     recon: ReconConfig = Field(default_factory=ReconConfig)
+    terminal: TerminalConfig = Field(default_factory=TerminalConfig)
 
     model_config = ConfigDict(
         env_prefix="VULNCLAW_",

@@ -51,6 +51,8 @@ def config_document(config: VulnClawConfig | None = None) -> dict[str, Any]:
             return
         for key, item in value.items():
             child = f"{path}.{key}" if path else key
+            if child == "terminal":
+                continue
             if key.lower() in _SECRET_NAMES:
                 secret_paths.append(child)
             elif key.lower() in {"env", "headers"} and isinstance(item, dict):
@@ -61,8 +63,12 @@ def config_document(config: VulnClawConfig | None = None) -> dict[str, Any]:
     collect(config.model_dump(mode="json"))
     schema = VulnClawConfig.model_json_schema()
     schema["$defs"]["SessionConfig"]["properties"]["engine"]["enum"] = list(ENGINE_CHOICES)
+    public = masked_config(config.model_dump(mode="json"))
+    # Theme names are user-defined dictionary keys; their validated colors are public.
+    public["terminal"] = config.terminal.model_dump(mode="json")
     return {
-        "config": masked_config(config.model_dump(mode="json")),
+        "config": public,
+        "terminal_configured": "terminal" in config.model_fields_set,
         "schema": schema,
         "providers": list_providers(),
         "builtin_servers": list(BUILTIN_MCP_SERVERS),

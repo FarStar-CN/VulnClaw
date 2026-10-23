@@ -139,9 +139,10 @@ test("TUI: finding selection resets only its detail scroll and focused subagents
   controller.receive({ protocol_version: 2, type: "subagent", task_id: "t", agent_id: "child", parent_id: "main", group_id: "", name: "Child reader", agent_type: "general", status: "running" });
   const setup = await testRender(<TuiShell controller={controller} workbench={workbench} />, { width: 120, height: 44, kittyKeyboard: true });
   try {
-    await finalFrame(setup);
+    expect(await finalFrame(setup)).toContain("〉[HIGH] First finding");
     await act(async () => { setup.mockInput.pressEnter(); });
-    expect(await finalFrame(setup)).toContain("evidence/first.json");
+    const expanded = await finalFrame(setup);
+    expect(expanded).toContain("﹀[HIGH] First finding"); expect(expanded).toContain("evidence/first.json");
     await act(async () => { setup.mockInput.pressArrow("down"); });
     expect(await finalFrame(setup)).toContain("Second finding");
     await act(async () => { setup.mockInput.pressArrow("right", { ctrl: true }); }); await finalFrame(setup);

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BorderChars, MouseButton, type TextareaRenderable } from "@opentui/core";
+import { MouseButton, type TextareaRenderable } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type { SessionController } from "../session/controller";
 import { palettes } from "../theme/palette";
@@ -7,7 +7,7 @@ import { visibleText } from "./content";
 import { completions, completionDescription } from "../session/completions";
 import { pasteText } from "../platform/clipboard";
 
-export function Composer({ controller, active, joined = false }: { controller: SessionController; active: boolean; joined?: boolean }) {
+export function Composer({ controller, active, framed = false }: { controller: SessionController; active: boolean; framed?: boolean }) {
   const editor = useRef<TextareaRenderable>(null);
   const syncedDraft = useRef(controller.draft);
   const renderer = useRenderer();
@@ -51,6 +51,13 @@ export function Composer({ controller, active, joined = false }: { controller: S
     editor.current?.setText(applied); editor.current?.gotoBufferEnd();
     controller.changed();
   }
+  function submit() {
+    const current = editor.current, text = current?.plainText ?? "";
+    cycle.current = null; controller.draft = text; syncedDraft.current = text;
+    void controller.submit(text);
+    // Clear accepted input before deferred native edit notifications can restore it.
+    if (current && !controller.draft) { syncedDraft.current = ""; current.setText(""); current.gotoBufferEnd(); }
+  }
   useKeyboard((key) => {
     if (!active || key.defaultPrevented || controller.approvals.length || controller.overlay) return;
     if (cycle.current && cycle.current.applied !== controller.draft) cycle.current = null;
@@ -75,8 +82,7 @@ export function Composer({ controller, active, joined = false }: { controller: S
   const showMenu = active && candidates.length > 0;
   return <box id="composer-pane" backgroundColor={p.plate}
     flexDirection="column" flexShrink={0} onMouseDown={() => { controller.inputFocused = true; controller.changed(); }}>
-    {showMenu && <box id="completion-menu" flexDirection="column" backgroundColor={p.panel}
-      border={joined ? ["left", "right"] : false} borderColor={p.border}>
+    {showMenu && <box id="completion-menu" flexDirection="column" backgroundColor={p.panel}>
       <text fg={p.accent}>{`Commands · ${selection + 1}/${candidates.length}`}</text>
       {candidates.slice(begin, begin + 5).map((candidate) => <text key={candidate}
         fg={candidate === candidates[selection] ? p.action : p.muted}
@@ -85,9 +91,8 @@ export function Composer({ controller, active, joined = false }: { controller: S
         {visibleText(`${candidate === candidates[selection] ? "›" : " "} ${candidate}  ${completionDescription(controller, candidate)}`)}
       </text>)}
     </box>}
-    <box id="composer-input" border={joined ? showMenu ? true : ["left", "right", "bottom"] : ["top", "bottom"]} borderColor={p.border}
-      customBorderChars={joined ? { ...BorderChars.single, topLeft: "├", topRight: "┤" } : undefined}
-      flexDirection="row" height={controller.composerRows + (joined && !showMenu ? 1 : 2)} flexShrink={0}>
+    <box id="composer-input" border={framed ? true : ["top", "bottom"]} borderColor={p.composerBorder}
+      flexDirection="row" height={controller.composerRows + 2} flexShrink={0}>
       <text fg={p.action}>{" > "}</text>
       <textarea id="composer-editor" ref={editor} focused={active && controller.inputFocused} flexGrow={1}
         height={controller.composerRows} wrapMode="word" initialValue={controller.draft}
@@ -107,7 +112,7 @@ export function Composer({ controller, active, joined = false }: { controller: S
           if (!current || current.isDestroyed || current.plainText === controller.draft) return;
           cycle.current = null; selectedRef.current = 0; setSelected(0);
           controller.draft = current.plainText; syncedDraft.current = current.plainText; controller.changed();
-        }} onSubmit={() => { cycle.current = null; void controller.submit(editor.current?.plainText ?? ""); }} />
+        }} onSubmit={submit} />
     </box>
   </box>;
 }

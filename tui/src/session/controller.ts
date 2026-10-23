@@ -3,7 +3,7 @@ import type {
   ApprovalRequiredEvent, Bootstrap, ClientMessage, Finding, MessageSnapshot,
   RuntimeInfo, ServerEvent, StateSnapshot, SubagentEvent, TaskRequest,
 } from "../transport/protocol.generated";
-import { permissionOrder, type ThemeId } from "../theme/palette";
+import { configureThemes, palettes, permissionOrder, type ThemeId } from "../theme/palette";
 
 export function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -78,7 +78,6 @@ export class SessionController {
   draft = "";
   history: string[] = [];
   onExit: () => void = () => {};
-  onPreferences: () => void = () => {};
   onHistoryRetry: (() => void) | null = null;
   private hidden = new Set<string>();
   private listeners = new Set<() => void>();
@@ -115,7 +114,14 @@ export class SessionController {
   }
   notify(text: string): void { this.notice = text; this.changed(); }
   dismiss(): void { this.overlay = null; this.changed(); }
-  setTheme(theme: ThemeId): void { this.theme = theme; this.onPreferences(); this.changed(); }
+  setTheme(theme: ThemeId): void {
+    if (!Object.hasOwn(palettes, theme)) { this.notify(`Unknown theme: ${theme}. Available themes: ${Object.keys(palettes).join(", ")}`); return; }
+    this.theme = theme; this.changed();
+  }
+  applyConfigDocument(document: Record<string, unknown>): void {
+    const terminal = record(document.config).terminal;
+    if (terminal !== undefined) { this.theme = configureThemes(terminal).theme; this.changed(); }
+  }
   visibleEntries(source = this.source): Entry[] {
     return this.entries.filter((entry) => {
       const item = entry.kind === "message" ? this.messages.get(entry.id) : this.cards.get(entry.id);
@@ -141,10 +147,13 @@ export class SessionController {
     }
     if (command === "/theme") {
       const theme = text.trim().split(/\s+/)[1]?.toLowerCase();
-      if (!theme) this.setTheme(this.theme === "blue" ? "orange" : "blue");
-      else if (theme === "blue" || theme === "orange") this.setTheme(theme);
-      else this.notify("Use /theme blue or /theme orange");
-      this.draft = ""; this.changed(); return;
+      const themes = Object.keys(palettes);
+      const selected = theme ?? themes[(themes.indexOf(this.theme) + 1) % themes.length];
+      if (!Object.hasOwn(palettes, selected)) { this.notify(`Unknown theme: ${selected}. Available themes: ${themes.join(", ")}`); return; }
+      this.draft = ""; this.changed();
+      try { this.applyConfigDocument(await this.control("config.update", { changes: { "terminal.theme": selected } })); }
+      catch (error) { if (!this.draft) this.draft = text; this.notify(String(error)); }
+      return;
     }
     if (command === "/quit") { this.onExit(); return; }
     if (command === "/clear") { this.clearDisplay(); this.draft = ""; this.changed(); return; }
@@ -194,6 +203,7 @@ export class SessionController {
   readMessage = (messageId: string): void => { this.overlay = { kind: "reader", messageId, raw: false }; this.changed(); };
 
   private showControl(operation: string, result: Record<string, unknown>): void {
+    this.applyConfigDocument(result);
     if (operation === "config.read") this.overlay = { kind: "llm", document: result };
     else if (operation === "config.document") this.overlay = { kind: "config", document: result };
     else if (operation === "report.export") {

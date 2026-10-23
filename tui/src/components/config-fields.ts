@@ -1,7 +1,7 @@
 import { record } from "../session/controller";
 
 export const settingCategories = [
-  ["general", "General"], ["model", "Model"], ["execution", "Execution"],
+  ["general", "General"], ["model", "Model"], ["themes", "Themes"], ["execution", "Execution"],
   ["safety", "Approval & tools"], ["mcp", "MCP servers"], ["recon", "Recon"],
   ["advanced", "Advanced"],
 ] as const;
@@ -115,7 +115,7 @@ export function configFields(document: Record<string, unknown>, config: Record<s
   const engine = String(record(config.session).engine ?? "solve");
   const result: ConfigField[] = [];
   for (const [group, values] of Object.entries(config)) {
-    if (group === "mcp") continue;
+    if (group === "mcp" || group === "terminal") continue;
     for (const name of Object.keys(record(values))) {
       const key = group + "." + name;
       const schema = schemaAt(root, key);
@@ -169,5 +169,6 @@ export function parseField(text: string, schema: Record<string, unknown>, previo
   }
   if (typeof schema.minLength === "number" && text.length < schema.minLength) throw new Error("Enter at least " + schema.minLength + " characters.");
   if (typeof schema.maxLength === "number" && text.length > schema.maxLength) throw new Error("Use at most " + schema.maxLength + " characters.");
+  if (typeof schema.pattern === "string" && !new RegExp(schema.pattern).test(text)) throw new Error("Value must match " + schema.pattern);
   return text;
 }

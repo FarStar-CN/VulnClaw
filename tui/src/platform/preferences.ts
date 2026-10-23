@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { defaultLayout, normalizeLayout, type LayoutState, type View, type ViewId } from "../workbench/layout";
 import type { SessionController } from "../session/controller";
 import { record } from "../session/controller";
-import type { ThemeId } from "../theme/palette";
+import { defaultThemeConfig, parseThemes, type Palette, type ThemeConfig } from "../theme/palette";
 
 export function clientDirectory(): string {
   const root = process.env.VULNCLAW_HOME ?? join(homedir(), ".vulnclaw");
@@ -22,8 +22,22 @@ async function readJson(path: string): Promise<Record<string, unknown> | null> {
   try { return record(JSON.parse(await readFile(path, "utf-8"))); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 }
-export async function loadPreferences(directory = clientDirectory()): Promise<{ theme: ThemeId; layout: LayoutState }> {
-  const defaults = { format_version: 2, theme: "blue" as ThemeId, layout: defaultLayout() };
+export async function legacyThemeConfig(directory = clientDirectory()): Promise<ThemeConfig | null> {
+  const saved = await readJson(join(directory, "themes.json"));
+  const layout = await readJson(join(directory, "layout.json"));
+  if (!saved && !(layout?.format_version === 2 && typeof layout.theme === "string")) return null;
+  const blue = defaultThemeConfig.themes.blue;
+  const builtinOverrides = Object.fromEntries(Object.entries(defaultThemeConfig.themes).map(([name, palette]) =>
+    [name, Object.fromEntries(Object.entries(palette).filter(([key, color]) => blue[key as keyof Palette] !== color))]));
+  const definitions = { ...builtinOverrides, ...record(saved?.themes) };
+  const themes = Object.fromEntries(Object.entries(definitions).map(([name, overrides]) =>
+    [name, { ...blue, ...record(saved?.shared), ...builtinOverrides[name], ...record(overrides) }]));
+  const selected = layout?.format_version === 2 && typeof layout.theme === "string" && Object.hasOwn(themes, layout.theme)
+    ? layout.theme : defaultThemeConfig.theme;
+  return parseThemes({ theme: selected, themes });
+}
+export async function loadPreferences(directory = clientDirectory()): Promise<{ layout: LayoutState }> {
+  const defaults = { format_version: 2, layout: defaultLayout() };
   const saved = await readJson(join(directory, "layout.json"));
   if (!saved) return defaults;
   if (saved.format_version !== 2) {
@@ -36,7 +50,7 @@ export async function loadPreferences(directory = clientDirectory()): Promise<{ 
     return { id: row.id as ViewId, collapsed: row.collapsed === true, expandedHeight: Number(row.expandedHeight ?? 0),
       ...(row.id === "capabilities" ? { mcpExpanded: row.mcpExpanded === true } : {}) };
   }) : [];
-  return { theme: saved.theme === "orange" ? "orange" : "blue", layout: normalizeLayout({
+  return { layout: normalizeLayout({
     primaryWidth: Number(raw.primaryWidth), secondaryWidth: Number(raw.secondaryWidth),
     primary: views(raw.primary), secondary: views(raw.secondary), focus: raw.focus as ViewId,
   }) };

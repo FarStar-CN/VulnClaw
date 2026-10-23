@@ -12,7 +12,6 @@ test("existing history survives while legacy mode and permission cannot restore 
     await writeJson(join(directory, "layout.json"), { theme: "orange", primary_width: 35 });
     await writeJson(join(directory, "session.json"), { mode: "YOLO", permission: "full_access", history: ["hello 中文", 42], transcript: [{ text: "untrusted old business state" }], findings: [{ id: "old" }] });
     const preferences = await loadPreferences(directory);
-    expect(preferences.theme).toBe("blue");
     expect(preferences.layout.primaryWidth).toBe(28);
     const controller = new SessionController();
     expect(await restoreClientSession(controller, directory)).toBeUndefined();
@@ -39,7 +38,7 @@ test("current layout restores column widths, pane order, collapsed titles and MC
     capabilities.mcpExpanded = true; capabilities.expandedHeight = 8;
     await writeJson(join(directory, "layout.json"), { format_version: 2, theme: "orange", layout });
     const restored = await loadPreferences(directory);
-    expect(restored.layout).toEqual(layout); expect(restored.theme).toBe("orange");
+    expect(restored.layout).toEqual(layout);
     delete capabilities.mcpExpanded; capabilities.expandedHeight = 4;
     await writeJson(join(directory, "layout.json"), { format_version: 2, theme: "orange", layout });
     expect((await loadPreferences(directory)).layout.primary.find((view) => view.id === "capabilities")?.mcpExpanded).toBe(false);

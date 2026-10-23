@@ -1,3 +1,11 @@
+import stringWidth from "string-width";
+
+const collapsedDisclosure = "〉", expandedDisclosure = "﹀";
+export const disclosureWidth = Math.max(stringWidth(collapsedDisclosure), stringWidth(expandedDisclosure));
+export function disclosureIcon(expanded: boolean): string {
+  return expanded ? expandedDisclosure : collapsedDisclosure;
+}
+
 /** Body text may contain terminal instructions from targets, tools or models.
  * Keep raw text in the model; render controls visibly at the display boundary.
  */

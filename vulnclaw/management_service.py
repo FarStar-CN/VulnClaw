@@ -56,8 +56,13 @@ async def execute_management(application: Any, operation: str, args: dict[str, A
     if operation == "config.document":
         return config_document(config)
     if operation == "config.update":
-        updated = update_config(args.get("changes"), config=config)
-        await application.apply_config(updated)
+        changes = args.get("changes")
+        updated = update_config(changes, config=config)
+        if all(path == "terminal" or path.startswith("terminal.") for path in changes):
+            # Appearance edits must not reset the active model client or trim its context.
+            config.terminal = updated.terminal
+        else:
+            await application.apply_config(updated)
         return {"message": "Configuration saved.", **config_document(updated)}
     if operation == "language.set":
         language = args.get("language")

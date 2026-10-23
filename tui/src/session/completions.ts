@@ -1,8 +1,8 @@
 import type { SessionController } from "./controller";
-import { permissionOrder } from "../theme/palette";
+import { palettes, permissionOrder } from "../theme/palette";
 
 export const LOCAL_COMMANDS = {
-  theme: "Switch blue/orange theme",
+  theme: "Switch theme",
   settings: "Edit the complete configuration", config: "Configure the model provider",
   help: "List commands", clear: "Clear the display", quit: "Exit the client",
 };
@@ -10,7 +10,7 @@ const order = ["run", "recon", "scan", "exploit", "persistent", "codescan", "rep
   "new", "clear", "compact", "tools", "think", "config", "theme", "help", "quit"];
 export function completions(controller: SessionController): string[] {
   const query = controller.draft.trimStart();
-  if (query.startsWith("/theme ")) return ["/theme blue", "/theme orange"].filter((item) => item.startsWith(query));
+  if (query.startsWith("/theme ")) return Object.keys(palettes).map((name) => `/theme ${name}`).filter((item) => item.startsWith(query));
   if (query.startsWith("/permission ")) return permissionOrder.map((mode) => `/permission ${mode}`).filter((item) => item.startsWith(query));
   if (query.startsWith("/") && !query.includes(" ")) return [...new Set([...Object.keys(controller.commands), ...Object.keys(LOCAL_COMMANDS), ...(controller.onHistoryRetry ? ["history-retry"] : [])])]
     .sort((a, b) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)))

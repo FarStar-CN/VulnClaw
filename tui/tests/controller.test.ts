@@ -63,7 +63,7 @@ test("MD-16: a cumulative snapshot replaces text before the next delta", () => {
 
 test("local themes work while disconnected and busy input preserves the draft", async () => {
   const controller = new SessionController();
-  await controller.submit("/theme orange");
+  controller.setTheme("orange");
   expect(controller.theme).toBe("orange");
   controller.connected = true;
   controller.state = { ...state(), task: { active: true, task_id: "busy" } };

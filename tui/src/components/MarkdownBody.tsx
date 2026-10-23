@@ -4,22 +4,24 @@ import { BoxRenderable, CodeRenderable, TextRenderable, type MarkdownOptions, ty
 import { useRenderer } from "@opentui/react";
 import type { Tokens } from "marked";
 import { visibleText } from "./content";
-import { markdownStyle, palettes, type ThemeId } from "../theme/palette";
+import { markdownStyle, palettes, type Palette, type ThemeId } from "../theme/palette";
+import { usePalette } from "../theme/usePalette";
 
 export interface MarkdownBodyProps {
   id: string; text: string; streaming?: boolean; width: number; theme: ThemeId;
 }
 
 const errorHandlers = new WeakMap<CliRenderer, Map<string, (error: string) => void>>();
-const styles = new WeakMap<CliRenderer, Map<ThemeId, ReturnType<typeof markdownStyle>>>();
+const styles = new WeakMap<CliRenderer, Map<Palette, ReturnType<typeof markdownStyle>>>();
 export function sharedMarkdownStyle(renderer: CliRenderer, theme: ThemeId) {
   let cache = styles.get(renderer);
   if (!cache) {
     cache = new Map(); styles.set(renderer, cache);
     renderer.on("destroy", () => { for (const style of cache!.values()) style.destroy(); cache!.clear(); });
   }
-  let style = cache.get(theme);
-  if (!style) { style = markdownStyle(renderer, theme); cache.set(theme, style); }
+  const palette = palettes[theme];
+  let style = cache.get(palette);
+  if (!style) { style = markdownStyle(renderer, theme); cache.set(palette, style); }
   return style;
 }
 
@@ -52,6 +54,7 @@ export function markdownNodes(renderer: RenderContext, theme: ThemeId, width: nu
       box.add(new TextRenderable(renderer, { content: visibleText(language), fg: palettes[theme].muted }));
       box.add(new CodeRenderable(renderer, {
         content: visibleText(code.text), filetype: language === "text" ? undefined : language,
+        fg: palettes[theme].text,
         syntaxStyle: context.syntaxStyle, treeSitterClient: context.treeSitterClient,
         drawUnstyledText: true, conceal: false, wrapMode: "char",
       }));
@@ -79,11 +82,11 @@ class MarkdownBoundary extends React.Component<MarkdownBodyProps & { children: R
   }
 }
 
-function MarkdownContent(props: MarkdownBodyProps) {
+function MarkdownContent(props: MarkdownBodyProps & { palette: Palette }) {
   const renderer = useRenderer();
   const [error, setError] = useState("");
-  const syntaxStyle = useMemo(() => sharedMarkdownStyle(renderer, props.theme), [renderer, props.theme]);
-  const renderNode = useMemo(() => markdownNodes(renderer, props.theme, props.width), [renderer, props.theme, props.width]);
+  const syntaxStyle = useMemo(() => sharedMarkdownStyle(renderer, props.theme), [renderer, props.theme, props.palette]);
+  const renderNode = useMemo(() => markdownNodes(renderer, props.theme, props.width), [renderer, props.theme, props.width, props.palette]);
   useEffect(() => {
     let handlers = errorHandlers.get(renderer);
     if (!handlers) {
@@ -114,5 +117,6 @@ function MarkdownContent(props: MarkdownBodyProps) {
 }
 
 export const MarkdownBody = memo(function MarkdownBody(props: MarkdownBodyProps) {
-  return <MarkdownBoundary {...props}><MarkdownContent {...props} /></MarkdownBoundary>;
+  const palette = usePalette(props.theme);
+  return <MarkdownBoundary {...props}><MarkdownContent {...props} palette={palette} /></MarkdownBoundary>;
 });

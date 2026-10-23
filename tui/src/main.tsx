@@ -7,7 +7,7 @@ import { PythonBackend } from "./transport/backend";
 import { ReplShell } from "./shells/ReplShell";
 import { TuiShell } from "./shells/TuiShell";
 import { WorkbenchState } from "./workbench/layout";
-import { clientDirectory, loadPreferences, restoreClientSession, saveClientSession, writeJson } from "./platform/preferences";
+import { clientDirectory, legacyThemeConfig, loadPreferences, restoreClientSession, saveClientSession, writeJson } from "./platform/preferences";
 import type { Bootstrap } from "./transport/protocol.generated";
 
 const { values } = parseArgs({ args: Bun.argv.slice(2), options: {
@@ -22,13 +22,12 @@ const controller = new SessionController();
 const directory = clientDirectory();
 let writes = Promise.resolve();
 const workbench = new WorkbenchState(() => {
-  writes = writes.then(() => writeJson(join(directory, "layout.json"), { format_version: 2, theme: controller.theme, layout: workbench.layout }))
+  writes = writes.then(() => writeJson(join(directory, "layout.json"), { format_version: 2, layout: workbench.layout }))
     .catch((error: unknown) => controller.notify(`Preferences save failed: ${String(error)}`));
 });
-controller.onPreferences = workbench.persist;
 try {
   const preferences = await loadPreferences(directory);
-  controller.theme = preferences.theme; workbench.layout = preferences.layout;
+  workbench.layout = preferences.layout;
   await restoreClientSession(controller, directory);
 } catch (error) { controller.notice = `Preferences load failed: ${String(error)}`; }
 const renderer = await createCliRenderer({
@@ -45,7 +44,20 @@ const close = (): Promise<void> => closing ??= (async () => {
 controller.onExit = () => { void close().catch((error: unknown) => { process.stderr.write(String(error) + "\n"); process.exitCode = 1; }); };
 try {
   flushSync(() => root.render(values.mode === "repl" ? <ReplShell controller={controller} /> : <TuiShell controller={controller} workbench={workbench} />));
-  backend = new PythonBackend(controller.receive, controller.disconnect, { onDiagnostic: (message) => controller.receive({
+  backend = new PythonBackend((event) => {
+    controller.receive(event);
+    if (event.type === "ready") void (async () => {
+      let document = await controller.control("config.document");
+      if (document.terminal_configured !== true) {
+        const legacy = await legacyThemeConfig(directory);
+        if (legacy) document = await controller.control("config.update", { changes: { terminal: legacy } });
+      }
+      controller.applyConfigDocument(document);
+    })().catch((error: unknown) => {
+      const message = `Theme configuration load failed: ${String(error)}`;
+      controller.receive({ protocol_version: 2, type: "log", task_id: "theme", message }); controller.notify(message);
+    });
+  }, controller.disconnect, { onDiagnostic: (message) => controller.receive({
     protocol_version: 2, type: "log", task_id: "backend", message,
   }) });
   const bootstrap = JSON.parse(process.env.VULNCLAW_TERMINAL_BOOTSTRAP ?? "{}") as Bootstrap;

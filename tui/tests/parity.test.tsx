@@ -9,7 +9,7 @@ import { LlmSettings } from "../src/components/LlmSettings";
 import { TaskForm } from "../src/components/TaskForm";
 import { activeAgentRows } from "../src/workbench/agents";
 import { WorkbenchState } from "../src/workbench/layout";
-import { permissions } from "../src/theme/palette";
+import { palettes, permissions } from "../src/theme/palette";
 import { finalFrame } from "./render-helpers";
 
 const state = (): StateSnapshot => ({ permission_mode: "ask", target: "example.test", phase: "idle", task_constraints: {},
@@ -37,7 +37,7 @@ test("permission cycling waits for Python and uses the same four text colors in 
         await finalFrame(setup);
         const label = setup.renderer.root.findDescendantById("permission-label")!;
         const span = setup.captureSpans().lines[label.y].spans.find((span) => span.text.includes(permissions[current].label));
-        expect(span?.fg).toEqual(RGBA.fromHex(permissions[current].color));
+        expect(span?.fg).toEqual(RGBA.fromHex(palettes[theme][permissions[current].colorKey]));
         await act(async () => { setup.mockInput.pressTab({ shift: true }); });
         expect(controller.permission).toBe(current);
         expect(controller.overlay).toBeNull();

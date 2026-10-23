@@ -251,12 +251,22 @@ def _merge_config(base: VulnClawConfig, raw: dict[str, Any]) -> VulnClawConfig:
             session["context_compact_trigger_ratio"] = session["solve_compact_trigger_ratio"]
         raw["session"] = session
 
-    # Deep merge
+    # A saved terminal section contains complete palettes, without theme inheritance.
+    terminal_present = "terminal" in raw
+    terminal = raw.pop("terminal", None)
     _deep_merge(data, raw)
+    if terminal_present:
+        data["terminal"] = terminal
 
     try:
-        return VulnClawConfig(**data)
+        merged = VulnClawConfig(**data)
+        if not terminal_present and "terminal" not in base.model_fields_set:
+            merged.model_fields_set.discard("terminal")
+        return merged
     except ValidationError:
+        # An explicit main configuration remains authoritative for legacy migration.
+        if terminal_present:
+            base.model_fields_set.add("terminal")
         # If merged data is invalid, return base
         return base
 

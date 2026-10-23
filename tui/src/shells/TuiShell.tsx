@@ -34,17 +34,17 @@ export function TuiShell({ controller, workbench }: { controller: SessionControl
     : controller.permissionPending ? "Changing permission…"
       : controller.notice || (busy ? `Ctrl+C cancel · ${focusHint}` : focusHint);
   return <box width="100%" height="100%" flexDirection="column" backgroundColor={p.background}>
-    <box id="terminal-header" border={["top", "left", "right"]} borderColor={p.border} backgroundColor={p.panel} height={TUI_HEADER_ROWS} flexShrink={0} flexDirection="row">
+    <box id="terminal-header" border={["top", "left", "right"]} borderColor={p.border} backgroundColor={p.background} height={TUI_HEADER_ROWS} flexShrink={0} flexDirection="row">
       <text bg={p.action} fg={p.background}><b> VulnClaw </b></text>
       <box flexGrow={1} alignItems="center"><text fg={p.signal}>{visibleText(activity)}</text></box>
       {showProvider && <text fg={p.soft}>{visibleText(`│ ${provider} │ `)}</text>}
     </box>
     <Workbench controller={controller} model={workbench} width={width} height={available} now={now} />
     {!tooSmall && <>
-      <Composer controller={controller} active={!controller.overlay && !controller.approvals.length} joined />
+      <Composer controller={controller} active={!controller.overlay && !controller.approvals.length} framed />
       <PermissionStatus controller={controller} />
     </>}
-    <text id="hotbar" height={1} flexShrink={0} fg={p.muted} bg={p.panel}>{visibleText(hint)}</text>
+    <text id="hotbar" height={1} flexShrink={0} fg={p.muted} bg={p.background}>{visibleText(hint)}</text>
     <OverlayLayer controller={controller} width={width} />
   </box>;
 }

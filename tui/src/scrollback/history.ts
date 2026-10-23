@@ -61,7 +61,7 @@ export class HistoryQueue {
             tableOptions: { widthMode: "full", wrapMode: "word", borderColor: p.accent },
             renderNode: markdownNodes(surface.renderContext, theme, surface.width),
           }));
-          else box.add(new TextRenderable(surface.renderContext, { content: visibleText(text), wrapMode: "word" }));
+          else box.add(new TextRenderable(surface.renderContext, { content: visibleText(text), wrapMode: "word", fg: p.text }));
           surface.root.add(box);
           await surface.settle();
         }

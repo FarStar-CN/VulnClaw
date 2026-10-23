@@ -4,7 +4,7 @@ import { useKeyboard, useRenderer } from "@opentui/react";
 import stringWidth from "string-width";
 import { type SessionController, record } from "../session/controller";
 import { palettes, permissionInfo, severityColor } from "../theme/palette";
-import { visibleText } from "../components/content";
+import { disclosureIcon, disclosureWidth, visibleText } from "../components/content";
 import { Transcript, type ReadingPosition } from "../components/Transcript";
 import { geometry, MCP_LIST_ROWS, tuiChromeHeight, type ViewId, type WorkbenchState, type Region } from "./layout";
 import { activeAgentRows } from "./agents";
@@ -93,7 +93,7 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
     if (region.id === "status") {
       const state = controller.state;
       const last = record(state?.last_run);
-      const policy = permissionInfo(controller.permission);
+      const policy = permissionInfo(controller.permission, controller.theme);
       const rows = [
         ["Permission", policy.label, policy.color], ["Target", state?.target || "not selected", p.muted],
         ["Scope", `H${state?.task_constraints.allowed_hosts?.length ?? 0} P${state?.task_constraints.allowed_ports?.length ?? 0} A${state?.task_constraints.allowed_actions?.length ?? 0}`, p.muted],
@@ -116,11 +116,12 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
     }
     if (region.id === "capabilities") {
       const counter = `${controller.runtime?.mcp_ready ?? 0}/${mcpServers.length}`;
+      const mcpLabel = fitText(`${disclosureIcon(mcpExpanded)}MCP`, Math.max(1, region.content.width - stringWidth(counter)));
       return <box flexGrow={1} minHeight={0} flexDirection="column">
         <box height={1} flexShrink={0} flexDirection="row">
           <text id="mcp-toggle" height={1} flexShrink={0} fg={p.text}
             onMouseDown={(event) => { event.stopPropagation(); toggleMcp(); }}>
-            {fitText(`${mcpExpanded ? "▼" : "▶"} MCP`, Math.max(1, region.content.width - stringWidth(counter)))}
+            <b>{mcpLabel.slice(0, 1)}</b>{mcpLabel.slice(1)}
           </text>
           <box flexGrow={1} /><text id="mcp-count" height={1} fg={p.accent}>{counter}</text>
         </box>
@@ -154,9 +155,10 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
         backgroundColor={model.layout.focus === "findings" && !controller.inputFocused && index === findingSelection ? p.plate : p.panel}
         onMouseDown={() => { setFindingIndex(index); if (finding.evidence_refs?.length) setExpandedFinding((id) => id === finding.id ? null : finding.id); }}>
         <text wrapMode="word" fg={severityColor(finding.severity, controller.theme)}>
+          <b>{finding.evidence_refs?.length ? disclosureIcon(expandedFinding === finding.id) : " ".repeat(disclosureWidth)}</b>
           {finding.severity.toLowerCase() === "critical"
-            ? <b>{visibleText(`${finding.evidence_refs?.length ? expandedFinding === finding.id ? "▼" : "▶" : " "} [${finding.severity.toUpperCase()}] ${finding.title}`)}</b>
-            : visibleText(`${finding.evidence_refs?.length ? expandedFinding === finding.id ? "▼" : "▶" : " "} [${finding.severity.toUpperCase()}] ${finding.title}`)}
+            ? <b>{visibleText(`[${finding.severity.toUpperCase()}] ${finding.title}`)}</b>
+            : visibleText(`[${finding.severity.toUpperCase()}] ${finding.title}`)}
         </text>
         <text wrapMode="word" fg={p.muted}>{visibleText(`  ${finding.target}${finding.line ? `:${finding.line}` : ""}`)}</text>
         {expandedFinding === finding.id && finding.evidence_refs?.map((ref, i) => <text key={i} wrapMode="word" fg={p.soft}>
@@ -166,27 +168,32 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
     </scrollbox>;
   }
   const viewing = controller.agents.get(controller.source);
-  return <box id="workbench" ref={root} width={width} height={height} backgroundColor={p.panel}
+  return <box id="workbench" ref={root} width={width} height={height} backgroundColor={p.background}
     onMouseDrag={(event) => {
       if (!model.gesture) return;
       const point = local(event); model.update(point.x, point.y, layout); controller.changed();
     }}
     onMouseDragEnd={() => { if (model.gesture) { model.commit(layout); controller.changed(); } }}
     onMouseUp={() => { if (model.gesture) { model.commit(layout); controller.changed(); } }}>
+    {(["primary", "secondary"] as const).map((column) => {
+      const rect = layout.columns[column];
+      return rect.width > 0 && <box key={`background-${column}`} position="absolute" left={rect.x} top={rect.y}
+        width={rect.width} height={rect.height} backgroundColor={p.panel} />;
+    })}
     {layout.views.map((region) => {
       const collapsed = [...model.layout.primary, ...model.layout.secondary].find((view) => view.id === region.id)?.collapsed;
       const focused = model.layout.focus === region.id && !controller.inputFocused;
       const source = region.id === "output" ? ` · ${viewing?.name ?? controller.source}${viewing && !["running", "pending"].includes(viewing.status) ? ` (${viewing.status})` : ""}` : "";
       const pulse = controller.state?.task.active && Math.floor(now / 500) % 2 === 0;
       return <box id={`${region.id}-pane`} key={region.id} position="absolute" left={region.x} top={region.y}
-        width={region.width} height={region.height} backgroundColor={p.panel}
+        width={region.width} height={region.height} backgroundColor={region.id === "output" ? p.transcript : p.panel}
         onMouseDown={() => {
           if (controller.overlay || controller.approvals.length) return;
           controller.inputFocused = false; model.layout.focus = region.id; controller.changed();
         }}>
         <box position="absolute" left={region.content.x - region.x} top={region.content.y - region.y}
           width={region.content.width} height={region.content.height} flexDirection="column">
-          <box id={`title-${region.id}`} height={1} flexShrink={0} flexDirection="row"
+          <box id={`title-${region.id}`} height={1} flexShrink={0} flexDirection="row" backgroundColor={region.id === "output" ? p.transcript : p.title}
             onMouseDown={(event) => {
               event.stopPropagation();
               if (event.button !== MouseButton.LEFT || controller.overlay || controller.approvals.length) return;
@@ -194,14 +201,14 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
               const point = local(event); model.beginMove(region.id, point.x, point.y);
               controller.changed();
             }}>
-            {region.id !== "output" && <text id={`collapse-${region.id}`} height={1} width={1} flexShrink={0} selectable={false} fg={p.accent}
+            {region.id !== "output" && <text id={`collapse-${region.id}`} height={1} width={disclosureWidth} flexShrink={0} selectable={false} fg={p.accent}
               onMouseDown={(event) => {
                 event.stopPropagation();
                 if (event.button !== MouseButton.LEFT || controller.overlay || controller.approvals.length) return;
                 controller.inputFocused = false; model.collapse(region.id, layout); controller.changed();
-              }}>{collapsed ? "▶" : "▼"}</text>}
+              }}><b>{disclosureIcon(!collapsed)}</b></text>}
             <text height={1} flexGrow={1} wrapMode="none" selectable={false} fg={focused ? pulse ? p.accent : p.action : p.accent}>
-              {fitText(`${region.id === "output" ? "" : " "}${labels[region.id]}${region.id === "findings" ? ` (${controller.findings.length})` : ""}${source}${focused ? " *" : ""}${region.id === "output" && pulse ? " ●" : ""}`, region.content.width - (region.id === "output" ? 0 : 1))}
+              {fitText(`${labels[region.id]}${region.id === "findings" ? ` (${controller.findings.length})` : ""}${source}${focused ? " *" : ""}${region.id === "output" && pulse ? " ●" : ""}`, region.content.width - (region.id === "output" ? 0 : disclosureWidth))}
             </text>
           </box>
           <box flexDirection="column" flexGrow={1} minHeight={0} visible={!collapsed}>{content(region)}</box>
@@ -210,7 +217,7 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
     })}
     {layout.borders.map(({ rect, text }, index) => <text key={`border-${index}`} id={`border-${index}`}
       position="absolute" left={rect.x} top={rect.y} width={rect.width} height={rect.height}
-      zIndex={2} wrapMode="none" selectable={false} fg={p.border}>{text}</text>)}
+      zIndex={2} wrapMode="none" selectable={false} fg={p.border} bg={p.background}>{text}</text>)}
     {layout.sashes.map(({ sash, rect }, index) => <box key={`sash-${index}`} id={`sash-${index}`} position="absolute"
       left={rect.x} top={rect.y} width={rect.width} height={rect.height} zIndex={5}
       onMouseDown={(event) => {
