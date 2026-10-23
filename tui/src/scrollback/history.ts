@@ -1,6 +1,7 @@
 import { BoxRenderable, MarkdownRenderable, TextRenderable, type CliRenderer, type ScrollbackSurface } from "@opentui/core";
 import type { SessionController, Card } from "../session/controller";
 import type { MessageSnapshot } from "../transport/protocol.generated";
+import { cloneExecution, executionComplete, executionHistory, executionPresentation } from "../session/executions";
 import { sharedMarkdownStyle, markdownNodes } from "../components/MarkdownBody";
 import { visibleText } from "../components/content";
 import { palettes } from "../theme/palette";
@@ -39,8 +40,8 @@ export class HistoryQueue {
       const message = this.controller.messages.get(entry.id);
       const card = this.controller.cards.get(entry.id);
       if (!message && !card) continue;
-      if (message?.status === "streaming") break;
-      this.pending.push({ id: entry.id, message: message ? { ...message } : undefined, card: card ? { ...card } : undefined });
+      if (message?.status === "streaming" || (card?.execution && !executionComplete(card.execution))) break;
+      this.pending.push({ id: entry.id, message: message ? { ...message } : undefined, card: card ? { ...card, execution: card.execution ? cloneExecution(card.execution) : undefined } : undefined });
     }
     while (this.pending.length) {
       if (this.disposed) return;
@@ -52,12 +53,13 @@ export class HistoryQueue {
         const theme = this.controller.theme;
         const p = palettes[theme];
         const box = new BoxRenderable(surface.renderContext, { flexDirection: "column", width: "100%" });
+        const view = card?.execution ? executionPresentation(card.execution) : undefined;
         const label = message ? `${message.source} · ${statusLabel(message.role)} · ${statusLabel(message.status)}`
-          : `${card!.source} · ${card!.kind === "tool_call" ? card!.title : t(card!.title)}`;
+          : `${card!.source} · ${view ? view.expandedTitle ?? view.title : t(card!.title)}`;
         box.add(new TextRenderable(surface.renderContext, { content: visibleText(label), fg: p.accent }));
-        const text = message?.text ?? card!.text;
+        const text = message?.text ?? (card!.execution ? executionHistory(card!.execution) : card!.text);
         try {
-          if (message?.format === "markdown" || card?.format === "markdown") box.add(new MarkdownRenderable(surface.renderContext, {
+          if (message?.format === "markdown" || (!card?.execution && card?.format === "markdown")) box.add(new MarkdownRenderable(surface.renderContext, {
             content: visibleText(text), streaming: false, fg: p.text,
             syntaxStyle: sharedMarkdownStyle(this.renderer, theme),
             tableOptions: { widthMode: "full", wrapMode: "word", borderColor: p.accent },

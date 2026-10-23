@@ -35,8 +35,8 @@ const themeFields: [keyof Palette, string, string?][] = [
   ["permissionAutoReview", "Auto-review"], ["permissionFullAccess", "Full access"],
 ];
 
-export function ConfigForm({ controller, document, active, onDone }: {
-  controller: SessionController; document: Record<string, unknown>; active: boolean; onDone?: () => void;
+export function ConfigForm({ controller, document, active }: {
+  controller: SessionController; document: Record<string, unknown>; active: boolean;
 }) {
   const t = useI18n();
   const [current, setCurrent] = useState(document);
@@ -70,7 +70,6 @@ export function ConfigForm({ controller, document, active, onDone }: {
   const { width } = useTerminalDimensions();
   const categoryWidth = width < 76 ? 15 : 19;
   const labelWidth = Math.max(12, Math.min(27, Math.floor((Math.min(width, 104) - categoryWidth - 6) * 0.45)));
-  const done = onDone ?? (() => controller.dismiss());
   const rootSchema = record(current.schema);
   const validate = useMemo(() => Object.keys(record(current.schema)).length
     ? new Ajv({ allErrors: true, strict: false, validateFormats: false }).compile(record(current.schema)) : null, [current.schema]);
@@ -286,7 +285,7 @@ export function ConfigForm({ controller, document, active, onDone }: {
     else if (collection) { setCollection(null); select(0); }
     else if (server) { updateServer(null); select(0); }
     else if (theme) { updateTheme(null); select(0); }
-    else done();
+    else controller.dismiss();
   }
   useKeyboard((key) => {
     if (!active || connection || key.defaultPrevented) return;

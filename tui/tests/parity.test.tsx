@@ -9,7 +9,7 @@ import { LlmSettings } from "../src/components/LlmSettings";
 import { TaskForm } from "../src/components/TaskForm";
 import { activeAgentRows } from "../src/workbench/agents";
 import { WorkbenchState } from "../src/workbench/layout";
-import { palettes, permissions } from "../src/theme/palette";
+import { defaultThemeConfig, palettes, permissions } from "../src/theme/palette";
 import { finalFrame } from "./render-helpers";
 
 const state = (): StateSnapshot => ({ permission_mode: "ask", target: "example.test", phase: "idle", task_constraints: {},
@@ -32,7 +32,7 @@ test("permission cycling waits for Python and uses the same four text colors in 
     { width: 120, height: 36, kittyKeyboard: true, exitOnCtrlC: false });
   try {
     for (const theme of ["blue", "orange"] as const) {
-      await act(async () => { controller.setTheme(theme); });
+      await act(async () => { controller.applyConfigDocument({ config: { session: { language: "en" }, terminal: { ...defaultThemeConfig, theme } } }); });
       for (const [next, current] of [["ask", "read_only"], ["auto_review", "ask"], ["full_access", "auto_review"], ["read_only", "full_access"]] as const) {
         await finalFrame(setup);
         const label = setup.renderer.root.findDescendantById("permission-label")!;
@@ -152,7 +152,7 @@ test("agent groups keep active descendants and ended sources remain readable", a
   } finally { await act(async () => { await setup.dispose(); }); }
 });
 
-test("thinking and tool results start folded and the full original remains in the reader", async () => {
+test("thinking and tool records start folded and a sole result needs one expansion", async () => {
   const { controller } = session();
   const event = { protocol_version: 2, type: "message", task_id: "task", source: "main", format: "text", operation: "append" } as const;
   controller.receive({ ...event, message_id: "question", role: "user", text: "Read these observations." });
@@ -163,11 +163,17 @@ test("thinking and tool results start folded and the full original remains in th
   const setup = await testRender(<TuiShell controller={controller} workbench={new WorkbenchState()} />, { width: 140, height: 38 });
   try {
     let frame = await finalFrame(setup);
-    expect(frame).toContain("Thinking · 2 lines"); expect(frame).toContain("Result · 1 lines");
+    expect(frame).toContain("Thinking · 2 lines"); expect(frame).toContain("Returned");
     expect(frame).not.toContain("private reasoning fixture"); expect(frame).not.toContain("unabridged tool receipt");
     expect(frame).not.toContain("main · assistant");
-    await act(async () => { controller.readMessage(tool.id); });
+    const toolLabel = setup.renderer.root.findDescendantById(`execution-${tool.id}`)!;
+    await act(async () => { await setup.mockMouse.click(toolLabel.x + 1, toolLabel.y); });
     frame = await finalFrame(setup); expect(frame).toContain("Complete unabridged tool receipt.");
+    expect(setup.renderer.root.findDescendantById(`execution-${tool.id}-result`)).toBeUndefined();
+    const thinkingLabel = setup.renderer.root.findDescendantById("entry-thinking")!.getChildren()[1].getChildren()[0];
+    await act(async () => { await setup.mockMouse.click(thinkingLabel.x + 1, thinkingLabel.y); });
+    frame = await finalFrame(setup); expect(frame).toContain("private reasoning fixture"); expect(frame).toContain("second line");
+    expect(controller.overlay).toBeNull();
   } finally { await act(async () => { await setup.dispose(); }); }
 });
 

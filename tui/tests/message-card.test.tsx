@@ -4,14 +4,14 @@ import { testRender } from "@opentui/react/test-utils";
 import { MessageCard, ToolCard } from "../src/components/MessageCard";
 import { finalFrame } from "./render-helpers";
 
-for (const kind of ["log", "status", "tool_call", "tool_result"] as const) test(`${kind}: only the chevron and label toggle details`, async () => {
+for (const kind of ["log", "status"] as const) test(`${kind}: only the chevron and label toggle details`, async () => {
   const setup = await testRender(<ToolCard theme="blue" width={80} card={{ id: "fixture", source: "main", kind,
-    title: kind === "tool_call" ? "evidence_view" : "Log", text: "first preview\nDetailed receipt body", format: "text" }} />, { width: 80, height: 10 });
+    title: "Log", text: "first preview\nDetailed receipt body", format: "text" }} />, { width: 80, height: 10 });
   const detailsVisible = async () => (await finalFrame(setup)).split("\n").some((line) => line.trim() === "Detailed receipt body");
   try {
     expect(await detailsVisible()).toBe(false);
     const entry = setup.renderer.root.findDescendantById("entry-fixture")!;
-    expect((await finalFrame(setup)).trimStart()).toStartWith(kind === "tool_call" ? "〉→" : kind === "tool_result" ? "〉↳" : "〉Log");
+    expect((await finalFrame(setup)).trimStart()).toStartWith("〉Log");
     const previewX = entry.getChildren()[0].getChildren()[1].x;
     for (const x of [35, 75]) {
       await act(async () => { await setup.mockMouse.click(entry.x + x, entry.y); });
@@ -19,7 +19,7 @@ for (const kind of ["log", "status", "tool_call", "tool_result"] as const) test(
     }
     await act(async () => { await setup.mockMouse.click(entry.x + 1, entry.y); });
     expect(await detailsVisible()).toBe(true);
-    expect((await finalFrame(setup)).trimStart()).toStartWith(kind === "tool_call" ? "﹀→" : kind === "tool_result" ? "﹀↳" : "﹀Log");
+    expect((await finalFrame(setup)).trimStart()).toStartWith("﹀Log");
     expect(entry.getChildren()[0].getChildren()[1].x).toBe(previewX);
     await act(async () => { await setup.mockMouse.click(entry.x + 30, entry.y + 2); });
     expect(await detailsVisible()).toBe(true);
@@ -29,7 +29,7 @@ for (const kind of ["log", "status", "tool_call", "tool_result"] as const) test(
 });
 
 test("thinking toggles through its label and chevron while its line count stays inert", async () => {
-  const setup = await testRender(<MessageCard id="thinking" role="reasoning" source="main" text="Detailed thought body"
+  const setup = await testRender(<MessageCard id="thinking" role="reasoning" text="Detailed thought body"
     format="text" status="completed" theme="blue" width={80} showRole={false} />, { width: 80, height: 10 });
   try {
     expect(await finalFrame(setup)).toContain("〉Thinking · 1 lines");

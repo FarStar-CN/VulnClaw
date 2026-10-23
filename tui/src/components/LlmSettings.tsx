@@ -82,7 +82,7 @@ export function LlmSettings({ controller, document, active, onSave, onCancel }: 
     setBusy(true); setError(""); setFeedback("Saving…");
     try {
       if (onSave) { await onSave(editedValues()); return; }
-      const result = await controller.control("config.write", editedValues());
+      await controller.control("config.write", editedValues());
       controller.notify(t("Configuration saved.")); controller.dismiss();
     } catch (error) { setError(String(error)); setFeedback(""); }
     finally { setBusy(false); }

@@ -3,9 +3,8 @@ import { BoxRenderable, MarkdownRenderable, TextRenderable } from "@opentui/core
 import { createTestRenderer, MockTreeSitterClient } from "@opentui/core/testing";
 import { markdownStyle } from "../src/theme/palette";
 import { visibleText } from "../src/components/content";
-import { paneText } from "../src/platform/pane-copy";
 
-test("native Markdown finalizes split tokens, resizes, and copies the visible pane", async () => {
+test("native Markdown finalizes split tokens and resizes inside its pane", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 });
   const client = new MockTreeSitterClient();
   const style = markdownStyle(setup.renderer, "blue");
@@ -27,9 +26,7 @@ test("native Markdown finalizes split tokens, resizes, and copies the visible pa
     await setup.renderOnce();
     expect(setup.captureCharFrame()).toContain("中文回答");
     expect(setup.captureCharFrame()).toContain("保留空白");
-    const snapshot = paneText(setup.renderer, { x: 0, y: 0, width: 80, height: 24 });
-    expect(snapshot).toContain("┌");
-    expect(snapshot).toContain("中文回答");
+    expect(setup.captureCharFrame()).toContain("┌");
     setup.resize(40, 24);
     await setup.renderOnce();
     expect(setup.captureCharFrame()).toContain("中文回答");

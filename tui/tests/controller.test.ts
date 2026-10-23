@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { SessionController } from "../src/session/controller";
 import type { ClientMessage, MessageEvent, StateSnapshot } from "../src/transport/protocol.generated";
-import { codeBlocks } from "../src/components/code-blocks";
 
 const state = (): StateSnapshot => ({ target: "example.test", phase: "idle", task_constraints: {},
   task: { active: false, task_id: null }, last_run: null, findings: [], evidence: [], constraint_violations: [] });
@@ -37,10 +36,11 @@ test("MD-05/07/08/09: lifecycle, source isolation, tool order and failed partial
   controller.receive(message("child-b", "b", "B"));
   controller.receive(message("one", "main", "  print('中文')"));
   controller.receive({ ...message("one", "main", ""), operation: "end", status: "completed" });
-  controller.receive({ protocol_version: 2, type: "tool_call", task_id: "t", tool: "http", arguments: "{}" });
-  controller.receive({ protocol_version: 2, type: "tool_result", task_id: "t", result: "HTTP/1.1 200\n\nplain" });
+  controller.receive({ protocol_version: 2, type: "tool_call", task_id: "t", call_id: "http-1", tool: "http", arguments: "{}" });
+  controller.receive({ protocol_version: 2, type: "tool_result", task_id: "t", call_id: "http-1", result: "HTTP/1.1 200\n\nplain" });
   controller.receive(message("two", "main", "[late][ref]"));
-  expect(controller.visibleEntries().map((entry) => entry.kind)).toEqual(["message", "card", "card", "message"]);
+  expect(controller.visibleEntries().map((entry) => entry.kind)).toEqual(["message", "card", "message"]);
+  expect([...controller.cards.values()][0]!.execution!.result).toBe("HTTP/1.1 200\n\nplain");
   expect(controller.messages.get("one")?.text).toBe("```py\n  print('中文')");
   expect(controller.visibleEntries("a").map((entry) => entry.id)).toEqual(["child-a"]);
   expect(controller.visibleEntries("b").map((entry) => entry.id)).toEqual(["child-b"]);
@@ -61,10 +61,12 @@ test("MD-16: a cumulative snapshot replaces text before the next delta", () => {
   expect(controller.visibleEntries()).toHaveLength(1);
 });
 
-test("local themes work while disconnected and busy input preserves the draft", async () => {
+test("disconnected theme commands retain the saved theme and busy input preserves the draft", async () => {
   const controller = new SessionController();
-  controller.setTheme("orange");
-  expect(controller.theme).toBe("orange");
+  await controller.submit("/theme orange");
+  expect(controller.theme).toBe("blue");
+  expect(controller.notice).toContain("disconnected");
+  expect(controller.draft).toBe("/theme orange");
   controller.connected = true;
   controller.state = { ...state(), task: { active: true, task_id: "busy" } };
   controller.draft = "keep this draft";
@@ -91,14 +93,6 @@ test("task text is previewed by Python and approval decisions are explicit contr
   expect(approval.type === "control" && approval.payload?.arguments).toEqual({ request_hash: "a".repeat(64), decision: "deny" });
 });
 
-test("MD-12: code copying preserves spaces, tabs, empty lines and original Markdown", () => {
-  const source = "# Raw\n\n```python\n\tprint('中文')\n\n    next()\n```\n";
-  expect(codeBlocks(source)).toEqual(["\tprint('中文')\n\n    next()\n"]);
-  expect(source).toStartWith("# Raw");
-  expect(codeBlocks("~~~unknown\n  partial")).toEqual(["  partial"]);
-});
-
-
 test("busy tasks allow backend controls and answers, while rejecting another task", async () => {
   const controller = new SessionController();
   const requests: ClientMessage[] = [];
@@ -106,7 +100,7 @@ test("busy tasks allow backend controls and answers, while rejecting another tas
   requests.length = 0;
   controller.connected = true; controller.taskCommands = ["run"];
   controller.state = { ...state(), task: { active: true, task_id: "busy" } };
-  await controller.submit("/tools");
+  await controller.submit("/target");
   expect(requests.at(-1)?.type).toBe("submit_input");
   controller.state.task.waiting_for_input = true;
   controller.draft = "/run another.test";

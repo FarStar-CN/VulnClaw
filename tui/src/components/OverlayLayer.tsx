@@ -1,14 +1,16 @@
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import type { ScrollBoxRenderable } from "@opentui/core";
-import type { SessionController } from "../session/controller";
+import { scopeSummary, type SessionController } from "../session/controller";
 import { palettes } from "../theme/palette";
 import { useClock } from "../theme/activity";
 import { TaskForm } from "./TaskForm";
+import { ScopeForm } from "./ScopeForm";
 import { ConfigForm } from "./ConfigForm";
 import { LlmSettings } from "./LlmSettings";
-import { Reader } from "./Reader";
+import { DataDialog } from "./DataDialog";
+import { ExperiencePanel } from "./ExperiencePanel";
 import { visibleText } from "./content";
-import { useI18n, statusLabel } from "../i18n";
+import { useI18n } from "../i18n";
 
 export function OverlayLayer({ controller, width }: { controller: SessionController; width: number }) {
   const t = useI18n();
@@ -30,8 +32,8 @@ export function OverlayLayer({ controller, width }: { controller: SessionControl
     key.preventDefault(); key.stopPropagation();
   });
   if (!approval && !overlay) return null;
-  const modalWidth = Math.min(width, approval ? 78 : overlay?.kind === "task" ? 88 : overlay?.kind === "llm" ? 92 : overlay?.kind === "config" ? 104 : width);
-  const modalHeight = Math.max(4, Math.min(height, approval ? 18 : overlay?.kind === "llm" ? 22 : overlay?.kind === "task" ? 32 : overlay?.kind === "config" ? 34 : height));
+  const modalWidth = Math.min(width, approval ? 78 : overlay?.kind === "experience" ? 120 : ["task", "scope"].includes(overlay?.kind ?? "") ? 88 : overlay?.kind === "llm" ? 92 : overlay?.kind === "config" ? 104 : width);
+  const modalHeight = Math.max(4, Math.min(height, approval ? 18 : overlay?.kind === "experience" ? Math.max(4, height - 2) : overlay?.kind === "llm" ? 22 : ["task", "scope"].includes(overlay?.kind ?? "") ? 32 : overlay?.kind === "config" ? 34 : height));
   const deadline = approval?.request_hash ? controller.approvalDeadlines.get(approval.request_hash) : undefined;
   const remaining = deadline !== undefined && Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - now) / 1000)) : null;
   return <box id="overlay-pane" position="absolute" top={0} left={0} width="100%" height="100%" zIndex={20}
@@ -39,19 +41,23 @@ export function OverlayLayer({ controller, width }: { controller: SessionControl
     <box position="absolute" left={Math.floor((width - modalWidth) / 2)} top={Math.max(0, Math.floor((height - modalHeight) / 2))}
       width={modalWidth} height={modalHeight} flexDirection="column" visible={!approval}>
       {overlay?.kind === "task" && <TaskForm controller={controller} initial={overlay.preview} original={overlay.original} active={!approval} />}
+      {overlay?.kind === "scope" && <ScopeForm initial={overlay.preview} loading={overlay.loading} active={!approval}
+        readOnly={!!controller.state?.task.active} theme={controller.theme} summary={scopeSummary}
+        onPreview={(scope) => controller.control("session.scope.preview", { scope })}
+        onSave={(scope, reset) => controller.control(reset ? "session.scope.reset" : "session.scope.update", reset ? {} : { scope })}
+        onSaved={(result) => controller.scopeSaved(result as Record<string, unknown>)} onCancel={() => controller.dismiss()} />}
+      {overlay?.kind === "experience" && <ExperiencePanel initial={overlay.data} loading={overlay.loading} error={overlay.error}
+        active={!approval} disabled={!!controller.state?.task.active} theme={controller.theme} width={modalWidth}
+        onList={(status) => controller.control("experience.list", { status })}
+        onReview={(id, status) => controller.control(status === "approved" ? "experience.approve" : "experience.reject", { lesson_id: id })}
+        onEdit={(id, changes) => controller.control("experience.edit", { lesson_id: id, ...changes })}
+        onClose={() => controller.dismiss()} onNotify={(message) => controller.notify(message)} />}
       {overlay?.kind === "llm" && <LlmSettings controller={controller} document={overlay.document} active={!approval} />}
       {overlay?.kind === "config" && <ConfigForm controller={controller} document={overlay.document} active={!approval} />}
-      {overlay?.kind === "reader" && (() => {
-        const message = controller.messages.get(overlay.messageId), card = controller.cards.get(overlay.messageId);
-        const item = message ?? card;
-        return item ? <Reader controller={controller} title={message ? `${message.source} · ${statusLabel(message.role)} · ${statusLabel(message.status)}`
-          : `${card!.source} · ${card!.kind === "tool_call" ? card!.title : t(card!.title)}`}
-          text={item.text} format={item.format === "markdown" ? "markdown" : "text"} messageId={overlay.messageId}
-          active={!approval} width={modalWidth} /> : <text>{t("Message unavailable")}</text>;
-      })()}
-      {overlay?.kind === "data" && <Reader controller={controller} title={overlay.title}
+      {overlay?.kind === "data" && <DataDialog title={overlay.title}
         text={typeof overlay.data === "string" ? overlay.data : JSON.stringify(overlay.data, null, 2)}
-        format={overlay.format} active={!approval} width={modalWidth} />}
+        active={!approval} theme={controller.theme}
+        onClose={() => controller.dismiss()} onNotify={(message) => controller.notify(message)} />}
     </box>
     {approval && <box id="approval-pane" position="absolute" left={Math.floor((width - modalWidth) / 2)} top={Math.max(0, Math.floor((height - modalHeight) / 2))}
       width={modalWidth} height={modalHeight} title={t("Execution approval")} border borderColor={p.error} backgroundColor={p.panel} flexDirection="column" paddingX={1}>

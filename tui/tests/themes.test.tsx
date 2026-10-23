@@ -86,7 +86,7 @@ test("custom theme colors reach the native transcript, title, logo, composer, pe
     composerBorder: "#66ddaa", permissionAsk: "#ddaa66", codeString: "#cc88aa" };
   configureThemes({ theme: "forest", themes: { forest } });
   const controller = new SessionController(); controller.connected = true; controller.notice = "";
-  controller.setTheme("forest");
+  controller.applyConfigDocument({ config: { session: { language: "en" }, terminal: { theme: "forest", themes: { forest } } } });
   controller.receive({ protocol_version: 2, type: "message", task_id: "fixture", source: "main", role: "assistant",
     message_id: "fixture", operation: "append", format: "markdown", text: '```python\nprint("configured")\n```' });
   const setup = await testRender(<TuiShell controller={controller} workbench={new WorkbenchState()} />, { width: 120, height: 36 });
@@ -159,18 +159,15 @@ test("replacing the active theme with a disjoint theme map refreshes mounted con
     expect(span?.fg).toEqual(RGBA.fromHex("#123456"));
   } finally { await act(async () => { await setup.dispose(); }); configureThemes(defaultThemeConfig); }
 });
-for (const kind of ["config", "llm", "task", "reader", "data", "approval"] as const) test(`${kind} dialog adopts saved colors while open`, async () => {
+for (const kind of ["config", "llm", "task", "scope", "experience", "data", "approval"] as const) test(`${kind} dialog adopts saved colors while open`, async () => {
   configureThemes(defaultThemeConfig);
   const controller = new SessionController(); controller.connected = true; controller.notice = "";
   if (kind === "config") controller.overlay = { kind, document: { config: { terminal: structuredClone(defaultThemeConfig), session: { language: "en" } } } };
   if (kind === "llm") controller.overlay = { kind, document: { provider: "fixture", model: "fixture", providers: [] } };
   if (kind === "task") controller.overlay = { kind, preview: { task: { command: "run", target: "fixture.invalid", options: {} } }, original: "/run fixture.invalid" };
-  if (kind === "reader") {
-    controller.receive({ protocol_version: 2, type: "message", task_id: "fixture", source: "main", role: "assistant",
-      message_id: "read", operation: "append", format: "markdown", text: "reader content" });
-    controller.readMessage("read");
-  }
-  if (kind === "data") controller.overlay = { kind, title: "Data", format: "text", data: "plain data" };
+  if (kind === "scope") controller.overlay = { kind, loading: false, preview: { scope: {}, target: "fixture.invalid", constraints: {} } };
+  if (kind === "experience") controller.overlay = { kind, loading: false, data: { status: "pending", lessons: [] } };
+  if (kind === "data") controller.overlay = { kind, title: "Data", data: "plain data" };
   if (kind === "approval") controller.receive({ protocol_version: 2, type: "approval_required", task_id: "fixture",
     request_hash: "a".repeat(64), question: "synthetic approval" });
   const setup = await testRender(<TuiShell controller={controller} workbench={new WorkbenchState()} />, { width: 120, height: 40 });
@@ -181,12 +178,12 @@ for (const kind of ["config", "llm", "task", "reader", "data", "approval"] as co
       theme: "blue", themes: { ...defaultThemeConfig.themes, blue: next },
     } } }); });
     await finalFrame(setup);
-    const id = kind === "config" ? "settings-pane" : kind === "task" ? "form-pane" : kind === "reader" || kind === "data" ? "reader-pane" : kind + "-pane";
+    const id = kind === "config" ? "settings-pane" : ["task", "scope"].includes(kind) ? "form-pane" : kind + "-pane";
     const pane = setup.renderer.root.findDescendantById(id)!;
     expect(pane).toBeDefined();
     let end = 0;
     const corner = setup.captureSpans().lines[pane.y].spans.find(span => { end += span.width; return pane.x < end; })!;
     expect(corner.bg).toEqual(RGBA.fromHex(next.panel));
-    expect(corner.fg).toEqual(RGBA.fromHex(kind === "approval" ? next.error : kind === "reader" || kind === "data" ? next.accent : next.action));
+    expect(corner.fg).toEqual(RGBA.fromHex(kind === "approval" ? next.error : kind === "data" ? next.accent : next.action));
   } finally { await act(async () => { await setup.dispose(); }); configureThemes(defaultThemeConfig); }
 });

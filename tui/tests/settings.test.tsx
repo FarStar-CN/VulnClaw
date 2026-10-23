@@ -17,7 +17,7 @@ function fixture() {
       session: { language: "auto", show_thinking: false, auto_save: true, output_dir: "./output", runs_dir: null,
         report_format: "markdown", engine: "solve", solve_max_steps: 240, solve_max_tool_rounds: 6,
         solve_max_parallel: 1, max_rounds: 15, context_auto_compact: true, context_compact_trigger_ratio: 0.7,
-        solve_auto_compact: false },
+        solve_auto_compact: false, experience_enabled: false },
       safety: { permission_mode: "ask", trusted_commands: ["git diff"], approval_timeout_seconds: 300 },
       mcp: { servers: { existing: { name: "existing", enabled: true, priority: 1, description: "",
         transport: { type: "stdio", command: "fixture", args: [], env: { TOKEN: "***" }, startup_timeout: 30000, tool_timeout: 300000 } } } },
@@ -36,6 +36,7 @@ function fixture() {
         solve_max_steps: { type: "integer", description: "Execution step budget." },
         context_compact_trigger_ratio: { type: "number", minimum: 0.1, maximum: 0.95, description: "Compact before the context fills." },
         solve_auto_compact: { type: "boolean", description: "Deprecated alias." },
+        experience_enabled: { type: "boolean", default: false },
       } },
       MCPServerConfig: { type: "object", properties: { transport: { $ref: "#/$defs/Transport" } } },
       Transport: { type: "object", properties: { args: { type: "array", items: { type: "string" } },
@@ -114,6 +115,18 @@ test("settings keeps categories and footer visible, uses engine-specific fields 
     await act(async () => { setup.resize(64, 22); });
     const footer = setup.renderer.root.findDescendantById("settings-footer")!;
     await finalFrame(setup); expect(footer.y + footer.height).toBeLessThanOrEqual(22);
+  } finally { await setup.dispose(); }
+});
+
+test("automatic experience learning is off by default and saves explicit opt-in and opt-out", async () => {
+  const setup = await settings();
+  try {
+    await setup.click("settings-category-advanced");
+    expect(await finalFrame(setup)).toContain("Automatic experience");
+    await setup.activate("session.experience_enabled"); await setup.save();
+    expect(setup.requests.at(-1)).toEqual({ "session.experience_enabled": true });
+    await setup.activate("session.experience_enabled"); await setup.save();
+    expect(setup.requests.at(-1)).toEqual({ "session.experience_enabled": false });
   } finally { await setup.dispose(); }
 });
 

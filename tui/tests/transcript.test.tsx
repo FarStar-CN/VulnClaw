@@ -4,8 +4,33 @@ import { TextBufferRenderable, type Renderable, type ScrollBoxRenderable } from 
 import { testRender } from "@opentui/react/test-utils";
 import { SessionController } from "../src/session/controller";
 import { TuiShell } from "../src/shells/TuiShell";
+import { ReplShell } from "../src/shells/ReplShell";
 import { WorkbenchState } from "../src/workbench/layout";
 import { finalFrame } from "./render-helpers";
+
+for (const mode of ["tui", "repl"] as const) test(`${mode}: role labels preserve the conversation and composer draft`, async () => {
+  const controller = new SessionController(); controller.connected = true; controller.notice = "";
+  controller.draft = "preserved draft";
+  const shell = mode === "tui" ? <TuiShell controller={controller} workbench={new WorkbenchState()} /> : <ReplShell controller={controller} />;
+  const setup = await testRender(shell, { width: 120, height: 40, screenMode: mode === "repl" ? "split-footer" : "alternate-screen",
+    footerHeight: 12, externalOutputMode: mode === "repl" ? "capture-stdout" : "passthrough" });
+  try {
+    for (const role of ["user", "assistant", "tool", "reasoning"] as const) {
+      await act(async () => {
+        controller.messages.clear(); controller.entries = [];
+        controller.receive({ protocol_version: 2, type: "message", task_id: "fixture", message_id: role,
+          source: "main", role, format: "text", operation: "append", text: "Conversation content" });
+      });
+      await finalFrame(setup);
+      const label = setup.renderer.root.findDescendantById(`entry-${role}`)!.getChildren()[0];
+      await act(async () => { await setup.mockMouse.click(label.x + 1, label.y); });
+      expect(controller.overlay).toBeNull();
+      expect(controller.messages.get(role)?.text).toBe("Conversation content");
+      expect(controller.draft).toBe("preserved draft");
+      expect(await finalFrame(setup)).toContain("preserved draft");
+    }
+  } finally { await act(async () => { await setup.dispose(); }); }
+});
 
 function overflowingText(node: Renderable): TextBufferRenderable | undefined {
   if (node instanceof TextBufferRenderable && node.maxScrollY > 0) return node;
@@ -14,7 +39,7 @@ function overflowingText(node: Renderable): TextBufferRenderable | undefined {
   }
 }
 
-for (const kind of ["log", "status", "tool_call"] as const) test(`${kind}: overflowing message forwards the wheel to the transcript without scrolling itself`, async () => {
+for (const kind of ["log", "status"] as const) test(`${kind}: overflowing message forwards the wheel to the transcript without scrolling itself`, async () => {
   const controller = new SessionController(); controller.connected = true; controller.notice = "";
   controller.draft = "preserved draft";
   const preview = "overflow preview ".repeat(50);

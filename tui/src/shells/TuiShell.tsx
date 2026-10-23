@@ -28,10 +28,10 @@ export function TuiShell({ controller, workbench }: { controller: SessionControl
   const provider = controller.runtime ? t("provider: {provider}", { provider: controller.runtime.config_ready ? controller.runtime.provider : t("not configured") }) : "";
   const showProvider = !!provider && width >= 17 + stringWidth(activity) + stringWidth(provider);
   const focusHint = controller.inputFocused ? t("Enter submit · Shift+Enter newline · Tab complete · Shift+Tab permission")
-    : workbench.layout.focus === "subagents" ? t("↑↓ select agent · Enter view · Ctrl+←/→ pane")
+    : workbench.layout.focus === "subagents" ? t("↑↓ select agent/directory · Enter view/toggle · Ctrl+←/→ pane")
       : workbench.layout.focus === "findings" ? t("↑↓ select finding · Enter evidence · Ctrl+←/→ pane")
         : workbench.layout.focus === "capabilities" ? t("Enter expand/collapse MCP · ↑↓/PgUp/PgDn scroll · Ctrl+←/→ pane")
-        : t("↑↓/PgUp/PgDn scroll · Ctrl+←/→ pane · type to compose");
+        : t("Alt+↑/↓ select · Enter expand · ↑↓/PgUp/PgDn scroll");
   const hint = workbench.gesture ? t(workbench.gesture.kind === "move" ? "Move pane · Release to dock · Esc cancel" : "Resize panes · Release to save · Esc cancel")
     : controller.permissionPending ? t("Changing permission…")
       : controller.notice || (busy ? `${t("Ctrl+C cancel")} · ${focusHint}` : focusHint);

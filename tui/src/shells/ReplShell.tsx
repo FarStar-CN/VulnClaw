@@ -33,7 +33,7 @@ export function ReplShell({ controller }: { controller: SessionController }) {
   }, [renderer, controller.overlay, controller.approvals.length]);
   const pending = controller.visibleEntries().filter((entry) => !queue.committed.has(entry.id));
   return <box width="100%" height="100%" flexDirection="column" backgroundColor={p.background}>
-    <Transcript controller={controller} width={width - 2} entries={pending} positions={positions} />
+    <Transcript controller={controller} width={width - 2} entries={pending} positions={positions} focused={!controller.inputFocused} />
     <Composer controller={controller} active={!controller.overlay && !controller.approvals.length} />
     <PermissionStatus controller={controller} />
     <text fg={p.muted}>{visibleText(queue.error ? `${queue.error} · ${t("/history-retry resumes pending output")}` : controller.notice)}</text>

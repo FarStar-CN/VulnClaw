@@ -5,6 +5,65 @@ import { configureThemes, defaultThemeConfig } from "../src/theme/palette";
 import { HistoryQueue } from "../src/scrollback/history";
 import { SessionController } from "../src/session/controller";
 
+test("REPL dispatch history waits for every declared member and commits once", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, footerHeight: 8,
+    screenMode: "split-footer", externalOutputMode: "capture-stdout" });
+  const controller = new SessionController(), queue = new HistoryQueue(setup.renderer, controller);
+  const envelope = { protocol_version: 2, task_id: "batch" } as const;
+  const dispatch_batch = { id: "wave", call_ids: ["first", "second"] as [string, string] };
+  try {
+    for (const call_id of dispatch_batch.call_ids) controller.receive({ ...envelope, type: "tool_call", call_id,
+      dispatch_batch, tool: "agent_run", arguments: JSON.stringify({ description: call_id, agent_type: "researcher" }) });
+    controller.receive({ ...envelope, type: "tool_result", call_id: "second", result: "hidden model envelope",
+      structured_content: { ok: true, status: "completed", summary: "Second business summary" } });
+    await queue.drain(); expect(setup.externalOutput.takeText()).toBe("");
+    controller.receive({ ...envelope, type: "tool_result", call_id: "first", result: "hidden model envelope",
+      structured_content: { ok: true, status: "failed", summary: "First partial summary", parent_evidence_ids: ["e100"] } });
+    await queue.drain();
+    const output = setup.externalOutput.takeText();
+    expect(output.split("Dispatch subagents")).toHaveLength(2);
+    expect(output).toContain("Second business summary"); expect(output).toContain("First partial summary");
+    expect(output).toContain("e100"); expect(output).not.toContain("hidden model envelope");
+    await queue.drain(); expect(setup.externalOutput.takeText()).toBe("");
+    expect(queue.committed.size).toBe(1);
+  } finally { queue.dispose(); await setup.dispose(); }
+});
+
+test("REPL skill history contains its status and never its reference body", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, footerHeight: 8,
+    screenMode: "split-footer", externalOutputMode: "capture-stdout" });
+  const controller = new SessionController(), queue = new HistoryQueue(setup.renderer, controller);
+  const envelope = { protocol_version: 2, task_id: "skill", call_id: "skill" } as const;
+  try {
+    controller.receive({ ...envelope, type: "tool_call", tool: "load_skill_reference", arguments: '{"reference_name":"web.md"}' });
+    controller.receive({ ...envelope, type: "tool_execution", operation_id: "skill", kind: "tool", status: "completed" });
+    controller.receive({ ...envelope, type: "tool_result", result: "SECRET REFERENCE BODY", structured_content: { text: "SECRET REFERENCE BODY" } });
+    await queue.drain();
+    const output = setup.externalOutput.takeText();
+    expect(output).toContain("Load skill reference"); expect(output).toContain("Loaded successfully");
+    expect(output).not.toContain("SECRET REFERENCE BODY");
+  } finally { queue.dispose(); await setup.dispose(); }
+});
+
+test("execution history waits for the result and commits the grouped record once", async () => {
+  const setup = await createTestRenderer({ width: 60, height: 24, footerHeight: 8,
+    screenMode: "split-footer", externalOutputMode: "capture-stdout" });
+  const controller = new SessionController(), queue = new HistoryQueue(setup.renderer, controller);
+  const envelope = { protocol_version: 2, task_id: "t", call_id: "call" } as const;
+  try {
+    controller.receive({ ...envelope, type: "tool_call", tool: "shell_command", arguments: "{}" });
+    controller.receive({ ...envelope, type: "tool_execution", operation_id: "op", kind: "command",
+      status: "completed", command: "printf grouped", stdout: "grouped output", exit_code: 0 });
+    await queue.drain(); expect(setup.externalOutput.takeText()).toBe("");
+    controller.receive({ ...envelope, type: "tool_result", result: "Command: printf grouped" });
+    await queue.drain();
+    const output = setup.externalOutput.takeText();
+    expect(output.split("printf grouped")).toHaveLength(2);
+    expect(output.split("grouped output")).toHaveLength(2);
+    await queue.drain(); expect(setup.externalOutput.takeText()).toBe("");
+  } finally { queue.dispose(); await setup.dispose(); }
+});
+
 test("MD-06/07/10: completed Markdown, tool and later body commit in event order once", async () => {
   const setup = await createTestRenderer({ width: 60, height: 24, footerHeight: 8,
     screenMode: "split-footer", externalOutputMode: "capture-stdout" });
@@ -18,8 +77,8 @@ test("MD-06/07/10: completed Markdown, tool and later body commit in event order
     expect(setup.externalOutput.take()).toHaveLength(0);
     controller.receive({ ...event, operation: "append", text: "\n\n[ref]: https://example.test" });
     controller.receive({ ...event, operation: "end", status: "completed" });
-    controller.receive({ protocol_version: 2, type: "tool_call", task_id: "t", tool: "probe", arguments: "{}" });
-    controller.receive({ protocol_version: 2, type: "tool_result", task_id: "t", result: "second result" });
+    controller.receive({ protocol_version: 2, type: "tool_call", task_id: "t", call_id: "history-tool", tool: "probe", arguments: "{}" });
+    controller.receive({ protocol_version: 2, type: "tool_result", task_id: "t", call_id: "history-tool", result: "second result" });
     controller.receive({ ...event, message_id: "two", operation: "append", text: "third body" });
     controller.receive({ ...event, message_id: "two", operation: "end", status: "cancelled" });
     await queue.drain(); await setup.renderOnce();

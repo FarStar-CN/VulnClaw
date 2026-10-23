@@ -35,7 +35,7 @@ export function useI18n(): typeof t {
 
 const statuses: Record<string, string> = {
   pending: "Pending", queued: "Queued", running: "Running", streaming: "Streaming",
-  completed: "Completed", done: "Completed", cancelled: "Cancelled", failed: "Failed", error: "Error",
+  completed: "Completed", done: "Completed", cancelled: "Cancelled", failed: "Failed", killed: "Killed", error: "Error",
   interrupted: "Interrupted", stopped: "Stopped", no_path: "No viable path", needs_user: "Needs review",
   budget: "Budget exhausted", idle: "Idle", approved: "Approved", denied: "Denied", expired: "Expired",
   user: "You", assistant: "Assistant", tool: "Tool", reasoning: "Thinking",

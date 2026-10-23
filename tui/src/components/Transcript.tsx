@@ -1,7 +1,8 @@
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CodeRenderable, TextBufferRenderable, type Renderable, type ScrollBoxRenderable } from "@opentui/core";
-import { useRenderer } from "@opentui/react";
+import { useKeyboard, useRenderer } from "@opentui/react";
 import type { SessionController, Entry } from "../session/controller";
+import { ExecutionCard, type ExecutionNavigation } from "./ExecutionCard";
 import { MessageCard, ToolCard } from "./MessageCard";
 import { palettes } from "../theme/palette";
 import { useI18n } from "../i18n";
@@ -16,6 +17,25 @@ export function Transcript({ controller, width, entries, positions, focused = fa
   const messageText = useRef(new WeakSet<TextBufferRenderable>());
   const renderer = useRenderer();
   const source = controller.source;
+  const actions = useMemo(() => new Map<string, () => void>(), []);
+  const expanded = useMemo(() => new Map<string, boolean>(), []);
+  const [selected, setSelected] = useState("");
+  const selectedAction = useRef("");
+  const select = (id: string) => { selectedAction.current = id; setSelected(id); };
+  const navigation: ExecutionNavigation = { actions, expanded, selected, select };
+  useKeyboard((key) => {
+    if (key.defaultPrevented || !focused || controller.inputFocused || controller.overlay || controller.approvals.length) return;
+    const candidates = [...actions.keys()].map((id) => ({ id, node: renderer.root.findDescendantById(id) }))
+      .filter((item) => item.node && !item.node.isDestroyed).sort((a, b) => a.node!.y - b.node!.y || a.node!.x - b.node!.x);
+    if ((key.option || key.meta) && ["up", "down"].includes(key.name) && candidates.length) {
+      key.preventDefault(); key.stopPropagation();
+      const index = candidates.findIndex((item) => item.id === selectedAction.current);
+      const next = candidates[Math.max(0, Math.min(candidates.length - 1, index + (key.name === "up" ? -1 : 1)))]!;
+      select(next.id); scroll.current?.scrollChildIntoView(next.id);
+    } else if (key.name === "return" && !controller.draft && actions.has(selectedAction.current)) {
+      key.preventDefault(); key.stopPropagation(); actions.get(selectedAction.current)!();
+    }
+  });
   useLayoutEffect(() => {
     const saved = positions.get(source);
     let restoring = true;
@@ -60,7 +80,9 @@ export function Transcript({ controller, width, entries, positions, focused = fa
   const visible = entries ?? controller.visibleEntries();
   let previousRole = "";
   return <scrollbox id="transcript-scroll" ref={scroll} flexGrow={1} width="100%"
-    stickyScroll stickyStart="bottom" scrollX={false} focused={focused}>
+    stickyScroll stickyStart="bottom" scrollX={false} focused={focused} onMouseDown={() => {
+      if (!controller.overlay && !controller.approvals.length) { controller.inputFocused = false; controller.changed(); }
+    }}>
     {!visible.length && <text fg={palettes[controller.theme].muted} wrapMode="word">
       {controller.source === "main" ? controller.connected ? t("Ask a question, / for commands, @ for skills") : t("Connecting to Python…") : t("No messages from this agent yet")}
     </text>}
@@ -71,9 +93,11 @@ export function Transcript({ controller, width, entries, positions, focused = fa
       const showRole = role !== previousRole;
       if (role) previousRole = role;
       return entry.kind === "message" && message
-        ? <MessageCard key={entry.id} id={entry.id} role={message.role} source={message.source}
+        ? <MessageCard key={entry.id} id={entry.id} role={message.role}
           text={message.text} status={message.status} format={message.format} theme={controller.theme}
-          width={width} onRead={controller.readMessage} showRole={showRole} />
+          width={width} showRole={showRole} />
+        : card?.execution ? <ExecutionCard key={entry.id} card={card} theme={controller.theme} width={width - 2}
+          navigation={navigation} />
         : card ? <ToolCard key={entry.id} card={card} theme={controller.theme} width={width - 2} /> : null;
     })}
     {controller.activity === "conversation" && controller.state?.task.active && <text fg={palettes[controller.theme].muted}>

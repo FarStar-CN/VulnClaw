@@ -6,7 +6,7 @@ import { SessionController } from "../src/session/controller";
 import type { ClientMessage, RuntimeInfo, StateSnapshot } from "../src/transport/protocol.generated";
 import { TuiShell } from "../src/shells/TuiShell";
 import { WorkbenchState } from "../src/workbench/layout";
-import { palettes } from "../src/theme/palette";
+import { defaultThemeConfig, palettes } from "../src/theme/palette";
 import { finalFrame } from "./render-helpers";
 
 const state = (): StateSnapshot => ({ permission_mode: "ask", target: "", phase: "idle", task_constraints: {},
@@ -49,7 +49,7 @@ test("MCP disclosure targets only its label and chevron, uses green/red names, a
     expect(node("capabilities-pane").height).toBe(8);
     expect(controller.draft).toBe("retained draft"); expect(workbench.gesture).toBeNull();
     for (const theme of ["blue", "orange"] as const) {
-      await act(async () => { controller.setTheme(theme); });
+      await act(async () => { controller.applyConfigDocument({ config: { session: { language: "en" }, terminal: { ...defaultThemeConfig, theme } } }); });
       const frame = await finalFrame(setup);
       for (const server of runtime.mcp_servers!) {
         expect(frame).toContain(`● ${server.name}`);

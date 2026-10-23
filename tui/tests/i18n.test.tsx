@@ -79,6 +79,7 @@ for (const mode of ["tui", "repl"] as const) test(`${mode}: live language change
 
 test("language and alias completions retain command tokens while translating descriptions", () => {
   setLanguage("zh"); const controller = new SessionController();
+  controller.commands = { language: "Set display language" };
   controller.draft = "/language "; expect(completions(controller)).toEqual(["/language auto", "/language zh", "/language en"]);
   controller.draft = "/lang z"; expect(completions(controller)).toEqual(["/lang zh"]);
   expect(completionDescription(controller, "/language")).toBe("设置界面语言");

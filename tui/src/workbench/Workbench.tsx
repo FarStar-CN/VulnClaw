@@ -7,8 +7,8 @@ import { palettes, permissionInfo, severityColor } from "../theme/palette";
 import { disclosureIcon, disclosureWidth, visibleText } from "../components/content";
 import { Transcript, type ReadingPosition } from "../components/Transcript";
 import { geometry, MCP_LIST_ROWS, tuiChromeHeight, type ViewId, type WorkbenchState, type Region } from "./layout";
-import { activeAgentRows } from "./agents";
-import { useI18n, statusLabel } from "../i18n";
+import { subagentRows } from "./agents";
+import { currentLanguage, useI18n, statusLabel } from "../i18n";
 
 const labels: Record<ViewId, string> = { status: "Status", capabilities: "Capabilities", output: "Session transcript", findings: "Findings inspector", subagents: "Subagents" };
 
@@ -30,7 +30,8 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
   const root = useRef<BoxRenderable>(null);
   const positions = useMemo(() => new Map<string, ReadingPosition>(), []);
   const [findingIndex, setFindingIndex] = useState(0);
-  const [agentId, setAgentId] = useState("main");
+  const [agentId, setAgentId] = useState<string | null>("main");
+  const [endedExpanded, setEndedExpanded] = useState(false);
   const [expandedFinding, setExpandedFinding] = useState<string | null>(null);
   const p = palettes[controller.theme];
   const layout = geometry(width, height, model.layout);
@@ -40,9 +41,17 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
     if (controller.overlay || controller.approvals.length) return;
     controller.inputFocused = false; model.toggleMcp(layout); controller.changed();
   }
-  const agentRows = useMemo(() => activeAgentRows(controller.agents), [controller, controller.version]);
-  const selectable = agentRows.filter((row) => row.id !== null);
+  const agentRows = useMemo(() => subagentRows(controller.agents, endedExpanded),
+    [controller, controller.version, endedExpanded, currentLanguage()]);
+  const selectable = agentRows.filter((row) => row.kind !== "group");
   const selectedAgent = selectable.some((row) => row.id === agentId) ? agentId : "main";
+  const selectedAgentIndex = selectable.findIndex((row) => row.id === selectedAgent);
+  const endedCount = agentRows.find((row) => row.kind === "directory")!.count;
+  function toggleEnded() {
+    if (controller.overlay || controller.approvals.length) return;
+    setEndedExpanded((expanded) => !expanded); setAgentId(null);
+    controller.inputFocused = false; model.layout.focus = "subagents"; controller.changed();
+  }
   const findingSelection = Math.min(findingIndex, Math.max(0, controller.findings.length - 1));
   useEffect(() => {
     if (model.gesture) { model.cancel(); controller.changed(); }
@@ -56,7 +65,9 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
     const focus = model.layout.focus;
     if (key.name === "return" && !key.shift && !controller.draft) {
       if (focus === "subagents") {
-        key.preventDefault(); controller.source = selectedAgent; controller.changed();
+        key.preventDefault(); key.stopPropagation();
+        if (selectedAgent === null) toggleEnded();
+        else { controller.source = selectedAgent; controller.changed(); }
       } else if (focus === "findings") {
         key.preventDefault();
         const finding = controller.findings[findingSelection];
@@ -64,14 +75,13 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
       } else if (focus === "capabilities") {
         key.preventDefault(); key.stopPropagation(); toggleMcp();
       }
-    } else if (["up", "down", "pageup", "pagedown"].includes(key.name) && !key.shift && !key.ctrl) {
+    } else if (["up", "down", "pageup", "pagedown"].includes(key.name) && !key.shift && !key.ctrl && !key.option && !key.meta) {
       key.preventDefault(); key.stopPropagation();
       const direction = key.name === "up" || key.name === "pageup" ? -1 : 1;
       if (focus === "findings" && !key.name.startsWith("page")) {
         setFindingIndex(Math.max(0, Math.min(controller.findings.length - 1, findingSelection + direction)));
       } else if (focus === "subagents" && !key.name.startsWith("page")) {
-        const index = selectable.findIndex((row) => row.id === selectedAgent);
-        setAgentId(selectable[Math.max(0, Math.min(selectable.length - 1, index + direction))]?.id ?? "main");
+        setAgentId(selectable[Math.max(0, Math.min(selectable.length - 1, selectedAgentIndex + direction))].id);
       } else if (focus === "capabilities") {
         const box = renderer.root.findDescendantById("capabilities-scroll") as ScrollBoxRenderable | undefined;
         box?.scrollBy(direction * (key.name.startsWith("page") ? Math.max(1, box.viewport.height - 1) : 1));
@@ -80,8 +90,8 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
   });
   useEffect(() => {
     const box = renderer.root.findDescendantById("subagents-scroll") as ScrollBoxRenderable | undefined;
-    box?.scrollChildIntoView(`agent-row-${selectedAgent}`);
-  }, [selectedAgent, renderer]);
+    box?.scrollChildIntoView(selectedAgent === null ? "ended-agents-directory" : `agent-row-${selectedAgent}`);
+  }, [selectedAgent, selectedAgentIndex, endedExpanded, renderer]);
   useEffect(() => {
     const box = renderer.root.findDescendantById("findings-scroll") as ScrollBoxRenderable | undefined;
     box?.scrollChildIntoView(`finding-row-${findingSelection}`);
@@ -93,7 +103,7 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
   </text></box>;
   const local = (event: { x: number; y: number }) => ({ x: event.x - (root.current?.x ?? 0), y: event.y - (root.current?.y ?? 0) });
   function content(region: Region) {
-    if (region.id === "output") return <Transcript controller={controller} width={region.content.width - 2} positions={positions} />;
+    if (region.id === "output") return <Transcript controller={controller} width={region.content.width - 2} positions={positions} focused={model.layout.focus === "output" && !controller.inputFocused} />;
     if (region.id === "status") {
       const state = controller.state;
       const last = record(state?.last_run);
@@ -147,11 +157,18 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
       </box>;
     }
     if (region.id === "subagents") return <scrollbox id="subagents-scroll" flexGrow={1} scrollX={false}>
-      {agentRows.map((row, index) => <text id={row.id ? `agent-row-${row.id}` : `agent-group-${index}`} key={row.id ?? `group-${index}`}
-        wrapMode="word" fg={row.id === selectedAgent ? p.action : p.muted}
+      {agentRows.map((row, index) => row.kind === "directory" ? <text id="ended-agents-directory" key="ended-directory"
+        wrapMode="word" fg={selectedAgent === null ? p.action : p.accent}
+        onMouseDown={(event) => { event.stopPropagation(); if (event.button === MouseButton.LEFT) toggleEnded(); }}>
+        <b>{disclosureIcon(endedExpanded)}</b>{visibleText(row.text)}
+      </text> : <text id={row.id ? `agent-row-${row.id}` : `agent-group-${index}`} key={row.id ?? `group-${index}`}
+        wrapMode="word" fg={row.kind === "agent" && row.id === selectedAgent ? p.action : p.muted}
         onMouseDown={() => { if (row.id) { setAgentId(row.id); controller.source = row.id; controller.changed(); } }}>
-        {visibleText(`${row.id === selectedAgent ? "› " : "  "}${row.text}${controller.source === row.id ? " ◀" : ""}`)}
+        {visibleText(`${row.kind === "agent" && row.id === selectedAgent ? "› " : "  "}${row.text}${controller.source === row.id ? " ◀" : ""}`)}
       </text>)}
+      {endedExpanded && endedCount === 0 && <text id="ended-agents-empty" wrapMode="word" fg={p.muted}>
+        {"  " + t("No ended subagents")}
+      </text>}
     </scrollbox>;
     return <scrollbox id="findings-scroll" flexGrow={1} scrollX={false}>
       {!controller.findings.length && <text fg={p.muted}>{t("No findings")}</text>}

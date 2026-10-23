@@ -28,7 +28,8 @@ const labels: Record<string, string> = {
   "session.persistent_max_cycles": "Cycle limit",
   "session.persistent_auto_report": "Report after each cycle",
   "session.solve_auto_report": "Replay report on finish", "session.conversation_auto_report": "Security report on finish",
-  "session.solve_report_show": "Display replay report", "session.poc_verify_enabled": "Verify via PoC",
+  "session.poc_verify_enabled": "Verify via PoC",
+  "session.experience_enabled": "Automatic experience learning",
   "safety.permission_mode": "Approval policy", "safety.approval_timeout_seconds": "Approval timeout (s)",
   "safety.trusted_commands": "Trusted command prefixes", "safety.tool_max_concurrent": "Concurrent tools",
   "safety.tool_parallel": "Parallel tool calls", "safety.enable_python_execute": "Python execution tool",
@@ -123,7 +124,7 @@ export function configFields(document: Record<string, unknown>, config: Record<s
       if (name.startsWith("tui_scope_")) continue;
       if (/deprecated/i.test(String(schema.description ?? "")) && name !== "solve_max_parallel") continue;
       if (group === "session" && (
-        (["solve_max_steps", "solve_max_tool_rounds", "solve_auto_report", "solve_report_show"].includes(name) && engine === "rounds") ||
+        (["solve_max_steps", "solve_max_tool_rounds", "solve_auto_report"].includes(name) && engine === "rounds") ||
         (name === "solve_max_parallel" && engine !== "team") ||
         ((name === "max_rounds" || name.startsWith("repl_parallel_")) && engine !== "rounds")
       )) continue;

@@ -35,6 +35,7 @@ export function useSessionKeys(controller: SessionController, mode: "tui" | "rep
       return;
     }
     if (controller.overlay) return;
+    if (!controller.inputFocused && (key.option || key.meta) && ["up", "down"].includes(key.name)) return;
     if (controller.notice) { controller.notice = ""; controller.changed(); }
     if (key.ctrl && key.name === "c") {
       key.preventDefault(); key.stopPropagation();
