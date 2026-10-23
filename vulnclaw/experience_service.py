@@ -27,19 +27,20 @@ def _experience_store() -> Any:
     return ExperienceStore()
 
 
-def pending_lessons() -> OpResult:
-    """List lessons awaiting human review as a table (or a friendly note)."""
+def list_lessons(status: str = "pending") -> OpResult:
+    """List reviewable lessons, retaining the pending-only command default."""
     from vulnclaw.kb.experience import LessonStatus
 
+    if not isinstance(status, str) or status not in {item.value for item in LessonStatus} | {"all"}:
+        return OpResult(False, "[!] status must be pending, approved, rejected or all.")
     try:
-        lessons = _experience_store().list_by_status(LessonStatus.PENDING)
+        lessons = _experience_store().list_by_status(None if status == "all" else status)
     except OSError as exc:
         return OpResult(False, f"[!] Could not read the experience store: {exc}")
-    if not lessons:
-        return OpResult(True, "No pending experience lessons.")
-
-    return OpResult(True, f"{len(lessons)} pending lesson(s).",
-                    {"lessons": [item.model_dump(mode="json") for item in lessons]})
+    message = (f"{len(lessons)} {status} lesson(s)." if lessons
+               else f"No {status} experience lessons.")
+    return OpResult(True, message,
+                    {"status": status, "lessons": [item.model_dump(mode="json") for item in lessons]})
 
 
 def get_lesson(lesson_id: str) -> OpResult:

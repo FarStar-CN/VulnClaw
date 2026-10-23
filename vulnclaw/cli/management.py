@@ -258,7 +258,7 @@ def _experience(result):
 @experience_app.command("list")
 @experience_app.command("review")
 def experience_list(output_format: MachineFormat = typer.Option("json", "--format")):
-    perform(lambda: _experience(experience_service.pending_lessons()))
+    perform(lambda: _experience(experience_service.list_lessons()))
 
 
 @experience_app.command("show")

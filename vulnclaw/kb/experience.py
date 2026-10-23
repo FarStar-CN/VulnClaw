@@ -224,11 +224,12 @@ class ExperienceStore:
         except (OSError, json.JSONDecodeError, ValueError):
             return None
 
-    def list_by_status(self, status: LessonStatus | str) -> list[Lesson]:
-        """List only lessons in the requested lifecycle state."""
-        wanted = LessonStatus(status)
+    def list_by_status(self, status: LessonStatus | str | None) -> list[Lesson]:
+        """List a lifecycle state, or all lessons when no status filter is supplied."""
+        wanted = LessonStatus(status) if status is not None else None
         lessons = [lesson for path in self.experience_dir.glob("*.json") if (lesson := self._read(path))]
-        return sorted((lesson for lesson in lessons if lesson.status is wanted), key=lambda item: item.created_at)
+        return sorted((lesson for lesson in lessons if wanted is None or lesson.status is wanted),
+                      key=lambda item: (item.created_at, item.id))
 
     def approve(self, lesson_id: str) -> Optional[Lesson]:
         """Durably mark a pending lesson as approved."""

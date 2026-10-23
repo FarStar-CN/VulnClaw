@@ -93,6 +93,7 @@ def build_kb_context(agent: AgentContext, user_input: Optional[str] = None) -> s
         (f.vuln_type or "").lower() for f in agent.context.state.findings if (f.vuln_type or "")
     ]
     cache_key = (
+        agent.config.session.experience_enabled,
         (user_input or "").lower(),
         tuple(str(s).lower() for s in services[:3]),
         tuple(finding_types[:3]),
@@ -145,6 +146,8 @@ def _collect_kb_context(
     seen_ids: set[str] = set()
     deduped: list[dict[str, Any]] = []
     for entry in entries:
+        if entry.get("_category") == "experience" and not agent.config.session.experience_enabled:
+            continue
         eid = entry.get("id", entry.get("title", ""))
         if eid and eid not in seen_ids:
             seen_ids.add(eid)

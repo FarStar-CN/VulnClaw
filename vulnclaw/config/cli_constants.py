@@ -404,7 +404,8 @@ COMMANDS: tuple[ManualTopic, ...] = (
             "session.solve_max_parallel (team/legacy), session.show_thinking, "
             "session.persistent_rounds_per_cycle, session.persistent_max_cycles, "
             "session.persistent_auto_report, session.language, session.reasoning_state_enabled, "
-            "session.reflexion_enabled, session.plugin_runtime_enabled. The repl_parallel_* keys "
+            "session.reflexion_enabled, session.experience_enabled (off by default), "
+            "session.plugin_runtime_enabled. The repl_parallel_* keys "
             "(repl_parallel_enabled/agents/depth/worker_rounds/surface_limit) only apply to the "
             "legacy 'rounds' engine's network-scan --parallel-agents fan-out, not to 'solve'.",
             "Useful safety keys: safety.enable_python_execute, safety.python_execute_mode, "

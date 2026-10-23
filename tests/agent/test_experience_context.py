@@ -224,10 +224,16 @@ def test_target_scoped_lesson_matches_the_persisted_target_identifier(tmp_path):
 
     assert "target-only" in context
 
-def test_create_approve_injects_via_agent_core_production_path(tmp_path):
-    """Regression: store write → approve → AgentCore prompt builder injection."""
+def test_experience_opt_in_controls_both_prompt_paths_and_cached_context(tmp_path, monkeypatch):
+    """Toggling the setting gates dedicated and generic KB lesson injection."""
+    import vulnclaw.kb.retriever as retriever_module
     from vulnclaw.agent.core import AgentCore
     from vulnclaw.config.schema import VulnClawConfig
+    from vulnclaw.kb.retriever import KnowledgeRetriever
+    from vulnclaw.kb.store import KnowledgeStore
+
+    monkeypatch.setattr(retriever_module, "CHROMADB_AVAILABLE", False)
+    monkeypatch.setattr(AgentCore, "_report_kb_status", lambda _self: None)
 
     store = ExperienceStore(store_dir=tmp_path)
     pending = store.add(
@@ -242,6 +248,11 @@ def test_create_approve_injects_via_agent_core_production_path(tmp_path):
     config.session.output_dir = tmp_path / "session-out"
     agent = AgentCore(config)
     agent._experience_store = store
+    kb = KnowledgeStore(store_dir=tmp_path)
+    kb.add_entry("techniques", "ordinary-sqli", {
+        "title": "ordinary knowledge", "description": "sqli reference", "tags": ["sqli"],
+    })
+    agent._kb_retriever = KnowledgeRetriever(store=kb)
     agent.context.state.target = "demo.example"
     agent.context.state.recon_data = {
         "services": ["nginx/1.24"],
@@ -249,10 +260,19 @@ def test_create_approve_injects_via_agent_core_production_path(tmp_path):
     }
     agent.context.state.findings = [SimpleNamespace(vuln_type="sqli")]
 
-    prompt = agent._build_system_prompt(user_input="sqli", target="demo.example")
-
-    assert "## Prior Experience / Lessons" in prompt
-    assert "Favor parameter-stable probes" in prompt
+    previous = current_lang()
+    init_i18n(lang="zh")
+    try:
+        for enabled in (False, True, False):
+            config.session.experience_enabled = enabled
+            prompt = agent._build_system_prompt(user_input="sqli", target="demo.example")
+            assert ("## Prior Experience / Lessons" in prompt) is enabled
+            assert ("Favor parameter-stable probes" in prompt) is enabled
+            kb_context = agent._build_kb_context("core-path-lesson")
+            assert ("core-path-lesson" in kb_context) is enabled
+            assert "ordinary knowledge" in prompt
+    finally:
+        init_i18n(lang=previous)
 
 
 

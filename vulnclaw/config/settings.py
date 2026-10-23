@@ -383,6 +383,8 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
         config.session.reasoning_state_enabled = v.lower() in _truthy
     if v := os.environ.get("VULNCLAW_SESSION_REFLEXION_ENABLED"):
         config.session.reflexion_enabled = v.lower() in _truthy
+    if v := os.environ.get("VULNCLAW_SESSION_EXPERIENCE_ENABLED"):
+        config.session.experience_enabled = v.lower() in _truthy
     if v := os.environ.get("VULNCLAW_SESSION_REFLEXION_MAX_SAME_VULN_FAILS"):
         with suppress(ValueError):
             config.session.reflexion_max_same_vuln_fails = int(v)

@@ -30,8 +30,12 @@ def adapter_operation(name: str, text: str) -> tuple[str, dict[str, Any]]:
     if name == "experience":
         action = tokens.pop(0) if tokens else "list"
         action = "list" if action == "review" else action
-        if action == "list" and not tokens:
-            return "experience.list", {}
+        if action == "list":
+            if not tokens:
+                return "experience.list", {}
+            if len(tokens) == 2 and tokens[0] == "--status":
+                return "experience.list", {"status": tokens[1]}
+            raise ValueError("/experience list accepts --status pending|approved|rejected|all")
         if action not in {"show", "approve", "reject", "edit"} or not tokens:
             raise ValueError("/experience expects list|show|approve|reject|edit and a lesson ID")
         arguments: dict[str, Any] = {"lesson_id": tokens.pop(0)}
@@ -82,7 +86,7 @@ async def execute_management(application: Any, operation: str, args: dict[str, A
     if operation.startswith("experience."):
         identifier = str(args.get("lesson_id") or "")
         if operation == "experience.list":
-            result = experience_service.pending_lessons()
+            result = experience_service.list_lessons(args.get("status", "pending"))
         elif operation == "experience.show":
             result = experience_service.get_lesson(identifier)
         elif operation in {"experience.approve", "experience.reject"}:

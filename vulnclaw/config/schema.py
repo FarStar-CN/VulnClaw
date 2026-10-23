@@ -598,6 +598,10 @@ class SessionConfig(BaseModel):
     reflexion_enabled: bool = Field(
         default=True, description="Enable reflexion feedback loop"
     )
+    experience_enabled: bool = Field(
+        default=False,
+        description="Enable automatic experience distillation and approved lesson injection",
+    )
     reflexion_max_same_vuln_fails: int = Field(
         default=2, description="Max repeated failures for the same vulnerability"
     )

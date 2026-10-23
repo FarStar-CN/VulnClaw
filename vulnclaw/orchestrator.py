@@ -234,6 +234,8 @@ def _schedule_completed_run_distillation(
 ) -> None:
     """Launch lesson distillation after persistence; never affect run completion."""
 
+    if not agent.config.session.experience_enabled:
+        return
     try:
         from vulnclaw.agent.distiller import (
             RunArtifacts,

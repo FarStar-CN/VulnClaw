@@ -465,6 +465,8 @@ class AgentCore:
 
     def _build_experience_context(self) -> str:
         """Load approved cross-session lessons without affecting agent availability."""
+        if not self.config.session.experience_enabled:
+            return ""
         if self._experience_store is None:
             try:
                 self._experience_store = ExperienceStore()

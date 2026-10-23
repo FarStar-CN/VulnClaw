@@ -85,6 +85,7 @@ class TestSessionConfig:
         config = SessionConfig()
         assert config.reasoning_state_enabled is True
         assert config.reflexion_enabled is True
+        assert config.experience_enabled is False
         assert config.reflexion_max_same_vuln_fails == 2
         assert config.reflexion_max_total_no_progress == 5
         assert config.escalation_max_level == 4
@@ -561,6 +562,7 @@ class TestSettingsLoad:
         from vulnclaw.config.settings import load_config
 
         monkeypatch.setenv("VULNCLAW_SESSION_REFLEXION_ENABLED", "false")
+        monkeypatch.setenv("VULNCLAW_SESSION_EXPERIENCE_ENABLED", "true")
         monkeypatch.setenv("VULNCLAW_SESSION_REASONING_STATE_ENABLED", "false")
         monkeypatch.setenv("VULNCLAW_SESSION_REFLEXION_MAX_SAME_VULN_FAILS", "5")
         monkeypatch.setenv("VULNCLAW_SESSION_ESCALATION_MAX_LEVEL", "2")
@@ -570,6 +572,7 @@ class TestSettingsLoad:
         config = load_config()
 
         assert config.session.reflexion_enabled is False
+        assert config.session.experience_enabled is True
         assert config.session.reasoning_state_enabled is False
         assert config.session.reflexion_max_same_vuln_fails == 5
         assert config.session.escalation_max_level == 2
@@ -646,6 +649,7 @@ class TestSettingsLoad:
         settings_mod.save_config(config)
         reloaded = settings_mod.load_config()
         assert reloaded.llm.api_keys == ["x1", "x2"]
+
 
 def test_retired_report_display_setting_loads_and_is_removed_on_save(monkeypatch, tmp_path):
     import yaml

@@ -343,6 +343,7 @@ async def test_completed_run_starts_distillation_after_status_is_durable(tmp_pat
 
     monkeypatch.setattr(store, "TARGETS_DIR", tmp_path / "targets")
     agent = DummyAgent(tmp_path / "runs")
+    agent.config.session.experience_enabled = True
     scheduled: list[str] = []
 
     def fake_schedule(shared_agent, context, target):
@@ -367,6 +368,31 @@ async def test_completed_run_starts_distillation_after_status_is_durable(tmp_pat
     assert scheduled == [result.run_context.run_name]
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_background_experience_requires_opt_in_before_creating_clients(tmp_path, monkeypatch, enabled):
+    from unittest.mock import Mock
+
+    import vulnclaw.agent.distiller as distiller
+    import vulnclaw.kb.experience as experience
+    import vulnclaw.orchestrator as orchestrator
+
+    target = parse_target("https://example.com")
+    context = create_run_context(command="run", targets=[target], runs_dir=tmp_path / "runs")
+    agent = DummyAgent(tmp_path / "runs")
+    agent.config.session.experience_enabled = enabled
+    agent.config.llm.api_key = "test-key"
+    client, schedule, store = Mock(), Mock(), Mock()
+    monkeypatch.setattr(distiller, "configured_distiller", client)
+    monkeypatch.setattr(distiller, "schedule_run_distillation", schedule)
+    monkeypatch.setattr(experience, "ExperienceStore", store)
+
+    orchestrator._schedule_completed_run_distillation(agent, context, target)
+
+    assert client.call_count == store.call_count == schedule.call_count == int(enabled)
+    if enabled:
+        assert schedule.call_args.kwargs["artifacts"].run_id == context.run_name
+
+
 def test_distillation_setup_failure_is_logged_without_affecting_completed_run(tmp_path, monkeypatch):
     import vulnclaw.agent.distiller as distiller
     import vulnclaw.orchestrator as orchestrator
@@ -378,6 +404,7 @@ def test_distillation_setup_failure_is_logged_without_affecting_completed_run(tm
     context.update_manifest(status="completed")
     agent = DummyAgent(tmp_path / "runs")
     agent.config.llm.api_key = "test-key"
+    agent.config.session.experience_enabled = True
     monkeypatch.setattr(
         distiller, "configured_distiller", lambda _config: (_ for _ in ()).throw(RuntimeError())
     )

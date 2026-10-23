@@ -155,3 +155,71 @@ async def test_terminal_adapter_reports_missing_lesson_without_exiting(experienc
 
     with pytest.raises(ValueError, match="Lesson not found"):
         await execute_management(SimpleNamespace(config=VulnClawConfig()), "experience.show", {"lesson_id": "missing"})
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("pending", ["pending-one"]), ("approved", ["approved-one"]),
+    ("rejected", ["rejected-one"]), ("all", ["pending-one", "approved-one", "rejected-one"]),
+])
+async def test_terminal_experience_status_filters_share_the_durable_store(
+    experience_store, status, expected,
+):
+    from types import SimpleNamespace
+
+    from vulnclaw.config.schema import VulnClawConfig
+    from vulnclaw.management_service import adapter_operation, execute_management
+
+    for identifier in ["pending-one", "approved-one", "rejected-one"]:
+        experience_store.add(_lesson(identifier))
+    experience_store.approve("approved-one")
+    experience_store.reject("rejected-one")
+    operation, args = adapter_operation("experience", f"list --status {status}")
+    result = await execute_management(SimpleNamespace(config=VulnClawConfig()), operation, args)
+    assert result["status"] == status
+    assert [item["id"] for item in result["lessons"]] == expected
+    assert all(item["evidence_refs"]["run_id"] == "run-123" for item in result["lessons"])
+
+
+@pytest.mark.parametrize("status", ["pending", "approved", "rejected", "all"])
+async def test_empty_experience_views_have_a_structured_empty_list(experience_store, status):
+    from types import SimpleNamespace
+
+    from vulnclaw.management_service import execute_management
+
+    result = await execute_management(SimpleNamespace(config=None), "experience.list", {"status": status})
+    assert result["status"] == status
+    assert result["lessons"] == []
+
+
+@pytest.mark.parametrize("status", ["unknown", "", None, [], {}])
+async def test_experience_list_rejects_invalid_status_without_changing_lessons(experience_store, status):
+    from types import SimpleNamespace
+
+    from vulnclaw.management_service import execute_management
+
+    original = experience_store.add(_lesson("unchanged"))
+    with pytest.raises(ValueError, match="status must be"):
+        await execute_management(SimpleNamespace(config=None), "experience.list", {"status": status})
+    assert experience_store.get(original.id) == original
+
+
+async def test_editing_an_approved_lesson_preserves_review_status_and_provenance(experience_store):
+    from types import SimpleNamespace
+
+    from vulnclaw.management_service import execute_management
+
+    experience_store.add(_lesson("approved-edit"))
+    original = experience_store.approve("approved-edit")
+    result = await execute_management(SimpleNamespace(config=None), "experience.edit", {
+        "lesson_id": "approved-edit", "context": "中文上下文\nsecond line", "lesson": "## 中文经验\n\n  keep spaces",
+    })
+    assert result["lesson"]["status"] == "approved"
+    saved = experience_store.get("approved-edit")
+    assert saved.evidence_refs == original.evidence_refs
+    assert saved.tags == original.tags
+    assert saved.source_runs == original.source_runs
+    assert saved.context == "中文上下文\nsecond line"
+    assert saved.lesson == "## 中文经验\n\n  keep spaces"
+    with pytest.raises(ValueError, match="Invalid lesson update"):
+        await execute_management(SimpleNamespace(config=None), "experience.edit", {"lesson_id": saved.id, "lesson": ""})
+    assert experience_store.get(saved.id) == saved

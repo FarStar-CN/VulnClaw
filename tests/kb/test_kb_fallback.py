@@ -1,6 +1,7 @@
 """Tests for KB retrieval graceful degradation (keyword fallback)."""
 
 import vulnclaw.kb.retriever as retriever_mod
+from vulnclaw.config.schema import VulnClawConfig
 from vulnclaw.i18n import current_lang, init_i18n
 from vulnclaw.kb.retriever import (
     KeywordRetriever,
@@ -148,6 +149,7 @@ class _FakeAgent:
     """Minimal agent surface required by build_kb_context."""
 
     def __init__(self):
+        self.config = VulnClawConfig()
         self.context = _FakeContext()
         self._kb_retriever = None
         self._kb_context_cache = {}
