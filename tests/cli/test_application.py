@@ -15,14 +15,13 @@ import vulnclaw.application as application
 from vulnclaw.agent.context import SessionState
 from vulnclaw.agent.exec_gate import reset_execution_gate
 from vulnclaw.application import ApplicationError, ApplicationSession
-from vulnclaw.cli._helpers import _run_cli_orchestrated_task
 from vulnclaw.config.schema import VulnClawConfig
 from vulnclaw.conversation import ConversationState
 from vulnclaw.orchestrator import OrchestratorRunResult
+from vulnclaw.session_backend import BackendSession
+from vulnclaw.session_protocol import JsonlWriter, decode_client_message
 from vulnclaw.target_state.store import SessionRestoreResult
 from vulnclaw.task_service import TaskCreateRequest, TaskExecution, TaskOptions, prepare_task
-from vulnclaw.tui_backend import BackendSession
-from vulnclaw.tui_protocol import JsonlWriter, decode_client_message
 
 
 class Runtime:
@@ -108,24 +107,19 @@ async def test_local_and_jsonl_tasks_use_the_same_execution(command, monkeypatch
     )
     task = prepare_task(request)
 
-    async def local_action(agent, config):
-        from vulnclaw.task_service import run_task_action
-
-        return await run_task_action(agent, task)
-
-    local_result = await _run_cli_orchestrated_task(
-        command=command, target=request.target, resume=False, snapshot=None,
-        task=task, runner=local_action,
-    )
+    local = ApplicationSession(lambda *_args, **_fields: None, runtime_factory=create)
+    await local.handle("initialize", request_id="local-init")
+    local_result = await local.run_task(task)
+    await local.close()
     report.assert_not_awaited()
 
     stream = io.StringIO()
     backend = BackendSession(JsonlWriter(stream))
     await backend.handle(decode_client_message(json.dumps({
-        "protocol_version": 1, "type": "initialize", "request_id": "init", "payload": {},
+        "protocol_version": 2, "type": "initialize", "request_id": "init", "payload": {},
     })))
     await backend.handle(decode_client_message(json.dumps({
-        "protocol_version": 1, "type": "start_task", "request_id": "start", "task_id": "t1",
+        "protocol_version": 2, "type": "start_task", "request_id": "start", "task_id": "t1",
         "payload": {"task": request.model_dump(mode="json", exclude_none=True)},
     })))
     await backend.wait_for_idle()
@@ -136,9 +130,9 @@ async def test_local_and_jsonl_tasks_use_the_same_execution(command, monkeypatch
 
     assert calls[0] == calls[1]
     assert calls[0][2]["allowed_ports"] == [443]
-    assert result["summary"] == local_result.summary
-    assert result["status"] == local_result.status
-    assert any(event["type"] == "log" and event["message"] == "observed" for event in events)
+    assert result["summary"] == local_result.run.summary
+    assert result["status"] == local_result.run.status
+    assert any(event["type"] == "message" and event.get("text") == "observed" for event in events)
     assert report.await_count == 1
     await backend.close()
     await backend.close()
@@ -266,47 +260,46 @@ def test_conversation_target_switch_and_continue_preserve_existing_semantics():
     assert resets == [True]
 
 
-@pytest.mark.parametrize("ui_failure", [False, True])
-def test_repl_reuses_one_loop_and_closes_its_runtime(monkeypatch, ui_failure):
-    from typer.testing import CliRunner
-
-    import vulnclaw.cli.main as cli
-
+@pytest.mark.parametrize("failed_turn", [False, True])
+async def test_backend_reuses_one_loop_across_turns_and_closes_runtime(failed_turn):
     runtime = Runtime()
     loops = []
+    stream = io.StringIO()
+    calls = 0
 
-    async def create(config=None):
+    async def create():
         loops.append(asyncio.get_running_loop())
         return runtime
 
     async def chat(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
         loops.append(asyncio.get_running_loop())
+        if calls == 2 and failed_turn:
+            raise RuntimeError("synthetic turn failure")
         return SimpleNamespace(target=None, phase=None, output="answer")
 
     async def stop():
         loops.append(asyncio.get_running_loop())
         runtime.stop_calls += 1
 
-    turns = iter(["hello", "hello again"])
-
-    def read(*_args):
-        try:
-            return next(turns)
-        except StopIteration:
-            if ui_failure:
-                raise RuntimeError("terminal input failed") from None
-            return "/quit"
-
     runtime.agent.chat = chat
     runtime.stop = stop
-    monkeypatch.setattr(application, "create_runtime", create)
-    monkeypatch.setattr(cli, "load_config", lambda: runtime.config)
-    monkeypatch.setattr(cli, "_read_repl_line", read)
-
-    result = CliRunner().invoke(cli.app, ["repl"])
-
-    assert result.exit_code == (1 if ui_failure else 0), result.exception
-    assert len(loops) == 4  # initialize, two user turns, close
-    assert all(loop is loops[0] for loop in loops)
-    assert loops[0].is_closed()
+    backend = BackendSession(JsonlWriter(stream), runtime_factory=create)
+    for kind, identifier, payload in [
+        ("initialize", "init", {}),
+        ("submit_input", "one", {"text": "hello"}),
+        ("submit_input", "two", {"text": "hello again"}),
+    ]:
+        request = {"protocol_version": 2, "type": kind, "request_id": identifier, "payload": payload}
+        if kind == "submit_input":
+            request["task_id"] = identifier
+        await backend.handle(decode_client_message(json.dumps(request)))
+        await backend.wait_for_idle()
+    await backend.close()
+    assert len(loops) == 4
+    assert all(loop is asyncio.get_running_loop() for loop in loops)
     assert runtime.stop_calls == 1
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert sum(event["type"] == "turn_failed" for event in events) == int(failed_turn)
+    assert sum(event["type"] == "turn_completed" for event in events) == 2 - int(failed_turn)

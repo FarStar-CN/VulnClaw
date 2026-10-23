@@ -126,37 +126,32 @@ def test_experience_unknown_id_fails_cleanly(runner, experience_store, command):
     assert "Lesson not found: missing-id" in result.output
 
 
-def test_repl_experience_approve_marks_lesson_approved(experience_store, capsys):
-    """The REPL /experience handler drives the same store as the CLI."""
-    import vulnclaw.cli.main as main_mod
 
-    experience_store.add(_lesson("repl-approve"))
+@pytest.mark.parametrize("text,expected", [
+    ("approve shared", LessonStatus.APPROVED),
+    ('edit shared --context "new ctx" --lesson "new operator guidance"', LessonStatus.PENDING),
+])
+async def test_terminal_adapter_uses_the_same_durable_store(experience_store, text, expected):
+    from types import SimpleNamespace
 
-    main_mod._repl_experience("approve repl-approve")
+    from vulnclaw.config.schema import VulnClawConfig
+    from vulnclaw.management_service import adapter_operation, execute_management
 
-    assert experience_store.get("repl-approve").status is LessonStatus.APPROVED
-    assert "marked approved" in capsys.readouterr().out
-
-
-def test_repl_experience_unknown_id_does_not_raise(experience_store, capsys):
-    import vulnclaw.cli.main as main_mod
-
-    # Must not raise typer.Exit — the REPL loop has to keep running.
-    main_mod._repl_experience("show missing-id")
-
-    assert "Lesson not found: missing-id" in capsys.readouterr().err
+    experience_store.add(_lesson("shared"))
+    operation, arguments = adapter_operation("experience", text)
+    result = await execute_management(SimpleNamespace(config=VulnClawConfig()), operation, arguments)
+    item = experience_store.get("shared")
+    assert item.status is expected
+    assert result["lesson"]["id"] == "shared"
+    if text.startswith("edit"):
+        assert (item.context, item.lesson) == ("new ctx", "new operator guidance")
 
 
-def test_repl_experience_edit_updates_context_and_lesson(experience_store):
-    import vulnclaw.cli.main as main_mod
+async def test_terminal_adapter_reports_missing_lesson_without_exiting(experience_store):
+    from types import SimpleNamespace
 
-    experience_store.add(_lesson("repl-edit"))
+    from vulnclaw.config.schema import VulnClawConfig
+    from vulnclaw.management_service import execute_management
 
-    main_mod._repl_experience(
-        'edit repl-edit --context "new ctx" --lesson "new operator guidance"'
-    )
-
-    edited = experience_store.get("repl-edit")
-    assert edited.context == "new ctx"
-    assert edited.lesson == "new operator guidance"
-    assert edited.status is LessonStatus.PENDING
+    with pytest.raises(ValueError, match="Lesson not found"):
+        await execute_management(SimpleNamespace(config=VulnClawConfig()), "experience.show", {"lesson_id": "missing"})

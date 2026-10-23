@@ -4,25 +4,31 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Literal, get_args
+from typing import Annotated, Any, Awaitable, Callable, Literal, get_args
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from vulnclaw.config.domain_models import TaskConstraints, validate_action_constraints
+from vulnclaw.config.domain_models import (
+    ACTION_PRESETS,
+    TaskConstraints,
+    validate_action_constraints,
+)
 from vulnclaw.config.schema import resolve_engine
 from vulnclaw.orchestrator import OrchestratorRunResult, run_agent_task
 
 TaskCommand = Literal["run", "recon", "scan", "exploit", "persistent", "codescan"]
 TASK_COMMANDS = frozenset(get_args(TaskCommand))
 ACTION_ALIASES = {
-    "recon": ["recon"],
-    "scan": ["recon", "scan"],
-    "exploit": ["recon", "scan", "exploit"],
+    "recon": list(ACTION_PRESETS["Quick"]),
+    "scan": list(ACTION_PRESETS["Standard"]),
+    "exploit": list(ACTION_PRESETS["Deep"]),
 }
 SCOPE_FIELDS = frozenset(
     {
         "only_port",
+        "allowed_ports",
+        "blocked_ports",
         "only_host",
         "only_path",
         "blocked_host",
@@ -50,9 +56,13 @@ class TaskOptions(BaseModel):
     rounds_per_cycle: int | None = Field(default=None, ge=1, le=1000)
     max_cycles: int | None = Field(default=None, ge=0, le=1000)
     auto_report: bool | None = None
+    report_output: str | None = Field(default=None, max_length=4096)
+    poc_verify: bool | None = None
     cve: str | None = Field(default=None, max_length=64)
     cmd: str | None = Field(default=None, max_length=512)
     only_port: int | None = Field(default=None, ge=1, le=65535)
+    allowed_ports: list[Annotated[int, Field(ge=1, le=65535)]] | None = None
+    blocked_ports: list[Annotated[int, Field(ge=1, le=65535)]] | None = None
     only_host: str | None = Field(default=None, max_length=253)
     only_path: str | None = Field(default=None, max_length=2048)
     blocked_host: str | None = Field(
@@ -63,6 +73,11 @@ class TaskOptions(BaseModel):
     blocked_path: str | None = Field(default=None, max_length=2048)
     allow_actions: list[str] | None = Field(default=None, max_length=20)
     block_actions: list[str] | None = Field(default=None, max_length=20)
+
+    @field_validator("allowed_ports", "blocked_ports", mode="before")
+    @classmethod
+    def split_port_lists(cls, value: Any) -> Any:
+        return _values(value) if isinstance(value, str) else value
 
     @field_validator("allow_actions", "block_actions", mode="before")
     @classmethod
@@ -76,6 +91,7 @@ class TaskOptions(BaseModel):
         "ports",
         "cve",
         "cmd",
+        "report_output",
         "only_host",
         "only_path",
         "blocked_path",
@@ -163,7 +179,8 @@ class TaskCreateRequest(BaseModel):
                 "max_tool_rounds",
                 "max_parallel",
                 "max_rounds",
-                "continuous", "ports", "cve", "cmd", "auto_report",
+                "continuous", "ports", "cve", "cmd", "auto_report", "report_output",
+                "poc_verify",
                 "rounds_per_cycle", "max_cycles",
             },
             "scan": {"ports"},
@@ -213,7 +230,11 @@ def task_request_from_payload(
     if not isinstance(raw_options, dict):
         raise ValueError("task.options must be an object")
     options = dict(raw_options)
+    if "allowed_ports" in options:
+        options.pop("only_port", None)
     for field in SCOPE_FIELDS:
+        if field == "only_port" and "allowed_ports" in options:
+            continue
         if field not in options and defaults and defaults.get(field) not in (None, "", []):
             default = defaults[field]
             if field == "allow_actions" and raw.get("command") in ACTION_ALIASES:
@@ -245,8 +266,16 @@ def build_scope_constraints(target: str, scope: dict[str, Any]) -> TaskConstrain
 
     host = _target_host(target)
     constraints = TaskConstraints(
-        allowed_ports=[scope["only_port"]] if scope.get("only_port") else [],
-        allowed_hosts=[scope["only_host"]] if scope.get("only_host") else ([host] if host else []),
+        allowed_ports=(
+            scope["allowed_ports"] if scope.get("allowed_ports") is not None
+            else [scope["only_port"]] if scope.get("only_port") else []
+        ),
+        blocked_ports=scope.get("blocked_ports") or [],
+        allowed_hosts=(
+            [host.lower() for host in _values(scope["only_host"])]
+            if scope.get("only_host") is not None
+            else [host] if host else []
+        ),
         blocked_hosts=_parse_blocked_hosts(scope.get("blocked_host")),
         allowed_paths=_values(scope.get("only_path")),
         blocked_paths=_values(scope.get("blocked_path")),
@@ -296,7 +325,7 @@ async def _run_codescan(task: PreparedTask, *, stream_sink: Any = None) -> dict[
     from vulnclaw.codescan.report import _finding_to_vuln_dict
     from vulnclaw.codescan.scanner import scan_code
 
-    # Fields the TUI protocol schema (protocol/tui-v1.schema.json, $defs.finding)
+    # Fields the TUI protocol schema (protocol/session-v2.schema.json, $defs.finding)
     # allows. ``additionalProperties`` is false, so anything extra is rejected
     # by the strict Python-side validator.
     _FINDING_FIELDS = (
@@ -440,6 +469,7 @@ async def run_task_action(
             task_constraints=task.constraints,
             engine=options.engine,
             cycle_runner=cycle_runner,
+            poc_verify=options.poc_verify,
         )
     return await agent.chat(
         task.prompt,
@@ -522,6 +552,8 @@ async def execute_task(
         repair=request.repair,
         force_fresh=request.force_fresh,
         no_import=request.no_import,
+        continuous=request.options.continuous,
+        poc_verify=request.options.poc_verify,
         before_restore=before_restore,
         on_restored=on_restored,
         on_legacy_import=on_legacy_import,

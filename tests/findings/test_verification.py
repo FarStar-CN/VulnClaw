@@ -375,7 +375,7 @@ async def test_verify_cli_and_web_endpoint_delegate_to_independent_audits(candid
         return view, config.session.output_dir / 'audited.json', {}
 
     monkeypatch.setattr(service, 'verify_target', target_audit)
-    monkeypatch.setattr(cli, 'load_config', lambda: config)
+    monkeypatch.setattr('vulnclaw.cli.reports.load_config', lambda: config)
     monkeypatch.setattr('vulnclaw.config.settings.load_config', lambda: config)
     result = await asyncio.to_thread(CliRunner().invoke, cli.app,
                                     ['verify', state.target, '--target', '--poc-verify'])

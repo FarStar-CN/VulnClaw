@@ -75,83 +75,44 @@ _SPAWN_CALLS = {
 # "operator control plane" sites run fixed commands chosen by the local
 # operator (doctor probes, TUI launcher).
 ALLOWED_SPAWN_SITES: dict[str, str] = {
-    "vulnclaw/agent/builtin_tools.py:437:subprocess.Popen": (
-        "shared gated process runner for shell/python/PHP execution"
+    'vulnclaw/cli/terminal.py:49:subprocess.Popen': (
+        'operator control plane: launch the shared OpenTUI executable; Python owns execution policy'
     ),
-    "vulnclaw/agent/builtin_tools.py:622:subprocess.run": (
-        "fixed Windows taskkill fallback for the gated process runner"
+    'vulnclaw/agent/builtin_tools.py:437:subprocess.Popen': (
+        'shared gated process runner for shell/python/PHP execution'
     ),
-    "vulnclaw/agent/builtin_tools.py:1630:subprocess.run": (
-        "fixed Windows nmap path lookup"
+    'vulnclaw/agent/builtin_tools.py:622:subprocess.run': (
+        'fixed Windows taskkill fallback for the gated process runner'
     ),
-    "vulnclaw/agent/builtin_tools.py:1709:subprocess.run": (
-        "structured argv nmap execution constrained by the nmap tool schema"
+    'vulnclaw/agent/builtin_tools.py:1635:subprocess.run': (
+        'fixed Windows nmap path lookup'
     ),
-    "vulnclaw/agent/builtin_tools.py:1717:subprocess.run": (
-        "structured argv non-privileged nmap retry"
+    'vulnclaw/agent/builtin_tools.py:1714:subprocess.run': (
+        'structured argv nmap execution constrained by the nmap tool schema'
     ),
-    "vulnclaw/findings/poc.py:215:asyncio.create_subprocess_exec": (
-        "fixed reviewed PoC verification program run as a subprocess after "
-        "ExecutionGate approval; plan and scope are re-checked before the spawn"
+    'vulnclaw/agent/builtin_tools.py:1722:subprocess.run': (
+        'structured argv non-privileged nmap retry'
     ),
-    "vulnclaw/cli/tui.py:500:subprocess.call": (
-        "operator control plane: native TUI binary launcher"
+    'vulnclaw/findings/poc.py:215:asyncio.create_subprocess_exec': (
+        'fixed reviewed PoC verification program run as a subprocess after ExecutionGate approval; plan and scope are re-checked before the spawn'
     ),
-    "vulnclaw/cli/tui.py:1553:subprocess.run": (
-        "operator control plane: fixed version diagnostic"
+    'vulnclaw/setup_service.py:253:subprocess.run': (
+        'fixed java -version probe during wizard Java detection'
     ),
-    "vulnclaw/cli/tui.py:2439:subprocess.run": (
-        "operator control plane: Windows Get-Clipboard via powershell for /config paste"
+    'vulnclaw/setup_service.py:519:subprocess.Popen': (
+        'launch local Chrome with fixed argv for remote debugging'
     ),
-    "vulnclaw/cli/tui.py:2475:subprocess.run": (
-        "operator control plane: Unix pbpaste/wl-paste/xclip/xsel for /config paste"
+    'vulnclaw/agent/network_scan.py:431:subprocess.run': (
+        'fixed local wireless-interface diagnostic'
     ),
-    "vulnclaw/cli/main.py:1794:subprocess.run": (
-        "operator control plane: fixed Node.js version diagnostic"
+    'vulnclaw/agent/network_scan.py:472:subprocess.run': (
+        'fixed local IPv4-interface diagnostic'
     ),
-    # First-run setup wizard (merged from dev): operator-driven fixed argv
-    # probes/installers; never model-reachable.
-    "vulnclaw/cli/wizard.py:100:os.system": (
-        "operator control plane: Windows terminal clear (cls)"
+    'vulnclaw/setup_service.py:30:asyncio.create_subprocess_exec': (
+        'operator control plane: fixed Java installer and constant PortSwigger repository build commands; never model-accessible'
     ),
-    "vulnclaw/cli/wizard.py:102:os.system": (
-        "operator control plane: POSIX terminal clear (clear)"
-    ),
-    "vulnclaw/cli/wizard.py:300:subprocess.run": (
-        "fixed java -version probe during wizard Java detection"
-    ),
-    "vulnclaw/cli/wizard.py:360:subprocess.run": (
-        "fixed winget install of Temurin JDK 17 package on user confirm"
-    ),
-    "vulnclaw/cli/wizard.py:877:subprocess.run": (
-        "git clone of the constant PortSwigger mcp-server repo"
-    ),
-    "vulnclaw/cli/wizard.py:912:subprocess.run": (
-        "gradlew embedProxyJar in the cloned constant repo (Windows shell)"
-    ),
-    "vulnclaw/cli/wizard.py:922:subprocess.run": (
-        "gradlew embedProxyJar in the cloned constant repo (POSIX argv)"
-    ),
-    "vulnclaw/cli/wizard.py:1085:subprocess.Popen": (
-        "launch local Chrome with fixed argv for remote debugging"
-    ),
-    "vulnclaw/cli/wizard.py:1104:subprocess.Popen": (
-        "macOS open-URL launcher with fixed argv"
-    ),
-    "vulnclaw/cli/wizard.py:1106:subprocess.Popen": (
-        "Linux xdg-open URL launcher with fixed argv"
-    ),
-    "vulnclaw/cli/wizard.py:1116:subprocess.Popen": (
-        "macOS open-path launcher with fixed argv"
-    ),
-    "vulnclaw/cli/wizard.py:1118:subprocess.Popen": (
-        "Linux xdg-open path launcher with fixed argv"
-    ),
-    "vulnclaw/agent/network_scan.py:431:subprocess.run": (
-        "fixed local wireless-interface diagnostic"
-    ),
-    "vulnclaw/agent/network_scan.py:472:subprocess.run": (
-        "fixed local IPv4-interface diagnostic"
+    'vulnclaw/setup_service.py:42:asyncio.create_subprocess_exec': (
+        'operator control plane: fixed Windows taskkill to reap a cancelled setup process tree'
     ),
 }
 

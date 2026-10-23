@@ -32,6 +32,9 @@ frontend/.vite/
 frontend/.npm-cache/
 frontend/*.tsbuildinfo
 
+# Terminal is distributed separately from the Web container
+tui/
+
 # VulnClaw runtime state (lives in the /data volume)
 .vulnclaw/
 sessions/

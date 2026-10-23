@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import tarfile
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +37,22 @@ def verify_dist_artifacts(dist_dir: Path = DIST_DIR, version: str | None = None)
         names = ", ".join(path.name for path in empty)
         raise ValueError(f"empty dist artifacts detected: {names}")
 
+    for wheel in wheel_matches:
+        with zipfile.ZipFile(wheel) as archive:
+            schema = json.loads(archive.read("vulnclaw/protocol/session-v2.schema.json"))
+            if schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
+                raise ValueError(f"Unexpected session schema in {wheel.name}")
+            metadata = archive.read(next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))).decode()
+            if any("opentui" in line.lower() or "bun" in line.lower() for line in metadata.splitlines() if line.startswith("Requires-Dist:")):
+                raise ValueError("The Python wheel must install independently of the terminal runtime")
+    for sdist in sdist_matches:
+        with tarfile.open(sdist) as archive:
+            names = archive.getnames()
+            for resource in ("protocol/session-v2.schema.json", "tui/package.json", "tui/bun.lock", "tui/src/main.tsx"):
+                if not any(name.endswith("/" + resource) for name in names):
+                    raise ValueError(f"Missing {resource} in {sdist.name}")
+            if any("/node_modules/" in name or "/tui/dist/" in name for name in names):
+                raise ValueError(f"Dependency/build directories leaked into {sdist.name}")
     return artifacts
 
 

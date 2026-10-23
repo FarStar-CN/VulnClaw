@@ -1,13 +1,4 @@
-"""CLI shared data constants — extracted from cli/manual.py.
-
-Moved here so that infrastructure-layer modules (e.g. skills/) can consume
-CLI metadata without depending on the entry-layer cli/ package.
-
-修改者: Nyaecho
-修改时间: 2026-07-08
-修改原因: 消除 V5 违规 — skills/flag_skills.py 反向依赖 cli/manual.py，
-         将共享数据常量抽取到基础设施层 config/ 包中。
-"""
+"""Packaged command-manual topics and option descriptions."""
 
 from __future__ import annotations
 
@@ -29,11 +20,19 @@ class ManualTopic:
 
 ROOT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("--help", "Show Typer's short help for the root command or selected subcommand."),
+    ("no subcommand", "Print help; use tui or repl to start an interactive client."),
     ("--version", "Print the installed VulnClaw version and exit."),
     ("--man, --manual", "Print this full CLI manual and exit."),
+    ("--resume RUN", "Continue an exact saved run; --runs-dir PATH selects its storage root and --repair explicitly repairs an interrupted record."),
+    ("--format json|jsonl", "Business commands emit one command_result JSON or v2 JSONL events followed by exactly one result. Logs use stderr. Missing answers/credentials/approval yield requires_input or requires_approval and clean up; permissions are not widened. Help, version and manual remain readable text."),
+    ("exit codes", "0 completed; 1 failure, cancellation or interaction required; 2 verified finding threshold; 3 candidates only with --fail-on any. SIGINT/SIGTERM cancel through shared cleanup."),
 )
 
 COMMON_TASK_FLAGS: tuple[tuple[str, str], ...] = (
+    ("--format json|jsonl", "Machine output: one command_result JSON, or v2 JSONL events ending with exactly one result. Diagnostics use stderr."),
+    ("--input-json FILE|-", "Read the task DTO from a file or stdin. Explicit CLI/JSON values for the same field conflict, even when equal."),
+    ("--fail-on verified|any|never", "Choose the finding threshold for a nonzero exit; default verified."),
+    ("--non-interactive", "Accepted migration flag; all Python business commands already run headless."),
     (
         "--prompt TEXT",
         "Replace the built-in task prompt entirely. Use this when the default command goal is "
@@ -92,9 +91,37 @@ ACTION_NAMES = (
     "persistent",
 )
 
-TASK_COMMAND_NAMES = {"run", "persistent", "recon", "scan", "network-scan", "exploit"}
+TASK_COMMAND_NAMES = {"run", "solve", "persistent", "recon", "scan", "network-scan", "exploit", "codescan"}
 
 COMMANDS: tuple[ManualTopic, ...] = (
+    ManualTopic(
+        name="ask", summary="Submit one natural-language turn through the shared application.",
+        usage='vulnclaw ask "Explain current findings" [--format json|jsonl]',
+        notes=("Questions and approval stop headless execution with a structured terminal result. Use tui/repl to answer interactively.",),
+    ),
+    ManualTopic(
+        name="code", summary="Scan local source and export a text, JSON, SARIF or Markdown artifact.",
+        usage="vulnclaw code scan PATH [--layer L1,L2] [--format text|json|sarif|markdown] [--output PATH] [--output-format json|jsonl]",
+        notes=("--format selects the artifact; --output-format selects the machine envelope. L1/L2 run locally; L3 is an explicit optional LLM layer. Static matches are candidates; --fail-on any can make them fail CI.",),
+    ),
+    ManualTopic(
+        name="codescan", summary="Run a local static code task through the shared task lifecycle.",
+        usage="vulnclaw codescan PATH [--format json|jsonl]",
+        notes=("The terminal equivalent is /codescan PATH. Use code scan for explicit layer and artifact-format selection.",),
+    ),
+    ManualTopic(
+        name="experience", summary="Review durable lessons through an explicit human decision.",
+        usage="vulnclaw experience list|review\nvulnclaw experience show|approve|reject ID\nvulnclaw experience edit ID [--context TEXT] [--lesson TEXT]",
+        notes=("Edits retain provenance and status. Only approved lessons become reusable knowledge.",),
+    ),
+    ManualTopic(
+        name="learn", summary="Distill a completed saved run into pending lessons.",
+        usage="vulnclaw learn RUN [--runs-dir PATH] [--format json|jsonl]",
+    ),
+    ManualTopic(
+        name="feedback", summary="Record an operator rating and notes for a saved run.",
+        usage="vulnclaw feedback RUN --rating 1..5 --notes TEXT [--runs-dir PATH] [--format json|jsonl]",
+    ),
     ManualTopic(
         name="run",
         summary="Run the full authorized pentest workflow against one target.",
@@ -476,7 +503,7 @@ COMMANDS: tuple[ManualTopic, ...] = (
             (
                 "--mode MODE, -m MODE",
                 "Pre-fill workbench mode. quick maps to recon, standard maps to run, deep maps to "
-                "scan, and continuous maps to persistent.",
+                "run with the Deep action preset, and continuous maps to persistent.",
             ),
             ("--only-port PORT", "Pre-fill a single allowed port."),
             ("--only-host HOST", "Pre-fill a single allowed host."),
@@ -487,10 +514,10 @@ COMMANDS: tuple[ManualTopic, ...] = (
             ("--block-actions CSV", "Pre-fill blocked actions."),
             ("--resume / --no-resume", "Pre-fill target history resume behavior."),
             ("--dry-run", "Render the launch summary and exit without starting a task."),
-            ("--once", "Render the dashboard once and exit, useful for smoke tests."),
         ),
         notes=(
             "The TUI exposes the same scope and action controls as the CLI task commands.",
+            "Requires the platform terminal executable; reports, runs and target state remain owned by Python.",
         ),
         examples=(
             "vulnclaw tui",
@@ -519,17 +546,15 @@ COMMANDS: tuple[ManualTopic, ...] = (
     ),
     ManualTopic(
         name="repl",
-        summary="Start the classic natural-language REPL.",
-        usage="vulnclaw repl\nvulnclaw",
-        flags=(
-            ("no arguments", "Running vulnclaw with no subcommand opens this REPL by default."),
-        ),
+        summary="Start the OpenTUI scrollback conversation shell.",
+        usage="vulnclaw repl",
         notes=(
-            "REPL commands include help, status, target TARGET, tools, report [TARGET], persistent [TARGET], think [on|off], clear, and exit.",
-            "Natural-language inputs that include an auto-mode keyword and a target enter autonomous pentest mode.",
-            "Bounded parallel child-agent fan-out is available from the network-scan command's --parallel-agents flag, not from the REPL directly.",
+            "Requires the platform's vulnclaw-terminal executable. Set VULNCLAW_TERMINAL_BINARY to its path or put it on PATH.",
+            "Shares Markdown, native multiline input, forms, readers and the Python session backend with tui.",
+            "Plain text is natural language; /run, /target, /scope, /mode, /permission, /config, /report and /help use the shared command grammar.",
+            "Completed messages enter terminal scrollback; live content and the composer remain in the footer.",
         ),
-        examples=("vulnclaw", "vulnclaw repl"),
+        examples=("vulnclaw repl",),
     ),
     ManualTopic(
         name="init",
@@ -545,37 +570,26 @@ COMMANDS: tuple[ManualTopic, ...] = (
         summary="Check runtime readiness and configured integrations.",
         usage="vulnclaw doctor",
         notes=(
-            "Checks Python, node, npx, uvx, nmap, LLM config, MCP service registration, and exposed tool count.",
+            "Returns structured Python/executable/LLM/MCP diagnostics. --probe-llm explicitly probes the configured endpoint.",
             "Use this before a real run when provider, MCP, or frontend tooling feels unclear.",
         ),
         examples=("vulnclaw doctor",),
     ),
     ManualTopic(
         name="login",
-        summary="Sign in with a ChatGPT subscription (Codex \"Sign in with ChatGPT\").",
-        usage="vulnclaw login [--proxy-url URL] [--no-browser] [--set-default/--no-set-default]",
+        summary="Import an existing OAuth token bundle.",
+        usage="vulnclaw login --token-file FILE|- [--proxy-url URL] [--set-default/--no-set-default]",
         flags=(
-            (
-                "--proxy-url URL",
-                "Use an external OpenAI-compatible proxy base_url instead of the built-in bridge.",
-            ),
-            ("--no-browser", "Print the sign-in URL instead of opening a browser."),
-            (
-                "--set-default / --no-set-default",
-                "Set llm.auth_mode=oauth on success (default: set it).",
-            ),
+            ("--token-file FILE|-", "JSON bundle containing a non-empty access_token or refresh_token; - reads stdin."),
+            ("--proxy-url URL", "Use an external compatible proxy instead of the built-in bridge."),
+            ("--no-browser", "Accepted migration flag; headless login never opens a browser."),
+            ("--set-default / --no-set-default", "Select llm.auth_mode=oauth on success (default: set it)."),
         ),
         notes=(
-            "Opens the ChatGPT consent page, stores a refreshable token, and (with "
-            "llm.chatgpt_auto_proxy) starts a built-in local proxy that bridges chat.completions "
-            "to the ChatGPT backend.",
-            "This reuses OpenAI's first-party Codex OAuth client. Using a ChatGPT subscription "
-            "through a non-official client may violate OpenAI's Terms of Service and can get your "
-            "account restricted; proceed at your own risk.",
-            "Use `vulnclaw logout` to remove stored tokens, or `vulnclaw config set llm.auth_mode "
-            "static` plus llm.api_key to switch back to a static API key.",
+            "Missing token input returns requires_input and exits. No terminal prompt or consent browser is started.",
+            "Use logout to remove stored tokens, or set llm.auth_mode=static and llm.api_key for static credentials.",
         ),
-        examples=("vulnclaw login", "vulnclaw login --no-browser"),
+        examples=("vulnclaw login --token-file oauth-bundle.json",),
     ),
     ManualTopic(
         name="logout",
@@ -602,6 +616,6 @@ COMMANDS: tuple[ManualTopic, ...] = (
             "vulnclaw manual network-scan",
             "vulnclaw manual --format man",
         ),
-        aliases=("man", "help-man"),
+        aliases=("man",),
     ),
 )

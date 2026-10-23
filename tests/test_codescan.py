@@ -1,7 +1,6 @@
 """Tests for the VulnClaw codescan package (local source-code scanner).
 
-Covers the rule engine, scanner layering, JSON/SARIF reporting, and the
-JSONL stream protocol used by the Rust TUI.
+Covers the rule engine, scanner layering, JSON/SARIF reporting, using the shared application protocol for streaming.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ import json
 from vulnclaw.codescan.report import format_json, format_markdown, format_sarif
 from vulnclaw.codescan.rules import L1_RULES, L2_RULES, L1Rule
 from vulnclaw.codescan.scanner import scan_code
-from vulnclaw.codescan.stream import emit_code_scan_stream
 
 SAMPLE_TS = """\
 import { OpenAI } from "openai";
@@ -165,33 +163,3 @@ def test_format_markdown(tmp_path):
     assert "hardcoded_openai_key" in md
 
 
-# ---------------------------------------------------------------------------
-# Stream protocol (TUI)
-# ---------------------------------------------------------------------------
-
-def test_stream_events(tmp_path, capsys):
-    path = _write_sample(tmp_path)
-    result = scan_code(path, layers=("L1", "L2"))
-    emit_code_scan_stream(result, sys_out := _Capture())
-    events = [json.loads(line) for line in sys_out.lines if line.strip()]
-    types = [e["type"] for e in events]
-    assert types[0] == "status"
-    assert "finding" in types
-    assert types[-1] == "complete"
-    complete = events[-1]
-    assert complete["result"]["findings"]
-    assert complete["summary"].startswith("Scanned")
-
-
-class _Capture:
-    """Tiny StringIO-like object for the stream emitter."""
-
-    def __init__(self):
-        self.lines: list[str] = []
-
-    def write(self, s: str) -> int:
-        self.lines.append(s)
-        return len(s)
-
-    def flush(self) -> None:
-        pass

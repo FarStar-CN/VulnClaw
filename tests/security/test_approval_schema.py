@@ -9,7 +9,7 @@ from __future__ import annotations
 import io
 import json
 
-from vulnclaw.tui_protocol import JsonlWriter
+from vulnclaw.session_protocol import JsonlWriter
 
 
 def _emit(fields: dict) -> dict:

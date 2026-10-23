@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.cli.test_tui_backend import (
+from tests.cli.test_session_backend import (
     FakeRuntime,
     events,
     protocol_validator,
@@ -17,10 +17,10 @@ from tests.cli.test_tui_backend import (
 from vulnclaw.agent.context import SessionState, VulnerabilityFinding
 from vulnclaw.config.schema import VulnClawConfig
 from vulnclaw.orchestrator import OrchestratorRunResult
+from vulnclaw.session_backend import BackendSession
+from vulnclaw.session_protocol import JsonlWriter
 from vulnclaw.target_state.store import SessionRestoreResult
 from vulnclaw.task_service import TaskExecution
-from vulnclaw.tui_backend import BackendSession
-from vulnclaw.tui_protocol import JsonlWriter
 
 
 @pytest.fixture

@@ -931,7 +931,7 @@ async def call_llm_stream(
                     "tool_calls": tool_calls,
                 })()
                 for tc in tool_calls:
-                    stream_sink.on_tool_call(tc.function.name, tc.function.arguments[:200])
+                    stream_sink.on_tool_call(tc.function.name, tc.function.arguments)
                 # handle_tool_calls 执行工具并做第二轮 LLM 调用
                 result = await handle_tool_calls(agent, dummy_msg)
                 if result:
@@ -1018,7 +1018,7 @@ async def call_llm_auto_stream(
                 return extract_response(message)
 
             for tc in tool_calls:
-                stream_sink.on_tool_call(tc.function.name, tc.function.arguments[:200])
+                stream_sink.on_tool_call(tc.function.name, tc.function.arguments)
 
             tool_results, skipped_info = await handle_tool_calls_with_results(agent, message)
             last_tool_results = tool_results

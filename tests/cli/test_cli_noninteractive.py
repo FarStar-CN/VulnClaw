@@ -1,403 +1,250 @@
-"""Tests for `run --non-interactive`: scan-mode presets, exit codes, artifacts."""
+"""Machine tasks retain scan profiles, persistence, audit classification and failure exits."""
 
 from __future__ import annotations
 
 import json
-import types
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-import yaml
 from typer.testing import CliRunner
 
-import vulnclaw.cli.main as cli_main
+from vulnclaw.agent.context import PentestPhase, SessionState
 from vulnclaw.cli.main import app
-from vulnclaw.config.schema import VulnClawConfig
+from vulnclaw.findings.intake import submit_finding
+from vulnclaw.findings.types import FindingAssessment
+from vulnclaw.target_state.store import save_target_state
 
 
-class _Finding:
-    def __init__(self, verified: bool = False, verification_status: str = "pending"):
-        self.verified = verified
-        self.verification_status = verification_status
+def invoke(args):
+    result = CliRunner().invoke(app, args)
+    document = json.loads(result.stdout.splitlines()[-1])
+    assert document["type"] == "command_result"
+    return result, document
 
 
-class _FakeAgent:
-    """Records the engine kwargs and exposes a session_state with findings."""
+@pytest.mark.parametrize("mode", ["quick", "standard", "deep"])
+def test_scan_mode_budgets_reach_the_real_shared_engine(headless_runtime, mode):
+    from vulnclaw.headless import resolve_scan_profile
 
-    def __init__(self, findings, config):
-        self.config = config
-        self.context = None  # board lookup resolves to None
-        self.session_state = types.SimpleNamespace(findings=findings)
-        self.solve_kwargs: dict = {}
-
-    async def solve(self, prompt, **kwargs):
-        self.solve_kwargs = kwargs
-        return None
-
-    def apply_task_constraints(self, _constraints):
-        return None
-
-
-@pytest.fixture
-def runner():
-    return CliRunner()
-
-
-def _config_with_creds():
-    config = VulnClawConfig()
-    config.llm.api_key = "test-key"
-    return config
+    case = headless_runtime
+    result, document = invoke(
+        ["run", "https://synthetic.test", "--no-resume", "--non-interactive", "--scan-mode", mode]
+    )
+    assert result.exit_code == 0, document
+    profile = resolve_scan_profile(case.config, mode)
+    kwargs = case.agent.solve.call_args.kwargs
+    assert kwargs["max_steps"] == profile.max_steps
+    assert kwargs["max_tool_rounds"] == profile.max_tool_rounds
+    summary = json.loads(
+        Path(
+            next(item["path"] for item in document["artifacts"] if item["kind"] == "summary")
+        ).read_text()
+    )
+    assert summary["scan_mode"] == mode
+    assert summary["profile"]["max_parallel"] == profile.max_parallel
+    assert case.runtimes[0].stopped
+    assert Path(document["result"]["run"]["directory"], "run.json").is_file()
+    assert Path(document["result"]["report"]["path"]).is_file()
 
 
-def _install_fake_run(
-    monkeypatch,
-    *,
-    findings=None,
-    raise_exc: Exception | None = None,
-    captured: dict | None = None,
+def test_explicit_budget_and_report_destination_win_over_profile(headless_runtime):
+    destination = headless_runtime.root / "custom" / "report.md"
+    result, document = invoke(
+        [
+            "run",
+            "https://synthetic.test",
+            "--no-resume",
+            "--scan-mode",
+            "quick",
+            "--max-steps",
+            "999",
+            "--output",
+            str(destination),
+        ]
+    )
+    assert result.exit_code == 0, document
+    assert headless_runtime.agent.solve.call_args.kwargs["max_steps"] == 999
+    assert Path(document["result"]["report"]["path"]) == destination
+    assert destination.is_file()
+
+
+def test_team_fan_out_cap_reaches_the_existing_supervisor(headless_runtime, monkeypatch):
+    team = AsyncMock()
+    monkeypatch.setattr("vulnclaw.agent.team.run_team_pentest", team)
+    result, document = invoke(
+        ["run", "synthetic.test", "--no-resume", "--engine", "team", "--scan-mode", "quick"]
+    )
+    assert result.exit_code == 0, document
+    assert team.call_args.kwargs["max_parallel"] == 1
+    assert not headless_runtime.agent.solve.called
+
+
+@pytest.mark.parametrize(
+    ("history_verified", "outcome", "fail_on", "expected"),
+    [
+        (True, "suspected_low", "verified", 0),
+        (False, "verified", "verified", 2),
+        (False, "suspected_low", "any", 3),
+        (False, "suspected_high", "verified", 0),
+        (True, "verified", "never", 0),
+        (True, "rejected", "any", 0),
+    ],
+)
+def test_exit_code_uses_current_audit_instead_of_historical_claims(
+    headless_runtime, monkeypatch, history_verified, outcome, fail_on, expected
 ):
-    """Patch load_config + orchestrator so `run` drives a fake agent.
-
-    The fake ``_run_cli_orchestrated_task`` builds a config + agent and invokes
-    the real runner closure so scan-mode/engine wiring is exercised end to end.
-    """
-    findings = findings if findings is not None else []
-    monkeypatch.setattr(cli_main, "load_config", _config_with_creds)
-
-    async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
-        shared_config = VulnClawConfig()
-        agent = _FakeAgent(findings, shared_config)
-        if captured is not None:
-            captured["agent"] = agent
-            captured["shared_config"] = shared_config
-        if raise_exc is not None:
-            raise raise_exc
-        await runner(agent, shared_config)
-        return type("RunResult", (), {"summary": {"findings_count": len(findings)}})()
-
-    monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
+    case = headless_runtime
+    state = case.agent.session_state
+    state.target = "https://synthetic.test"
+    evidence = state.agent_state.remember_tool_result(
+        tool="fetch",
+        arguments={"url": state.target},
+        output="synthetic observation",
+        target=state.target,
+    )
+    submit_finding(
+        case.agent,
+        {
+            "title": "Synthetic candidate",
+            "description": "Recorded observation",
+            "vuln_type": "SQLi",
+            "severity": "High",
+            "endpoint": state.target,
+            "evidence_ids": [evidence.id],
+        },
+    )
+    if history_verified:
+        state.findings[0].mark_verified("Historical conclusion")
     monkeypatch.setattr(
-        cli_main, "_generate_report_for_target", AsyncMock(side_effect=lambda target, **kw:
-            _write_fake_assessed_report(kw['output_path'], findings))
-    )
-
-
-def _write_fake_assessed_report(path, findings):
-    report = Path(path)
-    folder = report.parent / (report.stem + '.artifacts') / 'findings'
-    folder.mkdir(parents=True, exist_ok=True)
-    document = {
-        'verified': [{'title': 'Controlled result'} for f in findings if f.verified],
-        'findings': [
-            {'assessment': {'outcome': 'verified' if f.verified else
-                'rejected' if f.verification_status == 'rejected' else 'suspected_low'}}
-            for f in findings
-        ],
-    }
-    (folder / 'findings.json').write_text(json.dumps(document))
-    return str(report)
-
-
-# ── Non-interactive: no prompts, structured output ──────────────────
-
-
-class TestNonInteractiveOutput:
-    def test_no_prompt_is_issued_and_run_completes(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch)
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-
-        # A prompt that would hang/raise must never be reached.
-        def _boom(*a, **k):  # pragma: no cover - only fails if a prompt is issued
-            raise RuntimeError("interactive prompt issued in non-interactive mode")
-
-        monkeypatch.setattr(cli_main.console, "input", _boom)
-
-        result = runner.invoke(app, ["run", "https://example.com", "--non-interactive"])
-        assert result.exit_code == cli_main.headless.EXIT_CLEAN
-
-    def test_structured_summary_lands_in_run_directory(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch, findings=[_Finding(verified=True)])
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-
-        result = runner.invoke(
-            app, ["run", "https://example.com", "--non-interactive", "--scan-mode", "quick"]
-        )
-        assert result.exit_code == cli_main.headless.EXIT_VERIFIED
-
-        summaries = list(tmp_path.glob("*/summary.json"))
-        assert len(summaries) == 1
-        data = json.loads(summaries[0].read_text())
-        assert data["target"] == "https://example.com"
-        assert data["scan_mode"] == "quick"
-        assert data["findings"]["verified"] == 1
-        assert data["exit_code"] == cli_main.headless.EXIT_VERIFIED
-        assert data["profile"]["max_parallel"] == 1  # quick → fan-out off
-
-    def test_report_is_co_located_in_run_directory_by_default(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch)
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-
-        report_calls: list = []
-
-        def capture_report(target, **kwargs):
-            report_calls.append(kwargs.get("output_path"))
-            return _write_fake_assessed_report(kwargs['output_path'], [])
-
-        monkeypatch.setattr(cli_main, "_generate_report_for_target", AsyncMock(side_effect=capture_report))
-
-        runner.invoke(app, ["run", "https://example.com", "--non-interactive"])
-        assert report_calls
-        # default (no --output) → report path lives inside the run directory
-        assert report_calls[0] is not None
-        assert str(tmp_path) in report_calls[0]
-        assert report_calls[0].endswith("report.md")
-
-    def test_explicit_output_flag_still_wins(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch)
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-
-        report_calls: list = []
-
-        def capture_report(target, **kwargs):
-            report_calls.append(kwargs.get("output_path"))
-            return _write_fake_assessed_report(kwargs['output_path'], [])
-
-        monkeypatch.setattr(cli_main, "_generate_report_for_target", AsyncMock(side_effect=capture_report))
-
-        output = str(tmp_path / 'custom' / 'report.md')
-        runner.invoke(
-            app,
-            ["run", "t", "--non-interactive", "--output", output],
-        )
-        assert report_calls == [output]
-
-
-@pytest.mark.parametrize(('historical_verified', 'outcome', 'expected_exit'), [
-    (True, 'suspected_low', 0),
-    (False, 'verified', 2),
-])
-def test_exit_code_uses_the_current_assessment(
-    runner, monkeypatch, tmp_path, historical_verified, outcome, expected_exit,
-):
-    from types import SimpleNamespace
-
-    from vulnclaw.agent.context import SessionState
-    from vulnclaw.findings.intake import submit_finding
-    from vulnclaw.findings.types import FindingAssessment
-    from vulnclaw.report.generator import generate_report
-
-    config = VulnClawConfig()
-    config.session.output_dir = tmp_path
-    state = SessionState(target='https://lab.test')
-    record = state.agent_state.remember_tool_result(
-        tool='fetch', arguments={'url': state.target + '/cmd'},
-        output='recorded observation', target=state.target,
-    )
-    submit_finding(SimpleNamespace(config=config, context=SimpleNamespace(state=state),
-                                   session_state=state), {
-        'title': 'Candidate', 'description': 'Recorded observation', 'vuln_type': 'SQLi',
-        'severity': 'High', 'endpoint': state.target + '/cmd', 'evidence_ids': [record.id],
-    })
-    if historical_verified:
-        state.findings[0].mark_verified('Historical result')
-    _install_fake_run(monkeypatch, findings=[_Finding(verified=historical_verified)])
-    monkeypatch.setattr(cli_main, 'RUNS_DIR', tmp_path / 'runs')
-    monkeypatch.setattr('vulnclaw.findings.verification.assess_finding', AsyncMock(
-        return_value=FindingAssessment(
-            outcome=outcome, method='poc' if outcome == 'verified' else 'evidence_review',
-            reason='Current assessment', evidence_ids=[record.id],
+        "vulnclaw.findings.verification.assess_finding",
+        AsyncMock(
+            return_value=FindingAssessment(
+                outcome=outcome,
+                method="poc" if outcome == "verified" else "evidence_review",
+                reason="Current assessment",
+                evidence_ids=[evidence.id],
+            )
         ),
-    ))
-
-    async def report(target, output_path, current_session=None):
-        from vulnclaw.findings.verification import verify_findings
-
-        view = await verify_findings(state, config=config)
-        return str(await generate_report(view, output_path, llm_attack_summary='Summary'))
-
-    monkeypatch.setattr(cli_main, '_generate_report_for_target', report)
-    result = runner.invoke(app, ['run', state.target, '--non-interactive', '--fail-on', 'verified'])
-    assert result.exit_code == expected_exit, result.output
-    summary = json.loads(next((tmp_path / 'runs').glob('*/summary.json')).read_text())
-    assert summary['findings']['verified'] == int(outcome == 'verified')
-    assert summary['findings']['candidates'] == int(outcome == 'suspected_low')
-
-
-# ── Scan-mode presets applied to the engine ─────────────────────────
-
-
-class TestScanModeWiring:
-    def test_standard_mode_uses_config_knobs(self, runner, monkeypatch, tmp_path):
-        captured: dict = {}
-        _install_fake_run(monkeypatch, captured=captured)
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-
-        runner.invoke(app, ["run", "t", "--non-interactive", "--scan-mode", "standard"])
-        agent = captured["agent"]
-        defaults = VulnClawConfig().session
-        assert agent.solve_kwargs["max_steps"] == defaults.solve_max_steps
-        assert agent.solve_kwargs["max_tool_rounds"] == defaults.solve_max_tool_rounds
-
-    def test_deep_mode_opens_fan_out(self, runner, monkeypatch, tmp_path):
-        captured: dict = {}
-        _install_fake_run(monkeypatch, captured=captured)
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-
-        runner.invoke(app, ["run", "t", "--non-interactive", "--scan-mode", "deep"])
-        assert captured["agent"].solve_kwargs["max_steps"] > VulnClawConfig().session.solve_max_steps
-
-    def test_explicit_max_steps_overrides_preset(self, runner, monkeypatch, tmp_path):
-        captured: dict = {}
-        _install_fake_run(monkeypatch, captured=captured)
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-
-        runner.invoke(
-            app,
-            ["run", "t", "--non-interactive", "--scan-mode", "quick", "--max-steps", "999"],
-        )
-        assert captured["agent"].solve_kwargs["max_steps"] == 999
-
-    def test_team_engine_receives_scan_mode_fan_out_cap(self, runner, monkeypatch, tmp_path):
-        # team fan-out reads its own cap (not config), so the CLI must pass it or
-        # quick/--max-parallel is silently ignored.
-        import vulnclaw.agent.team as team_mod
-
-        _install_fake_run(monkeypatch)
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-
-        team_calls: list = []
-
-        async def fake_team(agent, **kwargs):
-            team_calls.append(kwargs)
-            return None
-
-        monkeypatch.setattr(team_mod, "run_team_pentest", fake_team)
-
-        runner.invoke(
-            app,
-            ["run", "t", "--non-interactive", "--engine", "team", "--scan-mode", "quick"],
-        )
-        assert team_calls
-        assert team_calls[0]["max_parallel"] == 1  # quick → single agent
-
-
-# ── Exit-code contract ──────────────────────────────────────────────
-
-
-class TestExitCodes:
-    def test_clean_run_exits_zero(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch, findings=[])
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-        result = runner.invoke(app, ["run", "t", "--non-interactive"])
-        assert result.exit_code == 0
-
-    def test_verified_finding_exits_two(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch, findings=[_Finding(verified=True)])
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-        result = runner.invoke(app, ["run", "t", "--non-interactive"])
-        assert result.exit_code == 2
-
-    def test_only_candidates_exits_three_with_fail_on_any(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch, findings=[_Finding(verified=False)])
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-        result = runner.invoke(app, ["run", "t", "--non-interactive", "--fail-on", "any"])
-        assert result.exit_code == 3
-
-    def test_candidates_do_not_block_under_default_fail_on(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch, findings=[_Finding(verified=False)])
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-        result = runner.invoke(app, ["run", "t", "--non-interactive"])  # default: verified
-        assert result.exit_code == 0
-
-    def test_fail_on_never_exits_zero_despite_verified(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch, findings=[_Finding(verified=True)])
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-        result = runner.invoke(app, ["run", "t", "--non-interactive", "--fail-on", "never"])
-        assert result.exit_code == 0
-
-    def test_crash_during_scan_exits_one(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch, raise_exc=RuntimeError("boom"))
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-        result = runner.invoke(app, ["run", "t", "--non-interactive"])
-        assert result.exit_code == 1
-
-    def test_missing_credentials_exits_one(self, runner, monkeypatch, tmp_path):
-        monkeypatch.setattr(cli_main, "load_config", lambda: VulnClawConfig())  # no api_key
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-        result = runner.invoke(app, ["run", "t", "--non-interactive"])
-        assert result.exit_code == 1
-
-    def test_bad_scan_mode_exits_one(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch)
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-        result = runner.invoke(app, ["run", "t", "--non-interactive", "--scan-mode", "bogus"])
-        assert result.exit_code == 1
-
-    def test_bad_fail_on_exits_one(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch)
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-        result = runner.invoke(app, ["run", "t", "--non-interactive", "--fail-on", "sometimes"])
-        assert result.exit_code == 1
-
-    def test_blank_target_exits_one(self, runner, monkeypatch, tmp_path):
-        _install_fake_run(monkeypatch)
-        monkeypatch.setattr(cli_main, "RUNS_DIR", tmp_path)
-        result = runner.invoke(app, ["run", "   ", "--non-interactive"])
-        assert result.exit_code == 1
-
-
-# ── Prescribed workflow docs parse-check ────────────────────────────
-
-
-class TestWorkflowDocs:
-    DOCS_DIR = Path(__file__).resolve().parents[2] / "docs" / "ci"
-
-    def _run_flags(self, yaml_path: Path) -> list[str]:
-        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-        steps = data["jobs"]["vulnclaw"]["steps"]
-        run_lines = [s["run"] for s in steps if "run" in s and "vulnclaw run" in s.get("run", "")]
-        assert run_lines, f"no `vulnclaw run` step in {yaml_path.name}"
-        tokens = run_lines[0].split()
-        return [t for t in tokens if t.startswith("--")]
-
-    def _run_option_names(self) -> set[str]:
-        """Option strings the `run` command actually registers.
-
-        Introspects the Typer/Click command rather than scraping ``--help``
-        text, which Rich wraps/truncates at narrow terminal widths (e.g. CI).
-        """
-        from typer.main import get_command
-
-        run_cmd = get_command(app).commands["run"]
-        names: set[str] = set()
-        for param in run_cmd.params:
-            names.update(getattr(param, "opts", []) or [])
-            names.update(getattr(param, "secondary_opts", []) or [])
-        return names
-
-    def test_both_workflow_files_present(self):
-        assert (self.DOCS_DIR / "github-actions-pr-scan.yml").exists()
-        assert (self.DOCS_DIR / "github-actions-scheduled-scan.yml").exists()
-
-    @pytest.mark.parametrize(
-        "filename",
-        ["github-actions-pr-scan.yml", "github-actions-scheduled-scan.yml"],
     )
-    def test_workflow_uses_flags_the_cli_accepts(self, filename):
-        flags = self._run_flags(self.DOCS_DIR / filename)
-        assert "--non-interactive" in flags
-        accepted = self._run_option_names()
-        for flag in flags:
-            assert flag in accepted, f"{flag} from {filename} is not a `run` option"
+    result, document = invoke(["run", state.target, "--no-resume", "--fail-on", fail_on])
+    assert result.exit_code == expected, document
+    assert document["status"] == "completed"
+    assert document["findings"] == {
+        "verified": int(outcome == "verified"),
+        "candidates": int(outcome.startswith("suspected")),
+    }
+    summary = json.loads(
+        Path(
+            next(item["path"] for item in document["artifacts"] if item["kind"] == "summary")
+        ).read_text()
+    )
+    assert summary["findings"] == {
+        **document["findings"],
+        "total": sum(document["findings"].values()),
+    }
+    assert summary["exit_code"] == expected
 
-    def test_pr_scan_gates_on_verified(self):
-        flags = self._run_flags(self.DOCS_DIR / "github-actions-pr-scan.yml")
-        assert "--scan-mode" in flags and "--scope-mode" in flags and "--fail-on" in flags
 
-    def test_scheduled_scan_never_breaks_pipeline(self):
-        text = (self.DOCS_DIR / "github-actions-scheduled-scan.yml").read_text(
-            encoding="utf-8"
-        )
-        assert "--fail-on never" in text
-        assert "--scan-mode deep" in text
+@pytest.mark.parametrize("resume", [True, False])
+def test_task_restores_existing_target_state_only_when_requested(headless_runtime, resume):
+    target = "https://synthetic.test"
+    saved = SessionState(target=target)
+    saved.advance_phase(PentestPhase.RECON)
+    saved.add_note("Existing business data")
+    save_target_state(target, saved, command="recon")
+    observed = []
+
+    async def solve(*args, **kwargs):
+        observed.extend(headless_runtime.agent.session_state.notes)
+        return SimpleNamespace(completed=False)
+
+    headless_runtime.agent.solve.side_effect = solve
+    result, document = invoke(["recon", target, *([] if resume else ["--no-resume"])])
+    assert result.exit_code == 0, document
+    assert ("Existing business data" in observed) is resume
+
+
+def test_persistent_alias_keeps_zero_cycles_and_step_callback(headless_runtime, monkeypatch):
+    async def one_cycle(*_args, **kwargs):
+        await kwargs["cycle_runner"]("synthetic cycle", lambda *_args: None)
+        return []
+
+    persistent = AsyncMock(side_effect=one_cycle)
+    monkeypatch.setattr(headless_runtime.agent, "persistent_pentest", persistent)
+    result, document = invoke(
+        [
+            "persistent",
+            "synthetic.test",
+            "--no-resume",
+            "--rounds-per-cycle",
+            "2",
+            "--max-cycles",
+            "0",
+            "--max-steps",
+            "17",
+            "--no-report",
+        ]
+    )
+    assert result.exit_code == 0, document
+    kwargs = persistent.call_args.kwargs
+    assert kwargs["rounds_per_cycle"] == 2
+    assert kwargs["max_cycles"] == 0
+    assert kwargs["auto_report"] is False
+    assert headless_runtime.agent.solve.call_args.kwargs["max_steps"] == 17
+    assert callable(kwargs["on_cycle_step"])
+
+
+def test_runtime_failure_returns_one_and_still_closes_the_session(headless_runtime):
+    headless_runtime.agent.solve.side_effect = RuntimeError("synthetic engine failure")
+    result, document = invoke(["run", "synthetic.test", "--no-resume", "--format", "jsonl"])
+    assert result.exit_code == 1
+    assert document["status"] == "failed"
+    assert "synthetic engine failure" in document["error"]["message"]
+    assert headless_runtime.runtimes[0].stopped
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--scan-mode", "invalid"],
+        ["--fail-on", "invalid"],
+        ["--scope-mode", "invalid"],
+        ["--only-port", "0"],
+        ["--continuous", "--max-cycles", "-1"],
+    ],
+)
+def test_invalid_task_options_fail_before_runtime_start(headless_runtime, arguments):
+    result, document = invoke(["run", "synthetic.test", *arguments])
+    assert result.exit_code == 1
+    assert document["status"] == "failed"
+    assert headless_runtime.runtimes == []
+
+
+def test_missing_credentials_does_not_start_runtime(headless_runtime):
+    headless_runtime.config.llm.api_key = ""
+    result, document = invoke(["run", "synthetic.test"])
+    assert result.exit_code == 1
+    assert document["status"] == "requires_input"
+    assert not headless_runtime.runtimes
+
+
+def test_root_resume_uses_exact_saved_run_and_preserves_its_command(headless_runtime):
+    case = headless_runtime
+    case.config.session.solve_auto_report = False
+    first, initial = invoke(
+        ["solve", "https://synthetic.test", "--no-resume", "--run-name", "saved-solve"]
+    )
+    assert first.exit_code == 0, initial.get("error")
+    case.agent.context.state = SessionState()
+    resumed, document = invoke(
+        ["--resume", "saved-solve", "--runs-dir", str(case.root / "runs"), "--repair"]
+    )
+    assert resumed.exit_code == 0, document.get("error")
+    assert document["result"]["run"]["name"] == "saved-solve"
+    assert document["result"]["command"] == "solve"
+    assert document["result"]["target"] == "https://synthetic.test"
+    assert len(list((case.root / "runs").iterdir())) == 1
+    assert "saved-solve" in case.agent.chat.call_args.args[0]
+    assert all(runtime.stopped for runtime in case.runtimes)

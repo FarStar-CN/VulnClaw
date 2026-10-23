@@ -54,6 +54,8 @@ async def run_agent_task(
     repair: bool = False,
     force_fresh: bool = False,
     no_import: bool = False,
+    continuous: bool = False,
+    poc_verify: bool | None = None,
     before_restore: Optional[Callable[[SessionRestoreResult | None], None]] = None,
     on_restored: Optional[Callable[[SessionRestoreResult], None]] = None,
     on_legacy_import: Optional[Callable[[SessionRestoreResult], None]] = None,
@@ -169,15 +171,19 @@ async def run_agent_task(
 
         # Persistent cycles already audit before their summaries and reports.
         # Do not immediately retry an incomplete audit from the final cycle.
-        if command == "persistent":
+        if command == "persistent" or continuous:
             try:
                 require_assessed(agent.session_state)
             except ValueError:
-                audited_session = await verify_findings(agent.session_state, config=agent.config)
+                audited_session = await verify_findings(
+                    agent.session_state, config=agent.config, poc_verify=poc_verify,
+                )
             else:
                 audited_session = agent.session_state.model_copy(deep=True)
         else:
-            audited_session = await verify_findings(agent.session_state, config=agent.config)
+            audited_session = await verify_findings(
+                agent.session_state, config=agent.config, poc_verify=poc_verify,
+            )
         checkpoint("run_complete")
         if run_context is not None:
             mark_run_status(run_context, "completed", exit_code=0)

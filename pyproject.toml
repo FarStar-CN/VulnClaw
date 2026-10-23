@@ -27,7 +27,6 @@ classifiers = [
 dependencies = [
     "typer>=0.12.0",
     "rich>=13.0.0",
-    "prompt_toolkit>=3.0.0",
     "httpx>=0.27.0",
     # openai 1.55.3 修复了「向 httpx>=0.28 传已删除的 proxies= 参数」的兼容问题；
     # 更老的 openai 与 httpx 0.28 共存时，构造客户端即抛
@@ -94,7 +93,8 @@ vulnclaw = "vulnclaw.cli.main:app"
 exclude = [
     "/frontend/node_modules",
     "/frontend/dist",
-    "/tui/target",
+    "/tui/node_modules",
+    "/tui/dist",
     "/.test-tmp",
     "/.pytest_cache",
     "/dist",
@@ -107,7 +107,7 @@ exclude = [
 packages = ["vulnclaw"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"protocol/tui-v1.schema.json" = "vulnclaw/protocol/tui-v1.schema.json"
+"protocol/session-v2.schema.json" = "vulnclaw/protocol/session-v2.schema.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -121,12 +121,15 @@ include = [
     "/README_EN.md",
     "/LICENSE",
     "/CONTRIBUTING.md",
+    "/CONTRIBUTING_EN.md",
+    "/Makefile",
     "/pyproject.toml",
 ]
 exclude = [
     "/frontend/node_modules",
     "/frontend/dist",
-    "/tui/target",
+    "/tui/node_modules",
+    "/tui/dist",
     "/.test-tmp",
     "/.pytest_cache",
     "/dist",

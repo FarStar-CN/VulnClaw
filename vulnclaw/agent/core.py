@@ -669,6 +669,7 @@ class AgentCore:
         task_constraints: Optional[TaskConstraints] = None,
         engine: Optional[str] = None,
         cycle_runner: Any = None,
+        poc_verify: bool | None = None,
     ) -> list["PersistentCycleResult"]:
         """Persistent penetration test — runs cycles of auto_pentest until stopped."""
         return await run_persistent_pentest(
@@ -684,6 +685,7 @@ class AgentCore:
             task_constraints=task_constraints,
             engine=engine,
             cycle_runner=cycle_runner,
+            poc_verify=poc_verify,
         )
 
     def _detect_phase_from_output(self, output: str) -> Optional[PentestPhase]:

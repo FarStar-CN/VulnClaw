@@ -1,6 +1,6 @@
-"""Tests for LLM error formatting in the classic REPL."""
+"""Tests for LLM error formatting in application clients."""
 
-from vulnclaw.cli._helpers import format_llm_user_error
+from vulnclaw.agent.errors import format_llm_user_error
 
 
 def test_format_llm_user_error_prefers_openrouter_metadata_raw():

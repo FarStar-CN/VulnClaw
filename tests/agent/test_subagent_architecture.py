@@ -1018,10 +1018,13 @@ async def test_real_agent_adapter_runs_leader_with_parallel_leaf_wave(monkeypatc
     for agent_id in {event["agent_id"] for event in streams}:
         agent_stream = [event for event in streams if event["agent_id"] == agent_id]
         assert [event["type"] for event in agent_stream] == [
-            "reasoning", "reasoning", "tool_call", "tool_result", "log",
+            "message", "message", "message", "tool_call", "tool_result", "message", "message",
         ]
-        assert agent_stream[0]["append"] is False
-        assert agent_stream[1]["append"] is True
+        assert agent_stream[0]["operation"] == "append"
+        assert agent_stream[1]["operation"] == "append"
+        assert agent_stream[2]["operation"] == "end"
+        assert agent_stream[0]["source"] == agent_id
+        assert agent_stream[0]["message_id"] == agent_stream[1]["message_id"]
     lifecycle = [payload for kind, payload in live_events if kind == "subagent"]
     assert {event["agent_id"] for event in lifecycle} == {event["agent_id"] for event in streams}
     assert all(event["status"] in {"pending", "running"} for event in lifecycle)

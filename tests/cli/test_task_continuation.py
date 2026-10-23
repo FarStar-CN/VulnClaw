@@ -151,7 +151,7 @@ async def test_ask_user_reply_is_queued_during_cleanup_and_runs_after_idle(
         await asyncio.wait_for(cleaning.wait(), timeout=2)
         assert paused_task.agent.session_state.agent_state.pending_questions
         assert any(
-            kind == "log" and "May I continue" in fields.get("message", "")
+            kind == "message" and "May I continue" in fields.get("text", "")
             for kind, fields in paused_task.events
         )
         assert not session.active_task.done()

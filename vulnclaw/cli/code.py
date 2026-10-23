@@ -1,189 +1,113 @@
-"""VulnClaw CLI — code sub-command group (local source-code scanning).
-
-Usage:
-    vulnclaw code scan <path> [--layer L1|L2|L3|all] [--format text|json|sarif|markdown]
-                              [--output FILE] [--stream] [--no-progress]
-
-The scanner is pure-Python (no LLM required for L1/L2). L3 uses the
-configured LLM provider for semantic review and is opt-in.
-"""
+"""Local code scanning; --format describes the artifact, --output-format the CLI."""
 
 from __future__ import annotations
 
 import sys
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
+from uuid import uuid4
 
 import typer
-from rich.panel import Panel
 
-from vulnclaw.cli._helpers import console, err_console
+from vulnclaw import headless
+from vulnclaw.cli.management import MachineFormat, command_group
+from vulnclaw.cli.output import CommandError, current_output, perform
 
-code_app = typer.Typer(
-    name="code",
-    help="Local source-code security scanning (no network target needed)",
-    no_args_is_help=False,
-)
-
-
-@code_app.callback(invoke_without_command=True)
-def code_root(ctx: typer.Context) -> None:
-    """Print the code-group help when invoked bare."""
-    if ctx.resilient_parsing or ctx.invoked_subcommand is not None:
-        return
-    console.print(Panel.fit("vulnclaw code — local source-code audit\n\n  vulnclaw code scan <path>", title="CodeScan"))
+code_app = command_group("Local source-code security scanning")
 
 
 @code_app.command("scan")
 def code_scan(
-    path: str = typer.Argument(..., help="Source file or directory to scan"),
-    layer: str = typer.Option(
-        "all",
-        "--layer",
-        help="Detection layers: L1 (instant regex/entropy), L2 (structural), L3 (LLM, opt-in), all",
+    path: str,
+    layer: str = typer.Option("all", "--layer"),
+    artifact_format: Literal["text", "json", "sarif", "markdown", "md"] = typer.Option(
+        "text", "--format", "-f"
     ),
-    output_format: str = typer.Option(
-        "text",
-        "--format",
-        "-f",
-        help="Output format: text, json, sarif, markdown",
-    ),
-    output: Optional[str] = typer.Option(
-        None,
-        "--output",
-        "-o",
-        help="Write the report to a file instead of stdout",
-    ),
-    stream: bool = typer.Option(
-        False,
-        "--stream",
-        help="Emit newline-delimited JSON events for the Rust TUI",
-    ),
-    no_progress: bool = typer.Option(
-        False,
-        "--no-progress",
-        help="Do not print per-file progress lines",
-    ),
-) -> None:
-    """Scan local source code for vulnerabilities (like DeepSec shield scan)."""
-    import os
-
-    if not os.path.exists(path):
-        err_console.print(f"[!] Path not found: {path}")
-        raise typer.Exit(2)
-
-    layer_set = _parse_layers(layer)
-    if layer_set is None:
-        err_console.print("[!] --layer must be one of: L1, L2, L3, all")
-        raise typer.Exit(2)
-
-    from vulnclaw.codescan.scanner import scan_code
-
-    progress_cb = None if no_progress or stream else _make_progress()
-
-    # L3 needs an LLM client; resolve lazily only when requested.
-    llm_client = None
-    if "L3" in layer_set:
-        llm_client = _resolve_llm_client()
-
-    result = scan_code(path, layers=layer_set, progress=progress_cb)
-
-    if "L3" in layer_set and llm_client is not None:
-        from vulnclaw.codescan.scanner import scan_code_llm
-
-        result.findings = scan_code_llm(path, findings=result.findings, llm_client=llm_client)
-
-    if stream:
-        from vulnclaw.codescan.stream import emit_code_scan_stream
-
-        emit_code_scan_stream(result, sys.stdout)
-    else:
+    output: Optional[str] = typer.Option(None, "--output", "-o"),
+    stream: bool = typer.Option(False, "--stream", help="Alias for --output-format jsonl"),
+    no_progress: bool = typer.Option(False, "--no-progress"),
+    output_format: MachineFormat = typer.Option("json", "--output-format"),
+    fail_on: Literal["verified", "any", "never"] = typer.Option("verified", "--fail-on"),
+):
+    def operation():
         from vulnclaw.codescan.report import format_result
+        from vulnclaw.codescan.scanner import scan_code
+        from vulnclaw.config.settings import RUNS_DIR
 
-        rendered = format_result(result, output_format)
-        structured = output_format in ("json", "sarif", "markdown", "md")
-        if output:
-            _write_output(output, rendered)
-            console.print(f"[+] Wrote {output_format} report to {output}")
-            console.print(result.summary())
-        elif structured:
-            # Write structured formats directly to stdout to avoid CRLF
-            # corruption from rich console on Windows.
-            sys.stdout.write(rendered)
-            sys.stdout.write("\n")
-        else:
-            console.print(rendered)
+        if not Path(path).exists():
+            raise CommandError("path_not_found", f"Path not found: {path}")
+        layers = _parse_layers(layer)
+        if layers is None:
+            raise CommandError("invalid_layer", "--layer must contain L1, L2, L3 or all")
+        task_id = f"codescan-{uuid4().hex}"
+        result = scan_code(
+            path,
+            layers=layers,
+            progress=None
+            if no_progress
+            else lambda file, count: current_output().event(
+                "status",
+                task_id=task_id,
+                request_id=current_output().request_id,
+                status=f"{file} ({count} findings)",
+            ),
+        )
+        if "L3" in layers:
+            client = _resolve_llm_client()
+            if client is not None:
+                from vulnclaw.codescan.scanner import scan_code_llm
 
-    # Non-zero exit when critical/high findings exist (CI-friendly).
-    counts = result.severity_counts
-    if counts.get("Critical", 0) or counts.get("High", 0):
-        raise typer.Exit(1)
+                result.findings = scan_code_llm(path, findings=result.findings, llm_client=client)
+        extensions = {"text": "txt", "json": "json", "sarif": "sarif", "markdown": "md", "md": "md"}
+        destination = (
+            Path(output)
+            if output
+            else headless.run_directory(RUNS_DIR, path, f"codescan-{uuid4().hex}")
+            / f"codescan.{extensions[artifact_format]}"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            format_result(result, artifact_format), encoding="utf-8", newline="\n"
+        )
+        classification = headless.FindingClassification(0, len(result.findings))
+        return current_output().finish(
+            result=result,
+            exit_code=headless.determine_exit_code(classification, fail_on),
+            findings={"verified": 0, "candidates": len(result.findings)},
+            artifacts=[{"kind": "codescan", "path": str(destination.resolve())}],
+        )
+
+    perform(operation)
 
 
-def _parse_layers(layer: str) -> Optional[set[str]]:
-    raw = (layer or "all").upper()
-    if raw == "ALL":
+def _parse_layers(layer: str) -> set[str] | None:
+    if layer.upper() == "ALL":
         return {"L1", "L2"}
-    valid = {"L1", "L2", "L3"}
-    parts = {p.strip().upper() for p in raw.replace(",", " ").split() if p.strip()}
-    if not parts or not parts <= valid:
-        return None
-    return parts
-
-
-def _make_progress():
-    """Return a progress callback printing one line per file scanned."""
-    import time
-
-    start = time.perf_counter()
-
-    def _cb(file_path: str, findings_so_far: int) -> None:
-        elapsed = (time.perf_counter() - start) * 1000
-        console.print(f"  [dim]{elapsed:7.1f} ms[/dim]  {file_path}  ({findings_so_far} findings)")
-
-    return _cb
+    parts = {part.upper() for part in layer.replace(",", " ").split()}
+    return parts if parts and parts <= {"L1", "L2", "L3"} else None
 
 
 def _resolve_llm_client():
-    """Build a thin LLM client from the current config (best effort).
-
-    Returns an object with ``.complete(prompt) -> str`` or ``None`` when
-    the provider is not configured. Uses the already-declared ``openai``
-    dependency so no new packages are required.
-    """
+    """Preserve L3's best-effort opt-in behavior; diagnostics stay on stderr."""
     try:
-        from vulnclaw.config.settings import load_config
-
-        config = load_config()
-        llm = getattr(config, "llm", None)
-        if llm is None:
-            raise RuntimeError("no llm config")
-        provider = getattr(llm, "provider", None) or "openai"
-        api_key = getattr(llm, "api_key", None) or ""
-        base_url = getattr(llm, "base_url", None) or None
-        model = getattr(llm, "model", None) or "gpt-4o"
-        if not api_key or api_key in ("", "${LLM_API_KEY}"):
-            raise RuntimeError("no api_key configured")
-
         from openai import OpenAI
 
-        client = OpenAI(api_key=api_key, base_url=base_url)
+        from vulnclaw.config.settings import load_config
+        from vulnclaw.config.token_provider import resolve_llm_token
 
-        class _SyncLLM:
+        llm = load_config().llm
+        client = OpenAI(api_key=resolve_llm_token(llm), base_url=llm.base_url or None)
+
+        class SyncLLM:
             def complete(self, prompt: str, *, temperature: float = 0.2) -> str:
-                resp = client.chat.completions.create(
-                    model=model,
+                response = client.chat.completions.create(
+                    model=llm.model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=temperature,
                 )
-                return resp.choices[0].message.content or ""
+                return response.choices[0].message.content or ""
 
-        console.print(f"[+] L3 enabled: using provider '{provider}' (model {model})")
-        return _SyncLLM()
-    except Exception as exc:  # noqa: BLE001
-        err_console.print(f"[!] L3 requested but LLM client unavailable ({exc}). Skipping L3.")
+        return SyncLLM()
+    except Exception as exc:
+        print(f"L3 unavailable; skipping semantic review: {exc}", file=sys.stderr)
         return None
-
-
-def _write_output(path: str, content: str) -> None:
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(content)

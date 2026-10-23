@@ -511,6 +511,13 @@ PHASE_TO_ACTION: dict[PentestPhase, str] = {
     PentestPhase.REPORTING: "report",
 }
 
+TEST_ACTIONS = ("recon", "scan", "exploit", "post_exploitation")
+ACTION_PRESETS = {
+    "Quick": ("recon",),
+    "Standard": ("recon", "scan"),
+    "Deep": ("recon", "scan", "exploit"),
+}
+
 
 def normalize_action_name(action: str) -> str:
     """Normalize action aliases into a shared policy namespace."""
@@ -552,3 +559,23 @@ def validate_action_constraints(action: str, constraints: TaskConstraints) -> st
         return f"constraint_violation: command '{normalized}' is blocked by task constraints"
 
     return None
+
+
+def complete_action_lists(constraints: TaskConstraints) -> TaskConstraints:
+    """Partition test actions while preserving the policy for other action classes."""
+    selected = [action for action in TEST_ACTIONS
+                if validate_action_constraints(action, constraints) is None]
+    allowed = [normalize_action_name(action) for action in constraints.allowed_actions
+               if normalize_action_name(action) not in TEST_ACTIONS]
+    blocked = [normalize_action_name(action) for action in constraints.blocked_actions
+               if normalize_action_name(action) not in TEST_ACTIONS]
+    if not constraints.allowed_actions:
+        # An unrestricted input also permits reporting. Making the four test
+        # selections explicit must not silently revoke that existing permission.
+        allowed.extend(action for action in PHASE_TO_ACTION.values()
+                       if action not in TEST_ACTIONS
+                       and validate_action_constraints(action, constraints) is None)
+    return constraints.model_copy(update={
+        "allowed_actions": list(dict.fromkeys([*selected, *allowed])),
+        "blocked_actions": [action for action in TEST_ACTIONS if action not in selected] + blocked,
+    })

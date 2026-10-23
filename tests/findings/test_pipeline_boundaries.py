@@ -21,7 +21,7 @@ async def test_plugin_session_records_evidence_for_explicit_submission(tmp_path,
     config = VulnClawConfig()
     config.session.output_dir = tmp_path
     config.session.auto_save = False
-    monkeypatch.setattr('vulnclaw.cli.main.load_config', lambda: config)
+    monkeypatch.setattr('vulnclaw.cli.management.load_config', lambda: config)
     path = tmp_path / 'plugin-session.json'
     result = await asyncio.to_thread(CliRunner().invoke, app, [
         'plugins', 'run', 'builtin.web.headers', '--target', 'https://lab.test',

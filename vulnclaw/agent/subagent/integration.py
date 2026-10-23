@@ -370,7 +370,10 @@ class VulnClawTaskRuntime:
                 {"agent_id": context.task_id, "type": event_type, **fields},
             )
 
-        stream_sink = TranscriptStreamSink(emit_stream) if callable(self._ui_event_sink) else None
+        stream_sink = (
+            TranscriptStreamSink(emit_stream, source=context.task_id)
+            if callable(self._ui_event_sink) else None
+        )
         child.context.add_user_message(prompt)
         child_state = child.context.state
         child_state.resume_summary = (
@@ -408,11 +411,15 @@ class VulnClawTaskRuntime:
                     else:
                         status = "budget_exhausted"
             except asyncio.CancelledError:
+                if stream_sink is not None:
+                    stream_sink.on_stream_end("cancelled")
                 status = "cancelled"
                 reason = context.token.reason or "agent cancelled"
                 include_session_state = False
                 _strip_unvalidated_partial_state(child_state)
             except Exception as exc:
+                if stream_sink is not None:
+                    stream_sink.on_stream_end("failed")
                 status = "failed"
                 reason = one_line(str(exc), 240)
                 include_session_state = False

@@ -1,1992 +1,318 @@
-"""VulnClaw CLI module tests for main.py."""
+"""Public entry points and preserved shared management behaviors."""
 
-import io
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
+import json
 
 import pytest
 from typer.testing import CliRunner
 
-# CLI smoke tests
 
+@pytest.fixture
+def runner():
+    return CliRunner()
 
-class TestCLI:
-    """Test CLI entry point and sub-commands."""
 
-    @pytest.fixture
-    def runner(self):
-        return CliRunner()
+def test_cli_help(runner):
+    from vulnclaw.cli.main import app
 
-    def test_cli_help(self, runner):
-        from vulnclaw.cli.main import app
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert "VulnClaw" in result.output or "vulnclaw" in result.output.lower()
+    assert "TUI" in result.output
 
-        result = runner.invoke(app, ["--help"])
-        assert result.exit_code == 0
-        assert "VulnClaw" in result.output or "vulnclaw" in result.output.lower()
-        assert "TUI" in result.output
 
-    def test_cli_version(self, runner):
-        from vulnclaw import __version__
-        from vulnclaw.cli.main import app
+def test_cli_version(runner):
+    from vulnclaw import __version__
+    from vulnclaw.cli.main import app
 
-        result = runner.invoke(app, ["--version"])
-        assert result.exit_code == 0
-        assert __version__ in result.output
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert __version__ in result.output
 
-    def test_cli_manual_command(self, runner):
-        from vulnclaw.cli.main import app
 
-        result = runner.invoke(app, ["manual"])
+def test_cli_manual_command(runner):
+    from vulnclaw.cli.main import app
 
-        assert result.exit_code == 0
-        assert "VULNCLAW(1)" in result.output
-        assert "COMMON TASK FLAGS" in result.output
-        assert "--only-port" in result.output
-        assert "network-scan" in result.output
-        assert "--parallel-agents" in result.output
+    result = runner.invoke(app, ["manual"])
 
-    def test_cli_manual_topic_markdown(self, runner):
-        from vulnclaw.cli.main import app
+    assert result.exit_code == 0
+    assert "VULNCLAW(1)" in result.output
+    assert "COMMON TASK FLAGS" in result.output
+    assert "--only-port" in result.output
+    assert "network-scan" in result.output
+    assert "--parallel-agents" in result.output
 
-        result = runner.invoke(app, ["manual", "network-scan", "--format", "markdown"])
 
-        assert result.exit_code == 0
-        assert "### `network-scan`" in result.output
-        assert "`--safe-probes / --no-safe-probes`" in result.output
-        assert "### `run`" not in result.output
+def test_cli_manual_topic_markdown(runner):
+    from vulnclaw.cli.main import app
 
-    def test_cli_man_alias_and_root_flag(self, runner):
-        from vulnclaw.cli.main import app
+    result = runner.invoke(app, ["manual", "network-scan", "--format", "markdown"])
 
-        alias_result = runner.invoke(app, ["man", "config"])
-        root_result = runner.invoke(app, ["--man"])
+    assert result.exit_code == 0
+    assert "### `network-scan`" in result.output
+    assert "`--safe-probes / --no-safe-probes`" in result.output
+    assert "### `run`" not in result.output
 
-        assert alias_result.exit_code == 0
-        assert "CONFIG" in alias_result.output
-        assert "llm.api_keys" in alias_result.output
-        assert root_result.exit_code == 0
-        assert "VULNCLAW(1)" in root_result.output
 
-    def test_cli_manual_rejects_unknown_topic(self, runner):
-        from vulnclaw.cli.main import app
+def test_cli_man_alias_and_root_flag(runner):
+    from vulnclaw.cli.main import app
 
-        result = runner.invoke(app, ["manual", "does-not-exist"])
+    alias_result = runner.invoke(app, ["man", "config"])
+    root_result = runner.invoke(app, ["--man"])
 
-        assert result.exit_code == 1
-        assert "unknown manual topic" in result.output
+    assert alias_result.exit_code == 0
+    assert "CONFIG" in alias_result.output
+    assert "llm.api_keys" in alias_result.output
+    assert root_result.exit_code == 0
+    assert "VULNCLAW(1)" in root_result.output
 
-    def test_cli_init(self, runner):
-        from vulnclaw.cli.main import app
 
-        result = runner.invoke(app, ["init"])
-        # Should not crash
-        assert result.exit_code == 0
-        assert "vulnclaw" in result.output
-        assert "vulnclaw tui" in result.output
+def test_cli_manual_rejects_unknown_topic(runner):
+    from vulnclaw.cli.main import app
 
-    def test_cli_doctor(self, runner):
-        from vulnclaw.cli.main import app
+    result = runner.invoke(app, ["manual", "does-not-exist"])
 
-        result = runner.invoke(app, ["doctor"])
-        # Should not crash
-        assert result.exit_code == 0
-        assert "Registered:" in result.output
-        assert "Tools:" in result.output
-        assert (
-            "Environment ready. Run vulnclaw to start." in result.output
-            or "Set credentials first" in result.output
-        )
+    assert result.exit_code == 1
+    assert "unknown manual topic" in result.output
 
-    def test_cli_config_list(self, runner):
-        from vulnclaw.cli.main import app
 
-        result = runner.invoke(app, ["config", "list"])
-        # Should not crash
-        assert result.exit_code == 0
+def test_cli_config_list(runner):
+    from vulnclaw.cli.main import app
 
-    def test_cli_config_provider_list(self, runner):
-        from vulnclaw.cli.main import app
+    result = runner.invoke(app, ["config", "list"])
+    # Should not crash
+    assert result.exit_code == 0
 
-        result = runner.invoke(app, ["config", "provider", "--list"])
-        # Should show available providers
-        assert result.exit_code == 0
 
-    def test_cli_config_provider_set(self, runner):
-        from vulnclaw.cli.main import app
+def test_cli_config_provider_list(runner):
+    from vulnclaw.cli.main import app
 
-        result = runner.invoke(app, ["config", "provider", "deepseek"])
-        # Should not crash
-        assert result.exit_code == 0
+    result = runner.invoke(app, ["config", "provider", "--list"])
+    # Should show available providers
+    assert result.exit_code == 0
 
-    def test_cli_kb_update(self, runner, monkeypatch, tmp_path):
-        import vulnclaw.kb.store as kb_store
-        from vulnclaw.cli.main import app
 
-        monkeypatch.setattr(kb_store, "KB_DIR", tmp_path)
-        result = runner.invoke(app, ["kb", "update"])
-        assert result.exit_code == 0
-        assert "Knowledge base updated" in result.output, f"Expected 'Knowledge base updated' in output: {result.output[:200]}"
-        assert (tmp_path / "index.json").exists()
+def test_cli_config_provider_set(runner):
+    from vulnclaw.cli.main import app
 
-    def test_cli_doctor_reports_registered_tools(self, runner):
-        from vulnclaw.cli.main import app
+    result = runner.invoke(app, ["config", "provider", "deepseek"])
+    # Should not crash
+    assert result.exit_code == 0
 
-        result = runner.invoke(app, ["doctor"])
-        assert result.exit_code == 0
-        assert "Registered:" in result.output
-        assert "Tools:" in result.output
 
-    def test_cli_doctor_probe_llm_reports_no_tool_call_endpoint(self, runner, monkeypatch):
-        from types import SimpleNamespace
+def test_target_state_list_and_clear(runner, monkeypatch, tmp_path):
+    import vulnclaw.target_state.store as store_mod
+    from vulnclaw.agent.context import SessionState
+    from vulnclaw.cli.main import app
 
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config import llm_probe
-        from vulnclaw.config.schema import VulnClawConfig
+    monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
+    state = SessionState(target="https://example.com")
+    store_mod.save_target_state("https://example.com", state, command="recon")
 
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
+    result_list = runner.invoke(app, ["target-state", "list", "https://example.com"])
+    assert result_list.exit_code == 0
+    assert "snapshot" in result_list.output.lower() or "蹇収" in result_list.output
 
-        message = SimpleNamespace(content="plain prose only", tool_calls=[])
-        response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    result_clear = runner.invoke(app, ["target-state", "clear", "https://example.com"])
+    assert result_clear.exit_code == 0
+    assert result_clear.output
 
-        class _Completions:
-            def create(self, **kwargs):
-                return response
-
-        class _Client:
-            chat = SimpleNamespace(completions=_Completions())
-
-        monkeypatch.setattr(
-            llm_probe, "make_openai_client", lambda *a, **k: _Client()
-        )
-
-        result = runner.invoke(app, ["doctor", "--probe-llm"])
 
-        assert result.exit_code == 0
-        assert "LLM Probe" in result.output
-        assert "no_tool_call" in result.output
+def test_target_state_preview_and_diff(runner, monkeypatch, tmp_path):
+    import vulnclaw.target_state.store as store_mod
+    from vulnclaw.agent.context import SessionState, VulnerabilityFinding
+    from vulnclaw.cli.main import app
 
-    def test_cli_doctor_probe_llm_ok(self, runner, monkeypatch):
-        from types import SimpleNamespace
+    monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
 
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config import llm_probe
-        from vulnclaw.config.schema import VulnClawConfig
+    state1 = SessionState(target="https://example.com")
+    state1.add_finding(VulnerabilityFinding(title="SQLi", severity="High", vuln_type="SQLi"))
+    store_mod.save_target_state("https://example.com", state1, command="recon")
 
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        message = SimpleNamespace(content=None, tool_calls=[SimpleNamespace(id="1")])
-        response = SimpleNamespace(choices=[SimpleNamespace(message=message)])
-
-        class _Completions:
-            def create(self, **kwargs):
-                return response
-
-        class _Client:
-            chat = SimpleNamespace(completions=_Completions())
-
-        monkeypatch.setattr(
-            llm_probe, "make_openai_client", lambda *a, **k: _Client()
-        )
-
-        result = runner.invoke(app, ["doctor", "--probe-llm"])
-
-        assert result.exit_code == 0
-        assert "LLM Probe" in result.output
-
-    def test_recon_resumes_target_state(self, runner, monkeypatch, tmp_path):
-        from types import SimpleNamespace
-        from unittest.mock import AsyncMock
-
-        import vulnclaw.orchestrator as orchestrator_mod
-        import vulnclaw.target_state.store as store_mod
-        from vulnclaw.agent.context import PentestPhase, SessionState
-        from vulnclaw.cli.main import app
-        monkeypatch.setattr("vulnclaw.cli.main.has_llm_credentials", lambda _: True)
-        monkeypatch.setattr("vulnclaw.agent.core.AgentCore.solve", AsyncMock(return_value=SimpleNamespace(completed=False)))
-
-        monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
-        state = SessionState(target="https://example.com")
-        state.advance_phase(PentestPhase.RECON)
-        store_mod.save_target_state("https://example.com", state, command="recon")
-
-        calls: list[tuple[str, str | None]] = []
-        original_apply = orchestrator_mod.apply_target_state_to_agent
-
-        def tracking_apply(agent, target, snapshot_id=None, **kwargs):
-            calls.append((target, snapshot_id))
-            return original_apply(agent, target, snapshot_id=snapshot_id, **kwargs)
-
-        monkeypatch.setattr(orchestrator_mod, "apply_target_state_to_agent", tracking_apply)
-
-        result = runner.invoke(app, ["recon", "https://example.com"])
-        assert result.exit_code == 0
-        assert result.output
-        assert calls == [("https://example.com", None)]
-
-    def test_recon_no_resume_skips_target_state(self, runner, monkeypatch, tmp_path):
-        from types import SimpleNamespace
-        from unittest.mock import AsyncMock
-
-        import vulnclaw.target_state.store as store_mod
-        from vulnclaw.agent.context import PentestPhase, SessionState
-        from vulnclaw.cli.main import app
-        monkeypatch.setattr("vulnclaw.cli.main.has_llm_credentials", lambda _: True)
-        monkeypatch.setattr("vulnclaw.agent.core.AgentCore.solve", AsyncMock(return_value=SimpleNamespace(completed=False)))
-
-        monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
-        state = SessionState(target="https://example.com")
-        state.advance_phase(PentestPhase.RECON)
-        store_mod.save_target_state("https://example.com", state, command="recon")
-
-        result = runner.invoke(app, ["recon", "https://example.com", "--no-resume"])
-        assert result.exit_code == 0
-        assert result.output is not None
-
-    def test_repl_persistent_explicit_target_restores_history(self, runner, monkeypatch):
-        import vulnclaw.agent.core as agent_core
-        import vulnclaw.cli.main as cli_main
-        import vulnclaw.mcp.lifecycle as lifecycle_mod
-        from vulnclaw.agent.context import PentestPhase, SessionState
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-
-        old_state = SessionState(target="https://old.example")
-        old_state.advance_phase(PentestPhase.RECON)
-
-        new_state = SessionState(target="https://new.example")
-        new_state.advance_phase(PentestPhase.EXPLOITATION)
-
-        observed: dict[str, object] = {}
-
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-        monkeypatch.setattr(
-            lifecycle_mod.MCPLifecycleManager, "start_enabled_servers", lambda self: 0
-        )
-        monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "stop_all", lambda self: None)
-
-        def fake_apply(agent, target: str, snapshot_id=None, **_kwargs):
-            restored = None
-            if target == "https://old.example":
-                restored = old_state
-            elif target == "https://new.example":
-                restored = new_state
-
-            if restored is not None:
-                agent.context.state = restored
-                return type(
-                    "Restore",
-                    (),
-                    {
-                        "restored": True,
-                        "target": restored.target,
-                        "phase": restored.phase.value,
-                        "snapshot_id": snapshot_id or "",
-                        "resume_strategy": "",
-                        "resume_reason": "",
-                    },
-                )()
-
-            agent.context.state.target = target
-            return type(
-                "Restore",
-                (),
-                {
-                    "restored": False,
-                    "target": target,
-                    "phase": agent.context.state.phase.value,
-                    "snapshot_id": snapshot_id or "",
-                    "resume_strategy": "",
-                    "resume_reason": "",
-                },
-            )()
-
-        async def fake_persistent_pentest(self, user_input: str, target=None, **kwargs):
-            observed["user_input"] = user_input
-            observed["target_arg"] = target or ""
-            observed["state_target"] = self.context.state.target or ""
-            observed["phase"] = self.context.state.phase.value
-            return []
-
-        monkeypatch.setattr("vulnclaw.conversation.apply_target_state_to_agent", fake_apply)
-        monkeypatch.setattr("vulnclaw.orchestrator.apply_target_state_to_agent", fake_apply)
-        monkeypatch.setattr(agent_core.AgentCore, "persistent_pentest", fake_persistent_pentest)
-
-        result = runner.invoke(
-            app,
-            ["repl"],
-            input="/target https://old.example\n/persistent https://new.example\n/quit\n",
-        )
-
-        assert result.exit_code == 0
-        assert observed["target_arg"] == "https://new.example"
-        assert observed["state_target"] == "https://new.example"
-        assert observed["phase"] == PentestPhase.EXPLOITATION.value
-        assert isinstance(observed["user_input"], str)
-        assert "https://new.example" in observed["user_input"]
-
-    def test_report_target_mode(self, runner, monkeypatch, tmp_path):
-        import vulnclaw.target_state.store as store_mod
-        from vulnclaw.agent.context import SessionState, VulnerabilityFinding
-        from vulnclaw.cli.main import app
-
-        monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
-        state = SessionState(target="https://example.com")
-        finding = VulnerabilityFinding(title="SQLi", severity="High", vuln_type="SQLi")
-        finding.verified = True
-        finding.verification_status = "verified"
-        state.add_finding(finding)
-        store_mod.save_target_state("https://example.com", state, command="scan")
-
-        result = runner.invoke(app, ["report", "https://example.com", "--target"])
-        assert result.exit_code == 0
-        assert "Report generated" in result.output or "报告已生成" in result.output, f"Expected report confirmation in output: {result.output[:200]}"
-
-    def test_repl_report_command_uses_current_session_or_target_state(self, runner, monkeypatch):
-        import vulnclaw.cli.main as cli_main
-        import vulnclaw.mcp.lifecycle as lifecycle_mod
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-        monkeypatch.setattr(
-            lifecycle_mod.MCPLifecycleManager, "start_enabled_servers", lambda self: 0
-        )
-        monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "stop_all", lambda self: None)
-        monkeypatch.setattr(
-            "vulnclaw.report_service.export_report",
-            __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(return_value={"path": "C:/tmp/report.md"})
-        )
-
-        result = runner.invoke(
-            app,
-            ["repl"],
-            input="/target https://example.com\n/report\n/quit\n",
-        )
-
-        assert result.exit_code == 0
-        assert "Report saved" in result.output
-        assert "report.md" in result.output
-
-    def test_run_uses_shared_orchestrator(self, runner, monkeypatch):
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        called: list[tuple[str, str]] = []
-
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
-            called.append((command, target))
-            return type("RunResult", (), {"summary": {"findings_count": 3}})()
-
-        monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
-
-        result = runner.invoke(app, ["run", "https://example.com"])
-        assert result.exit_code == 0
-        assert called == [("run", "https://example.com")]
-
-    def test_solve_without_stream_binds_on_event(self, runner, monkeypatch):
-        """Regression: bare `vulnclaw solve` (no --stream) must not hit
-        UnboundLocalError: on_event referenced before assignment."""
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        solve_kwargs: list[dict] = []
-
-        class DummyAgent:
-            def __init__(self, agent_config):
-                self.config = agent_config
-                self.context = SimpleNamespace(
-                    state=SimpleNamespace(
-                        agent_state=SimpleNamespace(
-                            get_summary=lambda: {"completed": False, "steps": 0}
-                        )
-                    )
-                )
-
-            async def solve(self, prompt, **kwargs):
-                solve_kwargs.append(kwargs)
-                return []
-
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner):
-            await runner(DummyAgent(config), config)
-            return type("RunResult", (), {"summary": {"findings_count": 0}})()
-
-        monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
-
-        result = runner.invoke(app, ["solve", "https://example.com"])
-
-        assert result.exit_code == 0, result.exception
-        assert solve_kwargs, "agent.solve was never called"
-        # on_event must be a callable (the terminal event printer), not missing
-        assert callable(solve_kwargs[0].get("on_event"))
-        assert solve_kwargs[0]["stream_sink"] is not None
-
-    def test_solve_with_stream_emits_events_without_unbound_local(self, runner, monkeypatch):
-        """--stream path keeps its JSONL on_event and still binds the name."""
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        solve_kwargs: list[dict] = []
-
-        class DummyAgent:
-            def __init__(self, agent_config):
-                self.config = agent_config
-                self.context = SimpleNamespace(
-                    state=SimpleNamespace(
-                        agent_state=SimpleNamespace(
-                            get_summary=lambda: {"completed": True, "steps": 1}
-                        )
-                    )
-                )
-
-            async def solve(self, prompt, **kwargs):
-                solve_kwargs.append(kwargs)
-                kwargs["on_event"]("agent_step", {"step": 1})
-                kwargs["on_event"]("completed", {})
-                return []
-
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner):
-            await runner(DummyAgent(config), config)
-            return type("RunResult", (), {"summary": {"findings_count": 0}})()
-
-        monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
-
-        result = runner.invoke(app, ["solve", "https://example.com", "--stream"])
-
-        assert result.exit_code == 0, result.exception
-        assert solve_kwargs and callable(solve_kwargs[0].get("on_event"))
-
-    def test_run_generates_report_after_completion(self, runner, monkeypatch):
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.agent.context import SessionState
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        audited = SessionState(target="https://example.com")
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
-            return type("RunResult", (), {"summary": {"findings_count": 2}})()
-
-        monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
-
-        report_calls = []
-
-        def fake_generate_report(target, **kwargs):
-            report_calls.append((target, kwargs))
-            return "/tmp/vulnclaw-output/report.md"
-
-        monkeypatch.setattr(cli_main, "_generate_report_for_target", AsyncMock(side_effect=fake_generate_report))
-
-        result = runner.invoke(app, ["run", "https://example.com"])
-
-        assert result.exit_code == 0
-        assert report_calls == [("https://example.com", {"output_path": None, "current_session": audited})]
-        assert "report.md" in result.output
-
-    def test_run_passes_output_flag_to_report_generation(self, runner, monkeypatch):
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.agent.context import SessionState
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        audited = SessionState(target="https://example.com")
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
-            return type("RunResult", (), {"summary": {"findings_count": 0}})()
-
-        monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
-
-        report_calls = []
-
-        def fake_generate_report(target, **kwargs):
-            report_calls.append((target, kwargs))
-            return "/custom/path/report.md"
-
-        monkeypatch.setattr(cli_main, "_generate_report_for_target", AsyncMock(side_effect=fake_generate_report))
-
-        result = runner.invoke(
-            app, ["run", "https://example.com", "--output", "/custom/path/report.md"]
-        )
-
-        assert result.exit_code == 0
-        assert report_calls == [
-            ("https://example.com", {"output_path": "/custom/path/report.md", "current_session": audited})
-        ]
-        assert "/custom/path/report.md" in result.output
-
-    def test_run_engine_team_routes_to_team_supervisor(self, runner, monkeypatch):
-        from types import SimpleNamespace
-
-        import vulnclaw.agent.team as team
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        config.session.solve_max_steps = 7
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        calls = []
-
-        async def fake_run_team_pentest(agent, **kwargs):
-            calls.append(kwargs)
-            return SimpleNamespace(plan=SimpleNamespace(steps=[]))
-
-        monkeypatch.setattr(team, "run_team_pentest", fake_run_team_pentest)
-
-        class DummyResearch:
-            def get_summary(self):
-                return {
-                    "completed": False,
-                    "steps": 1,
-                    "evidence": 1,
-                    "tool_calls": 0,
-                    "complete_reason": "",
-                }
-
-        class DummyAgent:
-            mcp_manager = None
-
-            def __init__(self, *_args):
-                self.config = config
-                self.context = SimpleNamespace(state=SimpleNamespace(agent_state=DummyResearch()))
-
-            def apply_task_constraints(self, _constraints):
-                return None
-
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
-            await runner(DummyAgent(), config)
-            return type("RunResult", (), {"summary": {"findings_count": 0}})()
-
-        monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
-        monkeypatch.setattr(
-            cli_main,
-            "_generate_report_for_target",
-            AsyncMock(side_effect=lambda target, **kwargs: "/tmp/report.md"),
-        )
-
-        result = runner.invoke(app, ["run", "https://example.com", "--engine", "team"])
-
-        assert result.exit_code == 0
-        assert calls
-        assert calls[0]["target"] == "https://example.com"
-        assert calls[0]["max_steps"] == 7
-
-    def test_run_cli_constraints_are_appended_to_prompt(self, runner, monkeypatch):
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        config.session.engine = "rounds"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        prompts = []
-
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
-            class DummyAgent:
-                def __init__(self, agent_config):
-                    self.config = agent_config
-
-                async def auto_pentest(self, prompt, **kwargs):
-                    prompts.append(prompt)
-                    return []
-
-            await runner(DummyAgent(config), config)
-            return type("RunResult", (), {"summary": {"findings_count": 0}})()
-
-        monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
-
-        result = runner.invoke(
-            app,
-            [
-                "run",
-                "https://example.com",
-                "--only-port",
-                "443",
-                "--only-host",
-                "example.com",
-                "--only-path",
-                "/admin",
-            ],
-        )
-        assert result.exit_code == 0
-        assert prompts
-        assert all(value in prompts[0] for value in ("443", "example.com", "/admin"))
-
-    def test_run_cli_blocked_host_and_path_are_appended_to_prompt(self, runner, monkeypatch):
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        config.session.engine = "rounds"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        prompts = []
-
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
-            class DummyAgent:
-                def __init__(self, agent_config):
-                    self.config = agent_config
-
-                async def auto_pentest(self, prompt, **kwargs):
-                    prompts.append(prompt)
-                    return []
-
-            await runner(DummyAgent(config), config)
-            return type("RunResult", (), {"summary": {"findings_count": 0}})()
-
-        monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
-
-        result = runner.invoke(
-            app,
-            [
-                "run",
-                "https://example.com",
-                "--blocked-host",
-                "staging.example.com",
-                "--blocked-path",
-                "/internal",
-            ],
-        )
-        assert result.exit_code == 0
-        assert prompts
-        assert "staging.example.com" in prompts[0]
-        assert "/internal" in prompts[0]
-
-    def test_cli_blocks_command_when_allowed_actions_conflict(self, runner, monkeypatch):
-        import vulnclaw.cli._helpers as helpers_mod
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-        monkeypatch.setattr(
-            helpers_mod,
-            "_append_cli_constraints",
-            lambda prompt, only_port, only_host, only_path, blocked_host=None, blocked_path=None: f"{prompt} 仅做信息收集。",
-        )
-
-        result = runner.invoke(app, ["run", "https://example.com"])
-        assert result.exit_code == 0
-
-    def test_cli_blocks_command_with_explicit_allow_actions_option(self, runner):
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        result = runner.invoke(app, ["run", "https://example.com", "--allow-actions", "recon"])
-        monkeypatch.undo()
-        assert result.exit_code == 0
-
-    def test_persistent_command_uses_correct_cycle_callback(self, runner, monkeypatch):
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-
-        class DummyAgent:
-            def __init__(self):
-                self.config = config
-                self.context = type(
-                    "Ctx", (), {"state": type("State", (), {"target": "https://example.com"})()}
-                )()
-                self.runtime = type("Runtime", (), {})()
-
-            async def persistent_pentest(self, *args, **kwargs):
-                assert "on_cycle_complete" in kwargs
-                assert kwargs["on_cycle_complete"] is not None
-                return []
-
-        async def fake_orchestrated(*, command, target, resume, snapshot, runner, task=None):
-            await runner(DummyAgent(), config)
-            return type("Result", (), {"summary": {"findings_count": 0, "executed_steps": 0}})()
-
-        monkeypatch.setattr(cli_main, "_run_cli_orchestrated_task", fake_orchestrated)
-
-        result = runner.invoke(
-            app, ["persistent", "https://example.com", "--cycles", "1", "--rounds", "1"]
-        )
-        assert result.exit_code == 0
-
-    def test_repl_persistent_interrupt_returns_to_prompt(self, runner, monkeypatch):
-        import vulnclaw.agent.core as agent_core
-        import vulnclaw.cli.main as cli_main
-        import vulnclaw.mcp.lifecycle as lifecycle_mod
-        from vulnclaw.agent.context import SessionState, VulnerabilityFinding
-        from vulnclaw.cli.main import app
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-        monkeypatch.setattr(
-            lifecycle_mod.MCPLifecycleManager, "start_enabled_servers", lambda self: 0
-        )
-        monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "stop_all", lambda self: None)
-
-        state = SessionState(target="https://example.com")
-        finding = VulnerabilityFinding(title="SQLi", severity="High", vuln_type="SQLi")
-        state.add_finding(finding)
-
-        def fake_apply(agent, target: str, snapshot_id=None, **_kwargs):
-            agent.context.state = state
-            return type(
-                "Restore",
-                (),
-                {
-                    "restored": True,
-                    "target": state.target,
-                    "phase": state.phase.value,
-                    "snapshot_id": snapshot_id or "",
-                    "resume_strategy": "",
-                    "resume_reason": "",
-                },
-            )()
-
-        async def fake_persistent_pentest(self, user_input: str, target=None, **kwargs):
-            raise KeyboardInterrupt()
-
-        monkeypatch.setattr("vulnclaw.conversation.apply_target_state_to_agent", fake_apply)
-        monkeypatch.setattr("vulnclaw.orchestrator.apply_target_state_to_agent", fake_apply)
-        monkeypatch.setattr(agent_core.AgentCore, "persistent_pentest", fake_persistent_pentest)
-        monkeypatch.setattr(
-            cli_main, "_generate_report_for_target", AsyncMock(side_effect=lambda target, **kwargs: "C:/tmp/final.md")
-        )
-
-        result = runner.invoke(
-            app,
-            ["repl"],
-            input="/persistent https://example.com\n/quit\n",
-        )
-
-        assert result.exit_code == 0
-        assert "interrupted" in result.output
-
-    def test_target_state_list_and_clear(self, runner, monkeypatch, tmp_path):
-        import vulnclaw.target_state.store as store_mod
-        from vulnclaw.agent.context import SessionState
-        from vulnclaw.cli.main import app
-
-        monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
-        state = SessionState(target="https://example.com")
-        store_mod.save_target_state("https://example.com", state, command="recon")
-
-        result_list = runner.invoke(app, ["target-state", "list", "https://example.com"])
-        assert result_list.exit_code == 0
-        assert "snapshot" in result_list.output.lower() or "蹇収" in result_list.output
-
-        result_clear = runner.invoke(app, ["target-state", "clear", "https://example.com"])
-        assert result_clear.exit_code == 0
-        assert result_clear.output
-
-    def test_target_state_preview_and_diff(self, runner, monkeypatch, tmp_path):
-        import vulnclaw.target_state.store as store_mod
-        from vulnclaw.agent.context import SessionState, VulnerabilityFinding
-        from vulnclaw.cli.main import app
-
-        monkeypatch.setattr(store_mod, "TARGETS_DIR", tmp_path / "targets")
-
-        state1 = SessionState(target="https://example.com")
-        state1.add_finding(VulnerabilityFinding(title="SQLi", severity="High", vuln_type="SQLi"))
-        store_mod.save_target_state("https://example.com", state1, command="recon")
-
-        state2 = SessionState(target="https://example.com")
-        state2.add_finding(VulnerabilityFinding(title="XSS", severity="Medium", vuln_type="XSS"))
-        store_mod.save_target_state("https://example.com", state2, command="scan")
-
-        snapshots = store_mod.list_target_snapshots("https://example.com")
-        result_preview = runner.invoke(app, ["target-state", "preview", "https://example.com"])
-        assert result_preview.exit_code == 0
-        assert "Target Preview" in result_preview.output
-
-        result_diff = runner.invoke(
-            app,
-            [
-                "target-state",
-                "diff",
-                "https://example.com",
-                snapshots[-1]["snapshot_id"],
-                "--to",
-                snapshots[0]["snapshot_id"],
-            ],
-        )
-        assert result_diff.exit_code == 0
-        assert "Target Diff" in result_diff.output
-
-
-    def _patch_repl_chat(self, monkeypatch):
-        """Patch the classic REPL so a fake ``AgentCore.chat`` drives it."""
-        import vulnclaw.cli.main as cli_main
-        import vulnclaw.mcp.lifecycle as lifecycle_mod
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        monkeypatch.setattr(cli_main, "load_config", lambda: config)
-        monkeypatch.setattr(
-            lifecycle_mod.MCPLifecycleManager, "start_enabled_servers", lambda self: 0
-        )
-        monkeypatch.setattr(lifecycle_mod.MCPLifecycleManager, "stop_all", lambda self: None)
-
-    def test_repl_chat_surfaces_llm_error_before_streaming(self, runner, monkeypatch):
-        """Single-turn chat errors raised before the first token must reach the user."""
-        import vulnclaw.agent.core as agent_core
-        from vulnclaw.agent.runtime_state import AgentResult
-        from vulnclaw.cli.main import app
-
-        self._patch_repl_chat(monkeypatch)
-
-        async def fake_chat(self, user_input, target=None, *, stream_sink=None, **kwargs):
-            # Mirrors AgentCore.chat() when call_llm raises before any token
-            # streams: the error lands in result.output, the sink saw nothing.
-            return AgentResult(output="[!] Agent 错误: boom", target=target)
-
-        monkeypatch.setattr(agent_core.AgentCore, "chat", fake_chat)
-
-        result = runner.invoke(app, ["repl"], input="hey\n/quit\n")
-
-        assert result.exit_code == 0
-        assert "[!] Agent 错误: boom" in result.output
-
-    def test_repl_chat_does_not_reprint_streamed_output(self, runner, monkeypatch):
-        """The chat error fix must not duplicate output already streamed to the terminal."""
-        import vulnclaw.agent.core as agent_core
-        from vulnclaw.agent.runtime_state import AgentResult
-        from vulnclaw.cli.main import app
-
-        self._patch_repl_chat(monkeypatch)
-
-        async def fake_chat(self, user_input, target=None, *, stream_sink=None, **kwargs):
-            stream_sink.on_status("Thinking...")
-            stream_sink.on_content_token("streamed answer")
-            stream_sink.on_stream_end()
-            return AgentResult(output="streamed answer", target=target)
-
-        monkeypatch.setattr(agent_core.AgentCore, "chat", fake_chat)
-
-        result = runner.invoke(app, ["repl"], input="hey\n/quit\n")
-
-        assert result.exit_code == 0
-        assert result.output.count("streamed answer") == 1
-
-    def test_cli_kb_info(self, runner):
-        from vulnclaw.cli.main import app
-
-        result = runner.invoke(app, ["kb", "info"])
-        # kb info might not exist in all versions, just verify no crash
-        assert result.exit_code in (0, 2)
-
-    def test_cli_no_args(self, runner, monkeypatch):
-        """Running with no args should open the original CLI/REPL by default."""
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-
-        called = []
-        monkeypatch.setattr(cli_main, "_run_repl", lambda: called.append("repl"))
-
-        result = runner.invoke(app, [])
-        assert result.exit_code == 0
-        assert called == ["repl"]
-
-    def test_repl_command_starts_classic_repl(self, runner, monkeypatch):
-        import vulnclaw.cli.main as cli_main
-        from vulnclaw.cli.main import app
-
-        called = []
-        monkeypatch.setattr(cli_main, "_run_repl", lambda: called.append("repl"))
-
-        result = runner.invoke(app, ["repl"])
-        assert result.exit_code == 0
-        assert called == ["repl"]
-
-    def test_tui_once_renders_workbench(self, runner):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.cli.main import app
-        from vulnclaw.i18n import init_i18n
-
-        init_i18n(lang="zh")
-        tui_mod.rebuild_translations()
-        try:
-            result = runner.invoke(app, ["tui", "--once"])
-        finally:
-            init_i18n(lang="zh")
-            tui_mod.rebuild_translations()
-        assert result.exit_code == 0
-        assert "VulnClaw TUI" in result.output
-        assert "授权目标" in result.output
-        assert "运行概览" in result.output
-        assert "未选择目标" in result.output
-        assert "安全边界" in result.output
-        # [修改] 新版 TUI 使用 slash 命令系统替代了数字菜单, 移除 "操作菜单" 断言
-
-    def test_tui_once_renders_target_overview(self, runner, monkeypatch):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.cli.main import app
-        from vulnclaw.i18n import init_i18n
-
-        monkeypatch.setattr(
-            tui_mod,
-            "get_target_state_preview",
-            lambda target: {
-                "target": target,
-                "phase": "scanning",
-                "findings_count": 3,
-                "verified_count": 1,
-                "pending_count": 2,
-                "last_command": "scan",
-                "constraints": {
-                    "allowed_ports": [443],
-                    "allowed_paths": ["/admin"],
-                    "strict_mode": True,
-                },
-                "constraint_violations": ["blocked port 80"],
-            },
-        )
-        monkeypatch.setattr(
-            tui_mod,
-            "list_target_snapshots",
-            lambda target: [{"snapshot_id": "snap_a"}, {"snapshot_id": "snap_b"}],
-        )
-
-        init_i18n(lang="zh")
-        tui_mod.rebuild_translations()
-        try:
-            result = runner.invoke(app, ["tui", "--once", "--target", "https://example.com"])
-        finally:
-            init_i18n(lang="zh")
-            tui_mod.rebuild_translations()
-        assert result.exit_code == 0
-        assert "2 个快照" in result.output
-        assert "3 个风险" in result.output
-        assert "限定端口: 443" in result.output
-        assert "限定路径: /admin" in result.output
-        assert "严格模式" in result.output
-        assert "1 次" in result.output
-
-    def test_tui_once_accepts_prefilled_target(self, runner):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.cli.main import app
-        from vulnclaw.i18n import init_i18n
-
-        init_i18n(lang="zh")
-        tui_mod.rebuild_translations()
-        try:
-            result = runner.invoke(
-                app,
-                [
-                    "tui",
-                    "--once",
-                    "--target",
-                    "https://example.com",
-                    "--mode",
-                    "quick",
-                    "--only-port",
-                    "443",
-                ],
-            )
-        finally:
-            init_i18n(lang="zh")
-            tui_mod.rebuild_translations()
-        assert result.exit_code == 0
-        assert "https://example.com" in result.output
-        assert "快速摸底" in result.output
-        assert "443" in result.output
-
-    def test_tui_dry_run_renders_launch_summary(self, runner):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.cli.main import app
-        from vulnclaw.i18n import init_i18n
-
-        init_i18n(lang="zh")
-        tui_mod.rebuild_translations()
-        try:
-            result = runner.invoke(
-                app,
-                [
-                    "tui",
-                    "--dry-run",
-                    "--target",
-                    "https://example.com",
-                    "--mode",
-                    "deep",
-                    "--only-host",
-                    "example.com",
-                    "--only-port",
-                    "443",
-                    "--only-path",
-                    "/admin",
-                    "--blocked-host",
-                    "staging.example.com",
-                    "--block-actions",
-                    "post_exploitation",
-                ],
-            )
-        finally:
-            init_i18n(lang="zh")
-            tui_mod.rebuild_translations()
-        assert result.exit_code == 0
-        assert "启动摘要" in result.output
-        assert "vulnclaw scan https://example.com" in result.output
-        assert "--only-port 443" in result.output
-        assert "--only-path /admin" in result.output
-        assert "--blocked-host staging.example.com" in result.output
-
-    def test_tui_rejects_unknown_mode(self, runner):
-        from vulnclaw.cli.main import app
-
-        result = runner.invoke(app, ["tui", "--mode", "unknown", "--dry-run"])
-        assert result.exit_code == 1
-        assert "Unknown TUI mode" in result.output
-
-    def test_tui_interactive_launch_builds_task_draft(self, runner, monkeypatch):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.cli.main import app
-
-        launched = []
-
-        def fake_run_tui(*, launcher=None, once=False, initial_state=None):
-            state = tui_mod.TuiState(
-                target="https://example.com",
-                mode="quick",
-                only_port="443",
-                only_path="/admin",
-                blocked_host="staging.example.com",
-            )
-            draft = tui_mod._draft_from_state(state)
-            launched.append(draft)
-
-        monkeypatch.setattr(tui_mod, "run_tui", fake_run_tui)
-
-        result = runner.invoke(app, ["tui"])
-        assert result.exit_code == 0
-        assert launched
-        assert launched[0].command == "recon"
-        assert launched[0].target == "https://example.com"
-        assert launched[0].only_port == 443
-        assert launched[0].only_path == "/admin"
-        assert launched[0].blocked_host == "staging.example.com"
-        assert launched[0].allow_actions == ("recon",)
-
-    def test_native_tui_launcher_passes_python_and_bootstrap(self, monkeypatch):
-        import json
-        import sys
-
-        import vulnclaw.cli.tui as tui_mod
-
-        captured = {}
-        monkeypatch.setattr(tui_mod, "_find_tui_binary", lambda: "/tmp/vulnclaw-tui")
-
-        def fake_call(args, *, env):
-            captured["args"] = args
-            captured["env"] = env
-            return 0
-
-        monkeypatch.setattr(tui_mod.subprocess, "call", fake_call)
-        state = tui_mod.TuiState(
-            target="https://example.test",
-            mode="deep",
-            only_port="443",
-            blocked_host="internal.example.test",
-        )
-
-        with pytest.raises(SystemExit) as caught:
-            tui_mod.run_tui(initial_state=state)
-
-        assert caught.value.code == 0
-        assert captured["args"] == ["/tmp/vulnclaw-tui"]
-        assert captured["env"]["VULNCLAW_PYTHON"] == sys.executable
-        bootstrap = json.loads(captured["env"]["VULNCLAW_TUI_BOOTSTRAP"])
-        assert bootstrap["target"] == "https://example.test"
-        assert bootstrap["command"] == "scan"
-        assert bootstrap["only_port"] == 443
-        assert bootstrap["allow_actions"] == ["recon", "scan", "exploit"]
-
-    def test_tui_scope_prompt_updates_action_constraints(self, monkeypatch):
-        import vulnclaw.cli.tui as tui_mod
-
-        state = tui_mod.TuiState(target="https://example.com")
-        # Test scope parsing via _cmd_scope with inline arguments
-        # (/scope host=example.com port=443 path=/admin ...)
-        tui_mod._parse_scope_args(
-            state,
-            "host=example.com port=443 path=/admin "
-            "blocked_host=staging.example.com blocked_path=/logout "
-            "allow=recon,scan block=exploit,post_exploitation resume=false",
-        )
-        draft = tui_mod.build_task_draft(state)
-
-        assert state.only_host == "example.com"
-        assert state.only_port == "443"
-        assert state.only_path == "/admin"
-        assert state.blocked_host == "staging.example.com"
-        assert state.blocked_path == "/logout"
-        assert state.allow_actions == ["recon", "scan"]
-        assert state.block_actions == ["exploit", "post_exploitation"]
-        assert state.resume is False
-        assert draft.allow_actions == ("recon", "scan")
-        assert draft.block_actions == ("exploit", "post_exploitation")
-        assert "--allow-actions recon,scan" in draft.command_line
-        assert "--block-actions exploit,post_exploitation" in draft.command_line
-
-    def test_tui_slash_dot_flag_applies_scope_state(self):
-        import vulnclaw.cli.tui as tui_mod
-
-        session = {"state": tui_mod.TuiState(), "_message": "", "_prompt": None}
-
-        tui_mod._dispatch_slash("/.only-port 443", session)
-        tui_mod._dispatch_slash("/.allow-actions recon,scan", session)
-        tui_mod._dispatch_slash("/.no-resume", session)
-
-        assert session["state"].only_port == "443"
-        assert session["state"].allow_actions == ["recon", "scan"]
-        assert session["state"].resume is False
-
-    def test_tui_slash_dot_flag_without_value_shows_skill_help(self):
-        import vulnclaw.cli.tui as tui_mod
-
-        session = {"state": tui_mod.TuiState(), "_message": "", "_prompt": None}
-
-        tui_mod._dispatch_slash("/.only-port", session)
-
-        assert session["_prompt"][0] == "message"
-        assert "--only-port" in session["_prompt"][1]
-
-    def test_tui_persist_scope_state_writes_config(self, monkeypatch):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        state = tui_mod.TuiState(
-            only_host="example.com",
-            only_port="443",
-            only_path="/admin",
-            blocked_host="staging.example.com",
-            blocked_path="/logout",
-            allow_actions=["recon", "scan"],
-            block_actions=["exploit", "post_exploitation"],
-            mode="quick",
-            resume=False,
-        )
-        saved = []
-        monkeypatch.setattr(
-            "vulnclaw.config.settings.save_config", lambda cfg: saved.append(cfg)
-        )
-
-        tui_mod._persist_scope_state(state, config)
-        assert saved, "save_config was never called"
-        sc = saved[0].session
-        assert sc.tui_scope_only_host == "example.com"
-        assert sc.tui_scope_only_port == "443"
-        assert sc.tui_scope_allow_actions == "recon,scan"
-        assert sc.tui_scope_block_actions == "exploit,post_exploitation"
-        assert sc.tui_scope_mode == "quick"
-        assert sc.tui_scope_resume is False
-
-    def test_tui_restore_scope_state_reads_config(self):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        sc = config.session
-        sc.tui_scope_only_host = "example.com"
-        sc.tui_scope_only_port = "443"
-        sc.tui_scope_allow_actions = "recon,scan"
-        sc.tui_scope_block_actions = "exploit"
-        sc.tui_scope_mode = "deep"
-        sc.tui_scope_resume = True
-
-        state = tui_mod.TuiState()
-
-        tui_mod._restore_scope_state(state, config)
-        assert state.only_host == "example.com"
-        assert state.only_port == "443"
-        assert state.allow_actions == ["recon", "scan"]
-        assert state.block_actions == ["exploit"]
-        assert state.mode == "deep"
-        assert state.resume is True
-
-    def test_tui_persist_restore_resume_round_trip(self, monkeypatch):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        resume_state = tui_mod.TuiState(resume=True)
-        nosave = []
-
-        monkeypatch.setattr(
-            "vulnclaw.config.settings.save_config", lambda cfg: nosave.append(cfg)
-        )
-        tui_mod._persist_scope_state(resume_state, config)
-        assert nosave[0].session.tui_scope_resume is True
-
-        config2 = VulnClawConfig()
-        config2.session.tui_scope_resume = True
-        restored = tui_mod.TuiState(resume=False)
-
-        tui_mod._restore_scope_state(restored, config2)
-        assert restored.resume is True
-
-    def test_tui_restore_scope_preserves_cli_explicit(self):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.session.tui_scope_only_host = "persisted.example.com"
-        config.session.tui_scope_mode = "deep"
-
-        state = tui_mod.TuiState(only_host="cli.example.com", mode="quick")
-        tui_mod._restore_scope_state(state, config)
-        assert state.only_host == "cli.example.com"
-        assert state.mode == "quick"
-
-    def test_tui_slash_palette_includes_available_skills(self):
-        import vulnclaw.cli.tui as tui_mod
-
-        entries = dict(tui_mod.build_slash_palette_entries())
-
-        assert "target" in entries
-        assert "mode" in entries
-        assert "scope" in entries
-        assert "run" in entries
-        assert "quit" in entries
-
-    def test_tui_skill_slash_is_unknown(self):
-        import vulnclaw.cli.tui as tui_mod
-
-        session = {"state": tui_mod.TuiState(), "_message": "", "_prompt": None}
-
-        tui_mod._dispatch_slash("/ctf-web", session)
-
-        assert session["_message"] == "Unknown command: /ctf-web"
-
-
-
-
-    def test_tui_runtime_diagnostic_panel_renders_environment_summary(self, monkeypatch):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.config.schema import VulnClawConfig
-        from vulnclaw.i18n import init_i18n
-
-        config = VulnClawConfig()
-        config.llm.api_key = "test-key"
-        config.llm.provider = "openai"
-        config.llm.model = "gpt-test"
-
-        monkeypatch.setattr(tui_mod, "_command_version", lambda *args: "v20.0.0")
-        monkeypatch.setattr(tui_mod.shutil, "which", lambda command: f"/usr/bin/{command}")
-
-        class DummyMCPDiagnostics:
-            total_services = 3
-            running_services = 1
-            local_services = 2
-            placeholder_services = 1
-            tool_count = 5
-
-        def fake_get_mcp_diagnostics():
-            return DummyMCPDiagnostics()
-
-        import vulnclaw.mcp.diagnostics as mcp_diag_mod
-
-        monkeypatch.setattr(mcp_diag_mod, "get_mcp_diagnostics", fake_get_mcp_diagnostics)
-        rendered = tui_mod.Console(
-            file=io.StringIO(),
-            record=True,
-            width=100,
-            force_terminal=False,
-            color_system=None,
-        )
-        init_i18n(lang="zh")
-        try:
-            rendered.print(tui_mod.build_runtime_diagnostic_panel(config))
-            output = rendered.export_text()
-        finally:
-            init_i18n(lang="zh")
-
-        assert "环境诊断" in output
-        assert "v20.0.0" in output
-        assert "openai" in output
-        assert "gpt-test" in output
-        assert "已配置" in output
-        assert "3 registered" in output
-        assert "5" in output
-
-    def test_tui_llm_config_prompt_saves_provider_and_api_key(self, monkeypatch):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        # _edit_llm_config flow:
-        #   provider → base_url → auth_mode → api_keys → api_key
-        #   → model → chatgpt_auto_proxy → max_tokens → max_context_tokens
-        #   → temperature → reasoning_effort
-        answers = iter(
-            [
-                "deepseek",
-                "https://api.deepseek.com/v1",
-                "static",
-                "sk-test",
-                "",
-                "1",
-                "n",
-                "",
-                "",
-                "",
-                "",
-            ]
-        )
-
-        monkeypatch.setattr(tui_mod.Prompt, "ask", lambda *args, **kwargs: next(answers))
-        monkeypatch.setattr(tui_mod, "fetch_provider_models", lambda *a, **kw: ["deepseek-chat", "deepseek-reasoner"])
-
-        screen = tui_mod.Console(
-            file=io.StringIO(),
-            record=True,
-            width=100,
-            force_terminal=False,
-            color_system=None,
-        )
-        updated = tui_mod._edit_llm_config(screen, config)
-
-        assert updated.llm.provider == "deepseek"
-        assert updated.llm.base_url == "https://api.deepseek.com/v1"
-        assert updated.llm.model == "deepseek-chat"
-        assert updated.llm.api_keys == ["sk-test"]
-
-    def test_config_tui_escape_exits_without_saving(self, monkeypatch):
-        from rich.console import Console as RichConsole
-
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.config.schema import VulnClawConfig
-
-        answers = iter(["llm", "\x1b"])
-        saved = []
-        screen = RichConsole(
-            file=io.StringIO(),
-            record=True,
-            width=100,
-            force_terminal=False,
-            color_system=None,
-        )
-
-        monkeypatch.setattr(tui_mod, "load_config", VulnClawConfig)
-        monkeypatch.setattr(tui_mod, "save_config", lambda cfg: saved.append(cfg))
-        monkeypatch.setattr(
-            tui_mod, "_read_config_prompt_raw", lambda *args, **kwargs: next(answers)
-        )
-        monkeypatch.setattr(tui_mod, "Console", lambda *args, **kwargs: screen)
-
-        tui_mod.run_config_tui()
-
-        assert saved == []
-        assert "Discarded changes." in screen.export_text()
-
-    def test_config_tui_llm_editor_shows_models_for_selected_provider(self, monkeypatch):
-        from rich.console import Console as RichConsole
-
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.config.schema import VulnClawConfig
-
-        config = VulnClawConfig()
-        config.llm.api_key = "sk-test"
-        answers = iter(
-            [
-                "deepseek",
-                "",
-                "static",
-                "",
-                "",
-                "deepseek-reasoner",
-                "n",
-                "",
-                "",
-                "",
-                "",
-            ]
-        )
-        fetched = []
-        screen = RichConsole(
-            file=io.StringIO(),
-            record=True,
-            width=100,
-            force_terminal=False,
-            color_system=None,
-        )
-
-        monkeypatch.setattr(
-            tui_mod, "_read_config_prompt_raw", lambda *args, **kwargs: next(answers)
-        )
-        monkeypatch.setattr(
-            tui_mod,
-            "fetch_provider_models",
-            lambda base_url, api_key: fetched.append((base_url, api_key))
-            or ["deepseek-chat", "deepseek-reasoner"],
-        )
-
-        updated = tui_mod._edit_llm_config(screen, config)
-        output = screen.export_text()
-
-        assert fetched == [("https://api.deepseek.com", "sk-test")]
-        assert "deepseek-chat" in output
-        assert "deepseek-reasoner" in output
-        assert updated.llm.provider == "deepseek"
-        assert updated.llm.model == "deepseek-reasoner"
-
-
-class TestClassicReplSlashPalette:
-    """Classic `vulnclaw` REPL: '/' skill palette and '/.' flag-skill wiring."""
-
-    def test_skill_entries_are_skills_only(self):
-        import vulnclaw.cli.tui as tui_mod
-
-        entries = dict(tui_mod.list_skill_palette_entries())
-
-        assert "ctf-web" in entries
-        assert "recon" in entries
-        # Textual-only slash commands must not leak into the classic REPL menu.
-        assert "target" not in entries
-        assert "mode" not in entries
-
-    def test_skill_entries_filter_by_prefix(self):
-        import vulnclaw.cli.tui as tui_mod
-
-        names = {name for name, _ in tui_mod.list_skill_palette_entries("re")}
-
-        assert "recon" in names
-        assert "reporting" in names
-        assert all(name.startswith("re") for name in names)
-
-    def test_skill_description_localizes_by_language(self):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.i18n import init_i18n
-
-        skill = {"name": "recon", "description": "信息收集流程 — 被动+主动侦察"}
-        try:
-            init_i18n(lang="en")
-            english = tui_mod.skill_display_description(skill)
-            init_i18n(lang="zh")
-            chinese = tui_mod.skill_display_description(skill)
-        finally:
-            init_i18n()  # restore auto-detected default
-
-        # English catalog override applies; zh falls back to the frontmatter.
-        assert english == "Reconnaissance workflow — passive and active recon"
-        assert chinese == "信息收集流程 — 被动+主动侦察"
-
-    def test_skill_description_falls_back_when_untranslated(self):
-        import vulnclaw.cli.tui as tui_mod
-        from vulnclaw.i18n import init_i18n
-
-        skill = {"name": "no-such-skill", "description": "raw frontmatter"}
-        try:
-            init_i18n(lang="en")
-            assert tui_mod.skill_display_description(skill) == "raw frontmatter"
-        finally:
-            init_i18n()
-
-
-
-
-
-
-
-
-
-    def test_completer_offers_commands_and_skills_on_bare_slash(self):
-        from prompt_toolkit.document import Document
-
-        from vulnclaw.cli.tui import build_repl_slash_completer, list_repl_palette_entries
-
-        completer = build_repl_slash_completer()
-        completions = list(completer.get_completions(Document("/", 1), None))
-
-        assert len(completions) == len(list_repl_palette_entries())
-        # Built-in commands come first, ahead of the skills.
-        assert {"/run", "/new", "/mode", "/config"}.issubset({c.text for c in completions})
-
-    def test_completion_style_keeps_terminal_background(self):
-        from vulnclaw.cli.tui import build_repl_slash_style
-
-        rules = dict(build_repl_slash_style().style_rules)
-        completion_rules = {
-            selector: value
-            for selector, value in rules.items()
-            if selector.startswith(("completion-menu", "completion-toolbar"))
-        }
-
-        assert completion_rules
-        for value in completion_rules.values():
-            assert "bg:#" not in value
-            assert "reverse" not in value.replace("noreverse", "")
-        assert rules["completion-menu.completion.current"].endswith("noreverse")
-        assert "bg:default" in rules["completion-menu.completion.current"]
-
-    def test_completer_stops_after_skill_is_chosen(self):
-        from prompt_toolkit.document import Document
-
-        from vulnclaw.cli.tui import build_repl_slash_completer
-
-        completer = build_repl_slash_completer()
-        text = "/recon scan"
-        completions = list(completer.get_completions(Document(text, len(text)), None))
-
-        assert completions == []
-
-    def test_prompt_session_is_none_without_a_tty(self, monkeypatch):
-        import vulnclaw.cli.main as main_mod
-
-        monkeypatch.setattr(main_mod.sys.stdin, "isatty", lambda: False)
-
-        assert main_mod._make_repl_prompt_session() is None
-
-    def test_prompt_session_uses_terminal_background_completion_style(self, monkeypatch):
-        import prompt_toolkit
-
-        import vulnclaw.cli.main as main_mod
-
-        captured: dict[str, object] = {}
-
-        class _Hook:
-            def __iadd__(self, handler):
-                captured["handler"] = handler
-                return self
-
-        class _Buffer:
-            on_text_changed = _Hook()
-
-        class _PromptSession:
-            default_buffer = _Buffer()
-
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-        monkeypatch.setattr(main_mod.sys.stdin, "isatty", lambda: True)
-        monkeypatch.setattr(prompt_toolkit, "PromptSession", _PromptSession)
-
-        assert isinstance(main_mod._make_repl_prompt_session(), _PromptSession)
-        rules = dict(captured["style"].style_rules)
-        assert "bg:default" in rules["completion-menu.completion.current"]
-        assert rules["completion-menu.completion.current"].endswith("noreverse")
-
-    def test_config_command_dispatches(self):
-        from vulnclaw.input_service import InputRequest, parse_input
-
-        result = parse_input(InputRequest(text="/config"))
-
-        assert result.kind == "adapter"
-        assert result.operation == "config"
-        assert result.text == ""
-
-    def test_config_alias_dispatches(self):
-        from vulnclaw.input_service import InputRequest, parse_input
-
-        result = parse_input(InputRequest(text="/cfg"))
-
-        assert result.kind == "adapter"
-        assert result.operation == "config"
-
-    def test_language_command_carries_argument(self):
-        from vulnclaw.input_service import InputRequest, parse_input
-
-        result = parse_input(InputRequest(text="/language en"))
-
-        assert result.kind == "adapter"
-        assert result.operation == "language"
-        assert result.text == "en"
-
-    def test_language_alias_dispatches(self):
-        from vulnclaw.input_service import InputRequest, parse_input
-
-        result = parse_input(InputRequest(text="/lang"))
-
-        assert result.kind == "adapter"
-        assert result.operation == "language"
-
-    def test_experience_command_dispatches_without_args(self):
-        from vulnclaw.input_service import InputRequest, parse_input
-
-        result = parse_input(InputRequest(text="/experience"))
-
-        assert result.kind == "adapter"
-        assert result.operation == "experience"
-        assert result.text == ""
-
-    def test_experience_alias_and_subcommand_carry_args(self):
-        from vulnclaw.input_service import InputRequest, parse_input
-
-        result = parse_input(InputRequest(text="/exp show L1"))
-
-        assert result.kind == "adapter"
-        assert result.operation == "experience"
-        assert result.text == "show L1"
-
-    def test_learn_command_carries_run_name(self):
-        from vulnclaw.input_service import InputRequest, parse_input
-
-        result = parse_input(InputRequest(text="/learn my-run"))
-
-        assert result.kind == "adapter"
-        assert result.operation == "learn"
-        assert result.text == "my-run"
-
-    def test_feedback_command_carries_full_argument(self):
-        from vulnclaw.input_service import InputRequest, parse_input
-
-        result = parse_input(InputRequest(text="/feedback my-run 4 solid recon coverage"))
-
-        assert result.kind == "adapter"
-        assert result.operation == "feedback"
-        assert result.text == "my-run 4 solid recon coverage"
-
-    def test_experience_and_learn_and_feedback_in_palette(self):
-        import vulnclaw.cli.tui as tui_mod
-
-        names = [name for name, _ in tui_mod.list_repl_palette_entries()]
-
-        for expected in ("experience", "learn", "feedback"):
-            assert expected in names
-
-    def test_repl_palette_lists_commands_before_skills(self):
-        import vulnclaw.cli.tui as tui_mod
-
-        entries = tui_mod.list_repl_palette_entries()
-        names = [name for name, _ in entries]
-
-        assert {"config", "language", "run", "new"}.issubset(names)
-        assert "recon" in names  # run shorthand, not a skill
-
-    def test_run_repl_command_routes_experience_to_handler(self, monkeypatch):
-        import vulnclaw.cli.main as main_mod
-
-        seen = {}
-        monkeypatch.setattr(main_mod, "_repl_experience", lambda args: seen.setdefault("args", args))
-
-        out = main_mod._run_repl_command("experience", "approve L1", object(), "cfg")
-
-        assert seen["args"] == "approve L1"
-        assert out == "cfg"  # experience is read/side-effecting; config passes through
-
-    def test_run_repl_command_routes_learn_and_feedback(self, monkeypatch):
-        import vulnclaw.cli.main as main_mod
-
-        calls = {}
-        monkeypatch.setattr(
-            main_mod, "_repl_learn", lambda args, cfg: calls.setdefault("learn", (args, cfg))
-        )
-        monkeypatch.setattr(
-            main_mod, "_repl_feedback", lambda args, cfg: calls.setdefault("feedback", (args, cfg))
-        )
-
-        main_mod._run_repl_command("learn", "my-run", object(), "cfg")
-        main_mod._run_repl_command("feedback", "my-run 5 great", object(), "cfg")
-
-        assert calls["learn"] == ("my-run", "cfg")
-        assert calls["feedback"] == ("my-run 5 great", "cfg")
-
-    def test_parse_edit_flags_extracts_both_values(self):
-        import vulnclaw.cli.main as main_mod
-
-        context_val, lesson_val, error = main_mod._parse_edit_flags(
-            ["--context", "new ctx", "--lesson", "new lesson"]
-        )
-
-        assert context_val == "new ctx"
-        assert lesson_val == "new lesson"
-        assert error is None
-
-    def test_parse_edit_flags_rejects_flag_as_value(self):
-        import vulnclaw.cli.main as main_mod
-
-        context_val, lesson_val, error = main_mod._parse_edit_flags(
-            ["--lesson", "--context", "foo"]
-        )
-
-        assert context_val is None
-        assert lesson_val is None
-        assert "--lesson needs a value" in error
-
-    def test_parse_edit_flags_rejects_missing_trailing_value(self):
-        import vulnclaw.cli.main as main_mod
-
-        _, _, error = main_mod._parse_edit_flags(["--context"])
-
-        assert "--context needs a value" in error
-
-    def test_parse_edit_flags_rejects_unquoted_extra_token(self):
-        import vulnclaw.cli.main as main_mod
-
-        _, _, error = main_mod._parse_edit_flags(["--lesson", "prefer", "double"])
-
-        assert "Unexpected argument: double" in error
-
-    def test_experience_show_rejects_unsafe_lesson_id(self):
-        from vulnclaw.cli import experience_ops
-
-        result = experience_ops.render_lesson("../../foo")
-
-        assert result.ok is False
-        assert "Lesson not found" in str(result.renderable)
-
-    def test_experience_status_survives_unwritable_store(self, monkeypatch):
-        from vulnclaw.cli import experience_ops
-
-        class _Boom:
-            def approve(self, lesson_id):
-                raise OSError("read-only file system")
-
-            def reject(self, lesson_id):
-                raise OSError("read-only file system")
-
-        monkeypatch.setattr(experience_ops, "_experience_store", lambda: _Boom())
-
-        result = experience_ops.set_lesson_status("L1", "approved")
-
-        assert result.ok is False
-        assert "Could not write the experience store" in str(result.renderable)
-
-    def test_experience_edit_survives_unwritable_store(self, monkeypatch):
-        from vulnclaw.cli import experience_ops
-
-        class _Boom:
-            def update(self, lesson_id, *, context=None, lesson=None):
-                raise OSError("no space left on device")
-
-        monkeypatch.setattr(experience_ops, "_experience_store", lambda: _Boom())
-
-        result = experience_ops.edit_lesson("L1", lesson="new")
-
-        assert result.ok is False
-        assert "Could not write the experience store" in str(result.renderable)
-
-    def test_feedback_survives_unwritable_run_dir(self, monkeypatch, tmp_path):
-        from vulnclaw.cli import experience_ops
-        from vulnclaw.config.schema import VulnClawConfig
-
-        class _RunContext:
-            manifest = {"status": "completed"}
-            run_dir = tmp_path
-
-            def append_event(self, *args, **kwargs):
-                raise AssertionError("should not be reached")
-
-        monkeypatch.setattr(
-            "vulnclaw.run_context.load_run_context",
-            lambda *args, **kwargs: _RunContext(),
-        )
-
-        def _boom(run_dir, *, rating, notes):
-            raise OSError("permission denied")
-
-        monkeypatch.setattr("vulnclaw.feedback.save_feedback", _boom)
-
-        result = experience_ops.save_run_feedback(
-            "run-1", rating=4, notes="solid", config=VulnClawConfig()
-        )
-
-        assert result.ok is False
-        assert "Could not save feedback" in str(result.renderable)
-
-    def test_tui_palette_excludes_repl_only_learning_commands(self):
-        import vulnclaw.cli.tui as tui_mod
-
-        entries = dict(tui_mod.build_slash_palette_entries())
-        repl_entries = dict(tui_mod.list_repl_palette_entries())
-
-        for cmd in ("experience", "learn", "feedback"):
-            assert cmd not in entries
-            assert cmd in repl_entries
-
-    def test_repl_palette_filters_commands_by_prefix(self):
-        import vulnclaw.cli.tui as tui_mod
-
-        names = [name for name, _ in tui_mod.list_repl_palette_entries("co")]
-
-        assert "config" in names
-        assert "language" not in names
-
-    def test_language_switch_updates_config(self, monkeypatch):
-        import vulnclaw.cli.main as main_mod
-        import vulnclaw.cli.tui as tui_mod
-        import vulnclaw.i18n as i18n_mod
-
-        saved = {}
-        monkeypatch.setattr(main_mod, "save_config", lambda cfg: saved.setdefault("cfg", cfg))
-        # Keep the switch pure: no real locale reload / global rebuild.
-        monkeypatch.setattr(i18n_mod, "init_i18n", lambda *a, **k: None)
-        monkeypatch.setattr(tui_mod, "rebuild_translations", lambda: None)
-
-        class _Cfg:
-            class session:
-                language = "auto"
-
-        class _Agent:
-            def __init__(self):
-                self.applied = None
-
-            def apply_config(self, cfg):
-                self.applied = cfg
-
-        cfg = _Cfg()
-        agent = _Agent()
-
-        out = main_mod._repl_switch_language("en", agent, cfg)
-
-        assert cfg.session.language == "en"
-        assert out is cfg
-        assert saved["cfg"] is cfg
-        assert agent.applied is cfg
-
-    def test_repl_prompt_localizes_chinese_phase_when_language_is_english(self, monkeypatch):
-        import vulnclaw.cli.main as main_mod
-        from vulnclaw.i18n import init_i18n
-
-        prompts = []
-
-        class _Console:
-            def input(self, prompt):
-                prompts.append(prompt)
-                return "exit"
-
-        monkeypatch.setattr(main_mod, "console", _Console())
-        init_i18n(lang="en")
-        try:
-            assert main_mod._read_repl_line(None, "127.0.0.1:3000", "就绪", True) == "exit"
-        finally:
-            init_i18n(lang="zh")
-
-        assert "Ready" in prompts[0]
-        assert "就绪" not in prompts[0]
-
-    def test_language_switch_rejects_unknown(self, monkeypatch):
-        import vulnclaw.cli.main as main_mod
-
-        called = {"saved": False}
-        monkeypatch.setattr(
-            main_mod, "save_config", lambda cfg: called.__setitem__("saved", True)
-        )
-
-        class _Cfg:
-            class session:
-                language = "en"
-
-        class _Agent:
-            def apply_config(self, cfg):  # pragma: no cover - must not run
-                raise AssertionError("apply_config should not be called")
-
-        cfg = _Cfg()
-        out = main_mod._repl_switch_language("klingon", _Agent(), cfg)
-
-        assert out is cfg
-        assert cfg.session.language == "en"  # unchanged
-        assert called["saved"] is False
-
-    def test_agent_apply_config_resets_client(self):
-        from vulnclaw.agent.core import AgentCore
-        from vulnclaw.config.settings import load_config
-
-        config = load_config()
-        agent = AgentCore.__new__(AgentCore)
-        agent._client = object()
-        agent._key_index = 3
-
-        agent.apply_config(config)
-
-        assert agent.config is config
-        assert agent._client is None
-        assert agent._key_index == 0
-
-
-class TestCLISubCommands:
-    """Test CLI sub-command help messages."""
-
-    @pytest.fixture
-    def runner(self):
-        return CliRunner()
-
-    def test_run_help(self, runner):
-        from vulnclaw.cli.main import app
-
-        result = runner.invoke(app, ["run", "--help"])
-        assert result.exit_code == 0
-
-    def test_recon_help(self, runner):
-        from vulnclaw.cli.main import app
-
-        result = runner.invoke(app, ["recon", "--help"])
-        assert result.exit_code == 0
-
-    def test_scan_help(self, runner):
-        from vulnclaw.cli.main import app
-
-        result = runner.invoke(app, ["scan", "--help"])
-        assert result.exit_code == 0
-
-    def test_report_help(self, runner):
-        from vulnclaw.cli.main import app
-
-        result = runner.invoke(app, ["report", "--help"])
-        assert result.exit_code == 0
-
-    def test_repl_help(self, runner):
-        from vulnclaw.cli.main import app
-
-        result = runner.invoke(app, ["repl", "--help"])
-        assert result.exit_code == 0
-
-    def test_run_with_prompt_option(self, runner):
-        # [修改] 2026-06-10 Nyaecho - 添加 --prompt 选项测试
-        from vulnclaw.cli.main import app
-
-        # Test that --prompt option is accepted and doesn't crash
-        # We expect failure due to missing target, but the option should be parsed
-        result = runner.invoke(app, ["run", "--prompt", "test prompt", "example.com"])
-        # Should not be a usage error (exit code 2)
-        assert result.exit_code != 2
-        # The command will fail for other reasons (no config, etc.), but that's okay
+    state2 = SessionState(target="https://example.com")
+    state2.add_finding(VulnerabilityFinding(title="XSS", severity="Medium", vuln_type="XSS"))
+    store_mod.save_target_state("https://example.com", state2, command="scan")
+
+    snapshots = store_mod.list_target_snapshots("https://example.com")
+    result_preview = runner.invoke(app, ["target-state", "preview", "https://example.com"])
+    assert result_preview.exit_code == 0
+    assert json.loads(result_preview.stdout)["result"]["snapshot_id"] == snapshots[0]["snapshot_id"]
+
+    result_diff = runner.invoke(
+        app,
+        [
+            "target-state",
+            "diff",
+            "https://example.com",
+            snapshots[-1]["snapshot_id"],
+            "--to",
+            snapshots[0]["snapshot_id"],
+        ],
+    )
+    assert result_diff.exit_code == 0
+    assert json.loads(result_diff.stdout)["result"]["to_snapshot_id"] == snapshots[0]["snapshot_id"]
+
+
+def test_config_command_dispatches():
+    from vulnclaw.input_service import InputRequest, parse_input
+
+    result = parse_input(InputRequest(text="/config"))
+
+    assert result.kind == "adapter"
+    assert result.operation == "config"
+    assert result.text == ""
+
+
+def test_config_alias_dispatches():
+    from vulnclaw.input_service import InputRequest, parse_input
+
+    result = parse_input(InputRequest(text="/cfg"))
+
+    assert result.kind == "adapter"
+    assert result.operation == "config"
+
+
+def test_language_command_carries_argument():
+    from vulnclaw.input_service import InputRequest, parse_input
+
+    result = parse_input(InputRequest(text="/language en"))
+
+    assert result.kind == "adapter"
+    assert result.operation == "language"
+    assert result.text == "en"
+
+
+def test_language_alias_dispatches():
+    from vulnclaw.input_service import InputRequest, parse_input
+
+    result = parse_input(InputRequest(text="/lang"))
+
+    assert result.kind == "adapter"
+    assert result.operation == "language"
+
+
+def test_experience_command_dispatches_without_args():
+    from vulnclaw.input_service import InputRequest, parse_input
+
+    result = parse_input(InputRequest(text="/experience"))
+
+    assert result.kind == "adapter"
+    assert result.operation == "experience"
+    assert result.text == ""
+
+
+def test_experience_alias_and_subcommand_carry_args():
+    from vulnclaw.input_service import InputRequest, parse_input
+
+    result = parse_input(InputRequest(text="/exp show L1"))
+
+    assert result.kind == "adapter"
+    assert result.operation == "experience"
+    assert result.text == "show L1"
+
+
+def test_learn_command_carries_run_name():
+    from vulnclaw.input_service import InputRequest, parse_input
+
+    result = parse_input(InputRequest(text="/learn my-run"))
+
+    assert result.kind == "adapter"
+    assert result.operation == "learn"
+    assert result.text == "my-run"
+
+
+def test_feedback_command_carries_full_argument():
+    from vulnclaw.input_service import InputRequest, parse_input
+
+    result = parse_input(InputRequest(text="/feedback my-run 4 solid recon coverage"))
+
+    assert result.kind == "adapter"
+    assert result.operation == "feedback"
+    assert result.text == "my-run 4 solid recon coverage"
+
+
+def test_experience_show_rejects_unsafe_lesson_id():
+    from vulnclaw import experience_service as experience_ops
+
+    result = experience_ops.get_lesson("../../foo")
+
+    assert result.ok is False
+    assert "Lesson not found" in str(result.message)
+
+
+def test_experience_status_survives_unwritable_store(monkeypatch):
+    from vulnclaw import experience_service as experience_ops
+
+    class _Boom:
+        def approve(self, lesson_id):
+            raise OSError("read-only file system")
+
+        def reject(self, lesson_id):
+            raise OSError("read-only file system")
+
+    monkeypatch.setattr(experience_ops, "_experience_store", lambda: _Boom())
+
+    result = experience_ops.set_lesson_status("L1", "approved")
+
+    assert result.ok is False
+    assert "Could not write the experience store" in str(result.message)
+
+
+def test_experience_edit_survives_unwritable_store(monkeypatch):
+    from vulnclaw import experience_service as experience_ops
+
+    class _Boom:
+        def update(self, lesson_id, *, context=None, lesson=None):
+            raise OSError("no space left on device")
+
+    monkeypatch.setattr(experience_ops, "_experience_store", lambda: _Boom())
+
+    result = experience_ops.edit_lesson("L1", lesson="new")
+
+    assert result.ok is False
+    assert "Could not write the experience store" in str(result.message)
+
+
+def test_feedback_survives_unwritable_run_dir(monkeypatch, tmp_path):
+    from vulnclaw import experience_service as experience_ops
+    from vulnclaw.config.schema import VulnClawConfig
+
+    class _RunContext:
+        manifest = {"status": "completed"}
+        run_dir = tmp_path
+
+        def append_event(*args, **kwargs):
+            raise AssertionError("should not be reached")
+
+    monkeypatch.setattr(
+        "vulnclaw.run_context.load_run_context",
+        lambda *args, **kwargs: _RunContext(),
+    )
+
+    def _boom(run_dir, *, rating, notes):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("vulnclaw.feedback.save_feedback", _boom)
+
+    result = experience_ops.save_run_feedback(
+        "run-1", rating=4, notes="solid", config=VulnClawConfig()
+    )
+
+    assert result.ok is False
+    assert "Could not save feedback" in str(result.message)
+
+
+def test_agent_apply_config_resets_client():
+    from vulnclaw.agent.core import AgentCore
+    from vulnclaw.config.settings import load_config
+
+    config = load_config()
+    agent = AgentCore.__new__(AgentCore)
+    agent._client = object()
+    agent._key_index = 3
+
+    agent.apply_config(config)
+
+    assert agent.config is config
+    assert agent._client is None
+    assert agent._key_index == 0
+

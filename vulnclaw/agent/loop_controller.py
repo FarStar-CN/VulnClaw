@@ -311,6 +311,7 @@ async def persistent_pentest(
     task_constraints: TaskConstraints | None = None,
     engine: str | None = None,
     cycle_runner: Any = None,
+    poc_verify: bool | None = None,
 ) -> list[PersistentCycleResult]:
     cycle_results: list[PersistentCycleResult] = []
 
@@ -380,7 +381,9 @@ async def persistent_pentest(
 
         from vulnclaw.findings.verification import verify_findings
 
-        audited = await verify_findings(agent.context.state, config=agent.config)
+        audited = await verify_findings(
+            agent.context.state, config=agent.config, poc_verify=poc_verify,
+        )
         total_findings = len(agent.context.state.findings)
         total_steps = len(agent.context.state.executed_steps)
         new_findings = total_findings - findings_at_cycle_start

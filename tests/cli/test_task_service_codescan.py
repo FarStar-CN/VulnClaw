@@ -13,14 +13,14 @@ from typing import Any
 
 import pytest
 
+from vulnclaw.session_backend import BackendSession
+from vulnclaw.session_protocol import JsonlWriter, decode_client_message
 from vulnclaw.task_service import (
     TASK_COMMANDS,
     TaskCreateRequest,
     prepare_task,
     task_request_from_payload,
 )
-from vulnclaw.tui_backend import BackendSession
-from vulnclaw.tui_protocol import JsonlWriter, decode_client_message
 
 DEMO = "demo/unsafe-ai-sample.ts"
 
@@ -56,7 +56,7 @@ def request(
     payload: dict[str, Any] | None = None,
 ):
     raw: dict[str, Any] = {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "type": kind,
         "request_id": request_id,
         "payload": payload or {},
@@ -124,7 +124,7 @@ async def test_codescan_streams_findings_and_completes() -> None:
     assert len(finding_events) >= 1, "codescan must stream finding events"
     assert len(completed) == 1
 
-    # every streamed finding carries the Rust-compatible envelope
+    # every streamed finding carries the versioned session envelope
     for ev in finding_events:
         assert ev["task_id"] == "task-1"
         f = ev["finding"]

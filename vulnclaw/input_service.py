@@ -17,25 +17,22 @@ COMMANDS = {
     "codescan": "Scan local source without an LLM",
     "clear": "Clear the display; keep the conversation",
     "new": "Start a new conversation; keep configuration and scope defaults",
-    "mode": "Show or set plan | agent",
-    "permission": "Show or set ask | auto_review | full_access",
+    "permission": "Show or set read_only | ask | auto_review | full_access",
     "target": "Show or set the current target",
     "scope": "Show, update or reset scope defaults",
     "compact": "Compact conversation context",
     "report": "Export existing results; --kind security | replay; --output PATH",
-    "status": "Show backend session state",
     "tools": "List available tools",
     "help": "List commands",
     "config": "Configure the model provider",
     "language": "Set display language",
-    "wizard": "Open the setup wizard",
     "experience": "Manage experience records",
     "learn": "Learn from saved work",
     "feedback": "Record feedback",
     "think": "Show or hide reasoning output",
     "quit": "Exit the client",
 }
-ADAPTER_COMMANDS = frozenset({"config", "language", "wizard", "experience", "learn", "feedback"})
+ADAPTER_COMMANDS = frozenset({"config", "language", "experience", "learn", "feedback"})
 
 
 @dataclass(frozen=True)
@@ -168,16 +165,14 @@ def parse_input(request: InputRequest) -> ParsedInput:
         return ParsedInput("control", operation="report.export", arguments=args)
     operations = {
         "new": "session.new",
-        "mode": "session.mode.set",
         "permission": "session.permission.set",
         "target": "session.target.set",
         "compact": "session.compact",
-        "status": "session.status",
         "tools": "session.tools",
         "help": "session.help",
         "think": "session.think",
     }
-    argument_names = {"mode": "mode", "permission": "mode", "target": "target", "think": "value"}
+    argument_names = {"permission": "mode", "target": "target", "think": "value"}
     args = {argument_names[command]: tail.strip()} if command in argument_names else {}
     if command not in argument_names and tail.strip():
         raise ValueError(f"/{command} does not accept arguments")

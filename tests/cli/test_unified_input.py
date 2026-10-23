@@ -16,9 +16,9 @@ from vulnclaw.agent.execution_context import current_execution
 from vulnclaw.application import ApplicationSession
 from vulnclaw.config.schema import VulnClawConfig
 from vulnclaw.input_service import COMMANDS, InputRequest, parse_input
+from vulnclaw.session_backend import BackendSession
+from vulnclaw.session_protocol import JsonlWriter, decode_client_message
 from vulnclaw.task_service import TaskCreateRequest, task_request_from_payload
-from vulnclaw.tui_backend import BackendSession
-from vulnclaw.tui_protocol import JsonlWriter, decode_client_message
 
 
 class Runtime:
@@ -255,7 +255,7 @@ async def test_jsonl_turn_can_be_cancelled_and_followed_by_another_turn():
 
     async def send(kind, request_id, task_id=None, **payload):
         message = {
-            "protocol_version": 1,
+            "protocol_version": 2,
             "type": kind,
             "request_id": request_id,
             "payload": payload,
@@ -284,11 +284,11 @@ async def test_jsonl_turn_can_be_cancelled_and_followed_by_another_turn():
     await backend.wait_for_idle()
     events = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert [event["type"] for event in events if event.get("task_id") == "turn-1"] == [
-        "turn_started",
+        "message", "message", "turn_started",
         "turn_cancelled",
     ]
     assert [event["type"] for event in events if event.get("task_id") == "turn-2"] == [
-        "turn_started",
+        "message", "message", "turn_started",
         "turn_completed",
     ]
     await backend.close()
@@ -368,57 +368,3 @@ async def test_self_discovering_skill_seed_is_not_an_implicit_host_boundary(monk
     await session.close()
 
 
-def test_cli_continuous_shorthand_preserves_zero_and_run_budget(monkeypatch):
-    from typer.testing import CliRunner
-
-    import vulnclaw.cli.main as cli
-
-    config = VulnClawConfig()
-    config.llm.api_key = "test-key"
-    monkeypatch.setattr(cli, "load_config", lambda: config)
-    captured = []
-
-    async def execute(**arguments):
-        captured.append(arguments["task"].request)
-        return SimpleNamespace(summary={"findings_count": 0})
-
-    monkeypatch.setattr(cli, "_run_cli_orchestrated_task", execute)
-    result = CliRunner().invoke(
-        cli.app,
-        [
-            "persistent",
-            "example.test",
-            "--max-cycles",
-            "0",
-            "--rounds-per-cycle",
-            "2",
-            "--max-steps",
-            "17",
-            "--no-report",
-        ],
-    )
-    assert result.exit_code == 0, result.exception
-    assert captured[0].command == "run"
-    assert captured[0].options.continuous is True
-    assert captured[0].options.max_cycles == 0
-    assert captured[0].options.max_steps == 17
-
-
-def test_repl_double_ctrl_c_still_exits_and_closes_runtime(monkeypatch):
-    from unittest.mock import Mock
-
-    from typer.testing import CliRunner
-
-    import vulnclaw.cli.main as cli
-
-    runtime = Runtime()
-    monkeypatch.setattr("vulnclaw.application.create_runtime", AsyncMock(return_value=runtime))
-    monkeypatch.setattr(cli, "load_config", lambda: runtime.config)
-    monkeypatch.setattr(
-        cli, "_read_repl_line", Mock(side_effect=[KeyboardInterrupt, KeyboardInterrupt])
-    )
-    monkeypatch.setattr(cli.time, "monotonic", lambda: 10.0)
-    result = CliRunner().invoke(cli.app, ["repl"])
-    assert result.exit_code == 0, result.exception
-    runtime.stop.assert_awaited_once()
-    assert runtime.calls == []

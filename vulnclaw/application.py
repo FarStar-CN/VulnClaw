@@ -8,10 +8,16 @@ import os
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from vulnclaw.agent.errors import format_llm_user_error
 from vulnclaw.agent.streaming import TranscriptStreamSink
 from vulnclaw.config.domain_models import validate_action_constraints
 from vulnclaw.conversation import ConversationState, run_conversation
-from vulnclaw.input_service import ADAPTER_COMMANDS, COMMANDS, InputRequest, parse_input
+from vulnclaw.input_service import COMMANDS, InputRequest, parse_input
+from vulnclaw.management_service import (
+    MANAGEMENT_OPERATIONS,
+    adapter_operation,
+    execute_management,
+)
 from vulnclaw.report_service import generate_report_for_run
 from vulnclaw.task_service import (
     SCOPE_FIELDS,
@@ -42,7 +48,7 @@ class ApplicationError(ValueError):
 # base backend owns mutable session scope defaults; client posture remains local.
 # Execution decisions and operator-initiated permission changes are usable
 # while a task is active. Scope and LLM config mutation remain idle-only.
-SUPPORTED_CONTROL_OPERATIONS = frozenset(
+SUPPORTED_CONTROL_OPERATIONS = MANAGEMENT_OPERATIONS | frozenset(
     {
         "session.scope.reset",
         "session.scope.update",
@@ -62,6 +68,8 @@ SUPPORTED_CONTROL_OPERATIONS = frozenset(
         "session.think",
         "session.scope.read",
         "report.export",
+        "report.read",
+        "task.preview",
     }
 )
 TASK_ACTIVE_CONTROL_OPERATIONS = frozenset({"execution.approval.resolve", "session.permission.set"})
@@ -96,20 +104,29 @@ class ApplicationStreamSink(TranscriptStreamSink):
 
     def __init__(
         self, emit: Callable[..., None], task_id: str, *, show_thinking: bool,
-        question_ready: Callable[[], None] | None = None,
+        question_ready: Callable[[], None] | None = None, request_id: str | None = None,
+        approval_channel_factory: Callable[["ApplicationStreamSink"], Any] | None = None,
+        on_question: Callable[[str], None] | None = None,
     ) -> None:
         self._emit_event = emit
         self._task_id = task_id
         self._question_ready = question_ready
+        self._request_id = request_id
+        self.approval_channel_factory = approval_channel_factory or EventApprovalChannel
+        self._on_question = on_question
         super().__init__(self._event, show_thinking=show_thinking)
 
     def _event(self, event_type: str, **fields: Any) -> None:
+        if self._request_id:
+            fields.setdefault("request_id", self._request_id)
         self._emit_event(event_type, task_id=self._task_id, **fields)
 
     def on_question(self, question: str) -> None:
         self.on_content_token(question)
         if self._question_ready is not None:
             self._question_ready()
+        if self._on_question is not None:
+            self._on_question(question)
 
 
 class ApplicationSession:
@@ -122,26 +139,60 @@ class ApplicationSession:
         runtime_factory: RuntimeFactory = None,
         task_runner: TaskRunner = None,
         source: str = "tui",
+        approval_channel_factory: Callable[[ApplicationStreamSink], Any] | None = None,
+        on_question: Callable[[str], None] | None = None,
     ) -> None:
         self.source = source
         self._closed = False
-        self.emit = emit
+        self._output = emit
+        self.messages: dict[str, dict[str, Any]] = {}
+        self.emit = self._publish
         self._runtime_factory = runtime_factory or create_runtime
         self._task_runner = task_runner or _run_task
+        self._approval_channel_factory = approval_channel_factory
+        self._on_question = on_question
         self.runtime: Any | None = None
         self.bootstrap: dict[str, Any] = {}
         self.initialized = False
         self.shutdown_requested = False
         self.active_task: asyncio.Task[None] | None = None
+        self.active_control: asyncio.Task[None] | None = None
         self.active_task_id: str | None = None
         self.cancel_request_id: str | None = None
         self.current_target = ""
         self.current_constraints: dict[str, Any] = {}
         self.last_run: dict[str, Any] | None = None
+        self.last_report: dict[str, Any] | None = None
         self.mode = "agent"
         self.conversation: ConversationState | None = None
         self._queued_input: tuple[str, str, str] | None = None
         self._answer_in_progress = False
+
+    def _publish(self, event_type: str, **fields: Any) -> None:
+        if event_type == "message":
+            fields["source"] = fields.get("agent_id") or fields.get("source", "main")
+            identifier = fields["message_id"]
+            message = self.messages.get(identifier)
+            if fields["operation"] == "append":
+                if message is None:
+                    message = {
+                        key: fields[key] for key in
+                        ("message_id", "source", "role", "format", "request_id", "task_id")
+                        if key in fields
+                    }
+                    message.update(text="", status="streaming")
+                    self.messages[identifier] = message
+                message["text"] += fields["text"]
+            elif message is not None:
+                message["status"] = fields["status"]
+        self._output(event_type, **fields)
+
+    def _publish_user(self, text: str, request_id: str, task_id: str) -> None:
+        identifier = f"user-{request_id}"
+        self.emit("message", request_id=request_id, task_id=task_id, message_id=identifier,
+                  source="main", role="user", format="text", operation="append", text=text)
+        self.emit("message", request_id=request_id, task_id=task_id, message_id=identifier,
+                  source="main", role="user", format="text", operation="end", status="completed")
 
     def publish_input_state(self) -> None:
         self.emit("state", task_id=self.active_task_id, state=self.state_snapshot())
@@ -270,8 +321,11 @@ class ApplicationSession:
         """The common business entry for text, typed tasks and trusted controls."""
         self._require_initialized("local")
         parsed = parse_input(request)
-        if parsed.kind in {"display", "adapter"}:
+        if parsed.kind == "display":
             return {"kind": parsed.kind, "operation": parsed.operation, "text": parsed.text}
+        if parsed.kind == "adapter":
+            operation, arguments = adapter_operation(parsed.operation, parsed.text)
+            return await self.submit_input(InputRequest(operation=operation, arguments=arguments))
         if parsed.kind == "control":
             operation = parsed.operation
             if operation not in SUPPORTED_CONTROL_OPERATIONS:
@@ -291,6 +345,8 @@ class ApplicationSession:
                 self.emit,
                 self.active_task_id or "local-task",
                 show_thinking=self.config.session.show_thinking,
+                approval_channel_factory=self._approval_channel_factory,
+                on_question=self._on_question,
             )
 
             async def converse() -> Any:
@@ -428,7 +484,6 @@ class ApplicationSession:
                 "input_commands": {
                     name: description
                     for name, description in COMMANDS.items()
-                    if self.source != "tui" or name not in ADAPTER_COMMANDS - {"config"}
                 },
             },
             runtime=_runtime_metadata(self.runtime),
@@ -443,6 +498,8 @@ class ApplicationSession:
         payload: dict[str, Any],
     ) -> None:
         self._require_initialized(request_id, task_id)
+        if self.active_control is not None and not self.active_control.done():
+            raise ApplicationError("operation_busy", "a management operation is active", request_id=request_id, task_id=task_id)
         if self.mode == "plan":
             raise ApplicationError(
                 "plan_mode",
@@ -471,9 +528,14 @@ class ApplicationSession:
         self._install_task(task)
         self.active_task_id = task_id
         self.cancel_request_id = None
-        self.active_task = asyncio.create_task(self._execute_task(request_id, task_id or "", task))
+        self.active_task = asyncio.create_task(self._execute_task(
+            request_id, task_id or "", task, input_text=payload.get("_input_text"),
+        ))
 
-    async def _execute_task(self, request_id: str, task_id: str, task: PreparedTask) -> None:
+    async def _execute_task(
+        self, request_id: str, task_id: str, task: PreparedTask, *, input_text: str | None = None,
+    ) -> None:
+        self._publish_user(input_text or f"/{task.request.command} {task.request.target}", request_id, task_id)
         self.emit(
             "task_started",
             request_id=request_id,
@@ -484,7 +546,10 @@ class ApplicationSession:
         sink = ApplicationStreamSink(
             self.emit,
             task_id,
+            request_id=request_id,
             question_ready=self.question_ready,
+            approval_channel_factory=self._approval_channel_factory,
+            on_question=self._on_question,
             show_thinking=bool(
                 getattr(getattr(self.runtime, "config", None), "session", None)
                 and getattr(self.runtime.config.session, "show_thinking", False)
@@ -505,6 +570,8 @@ class ApplicationSession:
                 if isinstance(finding, dict):
                     self.emit("finding", task_id=task_id, finding=finding)
             self.last_run = _json_safe(result if isinstance(result, dict) else {})
+            if self.last_run.get("report"):
+                self.last_report = self.last_run["report"]
             self.emit(
                 "task_completed",
                 request_id=request_id,
@@ -516,7 +583,7 @@ class ApplicationSession:
             self.emit("state", task_id=task_id, state=self.state_snapshot(active=False))
             succeeded = True
         except asyncio.CancelledError:
-            sink.on_stream_end()
+            sink.on_stream_end("cancelled")
             self.emit(
                 "task_cancelled",
                 request_id=self.cancel_request_id or request_id,
@@ -524,12 +591,12 @@ class ApplicationSession:
                 state=self.state_snapshot(active=False),
             )
         except Exception as exc:  # noqa: BLE001 - task failures are protocol data
-            sink.on_stream_end()
+            sink.on_stream_end("failed")
             self.emit(
                 "task_failed",
                 request_id=request_id,
                 task_id=task_id,
-                error={"code": "task_failed", "message": str(exc)},
+                error={"code": "task_failed", "message": format_llm_user_error(exc)},
                 state=self.state_snapshot(active=False),
             )
         finally:
@@ -572,21 +639,27 @@ class ApplicationSession:
                 await self._start_task(
                     request_id=request_id,
                     task_id=task_id,
-                    payload={"task": parsed.task},
+                    payload={"task": parsed.task, "_input_text": text},
                 )
                 return
-            if parsed.kind == "control":
+            if parsed.kind in {"control", "adapter"}:
+                operation, arguments = (
+                    adapter_operation(parsed.operation, parsed.text)
+                    if parsed.kind == "adapter" else (parsed.operation, parsed.arguments)
+                )
                 await self._control(
                     request_id=request_id,
                     task_id=task_id,
                     payload={
-                        "operation": parsed.operation,
-                        "arguments": parsed.arguments,
+                        "operation": operation,
+                        "arguments": arguments,
                     },
                 )
                 return
             if parsed.kind != "conversation":
                 raise ValueError(f"/{parsed.operation} requires client interaction")
+            if self.active_control is not None and not self.active_control.done():
+                raise ApplicationError("operation_busy", "a management operation is active")
             if self.active_task is not None and not self.active_task.done():
                 if (
                     self.mode == "agent"
@@ -612,14 +685,18 @@ class ApplicationSession:
         self.active_task = asyncio.create_task(self._execute_turn(request_id, task_id or "", text))
 
     async def _execute_turn(self, request_id: str, task_id: str, text: str) -> None:
+        self._publish_user(text, request_id, task_id)
         sink = ApplicationStreamSink(
-            self.emit, task_id, show_thinking=self.config.session.show_thinking
+            self.emit, task_id, show_thinking=self.config.session.show_thinking,
+            request_id=request_id,
+            approval_channel_factory=self._approval_channel_factory,
+            on_question=self._on_question,
         )
         from vulnclaw.agent.exec_gate import get_execution_gate
 
         gate = get_execution_gate()
         previous_channel = gate.channel
-        gate.install_channel(EventApprovalChannel(sink))
+        gate.install_channel(sink.approval_channel_factory(sink))
         self._answer_in_progress = bool(self.conversation.pending_questions)
         self.emit(
             "turn_started",
@@ -631,6 +708,8 @@ class ApplicationSession:
         succeeded = False
         try:
             result = await self.submit_input(InputRequest(text=text), stream_sink=sink)
+            if isinstance(result, dict) and result.get("reports"):
+                self.last_report = result["reports"][-1]
             sink.on_stream_end()
             self.emit(
                 "turn_completed",
@@ -641,7 +720,7 @@ class ApplicationSession:
             )
             succeeded = True
         except asyncio.CancelledError:
-            sink.on_stream_end()
+            sink.on_stream_end("cancelled")
             self.emit(
                 "turn_cancelled",
                 request_id=self.cancel_request_id or request_id,
@@ -649,12 +728,12 @@ class ApplicationSession:
                 state=self.state_snapshot(active=False),
             )
         except Exception as exc:
-            sink.on_stream_end()
+            sink.on_stream_end("failed")
             self.emit(
                 "turn_failed",
                 request_id=request_id,
                 task_id=task_id,
-                error={"code": "turn_failed", "message": str(exc)},
+                error={"code": "turn_failed", "message": format_llm_user_error(exc)},
                 state=self.state_snapshot(active=False),
             )
         finally:
@@ -704,6 +783,13 @@ class ApplicationSession:
         payload: dict[str, Any],
     ) -> None:
         self._require_initialized(request_id, task_id)
+        current = asyncio.current_task()
+        operation = payload.get("operation")
+        owns_control = operation not in TASK_ACTIVE_CONTROL_OPERATIONS
+        if owns_control:
+            if self.active_control is not None and not self.active_control.done():
+                raise ApplicationError("operation_busy", "a management operation is active", request_id=request_id)
+            self.active_control = current
         try:
             result = await self.submit_input(
                 InputRequest(
@@ -718,6 +804,9 @@ class ApplicationSession:
                 request_id=request_id,
                 task_id=task_id,
             ) from exc
+        finally:
+            if owns_control and self.active_control is current:
+                self.active_control = None
         self._write_control_result(
             request_id,
             result["operation"],
@@ -729,6 +818,14 @@ class ApplicationSession:
         self, operation: str, arguments: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Extension point for feature-owned management operations."""
+
+        if operation in MANAGEMENT_OPERATIONS:
+            return await execute_management(self, operation, arguments), None
+
+        if operation == "task.preview":
+            from vulnclaw.task_preview import preview_task
+
+            return preview_task(arguments, defaults=self.bootstrap, config=self.config), None
 
         if operation in {"session.mode.set", "session.permission.set"} and not arguments.get(
             "mode"
@@ -745,6 +842,7 @@ class ApplicationSession:
             if self.config.session.auto_save:
                 self.agent._maybe_auto_save_session()
             self.conversation.clear()
+            self.messages.clear()
             self.current_target = ""
             self.last_run = None
             self._apply_session_scope(self.bootstrap)
@@ -797,7 +895,20 @@ class ApplicationSession:
                 output=arguments.get("output"),
                 partial=not self.conversation.engagement_completed,
             )
+            self.last_report = report
             return {"report": report, "message": f"Report saved: {report['path']}"}, None
+
+        if operation == "report.read":
+            from pathlib import Path
+
+            report = self.last_report or (self.last_run or {}).get("report")
+            if not report or not report.get("path"):
+                raise ValueError("No report is available. Export one with /report first.")
+            path = Path(report["path"])
+            if path.suffix.lower() not in {".md", ".markdown", ".txt", ".html"}:
+                raise ValueError("This report is a binary artifact; open its path with an external viewer.")
+            return {"report": {"path": str(path), "text": path.read_text(encoding="utf-8"),
+                               "format": "markdown" if path.suffix.lower() in {".md", ".markdown"} else "text"}}, None
 
         if operation == "session.permission.set":
             mode = str(arguments.get("mode") or "").strip().lower()
@@ -993,6 +1104,13 @@ class ApplicationSession:
     async def close(self) -> None:
         if self._closed:
             return
+        control = self.active_control
+        if control is not None and control is not asyncio.current_task() and not control.done():
+            control.cancel()
+            try:
+                await control
+            except asyncio.CancelledError:
+                pass
         active = self.active_task
         if active is not None and not active.done():
             active.cancel()
@@ -1027,6 +1145,7 @@ class ApplicationSession:
             "findings": _runtime_findings(self.runtime),
             "evidence": [],
             "constraint_violations": [],
+            "messages": list(self.messages.values()),
         }
         runtime_state = getattr(self.runtime, "state_snapshot", None)
         if callable(runtime_state):
@@ -1130,7 +1249,7 @@ async def _run_task(
         elif kind == "subagent_stream":
             event = dict(payload)
             event_type = event.pop("type")
-            if sink.accepts(event_type):
+            if sink.accepts(event_type, **event):
                 sink._event(event_type, **event)
         elif kind == "agent_step":
             sink._event("log", message=f"turn {payload.get('step', '?')}")
@@ -1144,7 +1263,7 @@ async def _run_task(
             sink._event("log", message=f"no path: {payload.get('reason', '')}")
 
     execution = None
-    approval_channel = EventApprovalChannel(sink)
+    approval_channel = sink.approval_channel_factory(sink)
     from vulnclaw.agent.exec_gate import get_execution_gate
 
     _approval_gate = get_execution_gate()
@@ -1179,7 +1298,9 @@ async def _run_task(
         sink.on_status("Generating report...")
         try:
             report = await generate_report_for_run(
-                result, config=runtime.config, agent=runtime.agent
+                result, config=runtime.config,
+                **({"output_path": task.request.options.report_output}
+                   if task.request.options.report_output is not None else {}),
             )
         except Exception as exc:  # Report failures preserve the completed task and saved audit.
             report_error = str(exc) or type(exc).__name__
