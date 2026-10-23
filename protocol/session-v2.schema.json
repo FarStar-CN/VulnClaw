@@ -1234,7 +1234,10 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["name", "ready"],
+            "required": [
+              "name",
+              "ready"
+            ],
             "properties": {
               "name": {
                 "type": "string"
@@ -1500,6 +1503,18 @@
             },
             "arguments": {
               "type": "string"
+            },
+            "dispatch_batch": {
+              "type": "object",
+              "required": ["id", "call_ids"],
+              "properties": {
+                "id": {"$ref": "#/$defs/identifier"},
+                "call_ids": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}}
+              },
+              "additionalProperties": false
+            },
+            "call_id": {
+              "$ref": "#/$defs/identifier"
             }
           }
         }
@@ -1533,6 +1548,16 @@
                 "json",
                 "http"
               ]
+            },
+            "call_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "evidence_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "structured_content": {
+              "type": "object",
+              "additionalProperties": true
             }
           }
         }
@@ -1905,6 +1930,9 @@
         },
         {
           "$ref": "#/$defs/commandResultEvent"
+        },
+        {
+          "$ref": "#/$defs/toolExecutionEvent"
         }
       ]
     },
@@ -2164,6 +2192,120 @@
                 "number",
                 "boolean",
                 "null"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "toolExecutionEvent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/taskEventEnvelope"
+        },
+        {
+          "required": [
+            "type",
+            "call_id",
+            "operation_id",
+            "kind",
+            "status"
+          ],
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "cwd": {
+              "type": "string"
+            },
+            "code": {
+              "type": "string"
+            },
+            "method": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "response_body": {
+              "type": "string"
+            },
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            },
+            "argv": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "response_headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "attempt": {
+              "type": "integer"
+            },
+            "duration_ms": {
+              "type": "integer"
+            },
+            "exit_code": {
+              "type": "integer"
+            },
+            "status_code": {
+              "type": "integer"
+            },
+            "agent_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "type": {
+              "const": "tool_execution"
+            },
+            "call_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "operation_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "kind": {
+              "enum": [
+                "tool",
+                "command",
+                "script",
+                "http",
+                "action"
+              ]
+            },
+            "status": {
+              "enum": [
+                "preparing",
+                "awaiting_approval",
+                "running",
+                "completed",
+                "returned",
+                "partial",
+                "failed",
+                "timed_out",
+                "cancelled",
+                "denied",
+                "skipped"
               ]
             }
           }

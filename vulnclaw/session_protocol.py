@@ -29,6 +29,7 @@ SERVER_EVENT_TYPES = frozenset(
         "log",
         "tool_call",
         "tool_result",
+        "tool_execution",
         "subagent",
         "finding",
         "approval_required",

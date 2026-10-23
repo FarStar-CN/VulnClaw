@@ -289,6 +289,14 @@ class ExecutionGate:
     # ── Model-facing entry ───────────────────────────────────────────────
 
     async def authorize(self, request: GateRequest, *, run_id: str = "") -> GateOutcome:
+        from vulnclaw.agent.execution_trace import call_status
+
+        outcome = await self._authorize(request, run_id=run_id)
+        if not outcome.approved:
+            call_status("denied", error=outcome.refusal_text(request.kind))
+        return outcome
+
+    async def _authorize(self, request: GateRequest, *, run_id: str = "") -> GateOutcome:
         self.stats["requested"] += 1
 
         if self.mode == "read_only":
@@ -346,6 +354,9 @@ class ExecutionGate:
                 ),
             )
 
+        from vulnclaw.agent.execution_trace import call_status
+
+        call_status("awaiting_approval")
         request_hash = request.request_hash()
 
         async with self._lock:

@@ -19,6 +19,8 @@ from typing import Any, AsyncIterator, Optional
 
 import httpx
 
+from vulnclaw.agent.execution_trace import observe_http_client
+
 NVD_API_BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 GITHUB_EXPLOIT_SEARCH = "https://api.github.com/search/repositories"
 
@@ -165,7 +167,7 @@ async def _client_ctx(
         yield client
         return
     async with httpx.AsyncClient(timeout=timeout, headers=_headers(api_key)) as owned:
-        yield owned
+        yield observe_http_client(owned)
 
 
 async def _nvd_rate_limit(has_key: bool) -> None:

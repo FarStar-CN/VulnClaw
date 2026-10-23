@@ -9,6 +9,7 @@ import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
+from vulnclaw.agent.execution_trace import notify_call, notify_result, observe_tools
 from vulnclaw.agent.subagent.budget import (
     fail_request as _fail_subagent_llm_admission,
 )
@@ -931,10 +932,11 @@ async def call_llm_stream(
                     "tool_calls": tool_calls,
                 })()
                 for tc in tool_calls:
-                    stream_sink.on_tool_call(tc.function.name, tc.function.arguments)
+                    notify_call(stream_sink, tc)
                 # handle_tool_calls 执行工具并做第二轮 LLM 调用
-                result = await handle_tool_calls(agent, dummy_msg)
-                if result:
+                with observe_tools(stream_sink):
+                    result = await handle_tool_calls(agent, dummy_msg)
+                if result and not callable(getattr(stream_sink, "on_tool_event", None)):
                     stream_sink.on_content_token(result)
                 stream_sink.on_stream_end()
                 return result
@@ -1018,15 +1020,16 @@ async def call_llm_auto_stream(
                 return extract_response(message)
 
             for tc in tool_calls:
-                stream_sink.on_tool_call(tc.function.name, tc.function.arguments)
+                notify_call(stream_sink, tc)
 
-            tool_results, skipped_info = await handle_tool_calls_with_results(agent, message)
+            with observe_tools(stream_sink):
+                tool_results, skipped_info = await handle_tool_calls_with_results(agent, message)
             last_tool_results = tool_results
             last_skipped_info = skipped_info
             last_assistant_text = message.content or ""
             for item in tool_results:
                 if isinstance(item, dict) and "content" in item:
-                    stream_sink.on_tool_result(item["content"])
+                    notify_result(stream_sink, item)
 
             executed_tool_calls = [
                 item.get("tool_call")
@@ -1067,13 +1070,14 @@ async def call_llm_auto_stream(
         ):
             raise
 
-    return await call_llm_auto(
-        agent,
-        system_prompt,
-        round_context,
-        include_history=include_history,
-        max_tool_rounds=max_tool_rounds,
-    )
+    with observe_tools(stream_sink):
+        return await call_llm_auto(
+            agent,
+            system_prompt,
+            round_context,
+            include_history=include_history,
+            max_tool_rounds=max_tool_rounds,
+        )
 
 # === Stream Output Protocol ===
 

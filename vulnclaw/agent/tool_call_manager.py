@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from vulnclaw.agent.agent_state import parse_status_code
 from vulnclaw.agent.correction_layer import (
@@ -15,6 +16,7 @@ from vulnclaw.agent.correction_layer import (
     after_tool_call,
     before_tool_call,
 )
+from vulnclaw.agent.execution_trace import _OBSERVER, call_status, skipped_call, trace_call
 from vulnclaw.agent.subagent.tooling import (
     partition_calls as _partition_subagent_calls,
 )
@@ -38,6 +40,23 @@ logger = logging.getLogger(__name__)
 
 # Default concurrency cap used when the agent config does not specify one.
 DEFAULT_TOOL_MAX_CONCURRENT = 5
+BUSINESS_TOOLS = frozenset({
+    "submit_finding", "agent_run", "agent_job", "evidence_list", "evidence_view",
+    "evidence_search", "memory_search", "vault_archive", "vault_restore", "vault_search",
+    "vault_status", "source_extract", "crypto_decode", "traffic_list", "traffic_view",
+    "traffic_sitemap", "topology_build", "compliance_map", "findings_report", "findings_diff",
+    "remediation_advice", "attack_map",
+})
+
+
+def _display_content(tool: str, value: Any) -> dict[str, Any] | None:
+    if tool not in BUSINESS_TOOLS:
+        return _extract_structured_content(value)
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except (ValueError, TypeError):
+        parsed = None
+    return parsed if isinstance(parsed, dict) else {"text": str(value)}
 
 
 async def handle_tool_calls(agent: AgentContext, message: Any) -> str:
@@ -47,61 +66,76 @@ async def handle_tool_calls(agent: AgentContext, message: Any) -> str:
     for tool_call in (getattr(message, "tool_calls", None) or []):
         func_name = tool_call.function.name
         func_args = safe_parse_tool_args(tool_call.function.arguments)
-        pre_hint = before_tool_call(agent, func_name, func_args)
-        started = time.perf_counter()
-        try:
-            tool_result = await agent._execute_mcp_tool(func_name, func_args)
-            duration_ms = _elapsed_ms(started)
-            content, record, raw = _record_tool_result_with_record(
-                agent,
-                func_name,
-                func_args,
-                tool_result,
-                duration_ms=duration_ms,
-                ok=True,
-            )
-            signal = after_tool_call(
-                agent,
-                tool=func_name,
-                arguments=func_args,
-                raw_output=raw,
-                duration_ms=duration_ms,
-                evidence=record,
-            )
-            content = _append_correction_note(content, pre_hint, signal.model_hint())
-        except asyncio.CancelledError as exc:
-            if not _looks_like_tool_local_cancellation(exc):
-                raise
-            duration_ms = _elapsed_ms(started)
-            content, record, raw = _record_tool_failure_with_record(
-                agent, func_name, func_args, exc, duration_ms=duration_ms
-            )
-            signal = after_tool_call(
-                agent,
-                tool=func_name,
-                arguments=func_args,
-                raw_output=raw,
-                duration_ms=duration_ms,
-                evidence=record,
-                error=exc,
-            )
-            content = _append_correction_note(content, pre_hint, signal.model_hint())
-        except Exception as exc:
-            duration_ms = _elapsed_ms(started)
-            content, record, raw = _record_tool_failure_with_record(
-                agent, func_name, func_args, exc, duration_ms=duration_ms
-            )
-            signal = after_tool_call(
-                agent,
-                tool=func_name,
-                arguments=func_args,
-                raw_output=raw,
-                duration_ms=duration_ms,
-                evidence=record,
-                error=exc,
-            )
-            content = _append_correction_note(content, pre_hint, signal.model_hint())
-        results.append(f"[tool:{func_name}] {content}")
+        observer = _OBSERVER.get()
+        if observer:
+            observer("tool_call", call_id=tool_call.id, tool=func_name,
+                     arguments=tool_call.function.arguments)
+
+        with trace_call(tool_call.id):
+            structured_content = None
+            pre_hint = before_tool_call(agent, func_name, func_args)
+            started = time.perf_counter()
+            try:
+                tool_result = await agent._execute_mcp_tool(func_name, func_args)
+                structured_content = _display_content(func_name, tool_result)
+                duration_ms = _elapsed_ms(started)
+                content, record, raw = _record_tool_result_with_record(
+                    agent,
+                    func_name,
+                    func_args,
+                    tool_result,
+                    duration_ms=duration_ms,
+                    ok=True,
+                )
+                signal = after_tool_call(
+                    agent,
+                    tool=func_name,
+                    arguments=func_args,
+                    raw_output=raw,
+                    duration_ms=duration_ms,
+                    evidence=record,
+                )
+                content = _append_correction_note(content, pre_hint, signal.model_hint())
+            except asyncio.CancelledError as exc:
+                if not _looks_like_tool_local_cancellation(exc):
+                    raise
+                call_status("failed", error=str(exc))
+                duration_ms = _elapsed_ms(started)
+                content, record, raw = _record_tool_failure_with_record(
+                    agent, func_name, func_args, exc, duration_ms=duration_ms
+                )
+                signal = after_tool_call(
+                    agent,
+                    tool=func_name,
+                    arguments=func_args,
+                    raw_output=raw,
+                    duration_ms=duration_ms,
+                    evidence=record,
+                    error=exc,
+                )
+                content = _append_correction_note(content, pre_hint, signal.model_hint())
+            except Exception as exc:
+                call_status("failed", error=str(exc))
+                duration_ms = _elapsed_ms(started)
+                content, record, raw = _record_tool_failure_with_record(
+                    agent, func_name, func_args, exc, duration_ms=duration_ms
+                )
+                signal = after_tool_call(
+                    agent,
+                    tool=func_name,
+                    arguments=func_args,
+                    raw_output=raw,
+                    duration_ms=duration_ms,
+                    evidence=record,
+                    error=exc,
+                )
+                content = _append_correction_note(content, pre_hint, signal.model_hint())
+            results.append(f"[tool:{func_name}] {content}")
+        observer = _OBSERVER.get()
+        if observer:
+            observer("tool_result", call_id=tool_call.id, result=f"[tool:{func_name}] {content}",
+                     **({"structured_content": structured_content} if structured_content is not None else {}),
+                     **({"evidence_id": record.id} if record else {}))
     return "\n".join(results)
 
 
@@ -112,8 +146,10 @@ async def handle_tool_calls_with_results(
     max_calls_per_round = 10
 
     seen: dict[str, dict[str, Any]] = {}
+    merged: list[tuple[str, str]] = []
+    tool_calls = list(getattr(message, "tool_calls", None) or [])
     # [修改] 2026-06-10 Nyaecho - 修复 tool_calls 属性访问问题，使用 getattr 防止 AttributeError
-    for tool_call in (getattr(message, "tool_calls", None) or []):
+    for tool_call in tool_calls:
         func_name = tool_call.function.name
         func_args = safe_parse_tool_args(tool_call.function.arguments)
         args_key = json.dumps(func_args, sort_keys=True, ensure_ascii=False)
@@ -126,6 +162,9 @@ async def handle_tool_calls_with_results(
                 "func_args": func_args,
             }
 
+        else:
+            merged.append((tool_call.id, seen[key]["tool_call"].id))
+
     deduplicated = list(seen.values())
     # [修改] 2026-06-10 Nyaecho - 修复 tool_calls 属性访问问题，使用 getattr 防止 AttributeError
     total_count = len(getattr(message, "tool_calls", None) or [])
@@ -134,6 +173,19 @@ async def handle_tool_calls_with_results(
     to_execute = deduplicated[:max_calls_per_round]
     skipped_calls = deduplicated[max_calls_per_round:]
     skipped_info: list[str] = []
+    parallel, max_concurrent = _resolve_parallel_settings(agent)
+    dispatch_ids = [item["tool_call"].id for item in to_execute
+                    if item["func_name"] == "agent_run"]
+    batch = ({"id": uuid4().hex, "call_ids": dispatch_ids}
+             if parallel and max_concurrent > 1 and len(dispatch_ids) > 1 else None)
+    observer = _OBSERVER.get()
+    if observer:
+        for tool_call in tool_calls:
+            observer("tool_call", call_id=tool_call.id, tool=tool_call.function.name,
+                     arguments=tool_call.function.arguments,
+                     **({"dispatch_batch": batch} if batch and tool_call.id in dispatch_ids else {}))
+    for call_id, original_id in merged:
+        skipped_call(call_id, f"Merged with {original_id}")
 
     if total_count > dedup_count:
         skipped_info.append(
@@ -141,6 +193,7 @@ async def handle_tool_calls_with_results(
         )
     if skipped_calls:
         for sc in skipped_calls:
+            skipped_call(sc["tool_call"].id, "Tool batch limit reached")
             skipped_info.append(
                 f"[{_('agent.tool.skip')}] {sc['func_name']}({str(sc['func_args'])[:100]}) "
                 f"{_('agent.tool.skip_reason')}"
@@ -153,7 +206,6 @@ async def handle_tool_calls_with_results(
     )
     executed_meta = [await _execute_single(agent, item) for item in meta_calls]
 
-    parallel, max_concurrent = _resolve_parallel_settings(agent)
     if parallel and max_concurrent > 1 and len(normal_calls) > 1:
         executed_normal = await _execute_parallel(
             agent, normal_calls, max_concurrent
@@ -235,6 +287,20 @@ def _extract_structured_content(tool_result: Any) -> dict[str, Any] | None:
 
 
 async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str, Any] | None:
+    with trace_call(item["tool_call"].id):
+        result = await _execute_single_impl(agent, item)
+        if result and "execution_error" in result:
+            call_status("failed", error=result["execution_error"])
+    observer = _OBSERVER.get()
+    if observer and result:
+        observer("tool_result", call_id=item["tool_call"].id, result=result["content"],
+                 **({"structured_content": result["structured_content"]}
+                    if result.get("structured_content") is not None else {}),
+                 **({"evidence_id": result["evidence_id"]} if result.get("evidence_id") else {}))
+    return result
+
+
+async def _execute_single_impl(agent: AgentContext, item: dict[str, Any]) -> dict[str, Any] | None:
     """Execute one tool call with isolated error handling.
 
     Returns one tool response per requested tool call.  Failed tools are returned
@@ -252,6 +318,7 @@ async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str
     started = time.perf_counter()
     redundant_local_view = _redundant_evidence_view_reason(agent, func_name, func_args)
     if redundant_local_view:
+        call_status("skipped", error=redundant_local_view)
         duration_ms = _elapsed_ms(started)
         raw = f"[guard] Redundant evidence_view suppressed. {redundant_local_view}"
         _record_tool_call_without_new_evidence(
@@ -290,7 +357,7 @@ async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str
         # once) and embeds any structured content into tool_result as
         # "[structured] {...}". A second call_tool would run the side effect twice,
         # so we recover the structured payload from the result string instead.
-        structured_content = _extract_structured_content(tool_result)
+        structured_content = _display_content(func_name, tool_result)
         content, record, raw = _record_tool_result_with_record(
             agent,
             func_name,
@@ -313,6 +380,7 @@ async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str
             "tool_call_id": tool_call.id,
             "content": f"[tool:{func_name}] {content}",
             "structured_content": structured_content,
+            "evidence_id": record.id if record else None,
             "duration_ms": duration_ms,
             "correction": signal.model_hint(),
             "correction_signal": signal,
@@ -338,6 +406,7 @@ async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str
         return {
             "tool_call": tool_call,
             "tool_call_id": tool_call.id,
+            "execution_error": str(exc),
             "content": f"[tool:{func_name}] {content}",
             "structured_content": None,
             "duration_ms": duration_ms,
@@ -363,6 +432,7 @@ async def _execute_single(agent: AgentContext, item: dict[str, Any]) -> dict[str
         return {
             "tool_call": tool_call,
             "tool_call_id": tool_call.id,
+            "execution_error": str(exc),
             "content": f"[tool:{func_name}] {content}",
             "structured_content": None,
             "duration_ms": duration_ms,

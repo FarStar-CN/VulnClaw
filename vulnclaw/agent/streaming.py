@@ -46,6 +46,10 @@ class TranscriptStreamSink:
     def on_content_token(self, token: str) -> None:
         self._append("assistant", token)
 
+    def on_tool_event(self, event_type: str, **fields) -> None:
+        self.on_stream_end()
+        self._emit(event_type, agent_id=self._source, **fields)
+
     def on_tool_call(self, tool_name: str, args: str) -> None:
         self.on_stream_end()
         self._emit("tool_call", tool=str(tool_name), arguments=str(args or ""))

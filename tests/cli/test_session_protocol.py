@@ -355,6 +355,10 @@ def test_on_disk_schema_covers_every_v2_message_shape() -> None:
     messages.append({"protocol_version": 2, "type": "command_result", "request_id": "cli-1",
                      "status": "completed", "exit_code": 2,
                      "findings": {"verified": 1, "candidates": 0}, "error": None})
+    messages.append({"protocol_version": 2, "type": "tool_execution", "task_id": "t1",
+                     "call_id": "call-1", "operation_id": "op-1", "kind": "http",
+                     "status": "completed", "method": "GET", "url": "https://example.test/",
+                     "status_code": 404, "duration_ms": 12})
     for message in messages:
         validator.validate(message)
 

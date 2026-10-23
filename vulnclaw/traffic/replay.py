@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from vulnclaw.agent.execution_trace import observe_http_client
 from vulnclaw.traffic.models import (
     SOURCE_MANUAL_REPLAY,
     CapturedExchange,
@@ -79,6 +80,7 @@ def replay_request(
     if transport is not None:
         client_kwargs["transport"] = transport
     with httpx.Client(**client_kwargs) as client:
+        observe_http_client(client)
         http_response = client.request(
             request.method,
             request.url,

@@ -28,6 +28,14 @@ import httpx
 
 from vulnclaw.agent.agent_state import clip_text, one_line
 from vulnclaw.agent.constraint_policy import validate_tool_action
+from vulnclaw.agent.execution_trace import (
+    Operation,
+    call_status,
+    capture_process,
+    execution_error,
+    observe_http_client,
+    observe_process,
+)
 from vulnclaw.agent.network_scan import (
     attach_network_scan_to_session,
     build_nmap_command,
@@ -295,6 +303,7 @@ def enforce_traffic_repeat_constraints(
     path = parsed.path or ""
     violation = enforce_host_path_constraints(agent, host=host, path=path, target=host)
     if violation is not None:
+        call_status("denied", error=violation)
         return violation
 
     port = infer_port_from_url(target_url)
@@ -646,7 +655,7 @@ async def execute_shell_command(agent: AgentContext, args: dict[str, Any]) -> st
 
     command = str(args.get("command") or args.get("cmd") or "").strip()
     if not command:
-        return "[!] shell_command requires command"
+        return execution_error("[!] shell_command requires command")
     scope_violation = _validate_command_url_scope(agent, command)
     if scope_violation:
         return scope_violation
@@ -654,9 +663,9 @@ async def execute_shell_command(agent: AgentContext, args: dict[str, Any]) -> st
     try:
         workdir = _resolve_workdir(args.get("workdir"))
     except OSError as exc:
-        return f"[!] shell_command invalid workdir: {exc}"
+        return execution_error(f"[!] shell_command invalid workdir: {exc}")
     if not workdir.exists() or not workdir.is_dir():
-        return f"[!] shell_command workdir does not exist or is not a directory: {workdir}"
+        return execution_error(f"[!] shell_command workdir does not exist or is not a directory: {workdir}")
 
     timeout_ms = int(args.get("timeout_ms") or 10000)
     timeout_ms = max(1000, min(timeout_ms, 120000))
@@ -678,11 +687,11 @@ async def execute_shell_command(agent: AgentContext, args: dict[str, Any]) -> st
         from vulnclaw.agent.command_classifier import read_only_argv
 
         if shell_name:
-            return "[!] Read-Only does not permit a custom shell"
+            return execution_error("[!] Read-Only does not permit a custom shell")
         try:
             argv = read_only_argv(command)
         except ValueError as exc:
-            return f"[!] Read-Only: {exc}"
+            return execution_error(f"[!] Read-Only: {exc}")
     outcome = await gate.authorize(
         GateRequest(
             kind="shell",
@@ -698,27 +707,21 @@ async def execute_shell_command(agent: AgentContext, args: dict[str, Any]) -> st
 
     started = time.perf_counter()
     try:
-        loop = asyncio.get_running_loop()
-        returncode, stdout, stderr, timed_out = await loop.run_in_executor(
-            None,
-            lambda: _spawn_captured(
-                argv,
-                cwd=str(workdir),
-                env=env,
-                timeout_s=timeout_ms / 1000,
-            ),
+        returncode, stdout, stderr, timed_out = await capture_process(
+            _spawn_captured, argv, cwd=str(workdir), env=env,
+            timeout_s=timeout_ms / 1000, command=command,
         )
     except FileNotFoundError as exc:
-        return f"[!] shell_command failed: shell executable not found ({exc})"
+        return execution_error(f"[!] shell_command failed: shell executable not found ({exc})")
     except Exception as exc:
-        return f"[!] shell_command failed: {exc.__class__.__name__}: {exc}"
+        return execution_error(f"[!] shell_command failed: {exc.__class__.__name__}: {exc}")
 
     if timed_out:
         return (
-            f"[!] shell_command timed out after {timeout_ms}ms\n"
+            execution_error(f"[!] shell_command timed out after {timeout_ms}ms\n"
             f"Command: {command}\n"
             f"Workdir: {workdir}\n"
-            "Output:\n(process tree terminated)"
+            "Output:\n(process tree terminated)")
         )
 
     result_returncode = returncode
@@ -1076,15 +1079,9 @@ async def _execute_php_serialize_diff_probe(
     script_path.write_text(script, encoding="utf-8")
     started = time.perf_counter()
     try:
-        loop = asyncio.get_running_loop()
-        returncode, proc_stdout, proc_stderr, proc_timed_out = await loop.run_in_executor(
-            None,
-            lambda: _spawn_captured(
-                [php, str(script_path)],
-                cwd=str(tmp_dir),
-                env=sanitized_exec_env(),
-                timeout_s=timeout_ms / 1000,
-            ),
+        returncode, proc_stdout, proc_stderr, proc_timed_out = await capture_process(
+            _spawn_captured, [php, str(script_path)], cwd=str(tmp_dir),
+            env=sanitized_exec_env(), timeout_s=timeout_ms / 1000, code=script,
         )
     finally:
         try:
@@ -1199,6 +1196,7 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
     execution = current_execution()
     if (get_execution_gate(getattr(agent, "config", None)).mode == "read_only"
             and tool_name not in READ_ONLY_TOOLS):
+        call_status("denied", error="Read-Only does not permit this tool")
         return f"[!] Read-Only does not permit {tool_name}; choose another permission to execute."
     if tool_name == "conversation_report":
         if execution.report is None or agent._subagent_ctx.depth != 0:
@@ -1213,12 +1211,14 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
         args,
     )
     if violation is not None:
+        call_status("denied", error=violation)
         return violation
 
     # Fail-closed at dispatch too: even a hand-crafted tool call for a
     # dangerous tool cannot reach execution from a leaf agent.
     dangerous_refusal = dangerous_tool_refusal(tool_name, agent)
     if dangerous_refusal is not None:
+        call_status("denied", error=dangerous_refusal)
         return dangerous_refusal
 
     session = getattr(agent, "session_state", None)
@@ -1238,7 +1238,10 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
                     summary=tool_violation,
                     detail=json.dumps(args, ensure_ascii=False)[:500],
                 )
+            call_status("denied", error=tool_violation)
             return f"[constraint_violation] {tool_violation}"
+
+    call_status("running")
 
     if tool_name == "submit_finding":
         from vulnclaw.findings.intake import submit_finding
@@ -1322,9 +1325,12 @@ async def execute_mcp_tool(agent: AgentContext, tool_name: str, args: dict[str, 
                 )
                 if state is not None and hasattr(state, "record_loaded_reference"):
                     state.record_loaded_reference(skill_name, ref_name)
+                call_status("completed")
                 return content
+            call_status("failed", error="Reference document not found")
             return f"[!] 参考文档未找到: {skill_name}/{ref_name}"
         except Exception as e:
+            call_status("failed", error=str(e))
             return f"[!] 加载参考文档错误: {e}"
 
     if tool_name == "nmap_scan":
@@ -1611,7 +1617,7 @@ async def execute_vault_tool(agent: AgentContext, tool_name: str, args: dict[str
 async def execute_nmap(agent: AgentContext, args: dict[str, Any]) -> str:
     target = args.get("target", "").strip()
     if not target:
-        return "[!] nmap_scan 需要 target 参数（目标 IP 或域名）"
+        return execution_error("[!] nmap_scan 需要 target 参数（目标 IP 或域名）")
 
     host_violation = enforce_host_path_constraints(agent, host=target.lower(), target=target)
     if host_violation:
@@ -1651,7 +1657,7 @@ async def execute_nmap(agent: AgentContext, args: dict[str, Any]) -> str:
         except Exception:
             pass
     if not nmap_cmd:
-        return "[!] nmap 未安装或不在 PATH 中。请确认 nmap 已安装并加入系统 PATH。"
+        return execution_error("[!] nmap 未安装或不在 PATH 中。请确认 nmap 已安装并加入系统 PATH。")
 
     if profile:
         plan = build_nmap_plan(
@@ -1722,7 +1728,11 @@ async def execute_nmap(agent: AgentContext, args: dict[str, Any]) -> str:
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
             kwargs["startupinfo"] = startupinfo
-        result = subprocess.run(cmd, **kwargs)
+        with observe_process(cmd) as observation:
+            result = subprocess.run(cmd, **kwargs)
+            observation.finish("failed" if result.returncode else "completed",
+                               exit_code=result.returncode, stdout=result.stdout or "",
+                               stderr=result.stderr or "")
         if (
             result.returncode != 0
             and not result.stdout
@@ -1730,19 +1740,23 @@ async def execute_nmap(agent: AgentContext, args: dict[str, Any]) -> str:
         ):
             fallback_cmd = deescalate_nmap_argv(cmd)
             if fallback_cmd != cmd:
-                fallback = subprocess.run(fallback_cmd, **kwargs)
+                with observe_process(fallback_cmd, attempt=2) as observation:
+                    fallback = subprocess.run(fallback_cmd, **kwargs)
+                    observation.finish("failed" if fallback.returncode else "completed",
+                                       exit_code=fallback.returncode, stdout=fallback.stdout or "",
+                                       stderr=fallback.stderr or "")
                 if fallback.returncode == 0 or fallback.stdout:
                     result = fallback
                     deescalated_note = "[i] 权限错误后已使用非特权 nmap 参数重试。\n"
     except subprocess.TimeoutExpired:
-        return "[!] nmap 扫描超时（120秒），请减少扫描范围或使用更快的 timing"
+        return execution_error("[!] nmap 扫描超时（120秒），请减少扫描范围或使用更快的 timing")
     except PermissionError:
-        return "[!] nmap 执行被拒绝（权限不足）。Windows 请以管理员身份运行终端。"
+        return execution_error("[!] nmap 执行被拒绝（权限不足）。Windows 请以管理员身份运行终端。")
     except Exception as e:
-        return f"[!] nmap 执行错误: {e}"
+        return execution_error(f"[!] nmap 执行错误: {e}")
 
     if result.returncode != 0 and not result.stdout:
-        return f"[!] nmap 扫描失败（{result.returncode}）: {result.stderr[:500]}"
+        return execution_error(f"[!] nmap 扫描失败（{result.returncode}）: {result.stderr[:500]}")
     output = result.stdout or result.stderr
     human_summary = parse_nmap_xml(output, target)
     structured = parse_nmap_xml_structured(output, target)
@@ -1866,7 +1880,7 @@ async def execute_http_probe_batch(agent: AgentContext, args: dict[str, Any]) ->
 
     specs = args.get("requests", [])
     if not isinstance(specs, list) or not specs:
-        return "[!] http_probe_batch requires a non-empty requests array"
+        return execution_error("[!] http_probe_batch requires a non-empty requests array")
     specs = specs[:_HTTP_PROBE_MAX_REQUESTS]
 
     base_url = str(args.get("base_url", "") or "").strip()
@@ -1893,8 +1907,11 @@ async def execute_http_probe_batch(agent: AgentContext, args: dict[str, Any]) ->
             verify=verify_tls,
             headers={"User-Agent": "VulnClaw-http_probe_batch/1.0"},
         ) as client:
+            observe_http_client(client)
             for item in prepared:
                 if item.get("error"):
+                    Operation("http", status="preparing", method=str(item.get("method", "")),
+                              url=str(item.get("url", ""))).finish("failed", error=str(item["error"]))
                     results.append(item)
                     continue
                 results.append(_execute_one_http_probe(client, item, max_body_chars))
@@ -2257,7 +2274,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
     code = args.get("code", "")
     purpose = args.get("purpose", "")
     if not code.strip():
-        return "[!] Code is empty; nothing executed"
+        return execution_error("[!] Code is empty; nothing executed")
 
     url_matches = re.findall(r"https?://([a-zA-Z0-9._:-]+)(/[^\s'\"`]*)?", code)
     for raw_host, path in url_matches:
@@ -2278,7 +2295,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
     safety = getattr(agent.config, "safety", None)
     if safety is None or not safety.enable_python_execute:
         return (
-            "[!] python_execute is disabled. Set safety.enable_python_execute = true to enable it"
+            execution_error("[!] python_execute is disabled. Set safety.enable_python_execute = true to enable it")
         )
 
     mode = _resolve_python_execute_mode(agent)
@@ -2292,7 +2309,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
             outcome="blocked",
             blocked_reason="max_lines",
         )
-        return f"[!] Code exceeds the max line limit ({max_lines})"
+        return execution_error(f"[!] Code exceeds the max line limit ({max_lines})")
 
     show_warning = getattr(safety, "python_execute_show_warning", True)
     warning_prefix = ""
@@ -2316,7 +2333,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
                 outcome="blocked",
                 blocked_reason=pattern,
             )
-            return f"[!] Code contains a blocked operation pattern: {pattern}"
+            return execution_error(f"[!] Code contains a blocked operation pattern: {pattern}")
 
     blocked_pattern = _validate_python_execute_mode(mode, code)
     if blocked_pattern:
@@ -2329,8 +2346,8 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
             blocked_reason=blocked_pattern,
         )
         if mode == "safe":
-            return f"[!] safe mode blocked operation: {blocked_pattern}"
-        return f"[!] lab mode blocked operation: {blocked_pattern}"
+            return execution_error(f"[!] safe mode blocked operation: {blocked_pattern}")
+        return execution_error(f"[!] lab mode blocked operation: {blocked_pattern}")
 
     # AST-based check for dynamic bypass patterns (importlib, exec, getattr, etc.)
     ast_bypass = _ast_check_sandbox_bypass(code)
@@ -2343,7 +2360,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
             outcome="blocked",
             blocked_reason=f"ast:{ast_bypass}",
         )
-        return f"[!] Sandbox bypass detected: {ast_bypass}"
+        return execution_error(f"[!] Sandbox bypass detected: {ast_bypass}")
 
     max_output_chars = getattr(safety, "python_execute_max_output_chars", 0)
     model_risk = str(args.get("risk_self_assessment") or "").strip().lower()
@@ -2399,15 +2416,9 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
         else:
             env = sanitized_exec_env(base_env)
 
-        loop = asyncio.get_running_loop()
-        returncode, proc_stdout, proc_stderr, proc_timed_out = await loop.run_in_executor(
-            None,
-            lambda: _spawn_captured(
-                [sys.executable, tmp_path],
-                cwd=tempfile.gettempdir(),
-                env=env,
-                timeout_s=timeout_seconds,
-            ),
+        returncode, proc_stdout, proc_stderr, proc_timed_out = await capture_process(
+            _spawn_captured, [sys.executable, tmp_path], cwd=tempfile.gettempdir(),
+            env=env, timeout_s=timeout_seconds, code=preamble + code,
         )
 
         try:
@@ -2436,7 +2447,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
             _write_python_audit(
                 agent, purpose=purpose, code=code, mode=mode, outcome="timeout"
             )
-            return f"[!] Python execution timed out after {timeout_seconds} seconds (process tree terminated)"
+            return execution_error(f"[!] Python execution timed out after {timeout_seconds} seconds (process tree terminated)")
 
         if not output_parts:
             _write_python_audit(agent, purpose=purpose, code=code, mode=mode, outcome="success")
@@ -2471,7 +2482,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
             pass
         agent.runtime.python_timeout_rounds += 1
         _write_python_audit(agent, purpose=purpose, code=code, mode=mode, outcome="timeout")
-        return f"[!] Python execution timed out after {timeout_seconds} seconds"
+        return execution_error(f"[!] Python execution timed out after {timeout_seconds} seconds")
     except Exception as e:
         try:
             os.unlink(tmp_path)
@@ -2480,7 +2491,7 @@ async def execute_python(agent: AgentContext, args: dict[str, Any]) -> str:
         _write_python_audit(
             agent, purpose=purpose, code=code, mode=mode, outcome="error", blocked_reason=str(e)
         )
-        return f"[!] Python execution error: {e}"
+        return execution_error(f"[!] Python execution error: {e}")
 
 
 def _sync_cookies_to_shared_jar(
@@ -2580,6 +2591,7 @@ async def execute_brute_force(agent: AgentContext, args: dict[str, Any]) -> str:
         timeout=30.0,
         follow_redirects=True,
     ) as client:
+        observe_http_client(client)
         # Step 1: Get login page for initial CSRF and session
         try:
             resp = await asyncio.wait_for(

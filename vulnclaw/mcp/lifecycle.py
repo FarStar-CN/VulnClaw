@@ -10,6 +10,7 @@ from contextlib import suppress
 from typing import Any
 from urllib.parse import urlparse
 
+from vulnclaw.agent.execution_trace import observe_http_client
 from vulnclaw.config.schema import MCPServerConfig, VulnClawConfig
 from vulnclaw.config.source_render import render_highlighted_source_block
 
@@ -1480,6 +1481,7 @@ class MCPLifecycleManager(ProbeMixin):
                     follow_redirects=request["follow_redirects"],
                     cookies=jar,
                 ) as client:
+                    observe_http_client(client)
                     response = await client.request(**request["kwargs"])
                     jar.extract_cookies(response)
             except httpx.TransportError as exc:
@@ -1491,6 +1493,7 @@ class MCPLifecycleManager(ProbeMixin):
                         follow_redirects=request["follow_redirects"],
                         cookies=jar,
                     ) as client:
+                        observe_http_client(client, attempt=2)
                         response = await client.request(**request["kwargs"])
                         jar.extract_cookies(response)
                 else:

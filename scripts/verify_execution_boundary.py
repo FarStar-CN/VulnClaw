@@ -78,19 +78,19 @@ ALLOWED_SPAWN_SITES: dict[str, str] = {
     'vulnclaw/cli/terminal.py:49:subprocess.Popen': (
         'operator control plane: launch the shared OpenTUI executable; Python owns execution policy'
     ),
-    'vulnclaw/agent/builtin_tools.py:437:subprocess.Popen': (
+    'vulnclaw/agent/builtin_tools.py:446:subprocess.Popen': (
         'shared gated process runner for shell/python/PHP execution'
     ),
-    'vulnclaw/agent/builtin_tools.py:622:subprocess.run': (
+    'vulnclaw/agent/builtin_tools.py:631:subprocess.run': (
         'fixed Windows taskkill fallback for the gated process runner'
     ),
-    'vulnclaw/agent/builtin_tools.py:1646:subprocess.run': (
+    'vulnclaw/agent/builtin_tools.py:1652:subprocess.run': (
         'fixed Windows nmap path lookup'
     ),
-    'vulnclaw/agent/builtin_tools.py:1725:subprocess.run': (
+    'vulnclaw/agent/builtin_tools.py:1732:subprocess.run': (
         'structured argv nmap execution constrained by the nmap tool schema'
     ),
-    'vulnclaw/agent/builtin_tools.py:1733:subprocess.run': (
+    'vulnclaw/agent/builtin_tools.py:1744:subprocess.run': (
         'structured argv non-privileged nmap retry'
     ),
     'vulnclaw/findings/poc.py:215:asyncio.create_subprocess_exec': (

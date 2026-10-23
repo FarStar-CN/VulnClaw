@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -61,6 +62,97 @@ class _Agent:
 def _make_message(specs: list[tuple[str, str, str]]) -> _Message:
     """specs: list of (call_id, func_name, arguments_json)."""
     return _Message([_ToolCall(cid, name, args) for cid, name, args in specs])
+
+
+async def test_execution_events_identify_parallel_results_and_merged_calls():
+    from vulnclaw.agent.execution_trace import observe_tools
+    from vulnclaw.agent.streaming import TranscriptStreamSink
+
+    events, executed = [], []
+
+    def emit(event_type, **fields):
+        events.append({"type": event_type, **fields})
+
+    async def executor(name, args):
+        executed.append(args["n"])
+        await asyncio.sleep(.01 if args["n"] == 1 else 0)
+        return f"unstructured result {args['n']}"
+
+    sink = TranscriptStreamSink(emit, source="child")
+    with observe_tools(sink):
+        await handle_tool_calls_with_results(_Agent(executor), _make_message([
+            ("a", "probe", '{"n":1}'), ("merged", "probe", '{"n":1}'),
+            ("b", "probe", '{"n":2}'),
+        ]))
+    assert sorted(executed) == [1, 2]
+    assert all(event["agent_id"] == "child" for event in events)
+    results = [event for event in events if event["type"] == "tool_result"]
+    assert {event["call_id"] for event in results} == {"a", "b", "merged"}
+    assert len(results) == 3
+    assert "2" in next(event["result"] for event in results if event["call_id"] == "b")
+    statuses = {event["call_id"]: event["status"] for event in events
+                if event["type"] == "tool_execution"}
+    assert statuses == {"a": "returned", "b": "returned", "merged": "skipped"}
+
+
+@pytest.mark.parametrize("parallel,concurrency,grouped", [(True, 2, True), (False, 2, False), (True, 1, False)])
+async def test_dispatch_batch_declares_only_executed_parallel_members(parallel, concurrency, grouped):
+    from vulnclaw.agent.execution_trace import observe_tools
+    from vulnclaw.agent.streaming import TranscriptStreamSink
+    from vulnclaw.session_protocol import make_event
+
+    events, executed = [], []
+
+    def emit(event_type, **fields):
+        events.append(make_event(event_type, task_id="task", **fields))
+
+    async def executor(name, args):
+        executed.append(args["description"])
+        await asyncio.sleep(.001)
+        return json.dumps({"ok": True, "status": "completed", "summary": args["description"]})
+
+    calls = [("a", "agent_run", '{"description":"first"}'),
+             ("duplicate", "agent_run", '{"description":"first"}'),
+             ("b", "agent_run", '{"description":"second"}')]
+    with observe_tools(TranscriptStreamSink(emit, source="leader")):
+        await handle_tool_calls_with_results(_Agent(executor, _Safety(parallel, concurrency)), _make_message(calls))
+    assert executed == ["first", "second"]
+    announced = {event["call_id"]: event for event in events if event["type"] == "tool_call"}
+    assert "dispatch_batch" not in announced["duplicate"]
+    if grouped:
+        assert announced["a"]["dispatch_batch"] == announced["b"]["dispatch_batch"]
+        assert announced["a"]["dispatch_batch"]["call_ids"] == ["a", "b"]
+    else:
+        assert all("dispatch_batch" not in event for event in announced.values())
+    receipts = [event for event in events if event["type"] == "tool_result" and event["call_id"] != "duplicate"]
+    assert [event["structured_content"]["summary"] for event in receipts] == ["first", "second"]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_business_receipt_is_captured_before_model_prefix_and_evidence_preview(legacy, monkeypatch):
+    from vulnclaw.agent import tool_call_manager
+    from vulnclaw.agent.execution_trace import observe_tools
+    from vulnclaw.agent.streaming import TranscriptStreamSink
+
+    payload = {"finding_id": "finding-1", "action": "created", "verification_status": "pending"}
+    events, calls = [], []
+
+    async def executor(name, args):
+        calls.append(name)
+        return json.dumps(payload)
+
+    monkeypatch.setattr(tool_call_manager, "_record_tool_result_with_record",
+                        lambda *args, **kwargs: ("short model preview", None, json.dumps(payload)))
+    message = _make_message([("finding", "submit_finding", '{}')])
+    with observe_tools(TranscriptStreamSink(lambda event_type, **fields: events.append({"type": event_type, **fields}))):
+        if legacy:
+            model_result = await tool_call_manager.handle_tool_calls(_Agent(executor), message)
+        else:
+            results, _ = await handle_tool_calls_with_results(_Agent(executor), message)
+            model_result = results[0]["content"]
+    assert model_result == "[tool:submit_finding] short model preview"
+    assert events[-1]["structured_content"] == payload
+    assert calls == ["submit_finding"]
 
 
 @pytest.mark.asyncio

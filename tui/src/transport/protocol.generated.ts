@@ -73,7 +73,8 @@ export type ServerEvent =
   | ControlResultEvent
   | ErrorEvent
   | ShutdownCompleteEvent
-  | CommandResultEvent;
+  | CommandResultEvent
+  | ToolExecutionEvent;
 export type TurnStartedEvent = TaskEventEnvelope & {
   type: "turn_started";
   text: string;
@@ -157,12 +158,25 @@ export type ToolCallEvent = TaskEventEnvelope & {
   type: "tool_call";
   tool: string;
   arguments: string;
+  dispatch_batch?: {
+    id: Identifier;
+    /**
+     * @minItems 2
+     */
+    call_ids: [Identifier, Identifier, ...Identifier[]];
+  };
+  call_id?: Identifier;
 };
 export type ToolResultEvent = TaskEventEnvelope & {
   agent_id?: Identifier;
   type: "tool_result";
   result: string;
   format?: "markdown" | "text" | "code" | "json" | "http";
+  call_id?: Identifier;
+  evidence_id?: Identifier;
+  structured_content?: {
+    [k: string]: unknown;
+  };
 };
 export type FindingEvent = TaskEventEnvelope & {
   type: "finding";
@@ -228,6 +242,46 @@ export type CommandResultEvent = Envelope & {
     path: string;
   }[];
   result?: {} | unknown[] | string | number | boolean | null;
+};
+export type ToolExecutionEvent = TaskEventEnvelope & {
+  command?: string;
+  cwd?: string;
+  code?: string;
+  method?: string;
+  url?: string;
+  body?: string;
+  response_body?: string;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+  argv?: string[];
+  headers?: {
+    [k: string]: string;
+  };
+  response_headers?: {
+    [k: string]: string;
+  };
+  attempt?: number;
+  duration_ms?: number;
+  exit_code?: number;
+  status_code?: number;
+  agent_id?: Identifier;
+  type: "tool_execution";
+  call_id: Identifier;
+  operation_id: Identifier;
+  kind: "tool" | "command" | "script" | "http" | "action";
+  status:
+    | "preparing"
+    | "awaiting_approval"
+    | "running"
+    | "completed"
+    | "returned"
+    | "partial"
+    | "failed"
+    | "timed_out"
+    | "cancelled"
+    | "denied"
+    | "skipped";
 };
 
 export interface Envelope {

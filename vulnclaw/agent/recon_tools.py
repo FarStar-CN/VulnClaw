@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 from urllib.parse import urljoin, urlparse
 
 from vulnclaw.agent.builtin_tools import enforce_host_path_constraints
+from vulnclaw.agent.execution_trace import observe_http_client
 from vulnclaw.i18n import _
 
 # ── 内置目录字典（紧凑版；config.recon.dir_wordlist_path 可覆盖为大字典）────────
@@ -307,7 +308,7 @@ _DOMAIN_QUERY = {
 def _make_client(cfg: Any):
     import httpx
 
-    return httpx.AsyncClient(verify=False, timeout=cfg.http_timeout, follow_redirects=True)
+    return observe_http_client(httpx.AsyncClient(verify=False, timeout=cfg.http_timeout, follow_redirects=True))
 
 
 async def execute_space_search(agent: AgentContext, args: dict[str, Any]) -> str:
