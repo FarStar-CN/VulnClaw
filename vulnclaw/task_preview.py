@@ -15,6 +15,7 @@ from vulnclaw.config.domain_models import (
     validate_action_constraints,
 )
 from vulnclaw.input_service import InputRequest, parse_input
+from vulnclaw.scope_service import scope_errors
 from vulnclaw.task_service import prepare_task, task_request_from_payload
 
 
@@ -84,11 +85,7 @@ def preview_task(arguments: dict, *, defaults: dict, config: Any) -> dict:
     except ValueError as exc:
         return {"errors": {"allow_actions": str(exc)}}
     constraints = task.constraints
-    errors = {}
-    if constraints.allowed_ports and not set(constraints.allowed_ports).difference(
-        constraints.blocked_ports
-    ):
-        errors["blocked_ports"] = "All allowed ports are blocked"
+    errors = scope_errors(constraints)
     if parsed_target is not None:
         if constraints.allowed_hosts and host.lower() not in constraints.allowed_hosts:
             errors["only_host"] = "The target host is outside Allow hosts"
@@ -105,15 +102,6 @@ def preview_task(arguments: dict, *, defaults: dict, config: Any) -> dict:
         if (parsed_target.path not in {"", "/"} and constraints.allowed_paths
                 and parsed_target.path not in constraints.allowed_paths):
             errors["only_path"] = "The target path is outside Allow paths"
-    for field, paths in (
-        ("only_path", constraints.allowed_paths), ("blocked_path", constraints.blocked_paths),
-    ):
-        if any(not path.startswith("/") for path in paths):
-            errors[field] = "Paths must start with /; separate multiple paths with commas"
-    if constraints.allowed_paths and not set(constraints.allowed_paths).difference(
-        constraints.blocked_paths
-    ):
-        errors["blocked_path"] = "All allowed paths are blocked"
     actions = [
         action for action in TEST_ACTIONS
         if validate_action_constraints(action, constraints) is None

@@ -12,7 +12,7 @@ from vulnclaw.agent.errors import format_llm_user_error
 from vulnclaw.agent.streaming import TranscriptStreamSink
 from vulnclaw.config.domain_models import validate_action_constraints
 from vulnclaw.conversation import ConversationState, run_conversation
-from vulnclaw.input_service import COMMANDS, InputRequest, parse_input
+from vulnclaw.input_service import COMMANDS, InputRequest, command_help, parse_input
 from vulnclaw.management_service import (
     MANAGEMENT_OPERATIONS,
     adapter_operation,
@@ -20,6 +20,7 @@ from vulnclaw.management_service import (
 )
 from vulnclaw.mcp.registry import MCPRegistry
 from vulnclaw.report_service import generate_report_for_run
+from vulnclaw.scope_service import preview_scope
 from vulnclaw.task_service import (
     SCOPE_FIELDS,
     TASK_COMMANDS,
@@ -62,15 +63,18 @@ SUPPORTED_CONTROL_OPERATIONS = MANAGEMENT_OPERATIONS | frozenset(
         "session.new",
         "session.target.set",
         "session.compact",
-        "session.tools",
         "session.help",
         "session.think",
         "session.scope.read",
+        "session.scope.preview",
         "report.export",
         "task.preview",
     }
 )
-TASK_ACTIVE_CONTROL_OPERATIONS = frozenset({"execution.approval.resolve", "session.permission.set"})
+TASK_ACTIVE_CONTROL_OPERATIONS = frozenset({
+    "execution.approval.resolve", "session.permission.set",
+    "session.scope.read", "session.scope.preview", "session.help",
+})
 RUNTIME_STATE_FIELDS = frozenset(
     {"target", "phase", "task_constraints", "findings", "evidence", "constraint_violations"}
 )
@@ -871,18 +875,31 @@ class ApplicationSession:
             return {
                 "message": f"Context compacted ({len(summary)} characters)."
             }, self.state_snapshot()
-        if operation == "session.scope.read":
-            return {
-                "scope": _session_scope_defaults(self.bootstrap),
-                "message": str(_session_scope_defaults(self.bootstrap)),
-            }, self.state_snapshot()
+        if operation in {"session.scope.read", "session.scope.preview"}:
+            raw = _session_scope_defaults(self.bootstrap)
+            if operation == "session.scope.preview":
+                if "text" in arguments:
+                    parsed = parse_input(InputRequest(text=arguments["text"]))
+                    if parsed.operation not in {
+                        "session.scope.read", "session.scope.update", "session.scope.reset",
+                    }:
+                        raise ValueError("Scope preview requires /scope")
+                    if parsed.operation == "session.scope.reset":
+                        raw = {}
+                    elif parsed.operation == "session.scope.update":
+                        updates = parsed.arguments["scope"]
+                        if "allowed_ports" in updates:
+                            raw.pop("only_port", None)
+                        if "only_port" in updates:
+                            raw.pop("allowed_ports", None)
+                        raw.update(updates)
+                else:
+                    raw = arguments.get("scope", raw)
+                    if not isinstance(raw, dict):
+                        raise ValueError("scope must be an object")
+            return preview_scope(raw, target=self.current_target), None
         if operation == "session.help":
-            return {
-                "message": "\n".join(f"/{name}: {desc}" for name, desc in COMMANDS.items())
-            }, None
-        if operation == "session.tools":
-            tools = self.runtime.mcp_manager.list_available_tools()
-            return {"tools": tools, "message": "\n".join(tools) or "No MCP tools available."}, None
+            return command_help(str(arguments.get("topic") or "")), None
         if operation == "session.think":
             value = arguments.get("value", "")
             if value not in {"", "on", "off"}:
@@ -931,22 +948,24 @@ class ApplicationSession:
             raw_scope = arguments.get("scope")
             if not isinstance(raw_scope, dict) or not raw_scope:
                 raise ValueError("session.scope.update requires a non-empty arguments.scope")
-            unknown = set(raw_scope) - SCOPE_FIELDS
-            if unknown:
-                raise ValueError(f"unsupported scope field(s): {', '.join(sorted(unknown))}")
-            options = TaskOptions.model_validate(raw_scope)
-            updates = {
-                key: value
-                for key, value in options.model_dump().items()
-                if key in SCOPE_FIELDS and key in options.model_fields_set
-            }
-            bootstrap = dict(self.bootstrap)
-            bootstrap.update(updates)
+            raw = _session_scope_defaults(self.bootstrap)
+            if "allowed_ports" in raw_scope:
+                raw.pop("only_port", None)
+            if "only_port" in raw_scope and raw_scope["only_port"] is not None:
+                raw.pop("allowed_ports", None)
+            raw.update(raw_scope)
+            preview = preview_scope(raw, target=self.current_target)
+            if preview["errors"]:
+                return preview, None
+            bootstrap = {key: value for key, value in self.bootstrap.items()
+                         if key not in SCOPE_FIELDS}
+            bootstrap.update({key: value for key, value in preview["scope"].items()
+                              if value is not None})
             self._apply_session_scope(bootstrap)
             return (
                 {
                     "message": "Session scope defaults updated.",
-                    "scope": _session_scope_defaults(self.bootstrap),
+                    **preview,
                 },
                 self.state_snapshot(),
             )
@@ -958,7 +977,7 @@ class ApplicationSession:
             return (
                 {
                     "message": "Session scope defaults cleared.",
-                    "scope": {},
+                    **preview_scope({}, target=self.current_target),
                 },
                 self.state_snapshot(),
             )

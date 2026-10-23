@@ -111,8 +111,6 @@ async def export_report(
         )
         report_path.write_text(content, encoding="utf-8")
     result = {"kind": kind, "path": str(Path(path).resolve())}
-    if kind == "replay" and config.session.solve_report_show:
-        result["text"] = Path(path).read_text(encoding="utf-8")
     if kind == "security":
         result.update(
             {

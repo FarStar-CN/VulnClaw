@@ -260,7 +260,8 @@ async def test_scope_control_updates_defaults_for_later_tasks_and_can_reset() ->
     protocol_validator().validate(updated)
     assert updated["type"] == "control_result"
     assert updated["operation"] == "session.scope.update"
-    assert updated["result"]["scope"]["only_port"] == 443
+    assert updated["result"]["scope"]["allowed_ports"] == [443]
+    assert updated["result"]["scope"]["only_port"] is None
     assert updated["state"]["task_constraints"]["allowed_hosts"] == ["session.test"]
     assert updated["state"]["task_constraints"]["allowed_actions"] == ["recon", "scan"]
 
@@ -287,7 +288,7 @@ async def test_scope_control_updates_defaults_for_later_tasks_and_can_reset() ->
     reset = events(stream)[-1]
     protocol_validator().validate(reset)
     assert reset["operation"] == "session.scope.reset"
-    assert reset["result"]["scope"] == {}
+    assert not any(reset["result"]["scope"].values())
     assert reset["state"]["task_constraints"]["allowed_ports"] == []
     assert reset["state"]["task_constraints"]["allowed_actions"] == []
     assert reset["state"]["task_constraints"]["allowed_hosts"] == ["target.test"]

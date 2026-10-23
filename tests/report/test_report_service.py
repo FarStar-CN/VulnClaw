@@ -1,14 +1,16 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from tests.reporting_fixtures import assessed_snapshot
+from vulnclaw.agent.agent_state import AgentState
 from vulnclaw.agent.context import SessionState, VulnerabilityFinding
 from vulnclaw.config.schema import VulnClawConfig
 from vulnclaw.findings.types import FindingAssessment
 from vulnclaw.orchestrator import OrchestratorRunResult
-from vulnclaw.report_service import generate_report_for_run
+from vulnclaw.report_service import export_report, generate_report_for_run
 from vulnclaw.run_context import RunContext
 from vulnclaw.target_state.store import SessionRestoreResult
 
@@ -79,3 +81,35 @@ async def test_run_report_requires_audited_snapshot():
     run = OrchestratorRunResult(SessionRestoreResult(target="lab.test"), {})
     with pytest.raises(ValueError, match="audited session snapshot"):
         await generate_report_for_run(run, config=VulnClawConfig())
+
+
+@pytest.mark.parametrize("kind,report_format", [
+    ("security", "markdown"),
+    ("security", "html"),
+    ("replay", "markdown"),
+])
+async def test_export_returns_artifact_paths_without_report_body(
+    tmp_path, monkeypatch, kind, report_format,
+):
+    config = VulnClawConfig()
+    config.session.report_format = report_format
+    marker = "REPORT-CONTENT-MARKER"
+    target = "https://report-display.example.invalid"
+    session = SessionState(target=target, agent_state=AgentState(origin=target, goal=marker))
+    monkeypatch.setattr(
+        "vulnclaw.report.generator._generate_attack_summary_from_session", lambda _: marker,
+    )
+
+    result = await export_report(
+        SimpleNamespace(session_state=session), config,
+        kind=kind, output=str(tmp_path / "report.md"),
+    )
+
+    path = Path(result["path"])
+    body = path.read_text(encoding="utf-8")
+    assert marker in body
+    assert path.suffix == (".html" if report_format == "html" else ".md")
+    assert "text" not in result
+    if kind == "security":
+        assert Path(result["findings_json"]).is_file()
+        assert Path(result["findings_sarif"]).is_file()

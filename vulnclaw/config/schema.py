@@ -521,10 +521,6 @@ class SessionConfig(BaseModel):
         default=True,
         description="Export a security report when a natural-language engagement completes",
     )
-    solve_report_show: bool = Field(
-        default=True,
-        description="Print the generated solve replay report in the terminal after completion",
-    )
     poc_verify_enabled: bool = Field(
         default=False,
         description="Allow approved PoC execution during finding audits; otherwise review saved evidence",

@@ -105,7 +105,7 @@ def test_shell_quoting_and_cycle_zero_are_preserved():
         TaskCreateRequest(command="run", target="example.test", options={"max_cycles": 2})
 
 
-@pytest.mark.parametrize("text", ["/skill web-pentest", "/ctf-web", "/not-a-command"])
+@pytest.mark.parametrize("text", ["/skill web-pentest", "/ctf-web", "/not-a-command", "/tools"])
 def test_skill_slash_launches_are_not_commands(text):
     with pytest.raises(ValueError, match="Unknown command"):
         parse_input(InputRequest(text=text))
@@ -368,3 +368,108 @@ async def test_self_discovering_skill_seed_is_not_an_implicit_host_boundary(monk
     await session.close()
 
 
+
+
+async def command_result(session, request):
+    return (await session.submit_input(request))["result"]
+
+
+@pytest.mark.parametrize("text", ["/scope", "/scope --blocked-ports 8080", "/scope reset"])
+async def test_scope_preview_never_changes_defaults_or_live_constraints(text):
+    session = await open_application(
+        Runtime(), target="https://example.test", only_port=443,
+        allow_actions=["recon", "report"], block_actions=["exploit", "persistent"],
+    )
+    before = dict(session.bootstrap)
+    constraints = dict(session.current_constraints)
+    result = await command_result(session, InputRequest(
+        operation="session.scope.preview", arguments={"text": text},
+    ))
+    assert session.bootstrap == before
+    assert session.current_constraints == constraints
+    assert not result["errors"]
+    assert result["constraints"]["allowed_hosts"] == ["example.test"]
+    if text.endswith("reset"):
+        assert not any(result["scope"].values())
+        assert result["constraints"]["allowed_ports"] == []
+    else:
+        assert result["scope"]["only_port"] is None
+        assert result["scope"]["allowed_ports"] == [443]
+        assert "report" in result["action_policy"]["allow_actions"]
+        assert "persistent" in result["action_policy"]["block_actions"]
+    await session.close()
+
+
+async def test_full_scope_save_clears_old_fields_and_later_tasks_inherit_saved_defaults():
+    session = await open_application(Runtime(), target="example.test", only_port=443,
+                                     blocked_host="old.test", allow_actions=["recon", "report"])
+    preview = await command_result(session, InputRequest(operation="session.scope.read"))
+    draft = {**preview["scope"], "allowed_ports": "", "blocked_host": "", "only_path": "/api"}
+    saved = await command_result(session, InputRequest(
+        operation="session.scope.update", arguments={"scope": draft},
+    ))
+    assert not saved["errors"]
+    assert "only_port" not in session.bootstrap
+    assert "blocked_host" not in session.bootstrap
+    inherited = task_request_from_payload({"command": "run", "target": "example.test"},
+                                          defaults=session.bootstrap)
+    assert inherited.options.allowed_ports is None
+    assert inherited.options.only_port is None
+    assert inherited.options.only_path == "/api"
+    assert inherited.options.allow_actions == ["recon", "report"]
+    await session.close()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("allowed_ports", "443,65536"), ("blocked_ports", "oops"),
+    ("only_path", "relative"), ("blocked_path", "relative"),
+])
+async def test_scope_preview_and_save_share_field_errors_and_leave_defaults_intact(field, value):
+    session = await open_application(Runtime(), target="example.test", only_port=443)
+    before = dict(session.bootstrap)
+    draft = {field: value}
+    preview = await command_result(session, InputRequest(
+        operation="session.scope.preview", arguments={"scope": draft},
+    ))
+    saved = await command_result(session, InputRequest(
+        operation="session.scope.update", arguments={"scope": draft},
+    ))
+    assert field in preview["errors"]
+    assert preview["constraints"] is None
+    assert preview["available_actions"] == ["recon", "scan", "exploit", "post_exploitation"]
+    assert preview["presets"] and preview["action_policy"]
+    assert saved["errors"] == preview["errors"]
+    assert saved["scope"][field] == value
+    assert session.bootstrap == before
+    await session.close()
+
+
+async def test_busy_session_allows_only_scope_reads_previews_and_help_among_new_controls():
+    from vulnclaw.application import SUPPORTED_CONTROL_OPERATIONS
+
+    session = await open_application(Runtime(), target="example.test")
+    session.active_task = asyncio.create_task(asyncio.Event().wait())
+    for operation in ["session.scope.read", "session.scope.preview", "session.help"]:
+        result = await command_result(session, InputRequest(operation=operation))
+        assert "scope" in result or "commands" in result
+    for operation, args in [("session.scope.reset", {}),
+                            ("session.scope.update", {"scope": {"only_port": 443}})]:
+        with pytest.raises(ValueError, match="idle"):
+            await command_result(session, InputRequest(operation=operation, arguments=args))
+    assert "session.tools" not in SUPPORTED_CONTROL_OPERATIONS
+    with pytest.raises(ValueError, match="unsupported"):
+        await command_result(session, InputRequest(operation="session.tools"))
+    await session.close()
+
+
+async def test_help_metadata_matches_discovery_and_accepts_detail_or_unknown_topics():
+    session = await open_application(Runtime())
+    result = await command_result(session, InputRequest(text="/help"))
+    assert {item["name"]: item["description"] for item in result["commands"]} == COMMANDS
+    assert all(item["syntax"].startswith("/") and item["examples"] for item in result["commands"])
+    detail = await command_result(session, InputRequest(text="/help scope"))
+    assert [item["name"] for item in detail["commands"]] == ["scope"]
+    unknown = await command_result(session, InputRequest(text="/help nope"))
+    assert unknown["error"] and "scope" in unknown["topics"]
+    assert not session.runtime.calls
+    await session.close()

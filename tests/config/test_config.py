@@ -646,3 +646,17 @@ class TestSettingsLoad:
         settings_mod.save_config(config)
         reloaded = settings_mod.load_config()
         assert reloaded.llm.api_keys == ["x1", "x2"]
+
+def test_retired_report_display_setting_loads_and_is_removed_on_save(monkeypatch, tmp_path):
+    import yaml
+
+    from vulnclaw.config import settings
+
+    path = tmp_path / "config.yaml"
+    monkeypatch.setattr(settings, "CONFIG_FILE", path)
+    monkeypatch.setattr(settings, "ensure_dirs", lambda: None)
+    path.write_text("session:\n  solve_report_show: false\n  solve_auto_report: false\n")
+    config = settings.load_config()
+    assert config.session.solve_auto_report is False
+    settings.save_config(config)
+    assert "solve_report_show" not in yaml.safe_load(path.read_text())["session"]

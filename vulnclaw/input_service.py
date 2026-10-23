@@ -8,30 +8,172 @@ from typing import Any
 
 from vulnclaw.task_service import SCOPE_FIELDS, TASK_COMMANDS, TaskCreateRequest, TaskOptions
 
-COMMANDS = {
-    "run": "Execute a task; --allow-actions limits actions; --continuous repeats cycles",
-    "recon": "run --allow-actions recon",
-    "scan": "run --allow-actions recon,scan",
-    "exploit": "run --allow-actions recon,scan,exploit",
-    "persistent": "run --continuous",
-    "codescan": "Scan local source without an LLM",
-    "clear": "Clear the display; keep the conversation",
-    "new": "Start a new conversation; keep configuration and scope defaults",
-    "permission": "Show or set read_only | ask | auto_review | full_access",
-    "target": "Show or set the current target",
-    "scope": "Show, update or reset scope defaults",
-    "compact": "Compact conversation context",
-    "report": "Export existing results; --kind security | replay; --output PATH",
-    "tools": "List available tools",
-    "help": "List commands",
-    "config": "Configure the model provider",
-    "language": "Set display language",
-    "experience": "Manage experience records",
-    "learn": "Learn from saved work",
-    "feedback": "Record feedback",
-    "think": "Show or hide reasoning output",
-    "quit": "Exit the client",
-}
+COMMAND_METADATA = [
+    {
+        "name": "run",
+        "category": "Tasks",
+        "description": "Execute a task; --allow-actions limits actions; --continuous repeats cycles",
+        "syntax": "/run TARGET [--allow-actions ACTIONS] [--continuous] [OPTIONS]",
+        "examples": ["/run https://example.test --allow-actions recon,scan"],
+    },
+    {
+        "name": "recon",
+        "category": "Tasks",
+        "description": "run --allow-actions recon",
+        "syntax": "/recon TARGET [OPTIONS]",
+        "examples": ["/recon https://example.test"],
+    },
+    {
+        "name": "scan",
+        "category": "Tasks",
+        "description": "run --allow-actions recon,scan",
+        "syntax": "/scan TARGET [OPTIONS]",
+        "examples": ["/scan https://example.test"],
+    },
+    {
+        "name": "exploit",
+        "category": "Tasks",
+        "description": "run --allow-actions recon,scan,exploit",
+        "syntax": "/exploit TARGET [OPTIONS]",
+        "examples": ["/exploit https://example.test"],
+    },
+    {
+        "name": "persistent",
+        "category": "Tasks",
+        "description": "run --continuous",
+        "syntax": "/persistent TARGET [--rounds N] [--cycles N] [OPTIONS]",
+        "examples": ["/persistent https://example.test --cycles 2"],
+    },
+    {
+        "name": "codescan",
+        "category": "Tasks",
+        "description": "Scan local source without an LLM",
+        "syntax": "/codescan PATH [OPTIONS]",
+        "examples": ["/codescan ./src"],
+    },
+    {
+        "name": "report",
+        "category": "Tasks",
+        "description": "Export existing results; --kind security | replay; --output PATH",
+        "syntax": "/report [--kind security|replay] [--output PATH]",
+        "examples": ["/report --kind security --output ./report.md"],
+    },
+    {
+        "name": "target",
+        "category": "Session",
+        "description": "Show or set the current target",
+        "syntax": "/target [TARGET]",
+        "examples": ["/target https://example.test"],
+    },
+    {
+        "name": "scope",
+        "category": "Session",
+        "description": "Preview and edit session scope defaults",
+        "syntax": "/scope [reset | --only-host HOSTS --allowed-ports PORTS --blocked-ports PORTS --only-path PATHS --blocked-host HOSTS --blocked-path PATHS --allow-actions ACTIONS --block-actions ACTIONS]",
+        "examples": ["/scope --allowed-ports 80,443 --allow-actions recon,scan"],
+    },
+    {
+        "name": "permission",
+        "category": "Session",
+        "description": "Show or set read_only | ask | auto_review | full_access",
+        "syntax": "/permission [read_only|ask|auto_review|full_access]",
+        "examples": ["/permission ask"],
+    },
+    {
+        "name": "new",
+        "category": "Session",
+        "description": "Start a new conversation; keep configuration and scope defaults",
+        "syntax": "/new",
+        "examples": ["/new"],
+    },
+    {
+        "name": "clear",
+        "category": "Session",
+        "description": "Clear the display; keep the conversation",
+        "syntax": "/clear",
+        "examples": ["/clear"],
+    },
+    {
+        "name": "compact",
+        "category": "Session",
+        "description": "Compact conversation context",
+        "syntax": "/compact",
+        "examples": ["/compact"],
+    },
+    {
+        "name": "think",
+        "category": "Session",
+        "description": "Show or hide reasoning output",
+        "syntax": "/think [on|off]",
+        "examples": ["/think on"],
+    },
+    {
+        "name": "config",
+        "category": "Configuration",
+        "description": "Configure the model provider",
+        "syntax": "/config",
+        "examples": ["/config"],
+    },
+    {
+        "name": "language",
+        "category": "Configuration",
+        "description": "Set display language",
+        "syntax": "/language auto|zh|en",
+        "examples": ["/language zh"],
+    },
+    {
+        "name": "experience",
+        "category": "Management",
+        "description": "Manage experience records",
+        "syntax": "/experience [list [--status pending|approved|rejected|all]|show ID|approve ID|reject ID|edit ID --context TEXT --lesson TEXT]",
+        "examples": ["/experience", "/experience list --status all", "/experience show LESSON_ID"],
+    },
+    {
+        "name": "learn",
+        "category": "Management",
+        "description": "Learn from saved work",
+        "syntax": "/learn RUN_NAME",
+        "examples": ["/learn run-example"],
+    },
+    {
+        "name": "feedback",
+        "category": "Management",
+        "description": "Record feedback",
+        "syntax": "/feedback RUN_NAME RATING NOTES",
+        "examples": ['/feedback run-example 3 "The finding needs more evidence"'],
+    },
+    {
+        "name": "help",
+        "category": "Management",
+        "description": "List commands",
+        "syntax": "/help [COMMAND]",
+        "examples": ["/help scope"],
+    },
+    {
+        "name": "quit",
+        "category": "Management",
+        "description": "Exit the client",
+        "syntax": "/quit",
+        "examples": ["/quit"],
+    },
+]
+COMMANDS = {command["name"]: command["description"] for command in COMMAND_METADATA}
+
+
+def command_help(topic: str = "") -> dict[str, Any]:
+    topic = {"cfg": "config", "lang": "language", "exp": "experience"}.get(
+        topic.lstrip("/").lower(),
+        topic.lstrip("/").lower(),
+    )
+    commands = [command for command in COMMAND_METADATA if not topic or command["name"] == topic]
+    return {
+        "commands": commands,
+        "topic": topic,
+        "topics": list(COMMANDS),
+        "error": f"Unknown help topic: {topic}" if topic and not commands else "",
+    }
+
+
 ADAPTER_COMMANDS = frozenset({"config", "language", "experience", "learn", "feedback"})
 
 
@@ -168,11 +310,10 @@ def parse_input(request: InputRequest) -> ParsedInput:
         "permission": "session.permission.set",
         "target": "session.target.set",
         "compact": "session.compact",
-        "tools": "session.tools",
         "help": "session.help",
         "think": "session.think",
     }
-    argument_names = {"permission": "mode", "target": "target", "think": "value"}
+    argument_names = {"permission": "mode", "target": "target", "think": "value", "help": "topic"}
     args = {argument_names[command]: tail.strip()} if command in argument_names else {}
     if command not in argument_names and tail.strip():
         raise ValueError(f"/{command} does not accept arguments")
