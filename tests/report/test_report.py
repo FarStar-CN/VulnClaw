@@ -687,7 +687,7 @@ class TestReportRecommendationI18n:
         assert "请优先修复 XSS 风险: Reflected XSS" in content
 
     async def test_standard_report_empty_recommendation_localized(self, tmp_path):
-        from vulnclaw.i18n import init_i18n
+        from vulnclaw.i18n import _, init_i18n
         from vulnclaw.report.generator import generate_report
 
         session = self._session_no_high()
@@ -695,11 +695,12 @@ class TestReportRecommendationI18n:
             init_i18n(lang="en")
             en = (await generate_report(assessed_snapshot(session), str(tmp_path / "en.md"))).read_text(encoding="utf-8")
             init_i18n(lang="zh")
+            recommendation = _("report.rec.review_surface")
             zh = (await generate_report(assessed_snapshot(session), str(tmp_path / "zh.md"))).read_text(encoding="utf-8")
         finally:
             init_i18n()
         assert "Prioritize reviewing the attack surface" in en
-        assert "优先复核攻击面并补充验证链路" in zh
+        assert recommendation in zh
 
     async def test_cycle_report_recommendation_english(self, tmp_path):
         from vulnclaw.i18n import init_i18n

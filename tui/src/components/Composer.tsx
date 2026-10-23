@@ -6,8 +6,10 @@ import { palettes } from "../theme/palette";
 import { visibleText } from "./content";
 import { completions, completionDescription } from "../session/completions";
 import { pasteText } from "../platform/clipboard";
+import { useI18n } from "../i18n";
 
 export function Composer({ controller, active, framed = false }: { controller: SessionController; active: boolean; framed?: boolean }) {
+  const t = useI18n();
   const editor = useRef<TextareaRenderable>(null);
   const syncedDraft = useRef(controller.draft);
   const renderer = useRenderer();
@@ -83,7 +85,7 @@ export function Composer({ controller, active, framed = false }: { controller: S
   return <box id="composer-pane" backgroundColor={p.plate}
     flexDirection="column" flexShrink={0} onMouseDown={() => { controller.inputFocused = true; controller.changed(); }}>
     {showMenu && <box id="completion-menu" flexDirection="column" backgroundColor={p.panel}>
-      <text fg={p.accent}>{`Commands · ${selection + 1}/${candidates.length}`}</text>
+      <text fg={p.accent}>{t("Commands · {selected}/{count}", { selected: selection + 1, count: candidates.length })}</text>
       {candidates.slice(begin, begin + 5).map((candidate) => <text key={candidate}
         fg={candidate === candidates[selection] ? p.action : p.muted}
         bg={candidate === candidates[selection] ? p.plate : p.panel}
@@ -94,8 +96,7 @@ export function Composer({ controller, active, framed = false }: { controller: S
     <box id="composer-input" border={framed ? true : ["top", "bottom"]} borderColor={p.composerBorder}
       flexDirection="row" height={controller.composerRows + 2} flexShrink={0}>
       <text fg={p.action}>{" > "}</text>
-      <textarea id="composer-editor" ref={editor} focused={active && controller.inputFocused} flexGrow={1}
-        height={controller.composerRows} wrapMode="word" initialValue={controller.draft}
+      <box flexGrow={1} minWidth={0} height={controller.composerRows}
         onMouseDown={(event) => {
           if (!active || event.button !== MouseButton.RIGHT) return;
           event.preventDefault(); event.stopPropagation();
@@ -103,16 +104,23 @@ export function Composer({ controller, active, framed = false }: { controller: S
           void pasteText(renderer).then((text) => {
             if (!controller.overlay && !controller.approvals.length && editor.current && !editor.current.isDestroyed) editor.current.insertText(text);
           }).catch((error: unknown) => controller.notify(String(error)));
-        }}
-        placeholder="Ask a question, / for commands, @ for skills"
-        backgroundColor={p.plate} textColor={p.text}
-        keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }]}
-        onContentChange={() => {
-          const current = editor.current;
-          if (!current || current.isDestroyed || current.plainText === controller.draft) return;
-          cycle.current = null; selectedRef.current = 0; setSelected(0);
-          controller.draft = current.plainText; syncedDraft.current = current.plainText; controller.changed();
-        }} onSubmit={submit} />
+        }}>
+        <textarea id="composer-editor" ref={editor} focused={active && controller.inputFocused} flexGrow={1}
+          height={controller.composerRows} wrapMode="word" initialValue={controller.draft}
+          backgroundColor={p.plate} textColor={p.text}
+          keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }]}
+          onContentChange={() => {
+            const current = editor.current;
+            if (!current || current.isDestroyed || current.plainText === controller.draft) return;
+            cycle.current = null; selectedRef.current = 0; setSelected(0);
+            controller.draft = current.plainText; syncedDraft.current = current.plainText; controller.changed();
+          }} onSubmit={submit} />
+        {/* Native textarea placeholder redraws can split UTF-8 characters; use a text node. */}
+        {!controller.draft && <text id="composer-placeholder" position="absolute" top={0} left={0} width="100%"
+          height={1} wrapMode="none" selectable={false} fg={p.hint}>
+          {t("Ask a question, / for commands, @ for skills")}
+        </text>}
+      </box>
     </box>
   </box>;
 }

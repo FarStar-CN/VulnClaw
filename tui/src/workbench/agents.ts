@@ -1,4 +1,5 @@
 import type { SubagentEvent } from "../transport/protocol.generated";
+import { t, statusLabel } from "../i18n";
 
 export interface AgentRow { id: string | null; text: string }
 export function activeAgentRows(agents: Map<string, SubagentEvent>): AgentRow[] {
@@ -29,7 +30,7 @@ export function activeAgentRows(agents: Map<string, SubagentEvent>): AgentRow[] 
       prefix = "  └─ "; indent = "     ";
     }
     const role = agent.agent_type === "group-leader" ? "leader" : agent.agent_type;
-    rows.push({ id: agent.agent_id, text: `${prefix}${agent.name} (${role}) · ${agent.status}` });
+    rows.push({ id: agent.agent_id, text: `${prefix}${agent.name} (${t(role)}) · ${statusLabel(agent.status)}` });
     const members = children.get(agent.agent_id) ?? [];
     members.forEach((child, i) => append(child, indent + (i === members.length - 1 ? "└─ " : "├─ "), indent + (i === members.length - 1 ? "   " : "│  ")));
   }

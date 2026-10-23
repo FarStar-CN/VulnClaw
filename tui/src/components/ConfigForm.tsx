@@ -6,6 +6,7 @@ import { type SessionController, record } from "../session/controller";
 import { palettes, parseThemes, permissionInfo, type Palette } from "../theme/palette";
 import { LlmSettings } from "./LlmSettings";
 import { visibleText } from "./content";
+import { useI18n } from "../i18n";
 import {
   configChanges, configFields, connectionFields, parseField, resolveSchema,
   editableConfig, sameValue, settingCategories, validationConfig, valueAt, withValue, type SettingCategory,
@@ -15,7 +16,7 @@ type Row = {
   key: string; label: string; value?: unknown; schema?: Record<string, unknown>;
   secret?: boolean; choices?: unknown[]; help?: string; section?: string;
   set?: (value: unknown) => void; action?: () => void; remove?: () => void;
-  swatch?: string;
+  swatch?: string; literalLabel?: boolean;
 };
 type ServerDraft = { key: string | null; value: Record<string, unknown> };
 type ThemeDraft = { key: string | null; name: string; colors: Record<string, unknown> };
@@ -37,6 +38,7 @@ const themeFields: [keyof Palette, string, string?][] = [
 export function ConfigForm({ controller, document, active, onDone }: {
   controller: SessionController; document: Record<string, unknown>; active: boolean; onDone?: () => void;
 }) {
+  const t = useI18n();
   const [current, setCurrent] = useState(document);
   const [baseline, setBaseline] = useState(() => editableConfig(document));
   const [draft, setDraft] = useState(() => editableConfig(document));
@@ -93,18 +95,18 @@ export function ConfigForm({ controller, document, active, onDone }: {
       const text = editor.current?.plainText ?? buffer;
       if (!row.secret || text) row.set?.(parseField(text, row.schema ?? {}, row.value));
       editingRef.current = null; setEditing(null); setError(""); return true;
-    } catch (error) { setError(row.label + ": " + String(error instanceof Error ? error.message : error)); return false; }
+    } catch (error) { setError(t(row.label) + ": " + String(error instanceof Error ? error.message : error)); return false; }
   }
   function applyServer(): boolean {
     const pending = serverRef.current;
     if (!pending) return true;
     const name = String(pending.value.name ?? "").trim();
-    if (!name) { setError("Server name is required."); return false; }
+    if (!name) { setError(t("Server name is required.")); return false; }
     const servers = { ...record(record(draftRef.current.mcp).servers) };
-    if (pending.key !== name && Object.hasOwn(servers, name)) { setError("A server named " + name + " already exists."); return false; }
+    if (pending.key !== name && Object.hasOwn(servers, name)) { setError(t("A server named {name} already exists.", { name })); return false; }
     const transport = record(pending.value.transport);
     if (transport.type === "stdio" ? !String(transport.command ?? "").trim() : !String(transport.url ?? "").trim()) {
-      setError(transport.type === "stdio" ? "A stdio command is required." : "A server URL is required."); return false;
+      setError(t(transport.type === "stdio" ? "A stdio command is required." : "A server URL is required.")); return false;
     }
     if (pending.key && pending.key !== name) delete servers[pending.key];
     servers[name] = { ...pending.value, name };
@@ -115,7 +117,7 @@ export function ConfigForm({ controller, document, active, onDone }: {
     if (!pending) return true;
     const name = pending.name.trim();
     const themes = { ...record(record(draftRef.current.terminal).themes) };
-    if (pending.key !== name && Object.hasOwn(themes, name)) { setError("A theme named " + name + " already exists."); return false; }
+    if (pending.key !== name && Object.hasOwn(themes, name)) { setError(t("A theme named {name} already exists.", { name })); return false; }
     try {
       const parsed = parseThemes({ theme: name, themes: { [name]: pending.colors } });
       themes[name] = parsed.themes[name]; change("terminal.themes", themes); return true;
@@ -124,8 +126,8 @@ export function ConfigForm({ controller, document, active, onDone }: {
   async function persist(value = draftRef.current) {
     if (validate && !validate(validationConfig(value, current))) {
       const failure = validate.errors?.[0];
-      const path = failure?.instancePath.slice(1).replaceAll("/", ".") || "Configuration";
-      throw new Error(path + ": " + (failure?.message ?? "Invalid value"));
+      const path = failure?.instancePath.slice(1).replaceAll("/", ".") || t("Configuration");
+      throw new Error(t("Invalid configuration at {path}: {reason}", { path, reason: failure?.message ?? t("Invalid value") }));
     }
     const edits = configChanges(baseline, value);
     if (!Object.keys(edits).length) { setFeedback("No unsaved changes."); return; }
@@ -150,14 +152,14 @@ export function ConfigForm({ controller, document, active, onDone }: {
     const rows: Row[] = view.dictionary ? Object.entries(record(view.value)).flatMap(([key, value], index) => [
       { key: "name-" + index, label: "Name", value: key, set: (value) => {
         const name = String(value).trim();
-        if (!name || name !== key && Object.hasOwn(record(view.value), name)) throw new Error("Use a unique, non-empty name.");
-        if (name !== key && view.row.secret && record(view.value)[key] === "***") throw new Error("Replace the saved value before renaming this entry.");
+        if (!name || name !== key && Object.hasOwn(record(view.value), name)) throw new Error(t("Use a unique, non-empty name."));
+        if (name !== key && view.row.secret && record(view.value)[key] === "***") throw new Error(t("Replace the saved value before renaming this entry."));
         update(Object.fromEntries(Object.entries(record(view.value)).map(([old, item]) => [old === key ? name : old, item])));
       } },
       { key: "value-" + index, label: "Value", value, secret: view.row.secret, set: (value) => update({ ...record(view.value), [key]: value }),
         remove: () => update(Object.fromEntries(Object.entries(record(view.value)).filter(([name]) => name !== key))) },
     ]) : (Array.isArray(view.value) ? view.value : []).map((value, index, values) => ({
-      key: "item-" + index, label: "Item " + (index + 1), value, secret: view.row.secret,
+      key: "item-" + index, label: t("Item {index}", { index: index + 1 }), value, secret: view.row.secret,
       schema: resolveSchema(view.row.schema?.items, rootSchema),
       set: (value) => update(values.map((item, i) => i === index ? value : item)),
       remove: () => { update(values.filter((_, i) => i !== index)); select(Math.max(0, index - 1)); },
@@ -201,7 +203,7 @@ export function ConfigForm({ controller, document, active, onDone }: {
   function categoryRows(): Row[] {
     if (category === "themes") return [
       ...Object.entries(record(record(draft.terminal).themes)).map(([name, colors]): Row => ({
-        key: name, label: name, value: record(draft.terminal).theme === name ? "Current" : "",
+        key: name, label: name, literalLabel: true, value: record(draft.terminal).theme === name ? "Current" : "",
         action: () => { updateTheme({ key: name, name, colors: structuredClone(record(colors)) }); select(0); },
       })),
       { key: "add-theme", label: "＋ Add theme", action: () => {
@@ -212,7 +214,7 @@ export function ConfigForm({ controller, document, active, onDone }: {
     if (category === "mcp") return [
       ...Object.entries(record(record(draft.mcp).servers)).map(([name, item]): Row => {
         const service = record(item);
-        return { key: name, label: name, value: (service.enabled ? "Enabled" : "Disabled") + " · " + String(record(service.transport).type ?? ""),
+        return { key: name, label: name, literalLabel: true, value: t(service.enabled ? "Enabled" : "Disabled") + " · " + String(record(service.transport).type ?? ""),
           action: () => { updateServer({ key: name, value: structuredClone(service) }); select(0); } };
       }),
       { key: "add-server", label: "＋ Add MCP service", action: () => {
@@ -333,9 +335,9 @@ export function ConfigForm({ controller, document, active, onDone }: {
       }} />;
   }
   const info = editing ?? row;
-  const description = String(info?.help ?? info?.schema?.description ?? "");
+  const description = t(String(info?.help ?? info?.schema?.description ?? ""));
   const limits = [["minimum", "min"], ["maximum", "max"], ["exclusiveMinimum", ">"], ["exclusiveMaximum", "<"]]
-    .filter(([key]) => info?.schema?.[key] !== undefined).map(([key, label]) => label + " " + info!.schema![key]).join(" · ");
+    .filter(([key]) => info?.schema?.[key] !== undefined).map(([key, label]) => t(label) + " " + info!.schema![key]).join(" · ");
   const heading = collection ? collection.row.label : server ? server.key ?? "New MCP service" : theme ? theme.key ?? "New theme"
     : settingCategories.find(([id]) => id === category)![1];
   const pendingChanges = Object.keys(changes).length + (server && !sameValue(server.value,
@@ -345,7 +347,12 @@ export function ConfigForm({ controller, document, active, onDone }: {
   const fieldPath = server && info?.set ? "mcp.servers." + String(server.value.name ?? "") + "." + path
     : theme ? "terminal.themes." + theme.name + (path.startsWith("color-") ? "." + path.slice(6) : "")
       : path.includes(".") ? path : "";
-  return <box id="settings-pane" title="Settings" border borderColor={p.action} backgroundColor={p.panel}
+  const headingLabel = server?.key || theme?.key ? heading : t(heading);
+  function optionLabel(value: unknown, key = "") {
+    if (key === "session.language") return ({ auto: t("Auto (follow system)"), zh: "中文", en: "English" } as Record<string, string>)[String(value)] ?? String(value);
+    return key === "safety.permission_mode" ? permissionInfo(String(value), controller.theme).label : String(value);
+  }
+  return <box id="settings-pane" title={t("Settings")} border borderColor={p.action} backgroundColor={p.panel}
     flexDirection="column" flexGrow={1} minHeight={0} paddingX={1}>
     <box flexDirection="row" flexGrow={1} minHeight={0}>
       <box width={categoryWidth} flexShrink={0} border={["right"]} borderColor={pane === "categories" ? p.action : p.border}>
@@ -353,20 +360,20 @@ export function ConfigForm({ controller, document, active, onDone }: {
           {settingCategories.map(([id, label]) => <text key={id} id={"settings-category-" + id}
             fg={id === category ? p.action : p.muted} bg={id === category ? p.plate : p.panel}
             onMouseDown={() => { if (active && !editing && !busy) { switchCategory(id); focusPane("fields"); } }}>
-            {visibleText((id === category ? "› " : "  ") + label)}
+            {visibleText((id === category ? "› " : "  ") + t(label))}
           </text>)}
         </scrollbox>
       </box>
       <box flexDirection="column" flexGrow={1} minWidth={0} paddingLeft={1}>
-        <text fg={p.action} flexShrink={0}><b>{visibleText(heading)}</b></text>
+        <text fg={p.action} flexShrink={0}><b>{visibleText(headingLabel)}</b></text>
         <scrollbox id="settings-scroll" ref={scroll} flexGrow={1} minHeight={0} scrollX={false}>
           {rows.map((item, index) => <box key={item.key} id={"settings-row-" + index}
             flexDirection="column" flexShrink={0} backgroundColor={index === focus && pane === "fields" ? p.plate : p.panel}
             onMouseDown={() => { if (active && !editing && !busy && !choice) { select(index); focusPane("fields"); } }}>
-            {item.section && <text fg={p.action}><b>{item.section}</b></text>}
+            {item.section && <text fg={p.action}><b>{t(item.section)}</b></text>}
             <box id={"settings-field-" + item.key} flexDirection="row" flexShrink={0} gap={1}>
               <text width={labelWidth} wrapMode="word" fg={index === focus ? p.action : p.muted}>
-                {visibleText((index === focus && pane === "fields" ? "› " : "  ") + item.label)}
+                {visibleText((index === focus && pane === "fields" ? "› " : "  ") + (item.literalLabel ? item.label : t(item.label)))}
               </text>
               {editing?.key === item.key ? <box flexGrow={1} minWidth={1}>
                 <textarea id="settings-editor" ref={editor} focused={active} initialValue={buffer}
@@ -379,18 +386,19 @@ export function ConfigForm({ controller, document, active, onDone }: {
                 {item.swatch && <text width={2} fg={item.swatch}>■</text>}
                 <text flexGrow={1} wrapMode="word" fg={item.key === "safety.permission_mode" ? permissionInfo(String(item.value), controller.theme).color
                 : typeof item.value === "boolean" && item.value ? p.success : p.text}>
-                {visibleText(Array.isArray(item.value) ? item.value.length + " items"
-                  : item.schema?.type === "object" ? Object.keys(record(item.value)).length + " entries"
-                    : item.secret ? item.value ? "Configured" : "Not configured"
-                      : typeof item.value === "boolean" ? item.value ? "[x] Enabled" : "[ ] Disabled"
-                        : item.key === "safety.permission_mode" ? permissionInfo(String(item.value), controller.theme).label
-                          : String(item.value ?? (item.action ? "" : "Default")))}
+                {visibleText(Array.isArray(item.value) ? t("{count} items", { count: item.value.length })
+                  : item.schema?.type === "object" ? t("{count} entries", { count: Object.keys(record(item.value)).length })
+                    : item.secret ? t(item.value ? "Configured" : "Not configured")
+                      : typeof item.value === "boolean" ? t(item.value ? "[x] Enabled" : "[ ] Disabled")
+                        : item.key === "safety.permission_mode" || item.key === "session.language" ? optionLabel(item.value, item.key)
+                          : item.value === "Current" && category === "themes" && !theme ? t("Current")
+                            : String(item.value ?? (item.action ? "" : t("Default"))))}
               </text></>}
             </box>
             {choice?.row.key === item.key && choice.row.choices?.map((value, index) => <text
               key={index} id={"settings-option-" + index} fg={item.key === "safety.permission_mode" ? permissionInfo(String(value), controller.theme).color : index === choice.index ? p.action : p.muted}
               onMouseDown={(event) => { event.stopPropagation(); if (active && !busy) { choice.row.set?.(value); choose(null); } }}>
-              {visibleText("    " + (index === choice.index ? "› " : "  ") + (item.key === "safety.permission_mode" ? permissionInfo(String(value), controller.theme).label : String(value)))}
+              {visibleText("    " + (index === choice.index ? "› " : "  ") + optionLabel(value, item.key))}
             </text>)}
           </box>)}
         </scrollbox>
@@ -401,21 +409,21 @@ export function ConfigForm({ controller, document, active, onDone }: {
       <text fg={p.muted} height={2} wrapMode="word">{visibleText([description, limits].filter(Boolean).join(" · ") || " ")}</text>
       <box flexDirection="row" flexShrink={0}>
         <text id="settings-feedback" fg={error ? p.error : feedback ? p.success : p.muted} wrapMode="word" flexGrow={1}>
-          {visibleText(error || feedback || " ")}
+          {visibleText(error || t(feedback) || " ")}
         </text>
-        <text fg={p.muted}>{pendingChanges + " unsaved changes"}</text>
+        <text fg={p.muted}>{t("{count} unsaved changes", { count: pendingChanges })}</text>
       </box>
       <box flexDirection="row" gap={2} flexShrink={0}>
-        <text id="settings-save" fg={p.background} bg={p.action} onMouseDown={() => { if (active) void save(); }}> Save (Ctrl+S) </text>
-        <text id="settings-close" fg={p.soft} bg={p.plate} onMouseDown={() => { if (active && !busy) back(); }}> {collection || server || theme ? "Back" : "Close / discard"} </text>
+        <text id="settings-save" fg={p.background} bg={p.action} onMouseDown={() => { if (active) void save(); }}> {t("Save (Ctrl+S)")} </text>
+        <text id="settings-close" fg={p.soft} bg={p.plate} onMouseDown={() => { if (active && !busy) back(); }}> {t(collection || server || theme ? "Back" : "Close / discard")} </text>
         {row?.secret && row.set && <text id="settings-clear" fg={p.error} onMouseDown={() => {
           if (active && !busy && !editing) row.set?.(Array.isArray(row.value) ? [] : row.schema?.type === "object" ? {} : "");
-        }}>[Clear value]</text>}
-        {row?.remove && <text id="settings-remove" fg={p.error} onMouseDown={() => { if (active && !busy && !editing) row.remove?.(); }}>[Remove item]</text>}
+        }}>{t("[Clear value]")}</text>}
+        {row?.remove && <text id="settings-remove" fg={p.error} onMouseDown={() => { if (active && !busy && !editing) row.remove?.(); }}>{t("[Remove item]")}</text>}
       </box>
-      <text fg={p.hint} wrapMode="word">{busy ? "Saving…" : editing
+      <text fg={p.hint} wrapMode="word">{t(busy ? "Saving…" : editing
         ? "Enter apply · Shift+Enter newline · Esc revert · Ctrl+S save"
-        : "Tab switch pane · ↑↓ select · Enter edit · Ctrl+S save · Esc back"}</text>
+        : "Tab switch pane · ↑↓ select · Enter edit · Ctrl+S save · Esc back")}</text>
     </box>
   </box>;
 }

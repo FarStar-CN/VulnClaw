@@ -6,11 +6,13 @@ import { codeBlocks } from "./code-blocks";
 import { copyText } from "../platform/clipboard";
 import { palettes } from "../theme/palette";
 import { visibleText } from "./content";
+import { useI18n } from "../i18n";
 
 export function Reader({ controller, title, text, format, active, width, messageId }: {
   controller: SessionController; title: string; text: string; format: "markdown" | "text";
   active: boolean; width: number; messageId?: string;
 }) {
+  const t = useI18n();
   const renderer = useRenderer();
   const [raw, setRaw] = useState(false);
   const [code, setCode] = useState(0);
@@ -33,6 +35,6 @@ export function Reader({ controller, title, text, format, active, width, message
       {format === "markdown" && !raw ? <MarkdownBody id={`reader-${messageId ?? "document"}`} text={text} width={width - 4} theme={controller.theme} />
         : <text wrapMode="word" fg={p.text}>{visibleText(text)}</text>}
     </scrollbox>
-    <text fg={p.muted}>{`V raw/render · M copy source${blocks.length ? ` · C copy code ${code + 1}/${blocks.length} · [ ] choose code` : ""} · Esc close`}</text>
+    <text fg={p.muted} wrapMode="word">{`${t("V raw/render · M copy source")}${blocks.length ? ` · ${t("C copy code {index}/{count} · [ ] choose code", { index: code + 1, count: blocks.length })}` : ""} · ${t("Esc close")}`}</text>
   </box>;
 }

@@ -3,6 +3,7 @@ import { useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@open
 import type { SessionController } from "../session/controller";
 import { pasteText } from "../platform/clipboard";
 import { geometry, tuiChromeHeight, type WorkbenchState } from "../workbench/layout";
+import { t } from "../i18n";
 
 export function useSessionKeys(controller: SessionController, mode: "tui" | "repl", workbench?: WorkbenchState) {
   const renderer = useRenderer();
@@ -39,7 +40,7 @@ export function useSessionKeys(controller: SessionController, mode: "tui" | "rep
       key.preventDefault(); key.stopPropagation();
       if (controller.state?.task.active) { controller.cancel(); lastInterrupt.current = 0; }
       else if (mode === "tui" || Date.now() - lastInterrupt.current < 3000) controller.onExit();
-      else { lastInterrupt.current = Date.now(); controller.notify("Press Ctrl+C again to exit, or enter another request."); }
+      else { lastInterrupt.current = Date.now(); controller.notify(t("Press Ctrl+C again to exit, or enter another request.")); }
     } else if (key.ctrl && ["left", "right"].includes(key.name) && workbench) {
       key.preventDefault(); key.stopPropagation();
       controller.inputFocused = false; workbench.focus(key.name === "left"); controller.changed();

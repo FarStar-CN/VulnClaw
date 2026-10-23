@@ -10,9 +10,11 @@ import { HistoryQueue } from "../scrollback/history";
 import { visibleText } from "../components/content";
 import { useSession } from "./useSession";
 import { useSessionKeys } from "./useSessionKeys";
+import { useI18n } from "../i18n";
 
 export function ReplShell({ controller }: { controller: SessionController }) {
   useSession(controller);
+  const t = useI18n();
   useSessionKeys(controller, "repl");
   const renderer = useRenderer();
   const { width } = useTerminalDimensions();
@@ -34,7 +36,7 @@ export function ReplShell({ controller }: { controller: SessionController }) {
     <Transcript controller={controller} width={width - 2} entries={pending} positions={positions} />
     <Composer controller={controller} active={!controller.overlay && !controller.approvals.length} />
     <PermissionStatus controller={controller} />
-    <text fg={p.muted}>{visibleText(queue.error ? `${queue.error} · /history-retry resumes pending output` : controller.notice)}</text>
+    <text fg={p.muted}>{visibleText(queue.error ? `${queue.error} · ${t("/history-retry resumes pending output")}` : controller.notice)}</text>
     <OverlayLayer controller={controller} width={width} />
   </box>;
 }

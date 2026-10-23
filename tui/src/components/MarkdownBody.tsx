@@ -6,6 +6,7 @@ import type { Tokens } from "marked";
 import { visibleText } from "./content";
 import { markdownStyle, palettes, type Palette, type ThemeId } from "../theme/palette";
 import { usePalette } from "../theme/usePalette";
+import { t, useI18n, currentLanguage } from "../i18n";
 
 export interface MarkdownBodyProps {
   id: string; text: string; streaming?: boolean; width: number; theme: ThemeId;
@@ -62,8 +63,8 @@ export function markdownNodes(renderer: RenderContext, theme: ThemeId, width: nu
     }
     if (token.type === "table" && width < (token as Tokens.Table).header.length * 12) {
       const table = token as Tokens.Table;
-      const text = table.rows.map((row, i) => `Row ${i + 1}\n` + row.map((cell, j) =>
-        `${table.header[j]?.text || `Column ${j + 1}`}: ${cell.text || "(empty)"}`,
+      const text = table.rows.map((row, i) => t("Row {index}", { index: i + 1 }) + "\n" + row.map((cell, j) =>
+        `${table.header[j]?.text || t("Column {index}", { index: j + 1 })}: ${cell.text || t("(empty)")}`,
       ).join("\n")).join("\n\n");
       return new TextRenderable(renderer, { content: visibleText(text), wrapMode: "word", width: "100%" });
     }
@@ -76,17 +77,19 @@ class MarkdownBoundary extends React.Component<MarkdownBodyProps & { children: R
   static getDerivedStateFromError(error: Error) { return { error: error.message }; }
   render() {
     return this.state.error ? <box flexDirection="column">
-      <text fg={palettes[this.props.theme].error}>Markdown rendering failed: {visibleText(this.state.error)}</text>
+      <text fg={palettes[this.props.theme].error}>{t("Markdown rendering failed: {error}", { error: visibleText(this.state.error) })}</text>
       <text wrapMode="word">{visibleText(this.props.text)}</text>
     </box> : this.props.children;
   }
 }
 
 function MarkdownContent(props: MarkdownBodyProps & { palette: Palette }) {
+  useI18n();
+  const language = currentLanguage();
   const renderer = useRenderer();
   const [error, setError] = useState("");
   const syntaxStyle = useMemo(() => sharedMarkdownStyle(renderer, props.theme), [renderer, props.theme, props.palette]);
-  const renderNode = useMemo(() => markdownNodes(renderer, props.theme, props.width), [renderer, props.theme, props.width, props.palette]);
+  const renderNode = useMemo(() => markdownNodes(renderer, props.theme, props.width), [renderer, props.theme, props.width, props.palette, language]);
   useEffect(() => {
     let handlers = errorHandlers.get(renderer);
     if (!handlers) {
@@ -106,7 +109,7 @@ function MarkdownContent(props: MarkdownBodyProps & { palette: Palette }) {
     return () => { if (handlers.get(props.id) === setError) handlers.delete(props.id); };
   }, [renderer, props.id]);
   if (error) return <box flexDirection="column">
-    <text fg={palettes[props.theme].error}>Markdown rendering failed: {visibleText(error)}</text>
+    <text fg={palettes[props.theme].error}>{t("Markdown rendering failed: {error}", { error: visibleText(error) })}</text>
     <text wrapMode="word">{visibleText(props.text)}</text>
   </box>;
   // OpenTUI's incremental block cache can retain streaming spacing at finalization.
@@ -117,6 +120,7 @@ function MarkdownContent(props: MarkdownBodyProps & { palette: Palette }) {
 }
 
 export const MarkdownBody = memo(function MarkdownBody(props: MarkdownBodyProps) {
+  useI18n();
   const palette = usePalette(props.theme);
   return <MarkdownBoundary {...props}><MarkdownContent {...props} palette={palette} /></MarkdownBoundary>;
 });

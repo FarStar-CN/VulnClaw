@@ -5,6 +5,7 @@ import { record, type SessionController } from "../session/controller";
 import { palettes } from "../theme/palette";
 import { visibleText } from "./content";
 import { connectionFields as fields } from "./config-fields";
+import { useI18n } from "../i18n";
 
 type Field = typeof fields[number][0];
 
@@ -12,6 +13,7 @@ export function LlmSettings({ controller, document, active, onSave, onCancel }: 
   controller: SessionController; document: Record<string, unknown>; active: boolean;
   onSave?: (values: Record<string, string>) => Promise<void>; onCancel?: () => void;
 }) {
+  const t = useI18n();
   const p = palettes[controller.theme];
   const providers = (Array.isArray(document.providers) ? document.providers : []).map(record);
   const [values, setValues] = useState<Record<string, string>>({
@@ -45,15 +47,15 @@ export function LlmSettings({ controller, document, active, onSave, onCancel }: 
   }
   const matches = matchingModels(buffer);
   async function fetchModels() {
-    if (!values.base_url.trim()) { setError("Set an API request URL before fetching models. You can type a model id."); return; }
+    if (!values.base_url.trim()) { setError(t("Set an API request URL before fetching models. You can type a model id.")); return; }
     setBusy(true); setFeedback("Fetching models…"); setError("");
     try {
       const result = await controller.control("config.models", { base_url: values.base_url, api_key: values.api_key });
       const next = Array.isArray(result.models) ? result.models.filter((item): item is string => typeof item === "string") : [];
       setModels(next);
-      if (next.length) setFeedback(`${next.length} models available.`);
-      else { setFeedback(""); setError("No models returned; keeping the current model. You can type a model id."); }
-    } catch (error) { setFeedback(""); setError(`${String(error)} · You can type a model id.`); }
+      if (next.length) setFeedback(t("{count} models available.", { count: next.length }));
+      else { setFeedback(""); setError(t("No models returned; keeping the current model. You can type a model id.")); }
+    } catch (error) { setFeedback(""); setError(`${String(error)} · ${t("You can type a model id.")}`); }
     finally { setBusy(false); }
   }
   async function preset() {
@@ -81,7 +83,7 @@ export function LlmSettings({ controller, document, active, onSave, onCancel }: 
     try {
       if (onSave) { await onSave(editedValues()); return; }
       const result = await controller.control("config.write", editedValues());
-      controller.notify(String(result.message ?? "Configuration saved.")); controller.dismiss();
+      controller.notify(t("Configuration saved.")); controller.dismiss();
     } catch (error) { setError(String(error)); setFeedback(""); }
     finally { setBusy(false); }
   }
@@ -90,7 +92,7 @@ export function LlmSettings({ controller, document, active, onSave, onCancel }: 
     setError("");
     const currentField = fields[focusRef.current][0];
     if (currentField === "provider") {
-      if (!providers.length) { setError("No provider templates available."); return; }
+      if (!providers.length) { setError(t("No provider templates available.")); return; }
       listIndexRef.current = Math.max(0, providers.findIndex((item) => item.id === values.provider));
       setListIndex(listIndexRef.current); setList(true);
     } else {
@@ -128,19 +130,19 @@ export function LlmSettings({ controller, document, active, onSave, onCancel }: 
     }
   });
   function displayed(key: Field): string {
-    if (key === "api_key") return values.api_key ? "•".repeat(Array.from(values.api_key).length) : document.api_key_set ? "•••••••• (saved)" : "—";
+    if (key === "api_key") return values.api_key ? "•".repeat(Array.from(values.api_key).length) : document.api_key_set ? t("•••••••• (saved)") : "—";
     if (key === "provider") return String(providers.find((item) => item.id === values.provider)?.label ?? values.provider);
     return values[key] || "—";
   }
   const options = list ? providers.map((item) => String(item.label ?? item.id)) : matches;
   const selected = list ? listIndex : suggestion;
   const start = Math.max(0, (selected ?? 0) - 5);
-  return <box id="llm-pane" border borderColor={p.action} backgroundColor={p.panel} flexDirection="column" flexGrow={1} minHeight={0} paddingX={1} title="LLM settings">
+  return <box id="llm-pane" border borderColor={p.action} backgroundColor={p.panel} flexDirection="column" flexGrow={1} minHeight={0} paddingX={1} title={t("LLM settings")}>
     <scrollbox id="llm-scroll" ref={scroll} flexGrow={1} scrollX={false}>
       {fields.map(([key, label], index) => <box key={key} id={`llm-row-${index}`} flexDirection="column" flexShrink={0}>
         <box flexDirection="row" backgroundColor={focus === index ? p.plate : p.panel}
           onMouseDown={() => { if (!busy && !editing && !list) { focusRef.current = index; setFocus(index); } }}>
-          <text fg={focus === index ? p.action : p.muted} width={21}>{`${focus === index ? editing ? "✎" : "›" : " "} ${label}`}</text>
+          <text fg={focus === index ? p.action : p.muted} width={21}>{`${focus === index ? editing ? "✎" : "›" : " "} ${t(label)}`}</text>
           {editing && field === key ? <box flexGrow={1} minWidth={1}>
             <textarea id="llm-editor" key={key} ref={editor} focused={active} initialValue={buffer} height={1}
               textColor={p.text} backgroundColor={p.plate}
@@ -155,11 +157,11 @@ export function LlmSettings({ controller, document, active, onSave, onCancel }: 
             fg={start + offset === selected ? p.action : p.muted} bg={start + offset === selected ? p.plate : p.panel}>
             {visibleText(`${start + offset === selected ? "›" : " "} ${option}`)}
           </text>)}
-          {options.length > start + 6 && <text fg={p.hint}>{`… ${options.length - start - 6} more`}</text>}
+          {options.length > start + 6 && <text fg={p.hint}>{t("… {count} more", { count: options.length - start - 6 })}</text>}
         </box>}
       </box>)}
     </scrollbox>
-    <text fg={error ? p.error : p.muted} wrapMode="word">{visibleText(error || feedback || " ")}</text>
-    <text fg={p.hint} wrapMode="word">{list ? "↑↓/Tab template · Enter apply · Esc cancel" : editing ? "↑↓ model suggestions · Enter confirm · Esc revert · Ctrl+S save" : "↑↓/Tab row · Enter edit · Ctrl+S save · Esc close"}</text>
+    <text fg={error ? p.error : p.muted} wrapMode="word">{visibleText(error || t(feedback) || " ")}</text>
+    <text fg={p.hint} wrapMode="word">{t(list ? "↑↓/Tab template · Enter apply · Esc cancel" : editing ? "↑↓ model suggestions · Enter confirm · Esc revert · Ctrl+S save" : "↑↓/Tab row · Enter edit · Ctrl+S save · Esc close")}</text>
   </box>;
 }

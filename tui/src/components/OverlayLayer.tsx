@@ -8,8 +8,10 @@ import { ConfigForm } from "./ConfigForm";
 import { LlmSettings } from "./LlmSettings";
 import { Reader } from "./Reader";
 import { visibleText } from "./content";
+import { useI18n, statusLabel } from "../i18n";
 
 export function OverlayLayer({ controller, width }: { controller: SessionController; width: number }) {
+  const t = useI18n();
   const renderer = useRenderer();
   const { height } = useTerminalDimensions();
   const approval = controller.approvals[0];
@@ -42,28 +44,29 @@ export function OverlayLayer({ controller, width }: { controller: SessionControl
       {overlay?.kind === "reader" && (() => {
         const message = controller.messages.get(overlay.messageId), card = controller.cards.get(overlay.messageId);
         const item = message ?? card;
-        return item ? <Reader controller={controller} title={message ? `${message.source} · ${message.role} · ${message.status}` : `${card!.source} · ${card!.title}`}
+        return item ? <Reader controller={controller} title={message ? `${message.source} · ${statusLabel(message.role)} · ${statusLabel(message.status)}`
+          : `${card!.source} · ${card!.kind === "tool_call" ? card!.title : t(card!.title)}`}
           text={item.text} format={item.format === "markdown" ? "markdown" : "text"} messageId={overlay.messageId}
-          active={!approval} width={modalWidth} /> : <text>Message unavailable</text>;
+          active={!approval} width={modalWidth} /> : <text>{t("Message unavailable")}</text>;
       })()}
       {overlay?.kind === "data" && <Reader controller={controller} title={overlay.title}
         text={typeof overlay.data === "string" ? overlay.data : JSON.stringify(overlay.data, null, 2)}
         format={overlay.format} active={!approval} width={modalWidth} />}
     </box>
     {approval && <box id="approval-pane" position="absolute" left={Math.floor((width - modalWidth) / 2)} top={Math.max(0, Math.floor((height - modalHeight) / 2))}
-      width={modalWidth} height={modalHeight} title="Execution approval" border borderColor={p.error} backgroundColor={p.panel} flexDirection="column" paddingX={1}>
+      width={modalWidth} height={modalHeight} title={t("Execution approval")} border borderColor={p.error} backgroundColor={p.panel} flexDirection="column" paddingX={1}>
       <scrollbox id="approval-scroll" flexGrow={1} minHeight={0} focused scrollX={false}>
-        <text fg={p.action}><b>{visibleText(`${approval.kind ?? "action"} · Execution approval`)}</b></text>
-        <text wrapMode="word" fg={p.soft}>{visibleText(`Working directory: ${approval.cwd || "not specified"}\n\nCommand / code\n${approval.question}\n\nReason\n${approval.detail ?? ""}`)}</text>
+        <text fg={p.action}><b>{visibleText(`${approval.kind ?? t("action")} · ${t("Execution approval")}`)}</b></text>
+        <text wrapMode="word" fg={p.soft}>{visibleText(`${t("Working directory")}: ${approval.cwd || t("not specified")}\n\n${t("Command / code")}\n${approval.question}\n\n${t("Reason")}\n${approval.detail ?? ""}`)}</text>
       </scrollbox>
       <box flexDirection="column" flexShrink={0}>
-        <text fg={p.signal} wrapMode="word" flexShrink={0}>{visibleText(`Risk: ${approval.risk || "Executes with current user privileges"}`)}</text>
-        <text fg={p.muted} height={1} flexShrink={0}>{remaining === null ? "Waiting for backend decision" : `${remaining}s remaining · timeout denies`}</text>
+        <text fg={p.signal} wrapMode="word" flexShrink={0}>{visibleText(`${t("Risk")}: ${approval.risk || t("Executes with current user privileges")}`)}</text>
+        <text fg={p.muted} height={1} flexShrink={0}>{remaining === null ? t("Waiting for backend decision") : t("{seconds}s remaining · timeout denies", { seconds: remaining })}</text>
         <box flexDirection="row" gap={2} height={1} flexShrink={0}>
-          <text fg={p.accent} onMouseDown={() => controller.resolveApproval(true)}>[Y] Approve</text>
-          <text fg={p.error} onMouseDown={() => controller.resolveApproval(false)}>[N/Esc] Deny</text>
+          <text fg={p.accent} onMouseDown={() => controller.resolveApproval(true)}>{t("[Y] Approve")}</text>
+          <text fg={p.error} onMouseDown={() => controller.resolveApproval(false)}>{t("[N/Esc] Deny")}</text>
         </box>
-        <text fg={p.hint} height={1} flexShrink={0}>↑↓/PgUp/PgDn details</text>
+        <text fg={p.hint} height={1} flexShrink={0}>{t("↑↓/PgUp/PgDn details")}</text>
       </box>
     </box>}
   </box>;

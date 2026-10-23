@@ -4,6 +4,7 @@ import type {
   RuntimeInfo, ServerEvent, StateSnapshot, SubagentEvent, TaskRequest,
 } from "../transport/protocol.generated";
 import { configureThemes, palettes, permissionOrder, type ThemeId } from "../theme/palette";
+import { setLanguage, statusLabel, t } from "../i18n";
 
 export function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -13,26 +14,26 @@ export function record(value: unknown): Record<string, unknown> {
 function completionText(value: unknown): string {
   const result = record(value);
   const lines: string[] = [];
-  if (typeof result.status === "string") lines.push(`Status: ${result.status}`);
+  if (typeof result.status === "string") lines.push(`${t("Status")}: ${statusLabel(result.status)}`);
   if (typeof result.command === "string") lines.push(`${result.command} ${result.target ?? ""}`.trim());
   const run = record(result.run);
-  if (typeof run.name === "string") lines.push(`Run: ${run.name}`);
-  if (typeof run.directory === "string") lines.push(`Files: ${run.directory}`);
+  if (typeof run.name === "string") lines.push(`${t("Run")}: ${run.name}`);
+  if (typeof run.directory === "string") lines.push(`${t("Files")}: ${run.directory}`);
   if (typeof result.summary === "string") lines.push(result.summary);
   const counts = record(record(result.summary).findings);
   if (typeof counts.verified === "number" && typeof counts.candidates === "number") {
-    lines.push(`Findings: ${counts.verified} verified, ${counts.candidates} candidates`);
-  } else if (Array.isArray(result.findings)) lines.push(`Recorded findings: ${result.findings.length}`);
+    lines.push(t("Findings: {verified} verified, {candidates} candidates", { verified: counts.verified, candidates: counts.candidates }));
+  } else if (Array.isArray(result.findings)) lines.push(t("Recorded findings: {count}", { count: result.findings.length }));
   const reports = [result.report, ...(Array.isArray(result.reports) ? result.reports : [])];
   for (const report of reports) {
     const paths = record(report);
     for (const [key, label] of [["path", "Report"], ["findings_json", "Findings JSON"], ["findings_sarif", "Findings SARIF"]]) {
-      if (typeof paths[key!] === "string") lines.push(`${label}: ${paths[key!]}`);
+      if (typeof paths[key!] === "string") lines.push(`${t(label!)}: ${paths[key!]}`);
     }
   }
-  if (typeof result.report_error === "string") lines.push(`Report failed: ${result.report_error}`);
+  if (typeof result.report_error === "string") lines.push(t("Report failed: {error}", { error: result.report_error }));
   // Assistant output already belongs to its message, including partial/final state.
-  return lines.join("\n") || "Ready for another request.";
+  return lines.join("\n") || t("Ready for another request.");
 }
 
 export type Card = {
@@ -74,7 +75,7 @@ export class SessionController {
   theme: ThemeId = "blue";
   showReasoning = true;
   overlay: Overlay | null = null;
-  notice = "Starting Python session…";
+  notice = t("Starting Python session…");
   draft = "";
   history: string[] = [];
   onExit: () => void = () => {};
@@ -98,7 +99,7 @@ export class SessionController {
   }
   id(): string { return `terminal-${++this.nextId}`; }
   private send(request: ClientMessage): void {
-    if (!this.transport) throw new Error("Backend is disconnected");
+    if (!this.transport) throw new Error(t("Backend is disconnected"));
     this.transport.send(request);
   }
   control(operation: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
@@ -115,12 +116,15 @@ export class SessionController {
   notify(text: string): void { this.notice = text; this.changed(); }
   dismiss(): void { this.overlay = null; this.changed(); }
   setTheme(theme: ThemeId): void {
-    if (!Object.hasOwn(palettes, theme)) { this.notify(`Unknown theme: ${theme}. Available themes: ${Object.keys(palettes).join(", ")}`); return; }
+    if (!Object.hasOwn(palettes, theme)) { this.notify(t("Unknown theme: {theme}. Available themes: {themes}", { theme, themes: Object.keys(palettes).join(", ") })); return; }
     this.theme = theme; this.changed();
   }
   applyConfigDocument(document: Record<string, unknown>): void {
+    const mode = record(record(document.config).session).language ?? document.language;
+    setLanguage(mode);
     const terminal = record(document.config).terminal;
-    if (terminal !== undefined) { this.theme = configureThemes(terminal).theme; this.changed(); }
+    if (terminal !== undefined) this.theme = configureThemes(terminal).theme;
+    this.changed();
   }
   visibleEntries(source = this.source): Entry[] {
     return this.entries.filter((entry) => {
@@ -149,7 +153,7 @@ export class SessionController {
       const theme = text.trim().split(/\s+/)[1]?.toLowerCase();
       const themes = Object.keys(palettes);
       const selected = theme ?? themes[(themes.indexOf(this.theme) + 1) % themes.length];
-      if (!Object.hasOwn(palettes, selected)) { this.notify(`Unknown theme: ${selected}. Available themes: ${themes.join(", ")}`); return; }
+      if (!Object.hasOwn(palettes, selected)) { this.notify(t("Unknown theme: {theme}. Available themes: {themes}", { theme: selected, themes: themes.join(", ") })); return; }
       this.draft = ""; this.changed();
       try { this.applyConfigDocument(await this.control("config.update", { changes: { "terminal.theme": selected } })); }
       catch (error) { if (!this.draft) this.draft = text; this.notify(String(error)); }
@@ -157,13 +161,13 @@ export class SessionController {
     }
     if (command === "/quit") { this.onExit(); return; }
     if (command === "/clear") { this.clearDisplay(); this.draft = ""; this.changed(); return; }
-    if (!this.connected) { this.notify("Backend is disconnected"); return; }
+    if (!this.connected) { this.notify(t("Backend is disconnected")); return; }
     if (command === "/config" && text.trim() === command) { this.action("config.read"); this.draft = ""; this.changed(); return; }
     if (command === "/settings") { this.action("config.document"); this.draft = ""; this.changed(); return; }
     const executing = !command.startsWith("/") || this.taskCommands.includes(command.slice(1));
     const answering = !command.startsWith("/") && this.state?.task.waiting_for_input;
     if (this.state?.task.active && executing && !answering) {
-      this.notify("An operation is active. Cancel it or wait for completion."); return;
+      this.notify(t("An operation is active. Cancel it or wait for completion.")); return;
     }
     if (this.history.at(-1) !== text) this.history.push(text);
     this.history = this.history.slice(-50);
@@ -181,7 +185,7 @@ export class SessionController {
     } catch (error) { this.notify(String(error)); }
   }
   startTask(task: TaskRequest): void {
-    if (this.permission === "read_only") { this.notify("Read-Only: change permission before running a task."); return; }
+    if (this.permission === "read_only") { this.notify(t("Read-Only: change permission before running a task.")); return; }
     try {
       this.send({ protocol_version: 2, type: "start_task", request_id: this.id(),
         task_id: this.id(), payload: { task } });
@@ -197,7 +201,7 @@ export class SessionController {
   }
   resolveApproval(approve: boolean): void {
     const approval = this.approvals[0];
-    if (!approval?.request_hash) { this.notify("Approval has no resolvable request ID"); return; }
+    if (!approval?.request_hash) { this.notify(t("Approval has no resolvable request ID")); return; }
     this.action("execution.approval.resolve", { request_hash: approval.request_hash, decision: approve ? "approve" : "deny" });
   }
   readMessage = (messageId: string): void => { this.overlay = { kind: "reader", messageId, raw: false }; this.changed(); };
@@ -212,7 +216,7 @@ export class SessionController {
     } else if (operation.startsWith("experience.") || ["learn", "feedback", "session.tools", "session.help", "session.scope.read"].includes(operation)) {
       this.overlay = { kind: "data", title: operation, data: result, format: "text" };
     }
-    if (typeof result.message === "string") this.notice = result.message;
+    if (typeof result.message === "string") this.notice = operation === "config.update" ? t("Configuration saved.") : result.message;
   }
   private hydrate(state: StateSnapshot): void {
     this.state = state;
@@ -280,7 +284,7 @@ export class SessionController {
         if (event.request_hash) this.approvalDeadlines.set(event.request_hash,
           event.expires_in_seconds !== undefined ? Date.now() + event.expires_in_seconds * 1000 : Date.parse(event.expires_at ?? ""));
         break;
-      case "approval_closed": this.approvals = this.approvals.filter((item) => item.request_hash !== event.request_hash); this.approvalDeadlines.delete(event.request_hash); this.notice = `Approval ${event.status}`; break;
+      case "approval_closed": this.approvals = this.approvals.filter((item) => item.request_hash !== event.request_hash); this.approvalDeadlines.delete(event.request_hash); this.notice = t("Approval {status}", { status: statusLabel(event.status) }); break;
       case "control_result": {
         const result = record(event.result);
         const requested = event.request_id ? this.requests.has(event.request_id) : false;
@@ -305,9 +309,9 @@ export class SessionController {
       case "turn_completed": {
         this.card("main", "result", event.type === "task_completed" ? "Task completed" : "Turn completed", completionText(event.result));
         if (event.type === "task_completed") this.taskStatus = "Completed";
-        this.notice = "Ready"; break;
+        this.notice = t("Ready"); break;
       }
-      case "task_cancelled": case "turn_cancelled": this.taskStatus = "Cancelled"; this.notice = "Cancelled. Enter another request."; break;
+      case "task_cancelled": case "turn_cancelled": this.taskStatus = "Cancelled"; this.notice = t("Cancelled. Enter another request."); break;
       case "task_failed": case "turn_failed": this.taskStatus = "Failed"; this.card("main", "error", "Failed", event.error.message); this.notice = event.error.message; break;
       case "error": {
         if (event.request_id) { this.requests.get(event.request_id)?.reject(new Error(event.message)); this.requests.delete(event.request_id); }

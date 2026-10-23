@@ -593,7 +593,7 @@ class SessionConfig(BaseModel):
         default=True, description="Auto-generate report after each cycle"
     )
     # Language configuration
-    language: str = Field(
+    language: Literal["auto", "zh", "en"] = Field(
         default="auto", description="UI language: auto, zh, en"
     )
     reasoning_state_enabled: bool = Field(

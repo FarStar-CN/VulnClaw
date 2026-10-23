@@ -4,6 +4,7 @@ import type { MessageSnapshot } from "../transport/protocol.generated";
 import { sharedMarkdownStyle, markdownNodes } from "../components/MarkdownBody";
 import { visibleText } from "../components/content";
 import { palettes } from "../theme/palette";
+import { t, statusLabel } from "../i18n";
 
 export class HistoryQueue {
   readonly committed = new Set<string>();
@@ -21,7 +22,7 @@ export class HistoryQueue {
     if (this.running) { this.requested = true; return this.running; }
     this.running = this.flush().catch((error: unknown) => {
       if (!this.disposed) {
-        this.error = `History output failed: ${String(error)}`;
+        this.error = t("History output failed: {error}", { error: String(error) });
         this.controller.notify(this.error);
       }
     }).finally(() => {
@@ -51,7 +52,8 @@ export class HistoryQueue {
         const theme = this.controller.theme;
         const p = palettes[theme];
         const box = new BoxRenderable(surface.renderContext, { flexDirection: "column", width: "100%" });
-        const label = message ? `${message.source} · ${message.role} · ${message.status}` : `${card!.source} · ${card!.title}`;
+        const label = message ? `${message.source} · ${statusLabel(message.role)} · ${statusLabel(message.status)}`
+          : `${card!.source} · ${card!.kind === "tool_call" ? card!.title : t(card!.title)}`;
         box.add(new TextRenderable(surface.renderContext, { content: visibleText(label), fg: p.accent }));
         const text = message?.text ?? card!.text;
         try {
@@ -70,7 +72,7 @@ export class HistoryQueue {
           const fallback = this.renderer.createScrollbackSurface({ startOnNewLine: true });
           this.surface = fallback;
           fallback.root.add(new TextRenderable(fallback.renderContext, {
-            content: `Markdown rendering failed: ${visibleText(String(error))}\n${visibleText(text)}`, wrapMode: "word",
+            content: t("Markdown rendering failed: {error}", { error: visibleText(String(error)) }) + "\n" + visibleText(text), wrapMode: "word",
           }));
           fallback.render();
         }

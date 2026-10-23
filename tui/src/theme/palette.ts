@@ -1,5 +1,6 @@
 import { SyntaxStyle, type CliRenderer } from "@opentui/core";
 import defaults from "../../../vulnclaw/config/terminal_themes.json";
+import { t } from "../i18n";
 
 export type Palette = { [Key in keyof typeof defaults.themes.blue]: string };
 export type ThemeId = string;
@@ -7,33 +8,33 @@ export interface ThemeConfig { theme: ThemeId; themes: Record<ThemeId, Palette> 
 export const defaultThemeConfig = defaults;
 
 function object(value: unknown, path: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${path} must be an object`);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(t("{path} must be an object", { path }));
   return value as Record<string, unknown>;
 }
 function colors(value: unknown, path: string): Palette {
   const result: Partial<Palette> = {};
   for (const [key, color] of Object.entries(object(value, path))) {
-    if (!Object.hasOwn(defaults.themes.blue, key)) throw new Error(`Unknown color: ${path}.${key}`);
+    if (!Object.hasOwn(defaults.themes.blue, key)) throw new Error(t("Unknown color: {path}", { path: `${path}.${key}` }));
     if (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)) {
-      throw new Error(`${path}.${key} must be a #RRGGBB color`);
+      throw new Error(t("{path} must be a #RRGGBB color", { path: `${path}.${key}` }));
     }
     result[key as keyof Palette] = color;
   }
   for (const key of Object.keys(defaults.themes.blue)) {
-    if (!Object.hasOwn(result, key)) throw new Error(`Missing color: ${path}.${key}`);
+    if (!Object.hasOwn(result, key)) throw new Error(t("Missing color: {path}", { path: `${path}.${key}` }));
   }
   return result as Palette;
 }
 export function parseThemes(value: unknown): ThemeConfig {
   const config = object(value, "terminal");
   for (const key of Object.keys(config)) {
-    if (key !== "theme" && key !== "themes") throw new Error(`Unknown theme configuration field: ${key}`);
+    if (key !== "theme" && key !== "themes") throw new Error(t("Unknown theme configuration field: {key}", { key }));
   }
   const themes = Object.fromEntries(Object.entries(object(config.themes, "terminal.themes")).map(([name, palette]) => {
-    if (!/^[a-z][a-z0-9_-]*$/.test(name)) throw new Error(`Invalid theme name: ${name}; use lowercase letters, digits, - or _`);
+    if (!/^[a-z][a-z0-9_-]*$/.test(name)) throw new Error(t("Invalid theme name: {name}; use lowercase letters, digits, - or _", { name }));
     return [name, colors(palette, `terminal.themes.${name}`)];
   }));
-  if (typeof config.theme !== "string" || !Object.hasOwn(themes, config.theme)) throw new Error(`Unknown terminal theme: ${String(config.theme)}`);
+  if (typeof config.theme !== "string" || !Object.hasOwn(themes, config.theme)) throw new Error(t("Unknown terminal theme: {name}", { name: String(config.theme) }));
   return { theme: config.theme, themes };
 }
 
@@ -58,7 +59,7 @@ export type Permission = keyof typeof permissions;
 export const permissionOrder = Object.keys(permissions) as Permission[];
 export function permissionInfo(value: string, theme: ThemeId) {
   const policy = permissions[value as Permission] ?? permissions.ask;
-  return { label: policy.label, color: palettes[theme][policy.colorKey] };
+  return { label: t(policy.label), color: palettes[theme][policy.colorKey] };
 }
 export function severityColor(value: string, theme: ThemeId): string {
   const p = palettes[theme];

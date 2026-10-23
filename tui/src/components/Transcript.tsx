@@ -4,6 +4,7 @@ import { useRenderer } from "@opentui/react";
 import type { SessionController, Entry } from "../session/controller";
 import { MessageCard, ToolCard } from "./MessageCard";
 import { palettes } from "../theme/palette";
+import { useI18n } from "../i18n";
 
 export interface ReadingPosition { top: number; follow: boolean; anchor?: string; fraction?: number }
 export function Transcript({ controller, width, entries, positions, focused = false }: {
@@ -11,6 +12,7 @@ export function Transcript({ controller, width, entries, positions, focused = fa
   positions: Map<string, ReadingPosition>; focused?: boolean;
 }) {
   const scroll = useRef<ScrollBoxRenderable>(null);
+  const t = useI18n();
   const messageText = useRef(new WeakSet<TextBufferRenderable>());
   const renderer = useRenderer();
   const source = controller.source;
@@ -60,7 +62,7 @@ export function Transcript({ controller, width, entries, positions, focused = fa
   return <scrollbox id="transcript-scroll" ref={scroll} flexGrow={1} width="100%"
     stickyScroll stickyStart="bottom" scrollX={false} focused={focused}>
     {!visible.length && <text fg={palettes[controller.theme].muted} wrapMode="word">
-      {controller.source === "main" ? controller.connected ? "Ask a question, / for commands, @ for skills" : "Connecting to Python…" : "No messages from this agent yet"}
+      {controller.source === "main" ? controller.connected ? t("Ask a question, / for commands, @ for skills") : t("Connecting to Python…") : t("No messages from this agent yet")}
     </text>}
     {visible.map((entry) => {
       const message = controller.messages.get(entry.id);
@@ -75,7 +77,7 @@ export function Transcript({ controller, width, entries, positions, focused = fa
         : card ? <ToolCard key={entry.id} card={card} theme={controller.theme} width={width - 2} /> : null;
     })}
     {controller.activity === "conversation" && controller.state?.task.active && <text fg={palettes[controller.theme].muted}>
-      {controller.approvals.length ? "Awaiting approval" : controller.state.task.waiting_for_input ? "Requires input" : "VulnClaw is responding…"}
+      {controller.approvals.length ? t("Awaiting approval") : controller.state.task.waiting_for_input ? t("Requires input") : t("VulnClaw is responding…")}
     </text>}
   </scrollbox>;
 }

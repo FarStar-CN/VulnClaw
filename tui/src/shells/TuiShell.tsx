@@ -12,9 +12,11 @@ import { elapsed, equalizer, spinner, useClock } from "../theme/activity";
 import { visibleText } from "../components/content";
 import { useSession } from "./useSession";
 import { useSessionKeys } from "./useSessionKeys";
+import { useI18n } from "../i18n";
 
 export function TuiShell({ controller, workbench }: { controller: SessionController; workbench: WorkbenchState }) {
   useSession(controller); useSessionKeys(controller, "tui", workbench);
+  const t = useI18n();
   const { width, height } = useTerminalDimensions();
   const p = palettes[controller.theme];
   const busy = controller.state?.task.active ?? false;
@@ -22,17 +24,17 @@ export function TuiShell({ controller, workbench }: { controller: SessionControl
   const available = Math.max(1, height - tuiChromeHeight(controller.composerRows, controller.completionRows));
   const tooSmall = geometry(width, available, workbench.layout).tooSmall;
   const activity = busy && controller.activity === "task"
-    ? `${spinner(now)} ${controller.approvals.length ? "awaiting approval" : "task running"} ${equalizer(now)} ${elapsed(controller.startedAt, now)}` : "";
-  const provider = controller.runtime ? `provider: ${controller.runtime.config_ready ? controller.runtime.provider : "not configured"}` : "";
+    ? `${spinner(now)} ${controller.approvals.length ? t("awaiting approval") : t("task running")} ${equalizer(now)} ${elapsed(controller.startedAt, now)}` : "";
+  const provider = controller.runtime ? t("provider: {provider}", { provider: controller.runtime.config_ready ? controller.runtime.provider : t("not configured") }) : "";
   const showProvider = !!provider && width >= 17 + stringWidth(activity) + stringWidth(provider);
-  const focusHint = controller.inputFocused ? "Enter submit · Shift+Enter newline · Tab complete · Shift+Tab permission"
-    : workbench.layout.focus === "subagents" ? "↑↓ select agent · Enter view · Ctrl+←/→ pane"
-      : workbench.layout.focus === "findings" ? "↑↓ select finding · Enter evidence · Ctrl+←/→ pane"
-        : workbench.layout.focus === "capabilities" ? "Enter expand/collapse MCP · ↑↓/PgUp/PgDn scroll · Ctrl+←/→ pane"
-        : "↑↓/PgUp/PgDn scroll · Ctrl+←/→ pane · type to compose";
-  const hint = workbench.gesture ? `${workbench.gesture.kind === "move" ? "Move pane · Release to dock" : "Resize panes · Release to save"} · Esc cancel`
-    : controller.permissionPending ? "Changing permission…"
-      : controller.notice || (busy ? `Ctrl+C cancel · ${focusHint}` : focusHint);
+  const focusHint = controller.inputFocused ? t("Enter submit · Shift+Enter newline · Tab complete · Shift+Tab permission")
+    : workbench.layout.focus === "subagents" ? t("↑↓ select agent · Enter view · Ctrl+←/→ pane")
+      : workbench.layout.focus === "findings" ? t("↑↓ select finding · Enter evidence · Ctrl+←/→ pane")
+        : workbench.layout.focus === "capabilities" ? t("Enter expand/collapse MCP · ↑↓/PgUp/PgDn scroll · Ctrl+←/→ pane")
+        : t("↑↓/PgUp/PgDn scroll · Ctrl+←/→ pane · type to compose");
+  const hint = workbench.gesture ? t(workbench.gesture.kind === "move" ? "Move pane · Release to dock · Esc cancel" : "Resize panes · Release to save · Esc cancel")
+    : controller.permissionPending ? t("Changing permission…")
+      : controller.notice || (busy ? `${t("Ctrl+C cancel")} · ${focusHint}` : focusHint);
   return <box width="100%" height="100%" flexDirection="column" backgroundColor={p.background}>
     <box id="terminal-header" border={["top", "left", "right"]} borderColor={p.border} backgroundColor={p.background} height={TUI_HEADER_ROWS} flexShrink={0} flexDirection="row">
       <text bg={p.action} fg={p.background}><b> VulnClaw </b></text>

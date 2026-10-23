@@ -9,13 +9,14 @@ import { TuiShell } from "./shells/TuiShell";
 import { WorkbenchState } from "./workbench/layout";
 import { clientDirectory, legacyThemeConfig, loadPreferences, restoreClientSession, saveClientSession, writeJson } from "./platform/preferences";
 import type { Bootstrap } from "./transport/protocol.generated";
+import { t } from "./i18n";
 
 const { values } = parseArgs({ args: Bun.argv.slice(2), options: {
   mode: { type: "string", default: "tui" },
 }, strict: true });
 if (values.mode !== "tui" && values.mode !== "repl") throw new Error("--mode must be tui or repl");
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
-  process.stderr.write("An interactive terminal is required. Use headless commands for Agent/CI calls.\n");
+  process.stderr.write(t("An interactive terminal is required. Use headless commands for Agent/CI calls.") + "\n");
   process.exit(1);
 }
 const controller = new SessionController();
@@ -23,13 +24,13 @@ const directory = clientDirectory();
 let writes = Promise.resolve();
 const workbench = new WorkbenchState(() => {
   writes = writes.then(() => writeJson(join(directory, "layout.json"), { format_version: 2, layout: workbench.layout }))
-    .catch((error: unknown) => controller.notify(`Preferences save failed: ${String(error)}`));
+    .catch((error: unknown) => controller.notify(t("Preferences save failed: {error}", { error: String(error) })));
 });
 try {
   const preferences = await loadPreferences(directory);
   workbench.layout = preferences.layout;
   await restoreClientSession(controller, directory);
-} catch (error) { controller.notice = `Preferences load failed: ${String(error)}`; }
+} catch (error) { controller.notice = t("Preferences load failed: {error}", { error: String(error) }); }
 const renderer = await createCliRenderer({
   screenMode: values.mode === "repl" ? "split-footer" : "alternate-screen",
   footerHeight: 12, exitOnCtrlC: false, exitSignals: [], consoleMode: "disabled", useMouse: true,
@@ -54,7 +55,7 @@ try {
       }
       controller.applyConfigDocument(document);
     })().catch((error: unknown) => {
-      const message = `Theme configuration load failed: ${String(error)}`;
+      const message = t("Theme configuration load failed: {error}", { error: String(error) });
       controller.receive({ protocol_version: 2, type: "log", task_id: "theme", message }); controller.notify(message);
     });
   }, controller.disconnect, { onDiagnostic: (message) => controller.receive({

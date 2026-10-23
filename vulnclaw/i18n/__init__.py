@@ -66,7 +66,7 @@ class I18nLoader:
         Priority:
         1. VULNCLAW_LANG environment variable
         2. LANG environment variable
-        3. Default to 'zh'
+        3. Default to 'en'
         """
         # Check VulnClaw specific env var
         lang_env = os.environ.get("VULNCLAW_LANG", "").lower()

@@ -8,6 +8,7 @@ from typing import Any
 
 from vulnclaw import experience_service
 from vulnclaw.config_service import config_document, update_config
+from vulnclaw.i18n import _, init_i18n
 
 MANAGEMENT_OPERATIONS = frozenset({
     "config.document", "config.update", "language.set", "experience.list", "experience.show",
@@ -58,11 +59,14 @@ async def execute_management(application: Any, operation: str, args: dict[str, A
     if operation == "config.update":
         changes = args.get("changes")
         updated = update_config(changes, config=config)
+        language_changed = config.session.language != updated.session.language
         if all(path == "terminal" or path.startswith("terminal.") for path in changes):
             # Appearance edits must not reset the active model client or trim its context.
             config.terminal = updated.terminal
         else:
             await application.apply_config(updated)
+        if language_changed:
+            init_i18n(config=updated)
         return {"message": "Configuration saved.", **config_document(updated)}
     if operation == "language.set":
         language = args.get("language")
@@ -70,10 +74,11 @@ async def execute_management(application: Any, operation: str, args: dict[str, A
             raise ValueError("language must be en, zh or auto")
         updated = update_config({"session.language": language}, config=config)
         await application.apply_config(updated)
-        from vulnclaw.i18n import init_i18n
-
         init_i18n(lang=language if language != "auto" else None, config=updated)
-        return {"language": language, "message": f"Language: {language}"}
+        return {
+            "language": language,
+            "message": _("tui.language_switched", lang=_(f"tui.language_{language}")),
+        }
     if operation.startswith("experience."):
         identifier = str(args.get("lesson_id") or "")
         if operation == "experience.list":

@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { type SessionController, record } from "../session/controller";
 import type { TaskRequest } from "../transport/protocol.generated";
 import { FormPanel, type FormRow } from "./FormPanel";
+import { useI18n } from "../i18n";
 
 export function TaskForm({ controller, initial, original, active }: {
   controller: SessionController; initial: Record<string, unknown>; original: string; active: boolean;
 }) {
+  const t = useI18n();
   const [preview, setPreview] = useState(initial);
   const [raw, setRaw] = useState(original);
   const [busy, setBusy] = useState(false);
@@ -21,7 +23,7 @@ export function TaskForm({ controller, initial, original, active }: {
   const allowed = Array.isArray(options.allow_actions) ? options.allow_actions.map(String) : [];
   const [reportEdited, setReportEdited] = useState(record(preview.defaults).auto_report_explicit === true);
   async function validate(next: Record<string, unknown>, confirm = false) {
-    if (confirm && controller.permission === "read_only") { controller.notify("Read-Only: change permission before running a task."); return; }
+    if (confirm && controller.permission === "read_only") { controller.notify(t("Read-Only: change permission before running a task.")); return; }
     setBusy(true);
     try {
       const result = await controller.control("task.preview", Object.keys(next).length ? { task: next } : { text: raw });
@@ -87,13 +89,13 @@ export function TaskForm({ controller, initial, original, active }: {
     ...allActions.map((action) => ({ key: `action.${action}`, label: `  ${action === "post_exploitation" ? "post_exploit" : action}`, value: allowed.includes(action), error: typeof errors.allow_actions === "string" ? errors.allow_actions : undefined })),
     { ...field("options.continuous", "Execution"), section: "Run settings", choices: [false, true], choiceLabels: ["Once", "Continuous"] },
     ...(options.continuous ? [field("options.rounds_per_cycle", "Rounds per cycle", "number"),
-      { ...field("options.max_cycles", "Max cycles", "number"), displayValue: options.max_cycles === 0 ? "unlimited (0)" : undefined }] : []),
+      { ...field("options.max_cycles", "Max cycles", "number"), displayValue: options.max_cycles === 0 ? t("unlimited (0)") : undefined }] : []),
     field("options.poc_verify", "Verify via PoC"), field("options.auto_report", "Auto report"), field("resume", "Resume"),
     ...(task.prompt ? [field("prompt", "Additional instructions", "text")] : []),
   ] : [{ key: "raw", label: "Task command", value: raw, type: "text", error: typeof errors.target === "string" ? errors.target : undefined }];
   rows.push({ key: "confirm", label: "Confirm execution (Y)", footer: true, disabled: controller.permission === "read_only", action: () => { void validate(task, true); } },
     { key: "cancel", label: "Cancel (N)", footer: true, action: dismiss });
-  return <FormPanel title="Task overview" theme={controller.theme} active={active} busy={busy} rows={rows} confirmKeys
-    notice={controller.permission === "read_only" ? "Read-Only: change permission before running a task." : undefined}
+  return <FormPanel title={t("Task overview")} theme={controller.theme} active={active} busy={busy} rows={rows} confirmKeys
+    notice={controller.permission === "read_only" ? t("Read-Only: change permission before running a task.") : undefined}
     onChange={change} onSave={() => { void validate(task, true); }} onCancel={dismiss} />;
 }

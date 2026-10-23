@@ -4,6 +4,7 @@ import { useKeyboard } from "@opentui/react";
 import type { ThemeId } from "../theme/palette";
 import { palettes } from "../theme/palette";
 import { visibleText } from "./content";
+import { useI18n } from "../i18n";
 
 export interface FormRow {
   key: string; label: string; value?: unknown; displayValue?: string; choices?: unknown[]; choiceLabels?: string[];
@@ -14,6 +15,7 @@ export function FormPanel({ title, rows, theme, active, busy, onChange, onSave, 
   title: string; rows: FormRow[]; theme: ThemeId; active: boolean; busy?: boolean; notice?: string;
   onChange: (key: string, value: unknown) => void; onSave: () => void; onCancel: () => void; confirmKeys?: boolean;
 }) {
+  const t = useI18n();
   const [focus, setFocus] = useState(0);
   const focusIndex = useRef(0);
   const [editing, setEditing] = useState(false);
@@ -49,7 +51,7 @@ export function FormPanel({ title, rows, theme, active, busy, onChange, onSave, 
       const value = row.type === "secret" ? text === "!clear" ? Array.isArray(row.value) ? [] : "" : Array.isArray(row.value) ? JSON.parse(text) : text
         : row.type === "number" || typeof row.value === "number" ? Number(text)
           : row.type === "json" || (typeof row.value !== "string" && row.type !== "text") ? JSON.parse(text) : text;
-      if (typeof value === "number" && !Number.isFinite(value)) throw new Error("Enter a valid number");
+      if (typeof value === "number" && !Number.isFinite(value)) throw new Error(t("Enter a valid number"));
       onChange(row.key, value); setEditing(false); setError("");
     } catch (error) { setError(String(error)); }
   }
@@ -82,15 +84,15 @@ export function FormPanel({ title, rows, theme, active, busy, onChange, onSave, 
   });
   function renderRow(item: FormRow, index: number) {
     const selected = index === focus;
-    const value = item.displayValue ?? (item.type === "secret" && item.value ? "•••••••• (saved)"
-      : typeof item.value === "boolean" ? item.value ? "[x] Enabled" : "[ ] Disabled"
+    const value = item.displayValue ?? (item.type === "secret" && item.value ? t("•••••••• (saved)")
+      : typeof item.value === "boolean" ? t(item.value ? "[x] Enabled" : "[ ] Disabled")
         : typeof item.value === "string" ? item.value || "—" : JSON.stringify(item.value ?? null));
     return <box id={`form-row-${index}`} key={item.key} flexDirection="column" flexShrink={0}
       onMouseDown={() => { if (active && !busy && !editing) { focusIndex.current = index; setFocus(index); if (item.footer) activate(); } }}>
-      {item.section && <text fg={p.action}><b>{` ${item.section} ─────────────`}</b></text>}
+      {item.section && <text fg={p.action}><b>{` ${t(item.section)} ─────────────`}</b></text>}
       <box flexDirection="row" backgroundColor={selected ? p.plate : p.panel}>
         <text fg={item.error ? p.error : selected ? p.action : p.muted} width={confirmKeys ? 24 : undefined} wrapMode="word">
-          {visibleText(`${selected ? "›" : " "} ${item.label}${!confirmKeys && !item.action ? ": " : ""}`)}
+          {visibleText(`${selected ? "›" : " "} ${t(item.label)}${!confirmKeys && !item.action ? ": " : ""}`)}
         </text>
         {!item.action && (selected && editing ? <box flexGrow={1} minWidth={1}>
           <textarea key={item.key} id="form-editor" ref={editor} focused={active} initialValue={buffer}
@@ -102,7 +104,7 @@ export function FormPanel({ title, rows, theme, active, busy, onChange, onSave, 
           </box>}
         </box> : item.choices?.length && confirmKeys ? <text flexGrow={1} wrapMode="word">
           {item.choices.map((choice, i) => <span key={i} fg={choice === item.value ? p.background : p.hint}
-            bg={choice === item.value ? p.action : p.panel}>{` ${item.choiceLabels?.[i] ?? String(choice)} `}</span>)}
+            bg={choice === item.value ? p.action : p.panel}>{` ${t(item.choiceLabels?.[i] ?? String(choice))} `}</span>)}
         </text> : <text flexGrow={1} fg={item.error ? p.error : typeof item.value === "boolean" && item.value ? p.success : p.text} wrapMode="word">{visibleText(value)}</text>)}
       </box>
       {item.error && <text fg={p.error} wrapMode="word">{visibleText(item.error)}</text>}
@@ -121,10 +123,10 @@ export function FormPanel({ title, rows, theme, active, busy, onChange, onSave, 
         onMouseDown={() => { if (active && !busy && !editing) { focusIndex.current = index; setFocus(index); activate(); } }}>
         <text fg={item.disabled ? p.hint : item.key === "confirm" ? p.background : p.soft}
           bg={item.disabled ? p.plate : item.key === "confirm" ? p.action : p.plate}>
-          {visibleText(` ${index === focus ? "›" : " "} ${item.label} `)}
+          {visibleText(` ${index === focus ? "›" : " "} ${t(item.label)} `)}
         </text>
       </box>)}
     </box>
-    <text fg={p.muted}>{busy ? "Working…" : editing ? "Enter apply · Shift+Enter newline · Esc cancel edit" : "↑↓/Tab select · Enter edit/cycle · Esc cancel"}</text>
+    <text fg={p.muted}>{t(busy ? "Working…" : editing ? "Enter apply · Shift+Enter newline · Esc cancel edit" : "↑↓/Tab select · Enter edit/cycle · Esc cancel")}</text>
   </box>;
 }

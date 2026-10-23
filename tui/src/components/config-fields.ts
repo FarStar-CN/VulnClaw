@@ -1,4 +1,5 @@
 import { record } from "../session/controller";
+import { t } from "../i18n";
 
 export const settingCategories = [
   ["general", "General"], ["model", "Model"], ["themes", "Themes"], ["execution", "Execution"],
@@ -157,18 +158,18 @@ export function parseField(text: string, schema: Record<string, unknown>, previo
   const numeric = schema.type === "integer" || schema.type === "number" || typeof previous === "number";
   if (numeric) {
     const value = Number(text);
-    if (!text.trim() || !Number.isFinite(value)) throw new Error("Enter a valid number.");
-    if (schema.type === "integer" && !Number.isInteger(value)) throw new Error("Enter a whole number.");
+    if (!text.trim() || !Number.isFinite(value)) throw new Error(t("Enter a valid number."));
+    if (schema.type === "integer" && !Number.isInteger(value)) throw new Error(t("Enter a whole number."));
     for (const [limit, invalid, sign] of [
       ["minimum", value < Number(schema.minimum), "at least "],
       ["maximum", value > Number(schema.maximum), "at most "],
       ["exclusiveMinimum", value <= Number(schema.exclusiveMinimum), "greater than "],
       ["exclusiveMaximum", value >= Number(schema.exclusiveMaximum), "less than "],
-    ] as const) if (schema[limit] !== undefined && invalid) throw new Error("Value must be " + sign + schema[limit] + ".");
+    ] as const) if (schema[limit] !== undefined && invalid) throw new Error(t("Value must be {comparison}{limit}.", { comparison: t(sign), limit: String(schema[limit]) }));
     return value;
   }
-  if (typeof schema.minLength === "number" && text.length < schema.minLength) throw new Error("Enter at least " + schema.minLength + " characters.");
-  if (typeof schema.maxLength === "number" && text.length > schema.maxLength) throw new Error("Use at most " + schema.maxLength + " characters.");
-  if (typeof schema.pattern === "string" && !new RegExp(schema.pattern).test(text)) throw new Error("Value must match " + schema.pattern);
+  if (typeof schema.minLength === "number" && text.length < schema.minLength) throw new Error(t("Enter at least {count} characters.", { count: schema.minLength }));
+  if (typeof schema.maxLength === "number" && text.length > schema.maxLength) throw new Error(t("Use at most {count} characters.", { count: schema.maxLength }));
+  if (typeof schema.pattern === "string" && !new RegExp(schema.pattern).test(text)) throw new Error(t("Value must match {pattern}", { pattern: schema.pattern }));
   return text;
 }

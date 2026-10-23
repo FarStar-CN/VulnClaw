@@ -8,6 +8,7 @@ import { disclosureIcon, disclosureWidth, visibleText } from "../components/cont
 import { Transcript, type ReadingPosition } from "../components/Transcript";
 import { geometry, MCP_LIST_ROWS, tuiChromeHeight, type ViewId, type WorkbenchState, type Region } from "./layout";
 import { activeAgentRows } from "./agents";
+import { useI18n, statusLabel } from "../i18n";
 
 const labels: Record<ViewId, string> = { status: "Status", capabilities: "Capabilities", output: "Session transcript", findings: "Findings inspector", subagents: "Subagents" };
 
@@ -24,6 +25,7 @@ function fitText(text: string, width: number): string {
 export function Workbench({ controller, model, width, height, now = Date.now() }: {
   controller: SessionController; model: WorkbenchState; width: number; height: number; now?: number;
 }) {
+  const t = useI18n();
   const renderer = useRenderer();
   const root = useRef<BoxRenderable>(null);
   const positions = useMemo(() => new Map<string, ReadingPosition>(), []);
@@ -85,7 +87,9 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
     box?.scrollChildIntoView(`finding-row-${findingSelection}`);
   }, [findingSelection, renderer]);
   if (layout.tooSmall) return <box height={Math.max(1, height)}><text wrapMode="word" fg={p.accent}>
-    {`Terminal too small. Need at least ${layout.minimumWidth} columns and ${layout.minimumHeight + tuiChromeHeight(controller.composerRows, controller.completionRows)} rows. Ctrl+C cancels/exits.`}
+    {t("Terminal too small. Need at least {columns} columns and {rows} rows. Ctrl+C cancels/exits.", {
+      columns: layout.minimumWidth, rows: layout.minimumHeight + tuiChromeHeight(controller.composerRows, controller.completionRows),
+    })}
   </text></box>;
   const local = (event: { x: number; y: number }) => ({ x: event.x - (root.current?.x ?? 0), y: event.y - (root.current?.y ?? 0) });
   function content(region: Region) {
@@ -95,23 +99,23 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
       const last = record(state?.last_run);
       const policy = permissionInfo(controller.permission, controller.theme);
       const rows = [
-        ["Permission", policy.label, policy.color], ["Target", state?.target || "not selected", p.muted],
+        ["Permission", policy.label, policy.color], ["Target", state?.target || t("not selected"), p.muted],
         ["Scope", `H${state?.task_constraints.allowed_hosts?.length ?? 0} P${state?.task_constraints.allowed_ports?.length ?? 0} A${state?.task_constraints.allowed_actions?.length ?? 0}`, p.muted],
         ["Violations", String(state?.constraint_violations.length ?? 0), state?.constraint_violations.length ? p.warning : p.muted],
       ];
       if (controller.activity === "task") rows.push(["", "", p.muted], ["Task execution", "", p.accent],
-        ["State", controller.approvals.length ? "Awaiting approval" : state?.task.waiting_for_input ? "Requires input" : state?.task.active ? "Running" : controller.taskStatus, p.soft],
-        ["Phase", controller.taskStatus === "Submitting" ? "—" : state?.phase ?? "idle", p.muted], ["Found", String(controller.findings.length), p.success],
-        ["Last run", String(record(last.run).name ?? last.status ?? "none"), p.muted], ["", "", p.muted],
+        ["State", t(controller.approvals.length ? "Awaiting approval" : state?.task.waiting_for_input ? "Requires input" : state?.task.active ? "Running" : controller.taskStatus), p.soft],
+        ["Phase", controller.taskStatus === "Submitting" ? "—" : statusLabel(state?.phase ?? "idle"), p.muted], ["Found", String(controller.findings.length), p.success],
+        ["Last run", String(record(last.run).name ?? (last.status ? statusLabel(String(last.status)) : t("none"))), p.muted], ["", "", p.muted],
         [state?.task.active || controller.taskStatus === "Submitting" ? "Current command" : "Last command", "", p.accent], ["", controller.taskLabel, p.muted]);
       return <scrollbox id="status-scroll" flexGrow={1} scrollX={false}>
-        <text fg={p.action}><b>Workspace</b></text>
+        <text fg={p.action}><b>{t("Workspace")}</b></text>
         {rows.map(([label, value, color], index) => value && label
           ? <box key={index} flexDirection="row" flexShrink={0}>
-            <text fg={color} width={12}>{label}</text>
+            <text fg={color} width={12}>{t(label)}</text>
             <text fg={color} flexGrow={1} wrapMode="word">{visibleText(value)}</text>
           </box>
-          : <text key={index} wrapMode="word" fg={color}>{visibleText(value || label || " ")}</text>)}
+          : <text key={index} wrapMode="word" fg={color}>{visibleText(value || t(label) || " ")}</text>)}
       </scrollbox>;
     }
     if (region.id === "capabilities") {
@@ -131,12 +135,12 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
             height={1} flexShrink={0} wrapMode="none" fg={server.ready ? p.success : p.error}>
             {fitText(`  ● ${visibleText(server.name).replace(/\s/g, " ")}`, region.content.width - 1)}
           </text>) : <text id="mcp-empty" height={1} fg={p.muted}>
-            {fitText("  No MCP services enabled", region.content.width - 1)}
+            {fitText("  " + t("No MCP services enabled"), region.content.width - 1)}
           </text>}
         </scrollbox>}
         <box id="skills-count" height={1} flexShrink={0} flexDirection="row">
           <text height={1} flexShrink={0} fg={p.text}>
-            {fitText("Skills loaded", Math.max(1, region.content.width - String(controller.runtime?.skills_loaded ?? 0).length))}
+            {fitText(t("Skills loaded"), Math.max(1, region.content.width - String(controller.runtime?.skills_loaded ?? 0).length))}
           </text>
           <box flexGrow={1} /><text height={1} fg={p.accent}>{String(controller.runtime?.skills_loaded ?? 0)}</text>
         </box>
@@ -150,15 +154,15 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
       </text>)}
     </scrollbox>;
     return <scrollbox id="findings-scroll" flexGrow={1} scrollX={false}>
-      {!controller.findings.length && <text fg={p.muted}>No findings</text>}
+      {!controller.findings.length && <text fg={p.muted}>{t("No findings")}</text>}
       {controller.findings.map((finding, index) => <box id={`finding-row-${index}`} key={finding.id} flexDirection="column" flexShrink={0}
         backgroundColor={model.layout.focus === "findings" && !controller.inputFocused && index === findingSelection ? p.plate : p.panel}
         onMouseDown={() => { setFindingIndex(index); if (finding.evidence_refs?.length) setExpandedFinding((id) => id === finding.id ? null : finding.id); }}>
         <text wrapMode="word" fg={severityColor(finding.severity, controller.theme)}>
           <b>{finding.evidence_refs?.length ? disclosureIcon(expandedFinding === finding.id) : " ".repeat(disclosureWidth)}</b>
           {finding.severity.toLowerCase() === "critical"
-            ? <b>{visibleText(`[${finding.severity.toUpperCase()}] ${finding.title}`)}</b>
-            : visibleText(`[${finding.severity.toUpperCase()}] ${finding.title}`)}
+            ? <b>{visibleText(`[${statusLabel(finding.severity.toUpperCase())}] ${finding.title}`)}</b>
+            : visibleText(`[${statusLabel(finding.severity.toUpperCase())}] ${finding.title}`)}
         </text>
         <text wrapMode="word" fg={p.muted}>{visibleText(`  ${finding.target}${finding.line ? `:${finding.line}` : ""}`)}</text>
         {expandedFinding === finding.id && finding.evidence_refs?.map((ref, i) => <text key={i} wrapMode="word" fg={p.soft}>
@@ -183,7 +187,7 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
     {layout.views.map((region) => {
       const collapsed = [...model.layout.primary, ...model.layout.secondary].find((view) => view.id === region.id)?.collapsed;
       const focused = model.layout.focus === region.id && !controller.inputFocused;
-      const source = region.id === "output" ? ` · ${viewing?.name ?? controller.source}${viewing && !["running", "pending"].includes(viewing.status) ? ` (${viewing.status})` : ""}` : "";
+      const source = region.id === "output" ? ` · ${viewing?.name ?? controller.source}${viewing && !["running", "pending"].includes(viewing.status) ? ` (${statusLabel(viewing.status)})` : ""}` : "";
       const pulse = controller.state?.task.active && Math.floor(now / 500) % 2 === 0;
       return <box id={`${region.id}-pane`} key={region.id} position="absolute" left={region.x} top={region.y}
         width={region.width} height={region.height} backgroundColor={region.id === "output" ? p.transcript : p.panel}
@@ -208,7 +212,7 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
                 controller.inputFocused = false; model.collapse(region.id, layout); controller.changed();
               }}><b>{disclosureIcon(!collapsed)}</b></text>}
             <text height={1} flexGrow={1} wrapMode="none" selectable={false} fg={focused ? pulse ? p.accent : p.action : p.accent}>
-              {fitText(`${labels[region.id]}${region.id === "findings" ? ` (${controller.findings.length})` : ""}${source}${focused ? " *" : ""}${region.id === "output" && pulse ? " ●" : ""}`, region.content.width - (region.id === "output" ? 0 : disclosureWidth))}
+              {fitText(`${t(labels[region.id])}${region.id === "findings" ? ` (${controller.findings.length})` : ""}${source}${focused ? " *" : ""}${region.id === "output" && pulse ? " ●" : ""}`, region.content.width - (region.id === "output" ? 0 : disclosureWidth))}
             </text>
           </box>
           <box flexDirection="column" flexGrow={1} minHeight={0} visible={!collapsed}>{content(region)}</box>

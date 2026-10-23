@@ -1206,9 +1206,11 @@ def _session_scope_defaults(bootstrap: dict[str, Any]) -> dict[str, Any]:
 async def create_runtime(config: Any = None) -> ApplicationRuntime:
     from vulnclaw.agent.core import AgentCore
     from vulnclaw.config.settings import load_config
+    from vulnclaw.i18n import init_i18n
     from vulnclaw.mcp.lifecycle import MCPLifecycleManager
 
     config = config if config is not None else load_config()
+    init_i18n(config=config)
     mcp_manager = MCPLifecycleManager(config)
     try:
         started = mcp_manager.start_enabled_servers()
