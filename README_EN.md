@@ -108,6 +108,31 @@ cd VulnClaw
 pip install -e .
 ```
 
+### Install the interactive client
+
+The Python package runs every headless command independently. `tui` and `repl` also
+need the platform's `vulnclaw-terminal` executable (`.exe` on Windows). Rename the downloaded artifact to that filename, make it executable on POSIX,
+and put it on PATH or set `VULNCLAW_TERMINAL_BINARY` to its absolute path. Native OpenTUI
+libraries, parser worker and highlighting resources are embedded; running the executable
+does not require Bun. Install Python and business dependencies separately.
+Release artifacts are available for Linux x64 and Windows x64.
+
+Source builds require Bun **1.3.14** and the committed `tui/bun.lock`:
+
+```bash
+cd tui
+bun install --frozen-lockfile
+bun run build
+cd ..
+vulnclaw tui                 # finds the checkout's tui/dist executable
+vulnclaw repl
+```
+
+Both shells share TypeScript / React / OpenTUI components and a Python session backend.
+TUI uses the alternate screen; REPL submits completed messages to terminal scrollback,
+keeping the composer and live content in a footer. Missing terminal artifacts produce
+installation instructions while the other Python commands remain usable.
+
 ### Run with Docker (optional)
 
 The image bundles the Web UI plus runtimes (`npx` / `uvx`) for default MCP servers. All state persists in a `/data` volume.
@@ -142,10 +167,10 @@ vulnclaw config set llm.model your-model-name
 # 2. Set API Key
 vulnclaw config set llm.api_key sk-your-key-here
 #    — or sign in with ChatGPT subscription (no API key needed):
-#      vulnclaw login   (browser sign-in; note ToS caveat)
+#      vulnclaw login --token-file oauth-bundle.json
 
-# 3. Default: open the original CLI / REPL
-vulnclaw
+# 3. Explicitly open the interactive REPL
+vulnclaw repl
 
 # 4. Optional: open the TUI workbench
 vulnclaw tui
@@ -157,65 +182,22 @@ vulnclaw tui
 vulnclaw doctor
 ```
 
-Sample output:
-
-```
-🦞 VulnClaw Environment Check
-
-  Python: 3.14.4
-  Node.js: v24.14.1
-  npx: installed
-  nmap: installed
-
-LLM Config:
-  Provider: openai
-  Auth Mode: static
-  Credentials: configured
-  Base URL: https://api.openai.com/v1
-  Model: gpt-4o
-
-MCP Services:
-  fetch: enabled [P0]
-  memory: enabled [P0]
-  ...
-
-✅ Ready. Run vulnclaw to start.
-```
+`doctor` emits JSON with the Python version, executable paths, credential readiness and MCP diagnostics. Use `--probe-llm` to explicitly probe the configured endpoint.
 
 ---
 
 ## CLI Command Reference
 
 ```bash
-$ vulnclaw --help
-
-🦞 VulnClaw — AI-powered penetration testing CLI
-
- Usage: vulnclaw [OPTIONS] COMMAND [ARGS]...
-
- Commands:
-   run           🚀 Full pentest in one shot (defaults to the solve engine)
-   solve         🧩 Goal-driven solver (model-led, no fixed rounds)
-   persistent    🔄 Persistent pentesting (100 rounds/cycle)
-   recon         🔍 Reconnaissance only
-   scan          🔎 Vulnerability scanning
-   exploit       💥 Exploitation phase
-   report        📝 Generate report from session JSON
-   repl          💬 Start the classic REPL
-   config        ⚙️  Manage config (set/get/list/provider)
-   plugins       🧩 Manage vulnerability detection plugins (list/info/run)
-   init          🔧 Initialize configuration
-   doctor        🏥  Check runtime environment
-   tui           🖥️  Open the terminal UI workbench
-   web           🌐 Launch local Web UI
-   code          🧬 Local source-code security scan (no network target)
+vulnclaw --help
+vulnclaw manual
 ```
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `vulnclaw` | Open the original CLI / REPL by default | `vulnclaw` |
+| `vulnclaw` | Show help | `vulnclaw` |
 | `vulnclaw tui` | Terminal UI workbench | `vulnclaw tui --target target.com` |
-| `vulnclaw repl` | Start the classic REPL | `vulnclaw repl` |
+| `vulnclaw repl` | Start the OpenTUI scrollback REPL | `vulnclaw repl` |
 | `vulnclaw solve <target>` | Goal-driven solver (no fixed rounds) | `vulnclaw solve target.com --goal "get the flag"` |
 | `vulnclaw run <target>` | Full pentest in one shot | `vulnclaw run 192.168.1.1` |
 | `vulnclaw persistent <target>` | Persistent pentesting (100 rounds/cycle) | `vulnclaw persistent 192.168.1.1` |
@@ -234,32 +216,15 @@ $ vulnclaw --help
 
 ## Usage
 
-### Mode 1: CLI / REPL (Default)
+### Mode 1: Interactive REPL
 
 ```bash
-vulnclaw
+vulnclaw repl
 ```
 
-No-args startup opens the 🦞 interactive shell for natural-language use:
-
-```
-🦞 vulnclaw> pentest 192.168.1.100 — this is my authorized lab
-
-[*] Entering autonomous pentest mode. Press Ctrl+C to interrupt.
-── Round 1 ──
-  [+] Target: 192.168.1.100
-  [+] Open ports: 22, 80, 443, 8080
-  [+] Web fingerprint: Apache/2.4.62
-── Round 2 ──
-  [+] Discovered /manager/html (Tomcat Manager)
-  [+] Matched CVE-202X-XXXX: Apache Tomcat Auth Bypass
-── Round 3 ──
-  [+] Vulnerability verified
-
-🦞 192.168.1.100 | report> generate pentest report
-[+] Report saved: ./reports/192.168.1.100_20260418.md
-[+] PoC saved: ./pocs/CVE-202X-XXXX.py
-```
+`vulnclaw` without arguments prints help. Enter the conversation shell explicitly with
+`repl`; Python interprets ordinary text. Use slash commands and the task overview when
+you need explicit task parameters.
 
 **The REPL and native TUI share input semantics. Plain text is natural language:**
 
@@ -268,20 +233,21 @@ No-args startup opens the 🦞 interactive shell for natural-language use:
 | `/run <target>` | Execute a task; `--allow-actions` limits actions, `--continuous` repeats cycles |
 | `/recon` / `/scan` / `/exploit` / `/persistent` | Shorthands for constrained or continuous `/run` |
 | `/target <host>` / `/scope ...` | Set the target and scope defaults |
-| `/mode plan` / `/mode agent` | Plan or execute; new sessions default to Agent |
-| `/permission ask` / `auto_review` / `full_access` | Set execution approval independently |
+| `/permission read_only` / `ask` / `auto_review` / `full_access` | Unified permission policy; Ask is the default |
 | `/clear` / `/new` | Clear the display / start a new conversation; saved tasks remain |
 | `/report` / `/compact` | Export existing results / compact context |
-| `/status` / `/tools` / `/think on` / `/think off` | Status, tools, reasoning display |
+| `/think on` / `/think off` | Reasoning display |
 | `/help` / `/quit` | Help / exit |
 
-Select skills in the prompt, for example `Use VulnClaw skill web-pentest. Inspect login.` Automatic selection remains available. There is no `/skill` or `/<skill-name>` launch syntax. Natural-language reports use the requested meaning and configured defaults; explicit requests override defaults. See the [Markdown architecture](docs/architecture/tui-natural-language-design.md).
+Type `@` to filter skills; Enter completes the selection as a backend-readable prompt. Select skills in the prompt, for example `Use VulnClaw skill web-pentest. Inspect login.` Automatic selection remains available. There is no `/skill` or `/<skill-name>` launch syntax. Natural-language reports use the requested meaning and configured defaults; explicit requests override defaults. See the [Markdown architecture](docs/architecture/tui-natural-language-design.md).
 
 **Auto Pentest Trigger:** Keywords like "pentest", "find flag", "bruteforce" + a target address auto-enter the multi-round autonomous loop. `Ctrl+C` to interrupt anytime.
 
 ### Mode 2: TUI Workbench
 
-The terminal workbench accepts natural language by default, with conversation context, streamed tool output, approvals and cancellation. Explicit task commands keep their launch confirmation.
+The terminal workbench accepts natural language by default, with conversation context, streamed tool output, approvals and cancellation. `/run <target>` opens an editable task overview with target, host/port/path limits, action presets, single or continuous execution, PoC verification, automatic reporting and resume. Defaults are filled from the backend. Use Up/Down or Tab to select, Enter to edit or toggle, and Esc to undo an edit or close the overview. Y confirms and N cancels outside text editing. Other task commands retain their existing confirmation.
+
+The four test actions form complementary allow and block lists as you toggle them; startup arguments provide the initial selection. Quick selects recon, Standard selects recon and scan, and Deep also selects exploit. Post-exploitation can be enabled separately. Manual changes display Custom. Press Enter on Action preset to cycle Quick → Standard → Deep → Quick; Custom starts at Quick. Press Enter on Execution to switch Once/Continuous immediately, preserving the action selection. Neither switch requires a second confirmation. With no explicit action restrictions, `--mode continuous` allows all four actions and keeps the configured cycle defaults.
 
 ```bash
 vulnclaw tui
@@ -289,20 +255,67 @@ vulnclaw tui --target https://target.example --mode quick --only-port 443
 vulnclaw tui --dry-run --target https://target.example --mode deep --only-path /admin
 ```
 
-The Rust workbench has configurable containers: Status on the left, Findings and Subagents stacked on the right, agent output in the center, and an input area below. Subagent data is currently unavailable.
+The OpenTUI workbench has configurable Status, Capabilities, Findings and Subagents panels, source-specific output in the center, and a multiline composer below. Finding details expose evidence, and selecting a subagent changes the reading source.
 
-- Drag a view title between sidebars or to reorder it. An orange preview shows the module's position and size after release; click `v` / `>` to collapse or expand.
+The transcript groups tool calls and results into execution records. Coordination and local analysis use semantic action names with business details shown in one expansion; skill references show only their name and loading status. Parallel dispatches from the same turn form one group, and background launches show Dispatched. Commands, HTTP requests, scripts and retries retain the actual execution details and wrap long content when expanded. Use Alt+Up/Down to select and Enter to expand or collapse; mouse actions only respond on the arrow and label. Execution records have no raw invocation entry or copy button. REPL writes each finished record to terminal history once.
+
+`/exp` opens experience review with keyboard focus on the status filters. Use Left/Right to switch status, Down/Enter to enter the list, Enter for details, and Tab/Shift+Tab to move between visible regions. Borders and `›` show keyboard focus. Automatic lesson generation and injection of approved lessons are disabled by default. Manual `/learn <run-name>` and `/exp` remain available. Enable both automatic behaviors with `vulnclaw config set session.experience_enabled true`, or **Automatic experience learning** in `/settings → Advanced`.
+
+Use `/theme` to cycle through all available themes, or `/theme <name>` to select one. Type `/theme ` to complete a name, including custom themes. Selection and complete palettes are stored together under `terminal.theme` and `terminal.themes` in the main `config.yaml` (default: `~/.vulnclaw/config.yaml`; override its directory with `VULNCLAW_CONFIG_DIR`).
+
+Open `/settings → Themes`, select a theme and press Enter to edit, or choose `＋ Add theme`. A new theme starts with a complete copy of the current palette and remains independent afterward. Colors are grouped into surfaces, text, borders and accents, semantic colors, code and permission colors, with a swatch and `#RRGGBB` value. Enter applies a field and Esc reverts its active edit. `Apply to draft` returns to the list; `Set as current theme` also selects the theme; `Ctrl+S` saves all settings. Successful saves immediately update the interface and existing message syntax highlighting. Failed saves retain the draft.
+
+Each theme stores every color independently. See [vulnclaw/config/terminal_themes.json](vulnclaw/config/terminal_themes.json) for complete defaults. Names start with a lowercase letter and may contain digits, `-` and `_`. To add a theme by hand, copy a complete palette and edit it, then restart the client to read the configuration; no rebuild is needed.
+
+On the first backend connection with no `terminal` section in the main configuration, the client migrates effective colors from the old `themes.json` and the selection from `layout.json`, preserving the original files. After migration, the main configuration owns themes and the layout file stores layout only.
+
+| Color fields | Purpose |
+| --- | --- |
+| `background` / `transcript` | Global and border background / transcript body and title background |
+| `panel` / `title` / `plate` | Sidebars and dialogs / sidebar titles / composer and selected row backgrounds |
+| `action` / `accent` / `border` / `composerBorder` | Brand and actions / emphasis text / ordinary borders / composer border |
+| `text` / `soft` / `muted` / `hint` | Body, secondary, muted and hint text |
+| `error` / `warning` / `signal` / `success` / `low` | Error, high, medium, success and low semantic colors |
+| `dock` / `codeString` | Docking preview / code strings |
+| `permissionReadOnly` / `permissionAsk` / `permissionAutoReview` / `permissionFullAccess` | Text colors for the four permission policies |
+
+The built-in blue and orange themes independently store charcoal palettes with a lighter `#1E2127` transcript background, blue or copper borders, and brighter accents for focus. The workbench keeps its thin borders, and the bottom composer retains its independent frame. Bright fills are limited to the brand and small action buttons. Default semantic colors are red for critical severity and errors, orange for high, yellow for medium, cyan for low, and green for success. Text labels remain visible.
+
+- Drag a view title between sidebars or to reorder it. A preview in the theme's accent color shows the module's position and size after release; click `v` / `>` to collapse or expand.
 - Drag a separator to resize neighboring containers or expanded views. Press Esc during a drag to cancel.
-- The mouse wheel scrolls the view under the pointer. Click to focus, use arrow keys to scroll, `Ctrl+Left/Right` to cycle views, and `Ctrl+Y` to copy the focused view.
-- An empty secondary sidebar collapses automatically. Drag a view to the workbench's right edge for an orange docking preview, then release to reopen it. The primary sidebar always keeps at least one view.
+- The mouse wheel scrolls the view under the pointer. Click to focus, use arrow keys to scroll, `Ctrl+Left/Right` to cycle views. Typing returns focus to the composer.
+- An empty secondary sidebar collapses automatically. Drag a view to the workbench's right edge for a docking preview, then release to reopen it. The primary sidebar always keeps at least one view.
 - Layout changes save automatically to `VULNCLAW_HOME/tui/layout.json` (default `~/.vulnclaw/tui/layout.json`). The command palette grows the input area automatically. Small terminals show the required dimensions and restore the layout when enlarged.
 
-Native text selection while mouse capture is active depends on your terminal's modifier keys; `Ctrl+Y` copies an individual view. On Windows terminals `Ctrl+V`, `Shift+Insert`, and the right mouse button read the system clipboard directly into the composer (Win32 API, microseconds; the platform has no bracketed paste, so pasting never depends on the terminal synthesizing keystrokes); Unix terminals paste via bracketed paste.
+Report exports list the report, JSON and SARIF paths in the transcript. `Shift+Enter` inserts a newline;
+Enter submits. The first Tab accepts a completion; later Tabs cycle the original candidates.
+Shift+Tab cycles Read-Only → Ask → Auto-review → Full access. The lower-left label uses
+cyan, amber, blue and red text and waits for backend confirmation. `/think on|off` controls reasoning; Esc closes overlays.
+Windows supports `Ctrl+V` / `Shift+Insert` clipboard paste; POSIX supports bracketed paste.
+Use `/config` for the five provider fields, `/settings` for the complete configuration,
+and `/language` for language. Install and configure environment dependencies and MCP
+services manually. The Python backend owns authoritative session and permission state.
+`/scope`, `/scope --allowed-ports 80,443`, and `/scope reset` open an editable draft. Save with Y, the confirmation button, or Ctrl+S outside field editing; cancel with N/Esc. Scope is read-only during active tasks. `/help` lists categorized commands in the transcript; `/help scope` shows detailed syntax and examples.
+`/experience` (or `/exp`) opens experience review with Pending, Approved, Rejected and All filters. Wide terminals show a list beside the selected lesson; narrow terminals use Enter for details and Esc to return. Details include matching context, guidance, tags, confidence and provenance. Use E to edit, A to approve, R to reject, M to copy and F5 to refresh. In the editor, Enter applies a field; Ctrl+S outside field editing or the Save button submits changes, and Esc cancels. Successful changes retain the panel and add a transcript receipt. `/experience list --status all` and `/experience show ID` also open the corresponding view.
 
-Common menus:
-- **Menu 3** — Set testing scope (host/port/path/allowed actions/blocked actions)
-- **Menu 7** — Environment diagnostics (full details via `vulnclaw doctor`)
-- **Menu 8** — Model/API settings (switch Provider, Base URL, Model, API Key)
+In Capabilities, `MCP` shows the ready/enabled counts. Click its label or
+triangle to expand all enabled MCP services, shown as a dot and service name:
+green for ready services, including local implementations, and red for services
+that are not connected. Focus the panel and press Enter to toggle; arrows,
+PageUp/PageDown and the wheel scroll the list while the Skills count stays visible.
+
+`/settings` groups General, Model, Execution, Approval & tools, MCP, Recon and Advanced
+settings. Tab switches between categories and fields; arrows select and Enter edits.
+Ctrl+S includes the active edit and saves without closing. Esc reverts an edit, returns
+to the parent page, or closes and discards unsaved changes. The fixed footer shows field
+help, limits, errors and the change count. MCP uses service forms and item editors;
+credentials have explicit replace/clear actions. Provider connections reuse `/config`.
+
+Command history is saved without history completion or recall shortcuts. Legacy Plan/Agent mode
+and permission are never restored. Layout uses the version 2 format; themes live in the main configuration. Existing Python
+transcripts, findings, evidence and reports remain in place. Read-Only permits explicitly supported
+local reads, existing evidence and skill references; writes, scans, active probes, exploitation,
+report export and unknown tools are denied without an approval fallback.
 
 ### Mode 3: Single Command
 
@@ -337,6 +350,36 @@ The native TUI's `/run <target>` exports a report after execution and finding au
 using `session.report_format`, and displays the report, JSON and SARIF paths.
 Artifacts go under the run's `reports/` directory when a run directory is available.
 Export failures display their cause while preserving the completed task and saved audits.
+
+### Headless machine calls
+
+Business commands other than `tui` / `repl` are non-interactive and do not start Bun.
+By default stdout contains one `command_result` JSON object. `--format jsonl` emits
+version 2 events followed by exactly one result; diagnostics go to stderr. Help, version
+and manual remain readable text; Web is an explicitly started service.
+
+```bash
+vulnclaw run lab.example --format jsonl --max-steps 12
+vulnclaw ask "show current status" --format json
+vulnclaw run --input-json task.json
+cat task.json | vulnclaw run --input-json -
+vulnclaw code scan ./src --layer L1,L2 --format sarif --output scan.sarif --output-format json
+```
+
+`task.json` uses the task DTO, for example
+`{"command":"run","target":"lab.example","options":{"max_steps":12}}`.
+Explicit CLI and JSON values for the same field conflict, even when equal.
+For `code scan`, `--format` selects the artifact format and `--output-format` selects the
+machine envelope. Other commands use `--format`. `--non-interactive` remains accepted
+for migration and uses the same execution path.
+
+Missing credentials, answers or approval yield `requires_input` / `requires_approval`
+and clean up before exit. Permissions are never widened automatically. SIGINT/SIGTERM
+cancel through the shared cleanup path. Exit codes: 0 completed; 1 failure, cancellation
+or required interaction; 2 verified finding threshold; 3 candidates only with `--fail-on any`.
+`--fail-on never` does not fail for findings. Import an existing OAuth token bundle with
+`login --token-file FILE|-`; missing arguments yield `requires_input`, without opening
+a browser. Configuration output masks sensitive values.
 
 ### Mode 4: Persistent Pentesting
 
@@ -439,7 +482,7 @@ FINAL passes evidence gate → accepted; otherwise the rejection is fed back and
 
 | Module | File | Description |
 |--------|------|-------------|
-| **CLI/TUI Entry** | `cli/main.py` + `cli/tui.py` | Typer commands + REPL + TUI |
+| **CLI/TUI Entry** | `cli/` + `tui/src/` | Python headless + OpenTUI REPL/TUI |
 | **Agent Core** | `agent/core.py` | AgentCore coordination entrypoint |
 | **Solver Engine** | `agent/solver.py` + `agent/agent_state.py` | Model-led loop + AgentState evidence / steps / completion gate |
 | **Sub-Agent Runtime** | `agent/subagent/` | Parallel fan-out: budget, integration, merge, service, solve |
@@ -630,7 +673,7 @@ Dangerous tools (shell / python / PoC) prompt `Approve this execution? [y/N]` be
 vulnclaw config set safety.permission_mode full_access
 
 # 2. Current REPL session only (falls back to the config file after restart)
-mode full_access          # switch; without an argument, show the current mode
+/permission full_access   # switch; Shift+Tab also cycles policies
 
 # 3. Single run
 VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
@@ -638,8 +681,9 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 
 | Mode | Behavior |
 |------|----------|
+| `read_only` | Only explicitly supported reads; writes, scans, exploitation, report export and unknown actions are denied |
 | `ask` (default) | Every execution prompts y/N; unanswered prompts auto-deny after 300 s (`safety.approval_timeout_seconds`) |
-| `auto_review` | Read-only allowlist commands (ls / cat / nmap scans, etc.) run unattended, everything else still prompts; extend via `safety.trusted_commands` prefixes |
+| `auto_review` | Existing automatic-approval allowlist commands (ls / cat / nmap scans, etc.) run unattended, everything else still prompts; extend via `safety.trusted_commands` prefixes |
 | `full_access` | Everything runs unattended, no prompts |
 
 > ⚠️ Under `full_access`, target responses, page content and reports are untrusted input — prompt injection can drive unconfirmed arbitrary command execution. Reserve it for isolated labs, CTFs and throwaway VMs; for real engagements prefer `auto_review` plus your own trusted prefixes.
@@ -684,7 +728,6 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 | `subagent.max_model_tokens_per_group` | 1000000 | Shared token ceiling for one Leader and all its leaves |
 | `session.conversation_auto_report` | true | Export when natural-language security work completes; explicit requests override this default |
 | `session.solve_auto_report` | true | Generate a Markdown replay report when solve completes |
-| `session.solve_report_show` | true | Print the generated solve report body in the terminal |
 | `session.max_rounds` | 15 | Max rounds |
 | `session.output_dir` | ./vulnclaw-output | Report output directory |
 | `session.report_format` | markdown | Report format (markdown / html) |
@@ -695,7 +738,7 @@ VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 | `session.persistent_max_cycles` | 10 | Max cycles (0=unlimited) |
 | `session.persistent_auto_report` | true | Auto-report after each cycle |
 | `session.stale_rounds_threshold` | 5 | Dead-loop detection threshold |
-| `safety.permission_mode` | ask | Execution approval policy for dangerous tools: `ask` (default, y/N per request), `auto_review` (read-only allowlist runs unattended, rest still prompt), `full_access` (everything runs, no prompts) |
+| `safety.permission_mode` | ask | Unified permission policy: `read_only` (explicit reads only; deny other actions), `ask` (default, y/N per request), `auto_review` (read-only allowlist runs unattended, rest still prompt), `full_access` (everything runs, no prompts) |
 | `safety.approval_timeout_seconds` | 300 | How long an unanswered execution approval waits before auto-denying |
 | `safety.trusted_commands` | empty | auto_review prefixes that skip per-request approval (e.g. `nmap`, `git diff`); entries starting with a banned name are refused |
 | `safety.enable_python_execute` | true | Enable the python_execute built-in tool (disable for safer runs) |
@@ -753,7 +796,7 @@ Switch the UI language any of three ways:
 | Environment variable | `VULNCLAW_LANG=zh` / `VULNCLAW_LANG=en` |
 | Config file | `session.language: auto \| zh \| en` in `~/.vulnclaw/config.yaml` |
 
-Everything user-visible in the CLI follows the current language: REPL messages and status banners, event stream, solve reports, knowledge-base status, and LLM retry/recovery notices. Agent detection keyword tables are bilingual, so English or Chinese task phrasing is classified the same way. (Note: the web dashboard is not yet localized; that's planned separately.)
+OpenTUI and the scrollback REPL support Chinese and English controls through `session.language`. `/language zh`, `/language en` and `/language auto` save and switch immediately; you can also choose `/settings → General → Language` and save with `Ctrl+S`. Failed saves retain the active language and draft. Auto checks `VULNCLAW_LANG`, then system `LANG`, falling back to English. Existing message bodies, code, service names, theme identifiers and command arguments retain their original text. Generated messages and reports use the backend's active language. Machine keys and event types stay stable. Agent detection keyword tables are bilingual, so English or Chinese task phrasing is classified the same way.
 
 ---
 

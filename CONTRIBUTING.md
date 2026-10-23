@@ -13,7 +13,8 @@ VulnClaw/
 |-- vulnclaw/
 |   |-- __init__.py              # 包版本与基础元数据
 |   |-- orchestrator.py          # CLI / Web 共享任务编排入口
-|   |-- repl_runner.py           # REPL 共享执行辅助
+|   |-- application.py           # 共享会话、状态与控制操作
+|   |-- session_backend.py       # 版本 2 JSONL 会话传输
 |   |-- agent/                   # Agent 核心逻辑
 |   |   |-- core.py              # AgentCore 壳层与协调入口
 |   |   |-- llm_client.py        # LLM 调用、重试、工具总结回传
@@ -60,8 +61,9 @@ VulnClaw/
 |   |   `-- chatgpt_proxy.py     # ChatGPT 后端 OpenAI 兼容代理（Responses API）
 |   |-- cli/
 |   |   |-- main.py              # CLI 命令、doctor、web 启动、target-state CLI
-|   |   |-- tui.py               # TUI 数据类、仪表盘渲染、配色常量
-|   |   `-- tui_textual.py       # Textual 驱动的 TUI 工作台
+|   |   |-- tasks.py             # headless 任务参数适配
+|   |   |-- output.py            # JSON/JSONL 与退出码
+|   |   `-- terminal.py          # 显式启动共享终端可执行文件
 |   |-- config/                  # 配置 schema、加载、保存、环境变量覆盖
 |   |   |-- schema.py           # Pydantic 配置模型（LLM/MCP/Session/Safety/Subagent/Recon）
 |   |   |-- settings.py         # 加载、环境变量覆盖、旧字段迁移
@@ -99,7 +101,14 @@ VulnClaw/
 |   |   |-- hooks/               # React Query hooks
 |   |   `-- types/               # 前端共享类型
 |   `-- package.json             # 前端构建与开发脚本
-|-- scripts/                     # release preflight / dist 校验脚本
+|-- tui/                         # TypeScript / React / OpenTUI，共享 TUI 和 REPL
+|   |-- src/components/          # 原生输入、Markdown、表单、阅读器
+|   |-- src/workbench/           # TUI 自由布局
+|   |-- src/scrollback/          # REPL 有序历史提交
+|   |-- tests/                   # Bun / 原生 renderer 测试
+|   `-- bun.lock                 # 固定依赖版本；Bun 1.3.14
+|-- protocol/                    # 共享 session-v2 JSON Schema
+|-- scripts/                     # 发布、发行产物、真实终端校验
 |-- tests/                       # 后端、CLI、MCP、release、web、report 测试
 |   |-- agent/                  # agent 层单元测试（subagent/context/token/streaming）
 |   |-- cli/                    # CLI/TUI 测试
@@ -132,42 +141,45 @@ VulnClaw/
 
 **上下文预算**：所有 LLM 调用路径（含 `structured_call`/team planner/adviser/report summary）必须经过 `context_budget.prepare_context()` 预算入口。新增旁路 LLM 调用时，务必包装 `_fit_context_window(agent, messages, tools, purpose="...")`。
 
-**子 Agent**：`subagent/` 是独立的扇出运行时。修改扇出逻辑时注意：`max_depth` 硬顶为 2；`SubagentConfig` 全部数值项有 `le=` 上界；子进程退出必须是 `terminate→wait→kill` 三段式；TUI 中渲染子代理输出必须先转义再写入 `markup=True` 面板。
+**子 Agent**：`subagent/` 是独立的扇出运行时。修改扇出逻辑时注意：`max_depth` 硬顶为 2；`SubagentConfig` 全部数值项有 `le=` 上界；子进程退出必须是 `terminate→wait→kill` 三段式；终端消息必须使用共享消息组件，并保持子代理来源独立。
 
-### 2.2 修改共享任务流 → `vulnclaw/orchestrator.py` / `vulnclaw/repl_runner.py`
+### 2.2 修改共享任务流 → `vulnclaw/orchestrator.py` / `vulnclaw/application.py`
 
 适用场景：
 - CLI / Web / REPL 共享任务生命周期
 - restore → run → save → summarize 流程
-- REPL 单次执行辅助
+- 共享会话与生命周期
 
 同一行为同时出现在 CLI 和 Web 时，应收敛到这里，不要在 `cli/main.py` 和 `web/services/task_service.py` 各写一份。
 
-### 2.3 修改命令行或 REPL → `vulnclaw/cli/main.py`
+### 2.3 修改 Python 命令 → `vulnclaw/cli/`
 
 适用场景：
 - Typer 命令
-- REPL 体验
+- JSON / JSONL 机器输出
 - `doctor` 输出
 - `web` 启动器行为
 - `target-state` 子命令
 
 这一层负责入口、参数绑定和用户输出，不适合承载核心渗透逻辑。
 
-### 2.4 修改 TUI 工作台 → `vulnclaw/cli/tui.py` / `vulnclaw/cli/tui_textual.py`
+### 2.4 修改 TUI 或 REPL → `tui/src/`
 
-适用场景：
-- TUI 仪表盘布局与渲染
-- 斜杠命令系统（`/target`、`/mode`、`/start` 等）
-- 命令面板（Command Palette）交互
-- 提示/确认状态机
+两个 Shell 使用相同的消息、Markdown、表单、输入、阅读器与传输组件。
+`workbench/` 管理 TUI 布局，`scrollback/` 管理 REPL 完成消息的有序提交。
+任务、审批、配置和恢复业务由 Python 应用层负责，客户端等待后端状态更新。
 
-**架构关系：**
+```bash
+cd tui
+bun install --frozen-lockfile
+bun run generate --check
+bun run typecheck
+VULNCLAW_PYTHON=/absolute/path/to/python bun test
+bun run build
+```
 
-| 文件 | 职责 |
-|------|------|
-| `tui.py` | 数据类、Rich 仪表盘渲染、颜色常量、斜杠命令注册表、入口 `run_tui()` |
-| `tui_textual.py` | Textual App 实现：DashboardScreen、CommandPalette、SecondaryPopup、斜杠命令处理器、提示状态机、子进程执行引擎 |
+构建要求 Bun 1.3.14；发布二进制不要求用户安装 Bun。修改协议时同步
+`protocol/session-v2.schema.json`、Python 生产端和生成类型（`bun run generate`）。
 
 ### 2.5 修改配置 → `vulnclaw/config/`
 
@@ -474,7 +486,13 @@ npm ci
 npx tsc -b
 ```
 
-**完整预检（可选）：**
+**终端与完整预检：**
+
+```bash
+make test-terminal
+make build-terminal
+```
+
 ```bash
 python scripts/release_preflight.py
 python scripts/release_preflight.py --build

@@ -15,7 +15,8 @@ VulnClaw/
 |-- vulnclaw/
 |   |-- __init__.py              # Package version and metadata
 |   |-- orchestrator.py          # Shared task orchestration for CLI / Web
-|   |-- repl_runner.py           # Shared REPL execution helpers
+|   |-- application.py           # Shared session, lifecycle and controls
+|   |-- session_backend.py       # Version 2 JSONL transport
 |   |-- agent/                   # Agent core logic
 |   |   |-- core.py              # AgentCore coordination entrypoint
 |   |   |-- llm_client.py        # LLM calls, retries, tool result forwarding
@@ -44,8 +45,9 @@ VulnClaw/
 |   |   `-- ...
 |   |-- cli/
 |   |   |-- main.py              # CLI commands, doctor, web launcher
-|   |   |-- tui.py               # TUI data classes, Rich dashboard, color constants
-|   |   `-- tui_textual.py       # Textual-driven TUI workbench
+|   |   |-- tasks.py             # Headless task adapters
+|   |   |-- output.py            # JSON/JSONL and exit codes
+|   |   `-- terminal.py          # Explicit shared terminal launcher
 |   |-- config/                  # Config schema, loading, saving, env override
 |   |-- kb/                      # Knowledge base storage, retrieval, update
 |   |-- mcp/                     # MCP lifecycle, registry, router
@@ -56,7 +58,12 @@ VulnClaw/
 |   |-- web/                     # FastAPI backend, schemas, services, static frontend
 |   `-- ...
 |-- frontend/                    # React + TypeScript Web UI
-|-- scripts/                     # Release preflight / dist validation
+|-- tui/                         # TypeScript / React / OpenTUI TUI and REPL
+|   |-- src/components/          # Shared composer, Markdown, forms and readers
+|   |-- tests/                   # Bun and native renderer tests
+|   `-- bun.lock                 # Locked dependencies; Bun 1.3.14
+|-- protocol/                    # Shared session-v2 JSON Schema
+|-- scripts/                     # Release, package and real terminal checks
 |-- tests/                       # Backend, CLI, MCP, release, web, report tests
 |   |-- agent/                  # Agent-layer unit tests (subagent/context/token/streaming)
 |   |-- cli/                    # CLI/TUI tests
@@ -90,22 +97,35 @@ Applies to:
 
 **Context Budget**: All LLM call paths (including `structured_call` / team planner / adviser / report summary) must go through `context_budget.prepare_context()`. When adding new bypass LLM calls, always wrap with `_fit_context_window(agent, messages, tools, purpose="...")`.
 
-**Sub-Agents**: `subagent/` is an independent fan-out runtime. When modifying fan-out logic, note: `max_depth` is hard-capped at 2; all `SubagentConfig` numeric fields have `le=` upper bounds; subprocess exit must follow `terminate→wait→kill` three-stage cleanup; TUI rendering of sub-agent output must escape before writing to `markup=True` panels.
+**Sub-Agents**: `subagent/` is an independent fan-out runtime. When modifying fan-out logic, note: `max_depth` is hard-capped at 2; all `SubagentConfig` numeric fields have `le=` upper bounds; subprocess exit must follow `terminate→wait→kill` three-stage cleanup; Terminal rendering uses the shared message components and keeps subagent sources independent.
 
 ### 2.2 Modifying Shared Task Flow → `vulnclaw/orchestrator.py`
 
 When the same behavior appears in both CLI and Web, consolidate it here.
 
-### 2.3 Modifying CLI or REPL → `vulnclaw/cli/main.py`
+### 2.3 Modifying Python Commands → `vulnclaw/cli/`
 
 This layer handles entry points, parameter binding, and user output. Core pentest logic does not belong here.
 
-### 2.4 Modifying TUI → `vulnclaw/cli/tui.py` / `vulnclaw/cli/tui_textual.py`
+### 2.4 Modifying TUI or REPL → `tui/src/`
 
-| File | Responsibility |
-|------|------|
-| `tui.py` | Data classes, Rich dashboard rendering, color constants, slash command registry |
-| `tui_textual.py` | Textual App: DashboardScreen, CommandPalette, slash command handlers, sub-agent event monitoring |
+Both shells share the composer, Markdown, forms, readers and transport. `workbench/`
+owns TUI layout; `scrollback/` owns ordered REPL output. Python owns tasks, approval,
+configuration and restoration. Clients wait for authoritative backend state.
+
+```bash
+cd tui
+bun install --frozen-lockfile
+bun run generate --check
+bun run typecheck
+VULNCLAW_PYTHON=/absolute/path/to/python bun test
+bun run build
+```
+
+Builds require Bun 1.3.14. The standalone executable embeds native libraries, parser
+worker and highlighting resources; users install Python separately and do not need Bun.
+For protocol changes, update the Schema and Python producer, then run `bun run generate`.
+`make test-terminal` and `python scripts/release_preflight.py --build` run local checks.
 
 ### 2.5 Modifying Configuration → `vulnclaw/config/`
 

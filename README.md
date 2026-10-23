@@ -2,7 +2,7 @@
 
 # VulnClaw 🦞
 
-> *AI 驱动的渗透测试 CLI 工具 — 说人话，打漏洞。*
+> _AI 驱动的渗透测试 CLI 工具 — 说人话，打漏洞。_
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
@@ -14,6 +14,7 @@
 [![Discord](https://img.shields.io/badge/Discord-Join_Community-5865F2?logo=discord&logoColor=white)](https://discord.gg/q5nrZpe6S)
 [![AtomGitStars](https://atomgit.com/Unclecheng-li/VulnClaw/star/badge.svg)](https://atomgit.com/Unclecheng-li/VulnClaw)
 <picture>
+
   <source media="(prefers-color-scheme: dark)" srcset="https://kimi-file.moonshot.cn/prod-chat-kimi/kfs/4/1/2026-06-05/1d8h69mt3v89kkekg24gg">
   <img alt="Kimi Open Source Friends" src="https://kimi-file.moonshot.cn/prod-chat-kimi/kfs/4/1/2026-06-05/1d8h69fudcmosb3pipls0">
 </picture>
@@ -103,6 +104,29 @@ cd VulnClaw
 pip install -e .
 ```
 
+### 交互端安装
+
+Python 包可独立运行全部 headless 命令。`tui` / `repl` 还需要对应平台的
+`vulnclaw-terminal`（Windows 为 `.exe`）：下载后重命名为上述文件名，加入执行权限（POSIX）并放到 PATH，或设置
+`VULNCLAW_TERMINAL_BINARY` 为绝对路径。终端可执行文件已嵌入 OpenTUI 原生库、
+parser worker 和高亮资源，运行时无需 Bun；Python 和业务依赖需另行安装。
+当前发布平台为 Linux x64 和 Windows x64。
+
+从源码构建需要 Bun **1.3.14**，依赖版本保存在 `tui/bun.lock`：
+
+```bash
+cd tui
+bun install --frozen-lockfile
+bun run build
+cd ..
+vulnclaw tui                 # 自动找到源码目录中的 tui/dist 产物
+vulnclaw repl
+```
+
+两个入口共用 TypeScript / React / OpenTUI 组件和 Python 会话后端。TUI 使用独立屏幕，
+REPL 将完成的消息提交到终端滚动历史，输入与进行中的内容保留在底栏。
+缺少交互端时启动命令会返回安装说明，其余 Python 命令仍可使用。
+
 ### Docker 运行（可选）
 
 镜像已内置 Web UI 以及默认 MCP 服务所需的运行时（`npx` / `uvx`），所有状态持久化到 `/data` 数据卷。
@@ -131,16 +155,16 @@ docker run --rm -it \
 vulnclaw config provider minimax   (或 openai/anthropic/deepseek/zhipu/moonshot/qwen/siliconflow/ollama)
 
 # 1.2（可选）自定义 Base URL 或模型名
-vulnclaw config set llm.base_url https://your-own-api.example.com/v1 
+vulnclaw config set llm.base_url https://your-own-api.example.com/v1
 vulnclaw config set llm.model your-model-name
 
 # 2. 设置 API Key
 vulnclaw config set llm.api_key sk-your-key-here
 #    — 或改用 ChatGPT 订阅登录（无需 API Key）：
-#      vulnclaw login   （浏览器登录；注意 ToS 风险）
+#      vulnclaw login --token-file oauth-bundle.json
 
-# 3. 默认：打开原 CLI / REPL
-vulnclaw
+# 3. 显式打开交互式 REPL
+vulnclaw repl
 
 # 4. 可选：打开 TUI 工作台
 vulnclaw tui
@@ -152,131 +176,71 @@ vulnclaw tui
 vulnclaw doctor
 ```
 
-输出示例：
-
-```
-🦞 VulnClaw 环境检查
-
-  Python: 3.14.4
-  Node.js: v24.14.1
-  npx: 已安装
-  nmap: 已安装
-
-LLM 配置:
-  Provider: openai
-  Auth Mode: static
-  Credentials: configured
-  Base URL: https://api.openai.com/v1
-  Model: gpt-4o
-
-MCP 服务:
-  fetch: 已启用 [P0]
-  memory: 已启用 [P0]
-  ...
-
-✅ 环境就绪，运行 vulnclaw 开始
-```
+`doctor` 输出 JSON：Python 版本、可用程序路径、LLM 凭据是否配置以及 MCP 诊断；`--probe-llm` 显式探测当前模型端点。
 
 ---
 
 ## CLI 命令速查
 
 ```bash
-$ vulnclaw --help
-
-🦞 VulnClaw — AI-powered penetration testing CLI
-
- Usage: vulnclaw [OPTIONS] COMMAND [ARGS]...
-
- Commands:
-   run           🚀 一键全流程渗透测试（默认使用 solve 引擎）
-   solve         🧩 目标驱动求解（模型主导，无固定轮数）
-   persistent    🔄 持续性渗透测试（100轮/周期）
-   recon         🔍 仅信息收集阶段
-   scan          🔎 执行漏洞扫描阶段
-   exploit       💥 执行漏洞利用阶段
-   report        📝 从会话记录生成报告
-   repl          💬 启动经典 REPL 交互界面
-   config        ⚙️  管理配置（set/get/list/provider）
-   plugins       🧩 管理漏洞检测插件（list/info/run）
-   init          🔧 初始化配置
-   doctor        🏥  检查运行环境
-   tui           🖥️  打开终端图形化工作台
-   web           🌐 启动本地 Web UI
-   code          🧬 本地源码安全扫描（无需网络目标）
+vulnclaw --help
+vulnclaw manual
 ```
 
-| 命令 | 说明 | 示例 |
-|------|------|------|
-| `vulnclaw` | 默认打开原 CLI / REPL | `vulnclaw` |
-| `vulnclaw tui` | 终端图形化工作台 | `vulnclaw tui --target target.com` |
-| `vulnclaw repl` | 启动经典 REPL 交互界面 | `vulnclaw repl` |
-| `vulnclaw solve <target>` | 目标驱动求解（无固定轮数，拿到目标即停） | `vulnclaw solve target.com --goal "拿到flag"` |
-| `vulnclaw run <target>` | 一键全流程渗透（默认走 solve 引擎） | `vulnclaw run 192.168.1.1` |
-| `vulnclaw persistent <target>` | 持续性渗透（100轮/周期） | `vulnclaw persistent 192.168.1.1` |
-| `vulnclaw recon <target>` | 仅信息收集（不利用漏洞） | `vulnclaw recon target.com` |
-| `vulnclaw scan <target>` | 漏洞扫描阶段 | `vulnclaw scan target.com --ports 80,443` |
-| `vulnclaw exploit <target>` | 漏洞利用阶段 | `vulnclaw exploit target.com --cve CVE-2024-1234` |
-| `vulnclaw report <session>` | 从会话 JSON 生成报告 | `vulnclaw report session_xxx.json` |
-| `vulnclaw config set <key> <value>` | 设置配置项 | `vulnclaw config set llm.api_key sk-xxx` |
-| `vulnclaw config provider <name>` | 切换 LLM 提供商 | `vulnclaw config provider minimax` |
-| `vulnclaw plugins list` | 列出漏洞检测插件 | `vulnclaw plugins list --stage discovery` |
-| `vulnclaw plugins info <id>` | 查看插件元信息 | `vulnclaw plugins info builtin.web.headers` |
-| `vulnclaw plugins run <id>` | 运行插件（仅分析传入数据） | `vulnclaw plugins run builtin.web.headers --input headers.json` |
-| `vulnclaw code scan <path>` | 本地源码安全扫描（L1 正则 / L2 结构 / L3 LLM 可选） | `vulnclaw code scan ./src --format sarif` |
+| 命令                                | 说明                                                | 示例                                                            |
+| ----------------------------------- | --------------------------------------------------- | --------------------------------------------------------------- |
+| `vulnclaw`                          | 显示帮助                                            | `vulnclaw`                                                      |
+| `vulnclaw tui`                      | 终端图形化工作台                                    | `vulnclaw tui --target target.com`                              |
+| `vulnclaw repl`                     | 启动 OpenTUI 滚动历史 REPL                          | `vulnclaw repl`                                                 |
+| `vulnclaw solve <target>`           | 目标驱动求解（无固定轮数，拿到目标即停）            | `vulnclaw solve target.com --goal "拿到flag"`                   |
+| `vulnclaw run <target>`             | 一键全流程渗透（默认走 solve 引擎）                 | `vulnclaw run 192.168.1.1`                                      |
+| `vulnclaw persistent <target>`      | 持续性渗透（100轮/周期）                            | `vulnclaw persistent 192.168.1.1`                               |
+| `vulnclaw recon <target>`           | 仅信息收集（不利用漏洞）                            | `vulnclaw recon target.com`                                     |
+| `vulnclaw scan <target>`            | 漏洞扫描阶段                                        | `vulnclaw scan target.com --ports 80,443`                       |
+| `vulnclaw exploit <target>`         | 漏洞利用阶段                                        | `vulnclaw exploit target.com --cve CVE-2024-1234`               |
+| `vulnclaw report <session>`         | 从会话 JSON 生成报告                                | `vulnclaw report session_xxx.json`                              |
+| `vulnclaw config set <key> <value>` | 设置配置项                                          | `vulnclaw config set llm.api_key sk-xxx`                        |
+| `vulnclaw config provider <name>`   | 切换 LLM 提供商                                     | `vulnclaw config provider minimax`                              |
+| `vulnclaw plugins list`             | 列出漏洞检测插件                                    | `vulnclaw plugins list --stage discovery`                       |
+| `vulnclaw plugins info <id>`        | 查看插件元信息                                      | `vulnclaw plugins info builtin.web.headers`                     |
+| `vulnclaw plugins run <id>`         | 运行插件（仅分析传入数据）                          | `vulnclaw plugins run builtin.web.headers --input headers.json` |
+| `vulnclaw code scan <path>`         | 本地源码安全扫描（L1 正则 / L2 结构 / L3 LLM 可选） | `vulnclaw code scan ./src --format sarif`                       |
 
 ---
 
 ## 使用方式
 
-### 方式一：CLI / REPL（默认）
+### 方式一：交互式 REPL
 
 ```bash
-vulnclaw
+vulnclaw repl
 ```
 
-无参数启动会进入 🦞 交互界面，用自然语言对话：
-
-```
-🦞 vulnclaw> 对 192.168.1.100 进行渗透测试，这是我授权的靶场
-
-[*] 进入自主渗透模式，按 Ctrl+C 可随时中断
-── Round 1 ──
-  [+] 目标: 192.168.1.100
-  [+] 开放端口: 22, 80, 443, 8080
-  [+] Web 指纹: Apache/2.4.62
-── Round 2 ──
-  [+] 发现 /manager/html (Tomcat Manager)
-  [+] 命中 CVE-202X-XXXX: Apache Tomcat 认证绕过
-── Round 3 ──
-  [+] 漏洞验证成功
-
-🦞 192.168.1.100 | 报告> 生成渗透报告
-[+] 报告已保存: ./reports/192.168.1.100_20260418.md
-[+] PoC 脚本已保存: ./pocs/CVE-202X-XXXX.py
-```
+无参数 `vulnclaw` 只显示帮助。用 `repl` 显式进入对话界面，普通文字交给 Python
+理解并执行；需要精确任务参数时使用斜杠命令和任务概览。
 
 **REPL 与原生 TUI 使用同一输入语义，普通文本默认进入自然语言：**
 
-| 命令 | 说明 |
-|------|------|
-| `/run <target>` | 执行任务；`--allow-actions` 限制动作，`--continuous` 持续执行 |
-| `/recon` / `/scan` / `/exploit` / `/persistent` | 对应带约束或周期参数的 `/run` 简写 |
-| `/target <host>` / `/scope ...` | 设置目标和范围默认值 |
-| `/mode plan` / `/mode agent` | 规划或执行；新建会话默认 Agent |
-| `/permission ask` / `auto_review` / `full_access` | 独立设置执行审批策略 |
-| `/clear` / `/new` | 清理显示 / 开启新对话，保留已保存的任务文件 |
-| `/report` / `/compact` | 导出现有结果 / 压缩上下文 |
-| `/status` / `/tools` / `/think on` / `/think off` | 状态、工具和推理显示 |
-| `/help` / `/quit` | 帮助 / 退出 |
+| 命令                                                            | 说明                                                          |
+| --------------------------------------------------------------- | ------------------------------------------------------------- |
+| `/run <target>`                                                 | 执行任务；`--allow-actions` 限制动作，`--continuous` 持续执行 |
+| `/recon` / `/scan` / `/exploit` / `/persistent`                 | 对应带约束或周期参数的 `/run` 简写                            |
+| `/target <host>` / `/scope ...`                                 | 设置目标和范围默认值                                          |
+| `/permission read_only` / `ask` / `auto_review` / `full_access` | 统一权限策略；默认 Ask                                        |
+| `/clear` / `/new`                                               | 清理显示 / 开启新对话，保留已保存的任务文件                   |
+| `/report` / `/compact`                                          | 导出现有结果 / 压缩上下文                                     |
+| `/think on` / `/think off`                           | 推理显示                                                |
+| `/help` / `/quit`                                               | 帮助 / 退出                                                   |
 
-技能通过 prompt 明确指定，例如“使用技能 web-pentest，检查登录流程”；未指定时自动选择。不提供 `/skill` 或 `/<技能名>` 启动语法。自然语言报告按语义及对应配置处理，明确要求生成或不生成优先于默认设置。完整架构见 [Markdown 架构文档](docs/architecture/tui-natural-language-design.md)。
+输入 `@` 可筛选技能，Enter 将选择补全为后端识别的提示。技能通过 prompt 明确指定，例如“使用技能 web-pentest，检查登录流程”；未指定时自动选择。不提供 `/skill` 或 `/<技能名>` 启动语法。自然语言报告按语义及对应配置处理，明确要求生成或不生成优先于默认设置。完整架构见 [Markdown 架构文档](docs/architecture/tui-natural-language-design.md)。
 
 **自动渗透触发：** 输入包含「渗透测试」「找 flag」「爆破」等关键词 + 目标地址时，自动进入多轮自主渗透循环。`Ctrl+C` 随时中断。
 
 ### 方式二：TUI 工作台
 
-终端工作台默认接受自然语言，支持多轮上下文、流式工具输出、审批和取消；显式任务命令保留启动确认。
+终端工作台默认接受自然语言，支持多轮上下文、流式工具输出、审批和取消。`/run <target>` 打开任务概览，可修改目标、主机／端口／路径范围、动作预设、单次或持续执行、PoC 验证、自动报告和恢复历史；默认值由后端填入。↑↓ 或 Tab 选择，Enter 编辑或切换，Esc 撤销编辑或关闭弹窗；非文本编辑状态下 Y 确认、N 取消。其他任务命令保留现有确认流程。
+
+四项测试动作的白名单与黑名单随勾选互补更新，启动参数只提供初始选择。Quick 选择 recon，Standard 选择 recon、scan，Deep 再加入 exploit；post_exploitation 可单独开启。手动修改后显示 Custom。在 Action preset 上按 Enter 直接循环 Quick → Standard → Deep → Quick，Custom 从 Quick 开始；在 Execution 上按 Enter 直接切换 Once／Continuous，无需再次确认，动作选择保持不变。`--mode continuous` 未指定动作限制时默认允许全部四项动作，周期参数仍取配置默认值。
 
 ```bash
 vulnclaw tui
@@ -284,20 +248,65 @@ vulnclaw tui --target https://target.example --mode quick --only-port 443
 vulnclaw tui --dry-run --target https://target.example --mode deep --only-path /admin
 ```
 
-Rust TUI 工作台支持可配置容器布局：左侧默认显示状态，右侧同时显示发现与子代理；中间显示代理输出，底部为输入框。子代理视图目前显示无数据提示。
+OpenTUI 工作台支持可配置侧栏：状态、能力、发现、子代理可调整位置；中间为按来源隔离的消息，底部为多行输入。发现详情包含证据，子代理视图可切换阅读来源。
 
-- 拖动视图标题，可在两个侧栏之间移动，或在栏内重新排序；橙色预览框显示松开后的模块位置与大小。点击标题左侧 `v` / `>` 折叠或展开。
+主面板将工具调用与结果合为执行记录：内部协调及本地分析使用语义名称，展开直接显示业务详情；技能参考加载只显示对象和状态。同轮并行派发合为一组，后台启动显示“已派发”。命令、HTTP 请求、脚本与重试保留实际执行内容，长内容展开后换行。Alt+↑/↓ 选择，Enter 展开或折叠；鼠标仅点击箭头及文字触发操作。执行记录不提供原始调用入口或复制按钮，REPL 在记录结束后一次写入历史。
+
+输入 `/theme` 在所有可用主题之间循环切换，或用 `/theme <名称>` 直接选择；输入 `/theme ` 后可补全主题名称，包括自定义主题。主题选择与完整配色统一保存在主配置 `config.yaml` 的 `terminal.theme` 和 `terminal.themes`，默认文件为 `~/.vulnclaw/config.yaml`（可通过 `VULNCLAW_CONFIG_DIR` 修改目录）。
+
+打开 `/settings → Themes`，从列表选择主题并 Enter 编辑，或选择 `＋ Add theme` 新建。新主题复制当前主题的完整配色，之后互不关联。颜色按背景、文字、边框与强调色、语义色、代码和审批策略分组，字段显示色块和 `#RRGGBB`。Enter 确认字段，Esc 撤销当前编辑；`Apply to draft` 返回列表，`Set as current theme` 同时设置当前主题，`Ctrl+S` 统一保存。保存成功后界面和已有消息的代码高亮立即更新，失败保留草稿。
+
+每个主题独立保存全部色值，完整默认配置见 [vulnclaw/config/terminal_themes.json](vulnclaw/config/terminal_themes.json)。主题名以小写英文字母开头，可包含数字、`-` 和 `_`。手动新增主题时复制完整配色并修改，重启客户端读取配置，无需重新构建。
+
+首次连接后端且主配置尚无 `terminal` 时，客户端会将旧 `themes.json` 的有效配色和 `layout.json` 的主题选择迁移到主配置，原文件保留。迁移成功后以主配置为准，布局文件只保存布局。
+
+| 色值字段 | 用途 |
+| --- | --- |
+| `background` / `transcript` | 全局及边框底色 / 主会话内容和标题背景 |
+| `panel` / `title` / `plate` | 侧栏与弹窗 / 侧栏标题 / 输入区与选中行背景 |
+| `action` / `accent` / `border` / `composerBorder` | 徽标与操作 / 强调文字 / 普通边框 / 输入框边框 |
+| `text` / `soft` / `muted` / `hint` | 正文、次级正文、辅助文字、提示文字 |
+| `error` / `warning` / `signal` / `success` / `low` | 错误、高危、中危、成功、低危语义色 |
+| `dock` / `codeString` | 拖动停靠预览 / 代码字符串 |
+| `permissionReadOnly` / `permissionAsk` / `permissionAutoReview` / `permissionFullAccess` | 四种审批策略的文字颜色 |
+
+内置蓝色与橙色主题各自保存灰黑配色，主会话默认使用较浅的 `#1E2127`，普通边框分别为蓝色与铜色，焦点使用更亮的主题色。工作区保留细线边框，底部输入框保留独立外框。亮色填充集中于品牌和小型操作按钮。默认严重性颜色为严重／错误红、高危橙、中危黄、低危青、成功绿，并保留文字标签。
+
+- 拖动视图标题，可在两个侧栏之间移动，或在栏内重新排序；主题强调色预览框显示松开后的模块位置与大小。点击标题左侧 `v` / `>` 折叠或展开。
 - 拖动容器或视图之间的分隔条调整尺寸；折叠视图需展开后再调高。拖动中按 Esc 取消。
-- 滚轮滚动鼠标下方的视图内容；点击聚焦后可用方向键滚动，`Ctrl+←/→` 切换视图，`Ctrl+Y` 复制当前视图。
-- 辅助侧栏清空后自动收起，中间区域填满剩余空间。拖动模块到工作区右缘可显示橙色停靠预览，松开后重新展开；主侧栏始终至少保留一个模块。
+- 滚轮滚动鼠标下方的视图内容；点击聚焦后可用方向键滚动，`Ctrl+←/→` 切换视图；开始键入会返回输入区。
+- 辅助侧栏清空后自动收起，中间区域填满剩余空间。拖动模块到工作区右缘可显示停靠预览，松开后重新展开；主侧栏始终至少保留一个模块。
 - 布局自动保存到本地 `VULNCLAW_HOME/tui/layout.json`（默认 `~/.vulnclaw/tui/layout.json`），下次启动恢复。底栏随命令面板自动增高；终端过小时提示所需尺寸，放大后恢复布局。
 
-鼠标捕获开启时，终端原生文字选择取决于终端提供的修饰键；复制单个视图可使用 `Ctrl+Y`。Windows 终端下 `Ctrl+V` / `Shift+Insert` / 鼠标右键直接读取系统剪贴板粘贴到输入框（Win32 API 直读，微秒级；该平台无 bracketed paste，不依赖终端是否合成击键）；Unix 终端粘贴走 bracketed paste。
+报告导出后在会话区逐行显示报告、JSON 和 SARIF 文件路径。`Shift+Enter` 换行，Enter 提交；
+首次 Tab 补全当前候选，随后 Tab 循环原候选。Shift+Tab 按 Read-Only → Ask →
+Auto-review → Full access 循环切换权限，左下角以青、黄、蓝、红文字显示后端确认的策略。
+`/think on|off` 控制推理显示；Esc 关闭弹窗。
+Windows 支持 `Ctrl+V` / `Shift+Insert` 系统剪贴板粘贴，POSIX 支持 bracketed paste。
+用 `/config` 编辑模型提供商的五项设置、`/settings` 编辑完整配置、`/language` 设置语言。
+`/scope`、`/scope --allowed-ports 80,443` 和 `/scope reset` 均先打开可编辑草稿，Y、确认按钮或非编辑状态下的 Ctrl+S 保存，N/Esc 取消；运行任务时只能查看，不能保存。`/help` 在会话区分类列出命令，`/help scope` 查看详细语法和示例。
+`/experience`（或 `/exp`）打开经验审核弹层，默认聚焦待审核分类，用 ←→ 切换已批准、已拒绝和全部，空分类也能连续切换。↓/Enter 进入列表，↑↓ 选择，Enter 查看详情，列表首条按 ↑ 返回分类。Tab/Shift+Tab 在可见区域间切换，边框和 `›` 标出当前焦点。宽窗口并排显示列表与详情，窄窗口在详情按 Esc 返回列表。详情包含上下文、经验正文、标签、置信度和证据来源；E 编辑，A 通过，R 拒绝，M 复制内容，F5 刷新。编辑时 Enter 应用字段，非编辑状态下 Ctrl+S 或保存按钮提交；Esc 取消编辑。审核和编辑成功后弹层保留打开，会话区记录结果。也可用 `/experience list --status all` 或 `/experience show ID` 定位记录。
 
-常用菜单：
-- **菜单 3** — 设置测试范围（主机/端口/路径/允许动作/禁止动作）
-- **菜单 7** — 环境诊断入口（完整详情运行 `vulnclaw doctor`）
-- **菜单 8** — 模型/API 配置（切换 Provider、Base URL、Model、API Key）
+经验自动化默认关闭：任务结束后不自动提炼经验，已批准经验也不自动注入模型提示词。手动 `/learn <run-name>` 和 `/exp` 管理仍可使用。需要试用时，在 `/settings → Advanced` 开启“自动经验学习”，或运行 `vulnclaw config set session.experience_enabled true`；设回 `false` 同时关闭两项自动行为。
+
+OpenTUI 和滚动式 REPL 控件支持中英文，统一读取主配置 `session.language`。`/language zh`、`/language en`、`/language auto` 会保存并立即切换，也可在 `/settings → General → Language`（中文界面为“常规 → 语言”）选择后按 `Ctrl+S` 保存；保存失败保留当前语言与草稿。`auto` 依次读取 `VULNCLAW_LANG`、系统 `LANG`，无法识别时使用英文。消息正文、代码、服务名、主题配置名和命令参数保留原文，后续生成的消息与报告使用后端当前语言。
+环境依赖及 MCP 服务由用户自行安装和配置。
+
+Capabilities 中的 `MCP` 显示就绪数／已启用总数，点击文字或左侧三角展开
+全部已启用的 MCP。列表仅显示圆点和服务名称，就绪统一为绿色，未连接为红色。
+聚焦面板后 Enter 切换展开，方向键、PageUp/PageDown 和滚轮滚动列表；Skills 计数保持可见。
+界面状态始终以 Python 后端响应为准。
+
+`/settings` 按常规、模型、主题、执行、审批与工具、MCP、信息收集和高级设置分类。Tab 切换
+分类栏与内容区，方向键选择，Enter 编辑；Ctrl+S 提交当前编辑并保存，成功后留在
+设置页。Esc 撤销当前字段编辑、返回上一级或关闭并丢弃未保存修改。底部固定显示
+字段说明、限制、错误和修改数量。MCP 使用服务表单与逐项列表编辑，密钥可明确
+更换或清除；模型连接设置复用 `/config` 的五字段界面。
+
+命令历史继续保存，但不提供历史补全或历史快捷键。旧 Plan/Agent 模式和权限不恢复；
+布局按第 2 版格式保存，主题统一写入主配置。Python 业务对话、发现、证据及报告继续保留。
+Read-Only 允许明确支持的本地读取、已有证据和技能参考，拒绝写入、扫描、主动探测、
+利用、报告导出和未知工具，且不提供批准后执行的回退。
 
 ### 方式三：单命令模式
 
@@ -326,6 +335,31 @@ CLI `run/solve --stream` 的 finding 列表来自已登记候选，保留其严�
 原生 TUI 的 `/run <target>` 完成任务和审计后直接生成报告，格式沿用
 `session.report_format`，并显示报告、JSON 和 SARIF 的保存路径。有运行目录时，
 产物位于其中的 `reports/`。报告导出失败会显示原因，已完成的任务和审计结果仍保留。
+
+### Headless 机器调用
+
+除 `tui` / `repl` 外，业务命令均无交互，不启动 Bun 或渲染终端界面。默认 stdout
+只含一个 `command_result` JSON；`--format jsonl` 输出版本 2 事件，最后恰好一个结果。
+日志写 stderr。帮助、版本和 manual 保持可读文本，Web 是显式启动的服务。
+
+```bash
+vulnclaw run lab.example --format jsonl --max-steps 12
+vulnclaw ask "查看当前状态" --format json
+vulnclaw run --input-json task.json
+cat task.json | vulnclaw run --input-json -
+vulnclaw code scan ./src --layer L1,L2 --format sarif --output scan.sarif --output-format json
+```
+
+`task.json` 使用任务 DTO，例如 `{"command":"run","target":"lab.example","options":{"max_steps":12}}`。
+JSON 和显式 CLI 参数重复指定同一字段会报冲突，即使值相同。`code scan --format`
+选择报告文件格式，`--output-format` 选择机器输出格式；其他命令用 `--format`。
+`--non-interactive` 作为迁移参数保留，执行路径相同。
+
+缺少凭据、问题答案或审批时返回 `requires_input` / `requires_approval` 并清理退出，
+不会自动放宽权限。SIGINT / SIGTERM 走取消和清理路径。退出码：0 正常；1 失败、
+取消或需交互；2 达到已验证发现阈值；3 在 `--fail-on any` 下只有候选发现。
+`--fail-on never` 不因发现而失败。认证用 `login --token-file FILE|-` 导入已有 OAuth
+令牌包；缺少参数返回 `requires_input`，不会打开浏览器。配置输出遮罩敏感值。
 
 ### 方式四：持续性渗透
 
@@ -395,16 +429,16 @@ VulnClaw 默认使用**模型主导 solve 引擎**（旧版固定轮数引擎可
 
 **模型主导循环：** 框架不再把任务拆成固定“研究方向”，也不再按阶段模板主动安排目录扫描、JS 收集或 SQLi 测试。solve 只给模型提供目标、历史上下文、证据记忆和可用工具清单，由模型自己决定下一步行动。
 
-| 原语 | 含义 |
-|------|------|
-| **模型上下文** | 目标、用户约束、近期消息、证据摘要和已执行工具调用 |
-| **工具清单** | `fetch` / 浏览器 / 目录枚举 / JS 收集 / 编解码 / Python / `shell_command` / `source_extract` / `runtime_diff_probe` / skill 读取等能力，仅作为可选手脚暴露给模型 |
-| **工具 transcript** | 工具调用后会把 assistant `tool_calls` 与 `role=tool` 观察结果追加进模型上下文；大输出使用高信号预览，避免 HTML/body/日志反复污染 active context |
-| **AgentState 证据** | 每个真实工具结果都会写入 `AgentState.evidence`；raw 原文完整保留并带 hash/size/证据号，模型可通过 `evidence_search` / `evidence_view` 按需回查 |
-| **高信号记忆** | 源码 SQL、HTML 表单/input、PHP/API 链接、JavaScript endpoint、`highlight_file` 源码、`unserialize`/魔术方法/危险 sink 会被固定为长期可见事实，避免后续探测把真实入口淹没 |
-| **轻量纠偏层** | 只观察工具生命周期，记录耗时、失败降级、重复调用、高信号目标事实和小步语义差异，作为提示信号注入下一轮上下文，不做阶段规划、不主动安排工具 |
-| **证据闸门** | `FINAL:` 结论必须引用或命中真实证据；未被工具输出支撑的 flag/结论会被拒绝并继续探索 |
-| **自动复盘报告** | 目标达成后自动生成 Markdown 报告，包含解题思路、关键证据、复现请求包、curl、响应片段和证据索引 |
+| 原语                | 含义                                                                                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **模型上下文**      | 目标、用户约束、近期消息、证据摘要和已执行工具调用                                                                                                                       |
+| **工具清单**        | `fetch` / 浏览器 / 目录枚举 / JS 收集 / 编解码 / Python / `shell_command` / `source_extract` / `runtime_diff_probe` / skill 读取等能力，仅作为可选手脚暴露给模型         |
+| **工具 transcript** | 工具调用后会把 assistant `tool_calls` 与 `role=tool` 观察结果追加进模型上下文；大输出使用高信号预览，避免 HTML/body/日志反复污染 active context                          |
+| **AgentState 证据** | 每个真实工具结果都会写入 `AgentState.evidence`；raw 原文完整保留并带 hash/size/证据号，模型可通过 `evidence_search` / `evidence_view` 按需回查                           |
+| **高信号记忆**      | 源码 SQL、HTML 表单/input、PHP/API 链接、JavaScript endpoint、`highlight_file` 源码、`unserialize`/魔术方法/危险 sink 会被固定为长期可见事实，避免后续探测把真实入口淹没 |
+| **轻量纠偏层**      | 只观察工具生命周期，记录耗时、失败降级、重复调用、高信号目标事实和小步语义差异，作为提示信号注入下一轮上下文，不做阶段规划、不主动安排工具                               |
+| **证据闸门**        | `FINAL:` 结论必须引用或命中真实证据；未被工具输出支撑的 flag/结论会被拒绝并继续探索                                                                                      |
+| **自动复盘报告**    | 目标达成后自动生成 Markdown 报告，包含解题思路、关键证据、复现请求包、curl、响应片段和证据索引                                                                           |
 
 ```
 MODEL DECIDES → 可选工具调用 → AgentState 记录完整 raw evidence + active context 高信号预览 + 轻量纠偏信号
@@ -424,30 +458,30 @@ FINAL 经过证据闸门校验 → 通过才结束，否则把拒绝原因返回
 
 ### 核心模块
 
-| 模块 | 文件 | 说明 |
-|------|------|------|
-| **CLI/TUI 入口** | `cli/main.py` + `cli/tui.py` | Typer 命令 + REPL + TUI |
-| **Agent 核心** | `agent/core.py` | AgentCore 协调入口 |
-| **求解引擎** | `agent/solver.py` + `agent/agent_state.py` | 模型主导循环 + AgentState 证据/步骤/完成闸门 |
-| **推理/反思** | `agent/reasoning_state.py` + `reflexion.py` | 结构化事实/约束/攻击链 + L0-L4 升级 |
-| **插件体系** | `plugins/` | 低耦合漏洞检测插件运行时 |
-| **Skill 参考索引** | `skills/loader.py` + `resolver.py` | 只解析相关参考资料，不注入强制流程 |
-| **MCP 编排** | `mcp/registry.py` + `lifecycle.py` + `router.py` | 服务注册 + 生命周期 + 工具路由 |
-| **配置管理** | `config/schema.py` + `settings.py` | Pydantic + YAML + 14 Provider 预设 |
-| **漏洞审计** | `findings/verification.py` + `finding_service.py` | 任务结束与独立入口审计、保存结论、历史补审计 |
-| **报告生成** | `report_service.py` + `report/generator.py` | 编排已审计快照的导出，渲染 Markdown/HTML/PDF/SARIF |
-| **安全知识库** | `kb/store.py` + `retriever.py` + `ranking.py` | JSON 存储 + 中文感知 BM25 检索 + 可选重排序 |
+| 模块               | 文件                                              | 说明                                               |
+| ------------------ | ------------------------------------------------- | -------------------------------------------------- |
+| **CLI/TUI 入口**   | `cli/` + `tui/src/`                               | Python headless + OpenTUI REPL/TUI                 |
+| **Agent 核心**     | `agent/core.py`                                   | AgentCore 协调入口                                 |
+| **求解引擎**       | `agent/solver.py` + `agent/agent_state.py`        | 模型主导循环 + AgentState 证据/步骤/完成闸门       |
+| **推理/反思**      | `agent/reasoning_state.py` + `reflexion.py`       | 结构化事实/约束/攻击链 + L0-L4 升级                |
+| **插件体系**       | `plugins/`                                        | 低耦合漏洞检测插件运行时                           |
+| **Skill 参考索引** | `skills/loader.py` + `resolver.py`                | 只解析相关参考资料，不注入强制流程                 |
+| **MCP 编排**       | `mcp/registry.py` + `lifecycle.py` + `router.py`  | 服务注册 + 生命周期 + 工具路由                     |
+| **配置管理**       | `config/schema.py` + `settings.py`                | Pydantic + YAML + 14 Provider 预设                 |
+| **漏洞审计**       | `findings/verification.py` + `finding_service.py` | 任务结束与独立入口审计、保存结论、历史补审计       |
+| **报告生成**       | `report_service.py` + `report/generator.py`       | 编排已审计快照的导出，渲染 Markdown/HTML/PDF/SARIF |
+| **安全知识库**     | `kb/store.py` + `retriever.py` + `ranking.py`     | JSON 存储 + 中文感知 BM25 检索 + 可选重排序        |
 
 ---
 
 ## MCP 工具链
 
-| MCP 服务 | 工具数 | 模式 | 用途 | 状态 |
-|---|---|---|---|---|
-| fetch | 1 | 本地 (httpx) | HTTP/HTTPS 请求、GET/POST/PUT 等方法、headers/params/cookies/body/json/form、API 测试 | 开箱即用 |
-| memory | 2 | 本地 (JSON) | 上下文记忆、状态持久化 | 开箱即用 |
-| chrome-devtools | 31+ | stdio MCP | 浏览器自动化、截图、JS 执行 | 需部署 |
-| burp | 多个 | stdio MCP | HTTP 抓包、重放、漏洞扫描 | 需部署 |
+| MCP 服务        | 工具数 | 模式         | 用途                                                                                  | 状态     |
+| --------------- | ------ | ------------ | ------------------------------------------------------------------------------------- | -------- |
+| fetch           | 1      | 本地 (httpx) | HTTP/HTTPS 请求、GET/POST/PUT 等方法、headers/params/cookies/body/json/form、API 测试 | 开箱即用 |
+| memory          | 2      | 本地 (JSON)  | 上下文记忆、状态持久化                                                                | 开箱即用 |
+| chrome-devtools | 31+    | stdio MCP    | 浏览器自动化、截图、JS 执行                                                           | 需部署   |
+| burp            | 多个   | stdio MCP    | HTTP 抓包、重放、漏洞扫描                                                             | 需部署   |
 
 > 另有内置 Agent 工具（`http_probe_batch`、`python_execute`、`shell_command`、`source_extract`、`runtime_diff_probe`、`nmap_scan`、`crypto_decode`、`brute_force_login`、`load_skill_reference`、`evidence_list`、`evidence_search`、`evidence_view` 等），无需 MCP 即可调用。
 
@@ -477,7 +511,12 @@ mcp:
       transport:
         type: stdio
         command: npx
-        args: ["-y", "chrome-devtools-mcp@latest", "--browser-url=http://127.0.0.1:9222"]
+        args:
+          [
+            "-y",
+            "chrome-devtools-mcp@latest",
+            "--browser-url=http://127.0.0.1:9222",
+          ]
 ```
 
 </details>
@@ -511,7 +550,13 @@ mcp:
       transport:
         type: stdio
         command: java
-        args: ["-jar", "~/.vulnclaw/tools/burp-mcp-all.jar", "--sse-url", "http://127.0.0.1:9876"]
+        args:
+          [
+            "-jar",
+            "~/.vulnclaw/tools/burp-mcp-all.jar",
+            "--sse-url",
+            "http://127.0.0.1:9876",
+          ]
 ```
 
 </details>
@@ -524,48 +569,48 @@ mcp:
 
 ### 核心 Skill (7)
 
-| Skill | 说明 |
-|-------|------|
-| pentest-flow | 渗透测试全流程编排 |
-| recon | 信息收集流程 |
-| vuln-discovery | 漏洞发现流程 |
-| exploitation | 漏洞利用流程 |
-| post-exploitation | 后渗透流程 |
-| reporting | 报告生成流程 |
-| waf-bypass | WAF 绕过技巧库 |
+| Skill             | 说明               |
+| ----------------- | ------------------ |
+| pentest-flow      | 渗透测试全流程编排 |
+| recon             | 信息收集流程       |
+| vuln-discovery    | 漏洞发现流程       |
+| exploitation      | 漏洞利用流程       |
+| post-exploitation | 后渗透流程         |
+| reporting         | 报告生成流程       |
+| waf-bypass        | WAF 绕过技巧库     |
 
 ### 专项 Skill (16)
 
-| Skill | 参考文档数 | 说明 |
-|-------|-----------|------|
-| web-pentest | 3 | Web 应用渗透 |
-| android-pentest | 9 | 安卓应用渗透 |
-| client-reverse | 20 | 客户端逆向分析 |
-| web-security-advanced | 33 | Web 安全进阶（注入、绕过、利用链） |
-| ai-mcp-security | 7 | AI/MCP 安全测试 |
-| intranet-pentest-advanced | 15 | 内网渗透进阶 |
-| pentest-tools | 16 | 渗透工具速查 |
-| rapid-checklist | 2 | 快速检查清单 |
-| crypto-toolkit | 3 | 编解码/加解密（29 种操作） |
-| **ctf-web** | 8 | CTF Web 攻击知识库 |
-| **ctf-crypto** | 6 | CTF 密码学攻击知识库 |
-| **ctf-misc** | 6 | CTF 杂项知识库 |
-| **osint-recon** | 7 | OSINT 开源情报收集 |
-| **cve-triage** | 1 | CVE 查询与三级评估 |
-| **hackerone** | 1 | HackerOne 赏金 scope-guard |
-| **secknowledge-skill** | 40 | Web+AI 安全测试知识库 |
+| Skill                     | 参考文档数 | 说明                               |
+| ------------------------- | ---------- | ---------------------------------- |
+| web-pentest               | 3          | Web 应用渗透                       |
+| android-pentest           | 9          | 安卓应用渗透                       |
+| client-reverse            | 20         | 客户端逆向分析                     |
+| web-security-advanced     | 33         | Web 安全进阶（注入、绕过、利用链） |
+| ai-mcp-security           | 7          | AI/MCP 安全测试                    |
+| intranet-pentest-advanced | 15         | 内网渗透进阶                       |
+| pentest-tools             | 16         | 渗透工具速查                       |
+| rapid-checklist           | 2          | 快速检查清单                       |
+| crypto-toolkit            | 3          | 编解码/加解密（29 种操作）         |
+| **ctf-web**               | 8          | CTF Web 攻击知识库                 |
+| **ctf-crypto**            | 6          | CTF 密码学攻击知识库               |
+| **ctf-misc**              | 6          | CTF 杂项知识库                     |
+| **osint-recon**           | 7          | OSINT 开源情报收集                 |
+| **cve-triage**            | 1          | CVE 查询与三级评估                 |
+| **hackerone**             | 1          | HackerOne 赏金 scope-guard         |
+| **secknowledge-skill**    | 40         | Web+AI 安全测试知识库              |
 
 Skill 会根据用户输入解析为“可选参考资料索引”，不会把 Skill 正文、阶段流程或方法论剧本自动塞进系统提示。专项 Skill 含 `references/` 目录下的详细方法论文档，LLM 只有在自己判断有价值时才通过 `load_skill_reference` 按需加载。
 
 ### 内置编解码/加解密工具 (crypto_decode)
 
-| 类别 | 操作 |
-|------|------|
-| 编解码 | base64, base32, base58, hex, url, html, unicode, rot13, caesar, morse（各有 encode/decode） |
-| 哈希 | md5, sha1, sha256, sha512 |
-| 加解密 | aes_encrypt, aes_decrypt（CBC 模式，PKCS7 填充） |
-| JWT | jwt_decode, jwt_encode |
-| 自动识别 | auto_decode — 尝试所有常见编码，返回匹配结果 |
+| 类别     | 操作                                                                                        |
+| -------- | ------------------------------------------------------------------------------------------- |
+| 编解码   | base64, base32, base58, hex, url, html, unicode, rot13, caesar, morse（各有 encode/decode） |
+| 哈希     | md5, sha1, sha256, sha512                                                                   |
+| 加解密   | aes_encrypt, aes_decrypt（CBC 模式，PKCS7 填充）                                            |
+| JWT      | jwt_decode, jwt_encode                                                                      |
+| 自动识别 | auto_decode — 尝试所有常见编码，返回匹配结果                                                |
 
 ---
 
@@ -578,22 +623,22 @@ vulnclaw config provider --list    # 查看所有提供商
 vulnclaw config provider minimax   # 一键切换
 ```
 
-| 提供商 | 命令 | 默认模型 |
-|--------|------|----------|
-| OpenAI | `provider openai` | gpt-5.6-sol |
-| Anthropic Claude | `provider anthropic` | claude-opus-5 |
-| MiniMax | `provider minimax` | MiniMax-M3 |
-| DeepSeek | `provider deepseek` | deepseek-v4-pro |
-| 智谱 GLM | `provider zhipu` | glm-5.3 |
-| Kimi | `provider moonshot` | kimi-k3 |
-| 通义千问 | `provider qwen` | qwen3.8-max |
-| SiliconFlow | `provider siliconflow` | deepseek-ai/DeepSeek-V4-Flash |
-| 豆包 | `provider doubao` | doubao-seed-evolving |
-| 阶跃星辰 | `provider stepfun` | step-3.7-flash |
-| 商汤 | `provider sensetime` | SenseNova-V6.5-Pro |
-| OpenRouter | `provider openrouter` | anthropic/claude-opus-5 |
-| Ollama (本地) | `provider ollama` | qwen3.5:9b |
-| 自定义 | `provider custom` | 手动填写 |
+| 提供商           | 命令                   | 默认模型                      |
+| ---------------- | ---------------------- | ----------------------------- |
+| OpenAI           | `provider openai`      | gpt-5.6-sol                   |
+| Anthropic Claude | `provider anthropic`   | claude-opus-5                 |
+| MiniMax          | `provider minimax`     | MiniMax-M3                    |
+| DeepSeek         | `provider deepseek`    | deepseek-v4-pro               |
+| 智谱 GLM         | `provider zhipu`       | glm-5.3                       |
+| Kimi             | `provider moonshot`    | kimi-k3                       |
+| 通义千问         | `provider qwen`        | qwen3.8-max                   |
+| SiliconFlow      | `provider siliconflow` | deepseek-ai/DeepSeek-V4-Flash |
+| 豆包             | `provider doubao`      | doubao-seed-evolving          |
+| 阶跃星辰         | `provider stepfun`     | step-3.7-flash                |
+| 商汤             | `provider sensetime`   | SenseNova-V6.5-Pro            |
+| OpenRouter       | `provider openrouter`  | anthropic/claude-opus-5       |
+| Ollama (本地)    | `provider ollama`      | qwen3.5:9b                    |
+| 自定义           | `provider custom`      | 手动填写                      |
 
 ### 命令行配置
 
@@ -614,85 +659,85 @@ vulnclaw config set session.show_thinking false # 隐藏推理过程
 vulnclaw config set safety.permission_mode full_access
 
 # ② 仅当前 REPL 会话生效（重启后回到配置文件的模式）
-mode full_access          # 切换；不带参数则查看当前模式
+/permission full_access   # 切换；也可用 Shift+Tab 循环
 
 # ③ 单次运行生效
 VULNCLAW_SAFETY_PERMISSION_MODE=full_access vulnclaw solve <target>
 ```
 
-| 模式 | 行为 |
-|------|------|
-| `ask`（默认） | 每次执行都询问 y/N，未响应 300 秒（`safety.approval_timeout_seconds`）自动拒绝 |
-| `auto_review` | 只读命令白名单（ls / cat / nmap 扫描类等）直接执行，其余仍询问；可用 `safety.trusted_commands` 扩充前缀 |
-| `full_access` | 全部直接执行，不再询问 |
+| 模式          | 行为                                                                                                            |
+| ------------- | --------------------------------------------------------------------------------------------------------------- |
+| `read_only`   | 仅允许明确支持的读取；写入、扫描、利用、报告导出和未知动作直接拒绝                                              |
+| `ask`（默认） | 每次执行都询问 y/N，未响应 300 秒（`safety.approval_timeout_seconds`）自动拒绝                                  |
+| `auto_review` | 现有自动审批白名单命令（ls / cat / nmap 扫描类等）直接执行，其余仍询问；可用 `safety.trusted_commands` 扩充前缀 |
+| `full_access` | 全部直接执行，不再询问                                                                                          |
 
 > ⚠️ `full_access` 下，渗透目标返回的页面、响应体、报告内容都属于不可信输入，提示注入可能驱动无确认的任意命令执行。仅建议在隔离靶场、CTF 或一次性虚拟机中使用；真实环境推荐 `auto_review` + 自定义信任前缀。
 
 ### 可配置项
 
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `llm.provider` | openai | LLM 提供商 |
-| `llm.api_key` | 空 | API Key |
-| `llm.auth_mode` | static | `static` 或 `oauth` |
-| `llm.chatgpt_auto_proxy` | false | 自动启动内置 ChatGPT 后端桥接代理 |
-| `llm.base_url` | 按 provider | API 基础 URL |
-| `llm.model` | 按 provider | 模型名称 |
-| `llm.temperature` | 0.1 | 采样温度 |
-| `llm.max_tokens` | 4096 | 单次最大输出 token |
-| `session.engine` | solve | `solve`（模型主导）/ `team`（角色团队）/ `rounds`（旧固定轮数） |
-| `session.solve_max_steps` | 240 | solve 防失控安全预算；不是计划轮数，正常由模型自主完成/询问/判定无路 |
-| `session.solve_max_directions` | 3 | 兼容旧配置；默认模型主导 solve 不再使用研究方向数量 |
-| `session.solve_max_tool_rounds` | 6 | 兼容旧配置；单个模型 turn 内连续工具 follow-up 的 runaway 安全上限，不是计划式工作流轮数 |
-| `session.context_auto_compact` | true | 是否允许所有 LLM 调用路径自动压缩上下文 |
-| `session.context_compact_trigger_ratio` | 0.70 | 自动压缩的上下文触发比例 |
-| `session.context_compact_target_ratio` | 0.55 | 压缩完成后的目标上下文占用比例 |
-| `session.context_recent_message_groups` | 12 | 每次压缩保留的最近完整消息组数量 |
-| `session.context_summary_max_tokens` | 3500 | 长期结构化上下文摘要的最大 token 预算 |
-| `session.context_output_reserve_tokens` | 0 | 为模型输出预留的 token；0 时取 `min(llm.max_tokens, 8192)` |
-| `session.context_compaction_audit_enabled` | true | 是否在持久化 AgentState 中记录压缩审计事件 |
-| `session.conversation_auto_report` | true | 自然语言安全测试完成后默认导出报告，明确要求优先 |
-| `session.solve_auto_report` | true | solve 目标达成后自动生成 Markdown 复盘报告 |
-| `session.solve_report_show` | true | 自动报告生成后在终端直接打印报告正文 |
-| `session.max_rounds` | 15 | 最大轮数 |
-| `session.output_dir` | ./vulnclaw-output | 报告输出目录 |
-| `session.report_format` | markdown | 报告格式（markdown / html） |
-| `session.poc_verify_enabled` | false | 任务结束及历史补审计时尝试 PoC（经执行审批）；关闭时仅做独立证据审查 |
-| `session.language` | auto | 界面语言（auto / zh / en），默认英文 |
-| `session.show_thinking` | false | 显示 LLM 推理过程 |
-| `session.persistent_rounds_per_cycle` | 100 | 持续性渗透每周期轮数 |
-| `session.persistent_max_cycles` | 10 | 持续性渗透最大周期数（0=无限） |
-| `session.persistent_auto_report` | true | 持续性渗透每周期自动生成报告 |
-| `session.stale_rounds_threshold` | 5 | 死循环检测阈值 |
-| `safety.permission_mode` | ask | 危险工具执行审批策略：`ask`（默认，每次执行需 y/N 确认）/ `auto_review`（只读命令白名单免确认，其余仍询问）/ `full_access`（全部直接执行，无确认） |
-| `safety.approval_timeout_seconds` | 300 | 未响应的执行审批等待多少秒后自动拒绝 |
-| `safety.trusted_commands` | 空 | `auto_review` 模式下的免审批命令前缀（如 `nmap`、`git diff`）；以禁用名开头的条目会被拒绝 |
-| `safety.enable_python_execute` | true | 启用 python_execute 内置工具（关闭更安全） |
-| `safety.python_execute_max_lines` | 50 | 单次 python_execute 允许的最大代码行数 |
-| `safety.python_execute_show_warning` | true | 每次 python_execute 前显示安全警告 |
-| `safety.python_execute_audit_enabled` | true | 将 python_execute 审计记录写入本地配置目录 |
+| 配置项                                     | 默认值            | 说明                                                                                                                                                                                      |
+| ------------------------------------------ | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm.provider`                             | openai            | LLM 提供商                                                                                                                                                                                |
+| `llm.api_key`                              | 空                | API Key                                                                                                                                                                                   |
+| `llm.auth_mode`                            | static            | `static` 或 `oauth`                                                                                                                                                                       |
+| `llm.chatgpt_auto_proxy`                   | false             | 自动启动内置 ChatGPT 后端桥接代理                                                                                                                                                         |
+| `llm.base_url`                             | 按 provider       | API 基础 URL                                                                                                                                                                              |
+| `llm.model`                                | 按 provider       | 模型名称                                                                                                                                                                                  |
+| `llm.temperature`                          | 0.1               | 采样温度                                                                                                                                                                                  |
+| `llm.max_tokens`                           | 4096              | 单次最大输出 token                                                                                                                                                                        |
+| `session.engine`                           | solve             | `solve`（模型主导）/ `team`（角色团队）/ `rounds`（旧固定轮数）                                                                                                                           |
+| `session.solve_max_steps`                  | 240               | solve 防失控安全预算；不是计划轮数，正常由模型自主完成/询问/判定无路                                                                                                                      |
+| `session.solve_max_directions`             | 3                 | 兼容旧配置；默认模型主导 solve 不再使用研究方向数量                                                                                                                                       |
+| `session.solve_max_tool_rounds`            | 6                 | 兼容旧配置；单个模型 turn 内连续工具 follow-up 的 runaway 安全上限，不是计划式工作流轮数                                                                                                  |
+| `session.context_auto_compact`             | true              | 是否允许所有 LLM 调用路径自动压缩上下文                                                                                                                                                   |
+| `session.context_compact_trigger_ratio`    | 0.70              | 自动压缩的上下文触发比例                                                                                                                                                                  |
+| `session.context_compact_target_ratio`     | 0.55              | 压缩完成后的目标上下文占用比例                                                                                                                                                            |
+| `session.context_recent_message_groups`    | 12                | 每次压缩保留的最近完整消息组数量                                                                                                                                                          |
+| `session.context_summary_max_tokens`       | 3500              | 长期结构化上下文摘要的最大 token 预算                                                                                                                                                     |
+| `session.context_output_reserve_tokens`    | 0                 | 为模型输出预留的 token；0 时取 `min(llm.max_tokens, 8192)`                                                                                                                                |
+| `session.context_compaction_audit_enabled` | true              | 是否在持久化 AgentState 中记录压缩审计事件                                                                                                                                                |
+| `session.conversation_auto_report`         | true              | 自然语言安全测试完成后默认导出报告，明确要求优先                                                                                                                                          |
+| `session.solve_auto_report`                | true              | solve 目标达成后自动生成 Markdown 复盘报告                                                                                                                                                |
+| `session.max_rounds`                       | 15                | 最大轮数                                                                                                                                                                                  |
+| `session.output_dir`                       | ./vulnclaw-output | 报告输出目录                                                                                                                                                                              |
+| `session.report_format`                    | markdown          | 报告格式（markdown / html）                                                                                                                                                               |
+| `session.poc_verify_enabled`               | false             | 任务结束及历史补审计时尝试 PoC（经执行审批）；关闭时仅做独立证据审查                                                                                                                      |
+| `session.language`                         | auto              | 界面语言（auto / zh / en），默认英文                                                                                                                                                      |
+| `session.show_thinking`                    | false             | 显示 LLM 推理过程                                                                                                                                                                         |
+| `session.persistent_rounds_per_cycle`      | 100               | 持续性渗透每周期轮数                                                                                                                                                                      |
+| `session.persistent_max_cycles`            | 10                | 持续性渗透最大周期数（0=无限）                                                                                                                                                            |
+| `session.persistent_auto_report`           | true              | 持续性渗透每周期自动生成报告                                                                                                                                                              |
+| `session.stale_rounds_threshold`           | 5                 | 死循环检测阈值                                                                                                                                                                            |
+| `safety.permission_mode`                   | ask               | 统一权限策略：`read_only`（仅明确支持的读取，其余直接拒绝）/ `ask`（默认，每次执行需 y/N 确认）/ `auto_review`（只读命令白名单免确认，其余仍询问）/ `full_access`（全部直接执行，无确认） |
+| `safety.approval_timeout_seconds`          | 300               | 未响应的执行审批等待多少秒后自动拒绝                                                                                                                                                      |
+| `safety.trusted_commands`                  | 空                | `auto_review` 模式下的免审批命令前缀（如 `nmap`、`git diff`）；以禁用名开头的条目会被拒绝                                                                                                 |
+| `safety.enable_python_execute`             | true              | 启用 python_execute 内置工具（关闭更安全）                                                                                                                                                |
+| `safety.python_execute_max_lines`          | 50                | 单次 python_execute 允许的最大代码行数                                                                                                                                                    |
+| `safety.python_execute_show_warning`       | true              | 每次 python_execute 前显示安全警告                                                                                                                                                        |
+| `safety.python_execute_audit_enabled`      | true              | 将 python_execute 审计记录写入本地配置目录                                                                                                                                                |
 
 ### 环境变量
 
-| 变量 | 说明 |
-|------|------|
-| `VULNCLAW_LLM_PROVIDER` | LLM 提供商名称 |
-| `VULNCLAW_LLM_API_KEY` | API Key |
-| `VULNCLAW_LLM_AUTH_MODE` | static / oauth |
-| `VULNCLAW_LLM_CHATGPT_AUTO_PROXY` | 内置 ChatGPT 代理 |
-| `VULNCLAW_LLM_BASE_URL` | API 基础 URL |
-| `VULNCLAW_LLM_MODEL` | 模型名称 |
-| `VULNCLAW_SESSION_MAX_ROUNDS` | 最大轮数 |
-| `VULNCLAW_SESSION_STALE_ROUNDS_THRESHOLD` | 死循环检测阈值 |
-| `VULNCLAW_SESSION_REASONING_STATE_ENABLED` | 结构化推理状态开关 |
-| `VULNCLAW_SESSION_REFLEXION_ENABLED` | 自适应反思引擎开关 |
-| `VULNCLAW_SESSION_REFLEXION_MAX_SAME_VULN_FAILS` | 同类漏洞连败触发反思阈值 |
-| `VULNCLAW_SESSION_ESCALATION_MAX_LEVEL` | Payload 升级上限（0-4） |
-| `VULNCLAW_SESSION_PLUGIN_RUNTIME_ENABLED` | 插件运行时开关 |
-| `VULNCLAW_SESSION_PLUGIN_MAX_REQUESTS_PER_TARGET` | 单目标插件请求预算 |
-| `VULNCLAW_SAFETY_PERMISSION_MODE` | 执行审批模式（ask / auto_review / full_access） |
-| `VULNCLAW_SAFETY_APPROVAL_TIMEOUT_SECONDS` | 执行审批等待秒数 |
-| `VULNCLAW_SAFETY_TRUSTED_COMMANDS` | auto_review 免审批命令前缀（逗号分隔） |
+| 变量                                              | 说明                                            |
+| ------------------------------------------------- | ----------------------------------------------- |
+| `VULNCLAW_LLM_PROVIDER`                           | LLM 提供商名称                                  |
+| `VULNCLAW_LLM_API_KEY`                            | API Key                                         |
+| `VULNCLAW_LLM_AUTH_MODE`                          | static / oauth                                  |
+| `VULNCLAW_LLM_CHATGPT_AUTO_PROXY`                 | 内置 ChatGPT 代理                               |
+| `VULNCLAW_LLM_BASE_URL`                           | API 基础 URL                                    |
+| `VULNCLAW_LLM_MODEL`                              | 模型名称                                        |
+| `VULNCLAW_SESSION_MAX_ROUNDS`                     | 最大轮数                                        |
+| `VULNCLAW_SESSION_STALE_ROUNDS_THRESHOLD`         | 死循环检测阈值                                  |
+| `VULNCLAW_SESSION_REASONING_STATE_ENABLED`        | 结构化推理状态开关                              |
+| `VULNCLAW_SESSION_REFLEXION_ENABLED`              | 自适应反思引擎开关                              |
+| `VULNCLAW_SESSION_REFLEXION_MAX_SAME_VULN_FAILS`  | 同类漏洞连败触发反思阈值                        |
+| `VULNCLAW_SESSION_ESCALATION_MAX_LEVEL`           | Payload 升级上限（0-4）                         |
+| `VULNCLAW_SESSION_PLUGIN_RUNTIME_ENABLED`         | 插件运行时开关                                  |
+| `VULNCLAW_SESSION_PLUGIN_MAX_REQUESTS_PER_TARGET` | 单目标插件请求预算                              |
+| `VULNCLAW_SAFETY_PERMISSION_MODE`                 | 执行审批模式（ask / auto_review / full_access） |
+| `VULNCLAW_SAFETY_APPROVAL_TIMEOUT_SECONDS`        | 执行审批等待秒数                                |
+| `VULNCLAW_SAFETY_TRUSTED_COMMANDS`                | auto_review 免审批命令前缀（逗号分隔）          |
 
 优先级：**环境变量 > 配置文件 > 内置默认值**
 
@@ -740,11 +785,11 @@ VulnClaw 仅用于**已授权的安全测试**。使用本工具前，请确保�
 
 与更多安全爱好者一起交流、分享与成长
 
-| 社区交流群 | 开发者群聊 |
-|:--:|:--:|
-| 欢迎加入讨论分享，获取最新产品动态与使用技巧 | 加入我们，参与开源贡献与技术深度探讨 |
+|                  社区交流群                   |                      开发者群聊                       |
+| :-------------------------------------------: | :---------------------------------------------------: |
+| 欢迎加入讨论分享，获取最新产品动态与使用技巧  |         加入我们，参与开源贡献与技术深度探讨          |
 | ![VulnClaw 社区交流群](assets/社区交流群.jpg) | ![VulnClaw 开发者群聊](assets/VulnClaw开发者群聊.png) |
-| **QQ 群号：954402631** | **QQ 群号：1065858551** |
+|            **QQ 群号：954402631**             |                **QQ 群号：1065858551**                |
 
 ---
 
