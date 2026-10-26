@@ -11,7 +11,7 @@ const local: Command[] = [
   { name: "clear", category: "Session", description: "Clear the display; keep the conversation", syntax: "/clear", examples: ["/clear"] },
   { name: "quit", category: "Management", description: "Exit the client", syntax: "/quit", examples: ["/quit"] },
 ];
-export function mergeCommands(summaries: Record<string, string>, metadata: Command[], historyRetry: boolean): Command[] {
+export function mergeCommands(summaries: Record<string, string>, metadata: Command[]): Command[] {
   const commands = new Map(Object.entries(summaries).map(([name, description]) => [name,
     { name, description, category: "Management", syntax: `/${name}`, examples: [] as string[] }]));
   for (const command of metadata) commands.set(command.name, command);
@@ -20,8 +20,6 @@ export function mergeCommands(summaries: Record<string, string>, metadata: Comma
     commands.set(command.name, command.name === "scope" && commands.get("scope")
       ? { ...commands.get("scope")!, description: command.description, examples: command.examples } : command);
   }
-  if (historyRetry) commands.set("history-retry", { name: "history-retry", category: "Session",
-    description: "Retry terminal history output", syntax: "/history-retry", examples: ["/history-retry"] });
   return [...commands.values()];
 }
 export function helpText(commands: Command[], rawTopic = ""): string {

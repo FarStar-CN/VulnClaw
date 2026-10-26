@@ -12,6 +12,7 @@ for (const kind of ["log", "status"] as const) test(`${kind}: only the chevron a
     expect(await detailsVisible()).toBe(false);
     const entry = setup.renderer.root.findDescendantById("entry-fixture")!;
     expect((await finalFrame(setup)).trimStart()).toStartWith("〉Log");
+    expect((await finalFrame(setup)).split("first preview").length - 1).toBe(1);
     const previewX = entry.getChildren()[0].getChildren()[1].x;
     for (const x of [35, 75]) {
       await act(async () => { await setup.mockMouse.click(entry.x + x, entry.y); });
@@ -20,6 +21,7 @@ for (const kind of ["log", "status"] as const) test(`${kind}: only the chevron a
     await act(async () => { await setup.mockMouse.click(entry.x + 1, entry.y); });
     expect(await detailsVisible()).toBe(true);
     expect((await finalFrame(setup)).trimStart()).toStartWith("﹀Log");
+    expect((await finalFrame(setup)).split("first preview").length - 1).toBe(1);
     expect(entry.getChildren()[0].getChildren()[1].x).toBe(previewX);
     await act(async () => { await setup.mockMouse.click(entry.x + 30, entry.y + 2); });
     expect(await detailsVisible()).toBe(true);

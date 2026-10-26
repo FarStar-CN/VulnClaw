@@ -501,10 +501,13 @@ class ApplicationSession:
         from vulnclaw.agent.exec_gate import get_execution_gate
 
         permission_mode = get_execution_gate(getattr(self.runtime, "config", None)).mode
+        from vulnclaw.i18n import current_lang
+
         self.emit(
             "ready",
             request_id=request_id,
             capabilities={
+                "language": current_lang(),
                 "commands": sorted(TASK_COMMANDS),
                 "control_operations": sorted(SUPPORTED_CONTROL_OPERATIONS),
                 "cancellation": True,

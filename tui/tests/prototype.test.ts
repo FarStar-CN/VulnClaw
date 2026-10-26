@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { BoxRenderable, MarkdownRenderable, TextRenderable } from "@opentui/core";
+import { BoxRenderable, MarkdownRenderable } from "@opentui/core";
 import { createTestRenderer, MockTreeSitterClient } from "@opentui/core/testing";
 import { markdownStyle } from "../src/theme/palette";
 import { visibleText } from "../src/components/content";
@@ -32,38 +32,6 @@ test("native Markdown finalizes split tokens and resizes inside its pane", async
     expect(setup.captureCharFrame()).toContain("中文回答");
   } finally {
     await client.destroy();
-    await setup.dispose();
-    style.destroy();
-  }
-});
-
-test("split-footer accepts ordered completed Markdown snapshots through public API", async () => {
-  const setup = await createTestRenderer({
-    width: 60, height: 24, footerHeight: 8, screenMode: "split-footer",
-    externalOutputMode: "capture-stdout",
-  });
-  const style = markdownStyle(setup.renderer, "blue");
-  try {
-    setup.renderer.root.add(new TextRenderable(setup.renderer, { content: "继续输入" }));
-    const surface = setup.renderer.createScrollbackSurface();
-    surface.root.add(new MarkdownRenderable(surface.renderContext, {
-      content: "# 已完成\n\n第一段\n\n第二段", syntaxStyle: style,
-    }));
-    try {
-      await surface.settle();
-      surface.commitRows(0, surface.height, { trailingNewline: true });
-      await setup.renderOnce();
-      const history = setup.externalOutput.takeText();
-      expect(history).toContain("已完成");
-      expect(history.indexOf("第一段")).toBeLessThan(history.indexOf("第二段"));
-      expect(setup.captureCharFrame()).toContain("继续输入");
-      setup.resize(40, 24);
-      await setup.renderOnce();
-      expect(setup.externalOutput.take()).toHaveLength(0);
-    } finally {
-      surface.destroy();
-    }
-  } finally {
     await setup.dispose();
     style.destroy();
   }

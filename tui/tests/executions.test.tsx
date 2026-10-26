@@ -4,7 +4,7 @@ import { TextBufferRenderable } from "@opentui/core";
 import { MouseButtons } from "@opentui/core/testing";
 import { testRender } from "@opentui/react/test-utils";
 import { SessionController } from "../src/session/controller";
-import { executionHistory, fitExecution } from "../src/session/executions";
+import { executionPresentation, executionResult, fitExecution } from "../src/session/executions";
 import { Transcript } from "../src/components/Transcript";
 import { finalFrame } from "./render-helpers";
 
@@ -76,16 +76,15 @@ test("execution records retain evidence and semantic scan results", () => {
   controller.receive({ ...envelope, type: "tool_result", call_id: "scan", evidence_id: "e101", result: "Open ports: 80, 443" });
   const card = [...controller.cards.values()][0]!;
   expect(card.execution!.evidenceId).toBe("e101");
-  expect(executionHistory(card.execution!)).toContain("Open ports: 80, 443");
+  expect(executionResult(card.execution!, card.execution!.result!)).toBe("Open ports: 80, 443");
 });
 
-test("history retains exact originals, and summaries fit wide Unicode characters", () => {
+test("execution titles retain exact originals, and summaries fit wide Unicode characters", () => {
   const controller = new SessionController(); announce(controller, "a"); operation(controller, "a");
   const card = [...controller.cards.values()][0]!;
   card.execution!.result = "Command: duplicated";
-  const text = executionHistory(card.execution!);
-  expect(text.split("printf '中文 😀'")).toHaveLength(2);
-  expect(text).not.toContain("duplicated");
+  expect(executionPresentation(card.execution!).title).toBe("printf '中文 😀'");
+  expect(executionResult(card.execution!, card.execution!.result!)).toBe("");
   expect(fitExecution("中文 😀 long request", 8)).toEndWith("…");
 });
 

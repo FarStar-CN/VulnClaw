@@ -1,5 +1,6 @@
 import { activeExecution, type ExecutionRecord, type ExecutionStatus } from "./executions";
 import type { SessionTransport } from "../transport/backend";
+import { ExecutionDetailCache, type DetailPage } from "./details";
 import type {
   ApprovalRequiredEvent, Bootstrap, ClientMessage, Finding, MessageSnapshot,
   RuntimeInfo, ServerEvent, StateSnapshot, SubagentEvent, TaskRequest,
@@ -60,13 +61,15 @@ export type Overlay =
   | { kind: "data"; title: string; data: unknown };
 
 export class SessionController {
+  readonly details = new ExecutionDetailCache(async (id, offset) =>
+    await this.control("execution.details.read", { id, offset }) as unknown as DetailPage);
   version = 0;
   connected = false;
   state: StateSnapshot | null = null;
   runtime: RuntimeInfo | null = null;
   commands: Record<string, string> = {};
   commandMetadata: Command[] = [];
-  commandList(): Command[] { return mergeCommands(this.commands, this.commandMetadata, !!this.onHistoryRetry); }
+  commandList(): Command[] { return mergeCommands(this.commands, this.commandMetadata); }
   taskCommands: string[] = [];
   skills: string[] = [];
   messages = new Map<string, MessageSnapshot>();
@@ -90,24 +93,54 @@ export class SessionController {
   theme: ThemeId = "blue";
   showReasoning = true;
   overlay: Overlay | null = null;
-  notice = t("Starting Python session…");
+  notice = "";
   draft = "";
   history: string[] = [];
   onExit: () => void = () => {};
-  onHistoryRetry: (() => void) | null = null;
   private hidden = new Set<string>();
   private listeners = new Set<() => void>();
+  private streamNotification: ReturnType<typeof setTimeout> | null = null;
   private nextId = 0;
   private transport: SessionTransport | null = null;
   private reportRequests = new Set<string>();
   private requests = new Map<string, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void }>();
 
+  get preparing(): boolean {
+    return !this.connected || !!this.runtime?.mcp_servers?.some((server) => server.status === "starting");
+  }
+  get startupMessage(): string {
+    if (!this.connected) return t("Starting Python session…");
+    const servers = this.runtime?.mcp_servers ?? [];
+    if (servers.some((server) => server.status === "starting")) {
+      return t("Preparing MCP services ({ready}/{total})…", { ready: servers.filter((server) => server.ready).length, total: servers.length });
+    }
+    const failed = servers.filter((server) => !server.ready);
+    return failed.length ? t("MCP unavailable: {servers}. Check /settings.", { servers: failed.map((server) => server.name).join(", ") }) : t("Ready");
+  }
+
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return () => {
+      this.listeners.delete(listener);
+      if (!this.listeners.size) this.cancelStreamNotification();
+    };
   };
   snapshot = (): number => this.version;
-  changed(): void { this.version++; for (const listener of this.listeners) listener(); }
+  private cancelStreamNotification(): void {
+    if (this.streamNotification !== null) clearTimeout(this.streamNotification);
+    this.streamNotification = null;
+  }
+  private publish(): void {
+    this.cancelStreamNotification();
+    for (const listener of this.listeners) listener();
+  }
+  changed(): void { this.version++; this.publish(); }
+  private streamChanged(): void {
+    this.version++;
+    if (!this.listeners.size || this.streamNotification !== null) return;
+    // A fixed deadline batches appends without postponing updates during continuous output.
+    this.streamNotification = setTimeout(() => this.publish(), 32);
+  }
   attach(transport: SessionTransport, bootstrap: Bootstrap = {}): void {
     this.transport = transport;
     this.send({ protocol_version: 2, type: "initialize", request_id: this.id(),
@@ -169,9 +202,6 @@ export class SessionController {
     if (!text.trim()) return;
     const head = text.trim().split(/\s+/, 1)[0]!;
     const command = head.toLowerCase() === "/cfg" ? "/config" : head.toLowerCase();
-    if (command === "/history-retry" && this.onHistoryRetry) {
-      this.onHistoryRetry(); this.draft = ""; this.changed(); return;
-    }
     if (command === "/theme") {
       const theme = text.trim().split(/\s+/)[1]?.toLowerCase();
       const themes = Object.keys(palettes);
@@ -189,6 +219,7 @@ export class SessionController {
     if (command === "/settings") { this.action("config.document"); this.draft = ""; this.changed(); return; }
     const executing = !command.startsWith("/") || this.taskCommands.includes(command.slice(1));
     const answering = !command.startsWith("/") && this.state?.task.waiting_for_input;
+    if (executing && this.preparing) { this.changed(); return; }
     if (this.state?.task.active && executing && !answering) {
       this.notify(t("An operation is active. Cancel it or wait for completion.")); return;
     }
@@ -244,6 +275,7 @@ export class SessionController {
     } catch (error) { this.notify(String(error)); }
   }
   startTask(task: TaskRequest): void {
+    if (this.preparing) { this.changed(); return; }
     if (this.permission === "read_only") { this.notify(t("Read-Only: change permission before running a task.")); return; }
     try {
       this.send({ protocol_version: 2, type: "start_task", request_id: this.id(),
@@ -348,7 +380,10 @@ export class SessionController {
     }
   }
   receive = (event: ServerEvent): void => {
+    const continuingMessage = event.type === "message" && event.operation === "append"
+      && this.messages.has(event.message_id);
     if (event.type === "ready") {
+      setLanguage(event.capabilities.language);
       this.connected = true; this.commands = event.capabilities.input_commands ?? {};
       this.taskCommands = event.capabilities.authoritative_state ? event.capabilities.commands : [];
       this.permission = event.capabilities.permission_mode ?? "ask";
@@ -385,12 +420,22 @@ export class SessionController {
           execution.status = event.status;
           if (event.error !== undefined) execution.error = event.error;
           if (event.duration_ms !== undefined) execution.duration = event.duration_ms;
-        } else execution.operations.set(event.operation_id, { ...execution.operations.get(event.operation_id), ...event });
+        } else {
+          const previous = execution.operations.get(event.operation_id);
+          const operation = { ...previous, ...event,
+            detail_refs: { ...previous?.detail_refs, ...event.detail_refs } };
+          for (const field of ["code", "body", "response_body", "stdout", "stderr"] as const) {
+            if (event.detail_refs?.[field]) delete operation[field];
+            if (event[field] !== undefined) delete operation.detail_refs[field];
+          }
+          execution.operations.set(event.operation_id, operation);
+        }
         break;
       }
       case "tool_result": {
         const execution = this.execution(event);
         execution.result = event.result;
+        execution.resultRef = event.result_ref;
         this.executionCards.get(JSON.stringify([event.task_id, event.agent_id ?? "main", event.call_id ?? execution.callId]))!.format = event.format ?? "text";
         execution.structuredContent = event.structured_content;
         execution.received = true;
@@ -434,7 +479,7 @@ export class SessionController {
           const thinking = record(config.session).show_thinking;
           if (typeof thinking === "boolean") this.showReasoning = thinking;
         }
-        if (event.operation === "session.new") { this.executionCards.clear(); this.messages.clear(); this.cards.clear(); this.entries = []; this.agents.clear(); this.source = "main"; this.activity = null; this.taskLabel = ""; this.taskStatus = ""; }
+        if (event.operation === "session.new") { this.details.clear(); this.hidden.clear(); this.executionCards.clear(); this.messages.clear(); this.cards.clear(); this.entries = []; this.agents.clear(); this.source = "main"; this.activity = null; this.taskLabel = ""; this.taskStatus = ""; }
         if (!requested) this.showControl(event.operation, result);
         break;
       }
@@ -454,9 +499,10 @@ export class SessionController {
       }
       case "shutdown_complete": this.connected = false; break;
     }
-    this.changed();
+    if (continuingMessage) this.streamChanged(); else this.changed();
   };
   disconnect = (error: Error): void => {
+    this.details.clear();
     this.connected = false; this.notice = error.message; this.approvals = [];
     this.finishExecutions(undefined, "failed");
     for (const message of this.messages.values()) if (message.status === "streaming") message.status = "failed";

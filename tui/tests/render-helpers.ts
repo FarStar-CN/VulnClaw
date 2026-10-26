@@ -3,8 +3,9 @@ import { CodeRenderable, type Renderable } from "@opentui/core";
 import type { TestRendererSetup } from "@opentui/core/testing";
 
 export async function finalFrame(setup: TestRendererSetup): Promise<string> {
+  // Window changes requested by a native frame must commit before the next layout pass.
+  await act(async () => { await setup.renderOnce(); });
   await act(async () => {
-    await setup.renderOnce();
     const promises: Promise<void>[] = [];
     function visit(node: Renderable) {
       if (node instanceof CodeRenderable) promises.push(node.highlightingDone);

@@ -123,8 +123,9 @@ vulnclaw tui                 # 自动找到源码目录中的 tui/dist 产物
 vulnclaw repl
 ```
 
-两个入口共用 TypeScript / React / OpenTUI 组件和 Python 会话后端。TUI 使用独立屏幕，
-REPL 将完成的消息提交到终端滚动历史，输入与进行中的内容保留在底栏。
+两个入口共用 TypeScript / React / OpenTUI 组件和 Python 会话后端，均使用独立屏幕。
+TUI 提供多面板工作台；REPL 使用单个可滚动会话面板，回答和工具记录在原处持续更新，
+输入框及状态栏固定在底部。执行详情可展开并分页查看。
 缺少交互端时启动命令会返回安装说明，其余 Python 命令仍可使用。
 
 ### Docker 运行（可选）
@@ -191,7 +192,7 @@ vulnclaw manual
 | ----------------------------------- | --------------------------------------------------- | --------------------------------------------------------------- |
 | `vulnclaw`                          | 显示帮助                                            | `vulnclaw`                                                      |
 | `vulnclaw tui`                      | 终端图形化工作台                                    | `vulnclaw tui --target target.com`                              |
-| `vulnclaw repl`                     | 启动 OpenTUI 滚动历史 REPL                          | `vulnclaw repl`                                                 |
+| `vulnclaw repl`                     | 启动 OpenTUI 单面板 REPL                            | `vulnclaw repl`                                                 |
 | `vulnclaw solve <target>`           | 目标驱动求解（无固定轮数，拿到目标即停）            | `vulnclaw solve target.com --goal "拿到flag"`                   |
 | `vulnclaw run <target>`             | 一键全流程渗透（默认走 solve 引擎）                 | `vulnclaw run 192.168.1.1`                                      |
 | `vulnclaw persistent <target>`      | 持续性渗透（100轮/周期）                            | `vulnclaw persistent 192.168.1.1`                               |
@@ -250,7 +251,7 @@ vulnclaw tui --dry-run --target https://target.example --mode deep --only-path /
 
 OpenTUI 工作台支持可配置侧栏：状态、能力、发现、子代理可调整位置；中间为按来源隔离的消息，底部为多行输入。发现详情包含证据，子代理视图可切换阅读来源。
 
-主面板将工具调用与结果合为执行记录：内部协调及本地分析使用语义名称，展开直接显示业务详情；技能参考加载只显示对象和状态。同轮并行派发合为一组，后台启动显示“已派发”。命令、HTTP 请求、脚本与重试保留实际执行内容，长内容展开后换行。Alt+↑/↓ 选择，Enter 展开或折叠；鼠标仅点击箭头及文字触发操作。执行记录不提供原始调用入口或复制按钮，REPL 在记录结束后一次写入历史。
+主面板将工具调用与结果合为执行记录：内部协调及本地分析使用语义名称，展开直接显示业务详情；技能参考加载只显示对象和状态。同轮并行派发合为一组，后台启动显示“已派发”。命令、HTTP 请求、脚本与重试保留实际执行内容，长内容展开后换行。Alt+↑/↓ 选择，Enter 展开或折叠；鼠标仅点击箭头及文字触发操作。执行记录不提供原始调用入口或复制按钮。REPL 和 TUI 使用同一套会话与详情分页组件。
 
 输入 `/theme` 在所有可用主题之间循环切换，或用 `/theme <名称>` 直接选择；输入 `/theme ` 后可补全主题名称，包括自定义主题。主题选择与完整配色统一保存在主配置 `config.yaml` 的 `terminal.theme` 和 `terminal.themes`，默认文件为 `~/.vulnclaw/config.yaml`（可通过 `VULNCLAW_CONFIG_DIR` 修改目录）。
 

@@ -26,7 +26,7 @@ export function sharedMarkdownStyle(renderer: CliRenderer, theme: ThemeId) {
   return style;
 }
 
-/** Shared node adaptation for live messages, transcript messages and completed scrollback. */
+/** Shared node adaptation for streaming and completed transcript messages. */
 export function markdownNodes(renderer: RenderContext, theme: ThemeId, width: number): MarkdownOptions["renderNode"] {
   return (token, context) => {
     if (token.type === "def") return new BoxRenderable(renderer, { height: 0 });

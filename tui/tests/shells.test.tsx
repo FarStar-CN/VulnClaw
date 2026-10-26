@@ -24,8 +24,8 @@ function session() {
 for (const mode of ["tui", "repl"] as const) test(`${mode}: approval owns keys and paste while preserving the composer draft`, async () => {
   const { controller, requests } = session(); controller.draft = "draft 中文";
   const shell = mode === "tui" ? <TuiShell controller={controller} workbench={new WorkbenchState()} /> : <ReplShell controller={controller} />;
-  const setup = await testRender(shell, { width: 100, height: 36, screenMode: mode === "repl" ? "split-footer" : "alternate-screen",
-    footerHeight: 12, externalOutputMode: mode === "repl" ? "capture-stdout" : "passthrough", kittyKeyboard: true, exitOnCtrlC: false });
+  const setup = await testRender(shell, { width: 100, height: 36, screenMode: "alternate-screen",
+    externalOutputMode: "passthrough", kittyKeyboard: true, exitOnCtrlC: false });
   try {
     expect(await finalFrame(setup)).toContain("draft 中文");
     await act(async () => { controller.receive({ protocol_version: 2, type: "approval_required", task_id: "t",
@@ -157,7 +157,7 @@ test("TUI: finding selection resets only its detail scroll and focused subagents
 for (const mode of ["tui", "repl"] as const) test(`${mode}: permission cycling and multiline input preserve their contexts without history completion`, async () => {
   const { controller, requests } = session(); controller.history = ["first", "second"]; controller.draft = "retained draft";
   const shell = mode === "tui" ? <TuiShell controller={controller} workbench={new WorkbenchState()} /> : <ReplShell controller={controller} />;
-  const setup = await testRender(shell, { width: 100, height: 36, screenMode: mode === "repl" ? "split-footer" : "alternate-screen", footerHeight: 12, externalOutputMode: mode === "repl" ? "capture-stdout" : "passthrough", kittyKeyboard: true });
+  const setup = await testRender(shell, { width: 100, height: 36, screenMode: "alternate-screen", externalOutputMode: "passthrough", kittyKeyboard: true });
   try {
     await finalFrame(setup);
     await act(async () => { setup.mockInput.pressKey("p", { ctrl: true }); }); await finalFrame(setup);
@@ -211,7 +211,7 @@ test("TUI: conversation and new-session status do not inherit the previous task 
 for (const mode of ["tui", "repl"] as const) test(`${mode}: native command and skill completion produce backend-readable input`, async () => {
   const { controller, requests } = session(); controller.draft = "/conf";
   const shell = mode === "tui" ? <TuiShell controller={controller} workbench={new WorkbenchState()} /> : <ReplShell controller={controller} />;
-  const setup = await testRender(shell, { width: 100, height: 36, screenMode: mode === "repl" ? "split-footer" : "alternate-screen", footerHeight: 12, externalOutputMode: mode === "repl" ? "capture-stdout" : "passthrough" });
+  const setup = await testRender(shell, { width: 100, height: 36, screenMode: "alternate-screen", externalOutputMode: "passthrough" });
   try {
     await finalFrame(setup);
     await act(async () => { setup.mockInput.pressEnter(); }); await finalFrame(setup);

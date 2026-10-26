@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
 import { SessionController } from "../src/session/controller";
-import { executionComplete, executionHistory, executionPresentation } from "../src/session/executions";
+import { executionComplete, executionPresentation } from "../src/session/executions";
 import { currentLanguage, setLanguage } from "../src/i18n";
 import { Transcript } from "../src/components/Transcript";
 import { TuiShell } from "../src/shells/TuiShell";
@@ -47,13 +47,14 @@ for (const [action, label] of Object.entries({ created: "Candidate recorded", up
     announce(controller, "finding", "submit_finding", { title: "SQL injection", severity: "High", method: "POST",
       endpoint: "/login", description: "Candidate description", evidence_ids: ["e017", "e021"] });
     complete(controller, "finding", { action, finding_id: "hidden-finding-id", verification_status: "pending", path: "/hidden/evidence.json" });
-    const record = last(controller), view = executionPresentation(record), history = executionHistory(record);
+    const view = executionPresentation(last(controller));
+    const details = view.sections.map((section) => `${section.label}: ${section.text}`).join("\n");
     expect(view.receipt).toContain(label);
     expect(view.receipt).toContain("Pending verification");
-    expect(history).toContain("POST /login"); expect(history).toContain("Candidate description");
-    expect(history).toContain("e017, e021");
-    expect(history).not.toContain("hidden-finding-id"); expect(history).not.toContain("/hidden/");
-    expect(history).not.toContain("model-only prefix");
+    expect(details).toContain("POST /login"); expect(details).toContain("Candidate description");
+    expect(details).toContain("e017, e021");
+    expect(details).not.toContain("hidden-finding-id"); expect(details).not.toContain("/hidden/");
+    expect(details).not.toContain("model-only prefix");
   });
 }
 
@@ -95,8 +96,8 @@ test("dispatch membership isolates sources and tasks and survives out-of-order c
   } });
   expect(executionComplete(group)).toBe(true);
   expect(executionPresentation(group).status).toBe("partial");
-  expect(executionHistory(group)).toContain("second completed");
-  expect(executionHistory(group)).toContain("e022");
+  const details = executionPresentation(group).sections.map((section) => section.text).join("\n");
+  expect(details).toContain("second completed"); expect(details).toContain("e022");
 });
 
 test("skill references never expose bodies or enter keyboard expansion navigation", async () => {
@@ -112,7 +113,7 @@ test("skill references never expose bodies or enter keyboard expansion navigatio
     const frame = await finalFrame(setup);
     expect(frame).toContain("Loaded successfully"); expect(frame).not.toContain("SECRET REFERENCE BODY");
     expect(executionPresentation(skill).expandable).toBe(false);
-    expect(executionHistory(skill)).not.toContain("SECRET REFERENCE BODY");
+    expect(executionPresentation(skill).sections).toEqual([]);
     await act(async () => { setup.mockInput.pressArrow("down", { meta: true }); setup.mockInput.pressEnter(); });
     expect(await finalFrame(setup)).toContain("Next visible result");
   } finally { await act(async () => { await setup.dispose(); }); }
@@ -124,7 +125,6 @@ for (const status of ["failed", "denied", "cancelled", "skipped"] as const) test
   complete(controller, "skill", {}, "must not appear");
   const view = executionPresentation(last(controller));
   expect(view.status).toBe(status); expect(view.expandable).toBe(false); expect(view.sections).toEqual([]);
-  expect(executionHistory(last(controller))).not.toContain("must not appear");
 });
 
 test("business details have one expansion and preserve that expansion across source switches", async () => {

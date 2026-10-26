@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { YAML } from "bun";
 import { defaultLayout, normalizeLayout, type LayoutState, type View, type ViewId } from "../workbench/layout";
 import type { SessionController } from "../session/controller";
 import { record } from "../session/controller";
@@ -10,6 +11,26 @@ import { defaultThemeConfig, parseThemes, type Palette, type ThemeConfig } from 
 export function clientDirectory(): string {
   const root = process.env.VULNCLAW_HOME ?? join(homedir(), ".vulnclaw");
   return join(root === "~" ? homedir() : root.replace(/^~[/\\]/, homedir() + "/"), "tui");
+}
+export function configurationFile(env: Record<string, string | undefined> = process.env, home = homedir()): string {
+  return join(env.VULNCLAW_CONFIG_DIR ?? join(home, ".vulnclaw"), "config.yaml");
+}
+export async function loadStartupAppearance(path = configurationFile(), directory = clientDirectory()): Promise<{
+  terminal: ThemeConfig; migration: ThemeConfig | null; language: "auto" | "en" | "zh";
+}> {
+  let config: unknown = {};
+  try { config = YAML.parse(await readFile(path, "utf-8")) ?? {}; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (typeof config !== "object" || config === null || Array.isArray(config)) throw new Error("config must be an object");
+  const language = record(record(config).session).language ?? "auto";
+  if (language !== "auto" && language !== "en" && language !== "zh") throw new Error("session.language must be auto, en or zh");
+  if (Object.hasOwn(config, "terminal")) {
+    const terminal = (config as Record<string, unknown>).terminal;
+    if (typeof terminal !== "object" || terminal === null || Array.isArray(terminal)) throw new Error("terminal must be an object");
+    return { terminal: parseThemes({ ...defaultThemeConfig, ...terminal }), migration: null, language };
+  }
+  const migration = await legacyThemeConfig(directory);
+  return { terminal: migration ?? defaultThemeConfig, migration, language };
 }
 export async function writeJson(path: string, value: unknown): Promise<void> {
   const bytes = JSON.stringify(value, null, 2) + "\n";

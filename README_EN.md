@@ -129,9 +129,11 @@ vulnclaw repl
 ```
 
 Both shells share TypeScript / React / OpenTUI components and a Python session backend.
-TUI uses the alternate screen; REPL submits completed messages to terminal scrollback,
-keeping the composer and live content in a footer. Missing terminal artifacts produce
-installation instructions while the other Python commands remain usable.
+Both use the alternate screen. TUI provides a multi-pane workbench; REPL uses one
+scrollable conversation pane, with replies and tool records updated in place and
+the composer and status bars fixed below. Execution details expand with pagination.
+Missing terminal artifacts produce installation instructions while the other Python
+commands remain usable.
 
 ### Run with Docker (optional)
 
@@ -197,7 +199,7 @@ vulnclaw manual
 |---------|-------------|---------|
 | `vulnclaw` | Show help | `vulnclaw` |
 | `vulnclaw tui` | Terminal UI workbench | `vulnclaw tui --target target.com` |
-| `vulnclaw repl` | Start the OpenTUI scrollback REPL | `vulnclaw repl` |
+| `vulnclaw repl` | Start the OpenTUI single-pane REPL | `vulnclaw repl` |
 | `vulnclaw solve <target>` | Goal-driven solver (no fixed rounds) | `vulnclaw solve target.com --goal "get the flag"` |
 | `vulnclaw run <target>` | Full pentest in one shot | `vulnclaw run 192.168.1.1` |
 | `vulnclaw persistent <target>` | Persistent pentesting (100 rounds/cycle) | `vulnclaw persistent 192.168.1.1` |
@@ -257,7 +259,7 @@ vulnclaw tui --dry-run --target https://target.example --mode deep --only-path /
 
 The OpenTUI workbench has configurable Status, Capabilities, Findings and Subagents panels, source-specific output in the center, and a multiline composer below. Finding details expose evidence, and selecting a subagent changes the reading source.
 
-The transcript groups tool calls and results into execution records. Coordination and local analysis use semantic action names with business details shown in one expansion; skill references show only their name and loading status. Parallel dispatches from the same turn form one group, and background launches show Dispatched. Commands, HTTP requests, scripts and retries retain the actual execution details and wrap long content when expanded. Use Alt+Up/Down to select and Enter to expand or collapse; mouse actions only respond on the arrow and label. Execution records have no raw invocation entry or copy button. REPL writes each finished record to terminal history once.
+The transcript groups tool calls and results into execution records. Coordination and local analysis use semantic action names with business details shown in one expansion; skill references show only their name and loading status. Parallel dispatches from the same turn form one group, and background launches show Dispatched. Commands, HTTP requests, scripts and retries retain the actual execution details and wrap long content when expanded. Use Alt+Up/Down to select and Enter to expand or collapse; mouse actions only respond on the arrow and label. Execution records have no raw invocation entry or copy button. REPL and TUI share the same transcript and paged detail components.
 
 `/exp` opens experience review with keyboard focus on the status filters. Use Left/Right to switch status, Down/Enter to enter the list, Enter for details, and Tab/Shift+Tab to move between visible regions. Borders and `›` show keyboard focus. Automatic lesson generation and injection of approved lessons are disabled by default. Manual `/learn <run-name>` and `/exp` remain available. Enable both automatic behaviors with `vulnclaw config set session.experience_enabled true`, or **Automatic experience learning** in `/settings → Advanced`.
 
@@ -796,7 +798,7 @@ Switch the UI language any of three ways:
 | Environment variable | `VULNCLAW_LANG=zh` / `VULNCLAW_LANG=en` |
 | Config file | `session.language: auto \| zh \| en` in `~/.vulnclaw/config.yaml` |
 
-OpenTUI and the scrollback REPL support Chinese and English controls through `session.language`. `/language zh`, `/language en` and `/language auto` save and switch immediately; you can also choose `/settings → General → Language` and save with `Ctrl+S`. Failed saves retain the active language and draft. Auto checks `VULNCLAW_LANG`, then system `LANG`, falling back to English. Existing message bodies, code, service names, theme identifiers and command arguments retain their original text. Generated messages and reports use the backend's active language. Machine keys and event types stay stable. Agent detection keyword tables are bilingual, so English or Chinese task phrasing is classified the same way.
+OpenTUI and the REPL support Chinese and English controls through `session.language`. `/language zh`, `/language en` and `/language auto` save and switch immediately; you can also choose `/settings → General → Language` and save with `Ctrl+S`. Failed saves retain the active language and draft. Auto checks `VULNCLAW_LANG`, then system `LANG`, falling back to English. Existing message bodies, code, service names, theme identifiers and command arguments retain their original text. Generated messages and reports use the backend's active language. Machine keys and event types stay stable. Agent detection keyword tables are bilingual, so English or Chinese task phrasing is classified the same way.
 
 ---
 

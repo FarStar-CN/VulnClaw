@@ -60,8 +60,8 @@ for (const mode of ["tui", "repl"] as const) test(`${mode}: live language change
   controller.draft = "draft untouched";
   const shell = mode === "tui" ? <TuiShell controller={controller} workbench={new WorkbenchState()} /> : <ReplShell controller={controller} />;
   const setup = await testRender(shell, { width: 120, height: 40, kittyKeyboard: true,
-    screenMode: mode === "repl" ? "split-footer" : "alternate-screen", footerHeight: 12,
-    externalOutputMode: mode === "repl" ? "capture-stdout" : "passthrough" });
+    screenMode: "alternate-screen",
+    externalOutputMode: "passthrough" });
   try {
     expect(await finalFrame(setup)).toContain("You");
     await act(async () => { controller.applyConfigDocument({ config: { session: { language: "zh" } } }); });

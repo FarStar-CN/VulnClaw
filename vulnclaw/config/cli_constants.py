@@ -547,13 +547,13 @@ COMMANDS: tuple[ManualTopic, ...] = (
     ),
     ManualTopic(
         name="repl",
-        summary="Start the OpenTUI scrollback conversation shell.",
+        summary="Start the OpenTUI single-pane conversation shell.",
         usage="vulnclaw repl",
         notes=(
             "Requires the platform's vulnclaw-terminal executable. Set VULNCLAW_TERMINAL_BINARY to its path or put it on PATH.",
             "Shares Markdown, native multiline input, forms, readers and the Python session backend with tui.",
             "Plain text is natural language; /run, /target, /scope, /mode, /permission, /config, /report and /help use the shared command grammar.",
-            "Completed messages enter terminal scrollback; live content and the composer remain in the footer.",
+            "The conversation updates in place in a scrollable pane; the composer and status bars stay at the bottom.",
         ),
         examples=("vulnclaw repl",),
     ),

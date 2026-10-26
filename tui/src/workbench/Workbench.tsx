@@ -142,7 +142,7 @@ export function Workbench({ controller, model, width, height, now = Date.now() }
         {mcpExpanded && <scrollbox id="capabilities-scroll" height={Math.min(MCP_LIST_ROWS, Math.max(1, region.content.height - 3))}
           flexShrink={0} scrollX={false}>
           {mcpServers.length ? mcpServers.map((server) => <text id={`mcp-service-${server.name}`} key={server.name}
-            height={1} flexShrink={0} wrapMode="none" fg={server.ready ? p.success : p.error}>
+            height={1} flexShrink={0} wrapMode="none" fg={server.ready ? p.success : server.status === "starting" ? p.warning : p.error}>
             {fitText(`  ● ${visibleText(server.name).replace(/\s/g, " ")}`, region.content.width - 1)}
           </text>) : <text id="mcp-empty" height={1} fg={p.muted}>
             {fitText("  " + t("No MCP services enabled"), region.content.width - 1)}

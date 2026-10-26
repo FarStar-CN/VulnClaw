@@ -13,7 +13,7 @@ const state = (): StateSnapshot => ({ permission_mode: "ask", target: "", phase:
   task: { active: false, task_id: null }, last_run: null, findings: [], evidence: [], constraint_violations: [] });
 const runtime: RuntimeInfo = { config_ready: true, provider: "fixture", model: "fixture", mcp_started: 4,
   mcp_ready: 2, skills_loaded: 3, skills: [], mcp_servers: [
-    { name: "burp", ready: false }, { name: "chrome-devtools", ready: false },
+    { name: "burp", ready: false }, { name: "chrome-devtools", ready: false, status: "starting" },
     { name: "fetch", ready: true }, { name: "memory", ready: true },
   ] };
 function session() {
@@ -24,7 +24,7 @@ function session() {
   return { controller, requests };
 }
 
-test("MCP disclosure targets only its label and chevron, uses green/red names, and follows backend state", async () => {
+test("MCP disclosure targets its label and chevron, colors readiness, and follows backend state", async () => {
   const { controller, requests } = session(); const workbench = new WorkbenchState();
   controller.draft = "retained draft";
   const setup = await testRender(<TuiShell controller={controller} workbench={workbench} />,
@@ -37,6 +37,7 @@ test("MCP disclosure targets only its label and chevron, uses green/red names, a
   }
   try {
     expect(await finalFrame(setup)).toMatch(/〉MCP\s+2\/4/);
+    expect(controller.startupMessage).toContain("2/4");
     expect(node("capabilities-pane").height).toBe(4);
     await click("mcp-count");
     const toggle = node("mcp-toggle");
@@ -56,7 +57,7 @@ test("MCP disclosure targets only its label and chevron, uses green/red names, a
         const row = node(`mcp-service-${server.name}`);
         const spans = setup.captureSpans().lines[row.y].spans;
         expect(spans.find((span) => span.text.includes(server.name))?.fg)
-          .toEqual(RGBA.fromHex(server.ready ? palettes[theme].success : palettes[theme].error));
+          .toEqual(RGBA.fromHex(server.ready ? palettes[theme].success : server.status === "starting" ? palettes[theme].warning : palettes[theme].error));
       }
       expect(frame).not.toContain("Not ready"); expect(frame).not.toContain("(local)");
     }
@@ -69,6 +70,11 @@ test("MCP disclosure targets only its label and chevron, uses green/red names, a
     expect(setup.captureSpans().lines[burp.y].spans.find((span) => span.text.includes("burp"))?.fg)
       .toEqual(RGBA.fromHex(palettes.orange.success));
     expect(JSON.stringify(workbench.layout)).toBe(layout);
+    await act(async () => { controller.receive({ protocol_version: 2, type: "state", state: { ...state(), runtime: {
+      ...runtime, mcp_ready: 4, mcp_servers: runtime.mcp_servers!.map((server) => ({ ...server, ready: true, status: "ready" })),
+    } } }); });
+    expect(await finalFrame(setup)).toMatch(/MCP\s+4\/4/);
+    expect(controller.startupMessage).toBe("Ready");
     await click("mcp-toggle");
     expect(node("capabilities-pane").height).toBe(4);
     expect(controller.draft).toBe("retained draft");

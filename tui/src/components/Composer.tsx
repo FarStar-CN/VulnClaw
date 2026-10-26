@@ -17,6 +17,8 @@ export function Composer({ controller, active, framed = false }: { controller: S
   const selectedRef = useRef(0);
   const cycle = useRef<{ candidates: string[]; selected: number; applied: string } | null>(null);
   const p = palettes[controller.theme];
+  const inputBackground = framed ? p.plate : "transparent";
+  const completionBackground = framed ? p.panel : "transparent";
   if (cycle.current && cycle.current.applied !== controller.draft) cycle.current = null;
   const candidates = cycle.current?.candidates ?? completions(controller);
   useEffect(() => {
@@ -80,15 +82,15 @@ export function Composer({ controller, active, framed = false }: { controller: S
       key.preventDefault(); key.stopPropagation(); apply(current, options);
     }
   });
-  const begin = Math.max(0, selection - 4);
+  const begin = Math.min(Math.max(selection - 2, 0), Math.max(candidates.length - 5, 0));
   const showMenu = active && candidates.length > 0;
-  return <box id="composer-pane" backgroundColor={p.plate}
+  return <box id="composer-pane" backgroundColor={inputBackground}
     flexDirection="column" flexShrink={0} onMouseDown={() => { controller.inputFocused = true; controller.changed(); }}>
-    {showMenu && <box id="completion-menu" flexDirection="column" backgroundColor={p.panel}>
+    {showMenu && <box id="completion-menu" flexDirection="column" backgroundColor={completionBackground}>
       <text fg={p.accent}>{t("Commands · {selected}/{count}", { selected: selection + 1, count: candidates.length })}</text>
       {candidates.slice(begin, begin + 5).map((candidate) => <text key={candidate}
         fg={candidate === candidates[selection] ? p.action : p.muted}
-        bg={candidate === candidates[selection] ? p.plate : p.panel}
+        bg={framed && candidate === candidates[selection] ? p.plate : completionBackground}
         onMouseDown={(event) => { event.stopPropagation(); apply(candidates.indexOf(candidate)); }}>
         {visibleText(`${candidate === candidates[selection] ? "›" : " "} ${candidate}  ${completionDescription(controller, candidate)}`)}
       </text>)}
@@ -107,7 +109,7 @@ export function Composer({ controller, active, framed = false }: { controller: S
         }}>
         <textarea id="composer-editor" ref={editor} focused={active && controller.inputFocused} flexGrow={1}
           height={controller.composerRows} wrapMode="word" initialValue={controller.draft}
-          backgroundColor={p.plate} textColor={p.text}
+          backgroundColor={inputBackground} textColor={p.text}
           keyBindings={[{ name: "return", action: "submit" }, { name: "return", shift: true, action: "newline" }]}
           onContentChange={() => {
             const current = editor.current;
@@ -118,7 +120,7 @@ export function Composer({ controller, active, framed = false }: { controller: S
         {/* Native textarea placeholder redraws can split UTF-8 characters; use a text node. */}
         {!controller.draft && <text id="composer-placeholder" position="absolute" top={0} left={0} width="100%"
           height={1} wrapMode="none" selectable={false} fg={p.hint}>
-          {t("Ask a question, / for commands, @ for skills")}
+          {controller.preparing ? controller.startupMessage : t("Ask a question, / for commands, @ for skills")}
         </text>}
       </box>
     </box>

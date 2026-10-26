@@ -1,5 +1,5 @@
 import stringWidth from "string-width";
-import type { ToolExecutionEvent } from "../transport/protocol.generated";
+import type { ExecutionDetailRef, ToolExecutionEvent } from "../transport/protocol.generated";
 import { statusLabel, t } from "../i18n";
 
 export type ExecutionStatus = ToolExecutionEvent["status"];
@@ -9,15 +9,12 @@ export interface ExecutionRecord {
   status: ExecutionStatus; operations: Map<string, Operation>;
   received: boolean; error?: string; duration?: number; evidenceId?: string;
   result?: string; structuredContent?: Record<string, unknown>;
+  resultRef?: ExecutionDetailRef;
   members?: Map<string, ExecutionRecord>;
 }
 export function executionComplete(record: ExecutionRecord): boolean {
   return record.members ? [...record.members.values()].every(executionComplete)
     : record.received && !activeExecution(record.status);
-}
-export function cloneExecution(record: ExecutionRecord): ExecutionRecord {
-  return { ...record, operations: new Map(record.operations),
-    members: record.members ? new Map([...record.members].map(([id, member]) => [id, cloneExecution(member)])) : undefined };
 }
 export const activeExecution = (status: ExecutionStatus) => ["preparing", "awaiting_approval", "running"].includes(status);
 export const failedExecution = (status: ExecutionStatus) => ["failed", "timed_out", "cancelled", "denied"].includes(status);
@@ -83,37 +80,27 @@ export function executionReceipt(record: ExecutionRecord): string {
     }) : operations[0] ? operationReceipt(operations[0]) : "",
   ].filter(Boolean).join(" · ");
 }
-export interface ExecutionSection { label: string; text: string }
+export interface ExecutionSection { label: string; text: string; detail?: ExecutionDetailRef }
 export function operationSections(op: Operation): ExecutionSection[] {
   const headers = (value?: Record<string, string>) => Object.entries(value ?? {}).map(([k, v]) => `${k}: ${v}`).join("\n");
-  return [
+  const sections: (ExecutionSection & { field?: string })[] = [
     { label: "Working directory", text: op.cwd ?? "" },
     { label: "Arguments", text: op.argv ? JSON.stringify(op.argv) : "" },
-    { label: "Source code", text: op.code ?? "" },
+    { label: "Source code", text: op.code ?? "", field: "code" },
     { label: "Request headers", text: headers(op.headers) },
-    { label: "Request body", text: op.body ?? "" },
+    { label: "Request body", text: op.body ?? "", field: "body" },
     { label: "Response headers", text: headers(op.response_headers) },
-    { label: "Response body", text: op.response_body ?? "" },
-    { label: "stdout", text: op.stdout ?? "" },
-    { label: "stderr", text: op.stderr ?? "" },
-  ].filter((section) => section.text !== "");
+    { label: "Response body", text: op.response_body ?? "", field: "response_body" },
+    { label: "stdout", text: op.stdout ?? "", field: "stdout" },
+    { label: "stderr", text: op.stderr ?? "", field: "stderr" },
+  ];
+  return sections.map(({ field, ...section }) => ({ ...section,
+    detail: field ? op.detail_refs?.[field] : undefined,
+  })).filter((section) => section.text !== "" || section.detail);
 }
 export function executionResult(record: ExecutionRecord, result: string): string {
   return record.operations.size && ["shell_command", "python_execute", "runtime_diff_probe", "fetch", "http_probe_batch"].includes(record.tool) ? "" : result;
 }
-export function executionHistory(record: ExecutionRecord): string {
-  const view = executionPresentation(record);
-  if (view.category !== "execution") return [view.receipt, view.error,
-    ...view.sections.map(section => `${section.label}:\n${section.text}`)].filter(Boolean).join("\n");
-  const operations = [...record.operations.values()];
-  return [executionReceipt(record), record.evidenceId ? t("Evidence {id}", { id: record.evidenceId }) : "", record.error,
-    ...operations.flatMap((op) => [operationTitle(op), operationReceipt(op), op.error,
-      ...operationSections(op).filter((section) => section.label !== "Arguments")
-        .map((section) => `${t(section.label)}:\n${section.text}`)]),
-    executionResult(record, record.result ?? ""),
-  ].filter(Boolean).join("\n");
-}
-
 const internalNames: Record<string, string> = {
   submit_finding: "Submit candidate finding", agent_run: "Dispatch subagent", agent_job: "Manage subagent tasks",
   evidence_list: "List evidence", evidence_view: "View evidence", evidence_search: "Search evidence",

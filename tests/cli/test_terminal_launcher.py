@@ -1,7 +1,11 @@
 """Launch the shared executable, retaining task defaults without running business work."""
 
 import json
+import os
+import subprocess
 import sys
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -88,3 +92,72 @@ def test_interrupted_launcher_terminates_then_reaps_child(monkeypatch, terminal_
     result = CliRunner().invoke(app, ["repl"])
     assert result.exit_code == 1
     assert events == [("wait", None), "terminate", ("wait", 5), "kill", "reaped"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="PTY smoke check requires a Unix terminal")
+def test_built_terminal_connects_to_current_backend(tmp_path):
+    """Exercise the on-disk executable, including its embedded protocol schema."""
+    import fcntl
+    import pty
+    import select
+    import signal
+    import struct
+    import termios
+
+    root = Path(__file__).resolve().parents[2]
+    binary = root / "tui/dist/vulnclaw-terminal"
+    if not binary.is_file():
+        pytest.skip("terminal has not been built; Python headless tests do not require it")
+    (tmp_path / "config.yaml").write_text(json.dumps({
+        "session": {"language": "en"},
+        "mcp": {"servers": {name: {"enabled": False} for name in [
+            "fetch", "memory", "chrome-devtools", "burp",
+        ]}},
+    }))
+    env = {
+        **{key: value for key, value in os.environ.items() if not key.startswith("VULNCLAW_")},
+        "TERM": "xterm-256color", "COLORTERM": "truecolor", "VULNCLAW_LANG": "en",
+        "VULNCLAW_CONFIG_DIR": str(tmp_path), "VULNCLAW_HOME": str(tmp_path),
+        "VULNCLAW_TERMINAL_BINARY": str(binary),
+    }
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    child = subprocess.Popen(
+        [sys.executable, "-m", "vulnclaw", "tui"], cwd=root, env=env,
+        stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
+    )
+    os.close(slave)
+    output = bytearray()
+    connected = False
+    keys = list(b"/quit\r")
+    next_key = None
+    deadline = time.monotonic() + 8
+    try:
+        while child.poll() is None and time.monotonic() < deadline:
+            now = time.monotonic()
+            if next_key is not None and now >= next_key and keys:
+                os.write(master, bytes([keys.pop(0)]))
+                next_key = now + 0.05
+            if not select.select([master], [], [], 0.02)[0]:
+                continue
+            try:
+                output.extend(os.read(master, 65536))
+            except OSError:
+                break
+            if not connected and b"provider:" in output:
+                connected = True
+                next_key = time.monotonic() + 0.1
+        assert connected, (
+            "Built terminal did not accept the backend handshake: "
+            + output[-1200:].decode("utf-8", errors="replace")
+        )
+        assert child.wait(timeout=2) == 0
+    finally:
+        if child.poll() is None:
+            os.killpg(child.pid, signal.SIGTERM)
+            try:
+                child.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait()
+        os.close(master)

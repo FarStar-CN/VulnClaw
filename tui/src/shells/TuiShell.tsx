@@ -34,7 +34,7 @@ export function TuiShell({ controller, workbench }: { controller: SessionControl
         : t("Alt+↑/↓ select · Enter expand · ↑↓/PgUp/PgDn scroll");
   const hint = workbench.gesture ? t(workbench.gesture.kind === "move" ? "Move pane · Release to dock · Esc cancel" : "Resize panes · Release to save · Esc cancel")
     : controller.permissionPending ? t("Changing permission…")
-      : controller.notice || (busy ? `${t("Ctrl+C cancel")} · ${focusHint}` : focusHint);
+      : controller.notice || (busy ? `${t("Ctrl+C cancel")} · ${focusHint}` : `${controller.startupMessage} · ${focusHint}`);
   return <box width="100%" height="100%" flexDirection="column" backgroundColor={p.background}>
     <box id="terminal-header" border={["top", "left", "right"]} borderColor={p.border} backgroundColor={p.background} height={TUI_HEADER_ROWS} flexShrink={0} flexDirection="row">
       <text bg={p.action} fg={p.background}><b> VulnClaw </b></text>

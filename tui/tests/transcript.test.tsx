@@ -12,8 +12,8 @@ for (const mode of ["tui", "repl"] as const) test(`${mode}: role labels preserve
   const controller = new SessionController(); controller.connected = true; controller.notice = "";
   controller.draft = "preserved draft";
   const shell = mode === "tui" ? <TuiShell controller={controller} workbench={new WorkbenchState()} /> : <ReplShell controller={controller} />;
-  const setup = await testRender(shell, { width: 120, height: 40, screenMode: mode === "repl" ? "split-footer" : "alternate-screen",
-    footerHeight: 12, externalOutputMode: mode === "repl" ? "capture-stdout" : "passthrough" });
+  const setup = await testRender(shell, { width: 120, height: 40, screenMode: "alternate-screen",
+    externalOutputMode: "passthrough" });
   try {
     for (const role of ["user", "assistant", "tool", "reasoning"] as const) {
       await act(async () => {

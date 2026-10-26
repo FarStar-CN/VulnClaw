@@ -72,11 +72,11 @@ async function panel(mode: "tui" | "repl" = "tui", width = 120, height = 40) {
   const { controller, workbench } = experienceSession();
   setLanguage("en");
   const setup = await testRender(mode === "tui" ? <TuiShell controller={controller} workbench={workbench} /> : <ReplShell controller={controller} />,
-    { width, height, kittyKeyboard: true, screenMode: mode === "repl" ? "split-footer" : "alternate-screen", footerHeight: height - 2 });
+    { width, height, kittyKeyboard: true, screenMode: "alternate-screen" });
   await act(async () => { await controller.submit("/experience"); }); await finalFrame(setup);
   async function click(id: string) {
     const item = setup.renderer.root.findDescendantById(id)!; expect(item).toBeDefined();
-    await act(async () => { await setup.mockMouse.click(item.x + 1, item.y + (mode === "repl" ? setup.renderer.terminalHeight - setup.renderer.root.height : 0)); }); await finalFrame(setup);
+    await act(async () => { await setup.mockMouse.click(item.x + 1, item.y); }); await finalFrame(setup);
   }
   async function read(id: string) {
     let result: Record<string, unknown> = {};

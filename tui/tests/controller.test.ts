@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { SessionController } from "../src/session/controller";
 import type { ClientMessage, MessageEvent, StateSnapshot } from "../src/transport/protocol.generated";
+import { currentLanguage, setLanguage } from "../src/i18n";
 
 const state = (): StateSnapshot => ({ target: "example.test", phase: "idle", task_constraints: {},
   task: { active: false, task_id: null }, last_run: null, findings: [], evidence: [], constraint_violations: [] });
@@ -17,6 +18,55 @@ test("backend readiness clears the startup notice and retains provider metadata"
   expect(controller.connected).toBe(true);
   expect(controller.notice).toBe("");
   expect(controller.runtime?.model).toBe("fixture-model");
+});
+
+test("tasks retain their draft until MCP discovery settles; management stays available", async () => {
+  const controller = new SessionController();
+  const sent: ClientMessage[] = [];
+  controller.attach({ send: (request) => sent.push(request), close: async () => {} });
+  controller.connected = true;
+  controller.runtime = { config_ready: true, provider: "fixture", model: "fixture", mcp_started: 1, skills: [],
+    mcp_servers: [{ name: "devtools", ready: false, status: "starting" }] };
+  controller.draft = "retained task";
+  await controller.submit(controller.draft);
+  controller.startTask({ command: "run", target: "example.test" });
+  expect(controller.preparing).toBe(true);
+  expect(controller.draft).toBe("retained task");
+  expect(controller.startupMessage).toContain("0/1");
+  expect(sent.map((message) => message.type)).toEqual(["initialize"]);
+  await controller.submit("/target");
+  expect(sent.at(-1)?.type).toBe("submit_input");
+  controller.receive({ protocol_version: 2, type: "state", state: { ...state(), runtime: {
+    ...controller.runtime, mcp_ready: 1, mcp_servers: [{ name: "devtools", ready: true, status: "ready" }],
+  } } });
+  expect(controller.preparing).toBe(false);
+  expect(controller.startupMessage).toBe("Ready");
+  await controller.submit("new task");
+  expect(sent.at(-1)?.type).toBe("submit_input");
+  expect(controller.draft).toBe("");
+  controller.receive({ protocol_version: 2, type: "state", state: { ...state(), runtime: {
+    ...controller.runtime!, mcp_ready: 0, mcp_servers: [{ name: "devtools", ready: false, status: "failed" }],
+  } } });
+  expect(controller.preparing).toBe(false);
+  expect(controller.startupMessage).toContain("devtools");
+  expect(controller.startupMessage).toContain("/settings");
+});
+
+test("ready synchronizes language without requesting configuration or replacing the startup theme", () => {
+  const previous = currentLanguage();
+  const sent: ClientMessage[] = [];
+  const controller = new SessionController();
+  controller.theme = "orange";
+  controller.attach({ send: (request) => sent.push(request), close: async () => {} });
+  try {
+    controller.receive({ protocol_version: 2, type: "ready", backend: { pid: 1, version: "fixture", protocol_version: 2 },
+      capabilities: { commands: [], authoritative_state: true, cancellation: true, language: "zh" },
+      runtime: { config_ready: false, provider: "fixture", model: "fixture", mcp_started: 0, skills: [] }, state: state() });
+    expect(controller.connected).toBe(true);
+    expect(currentLanguage()).toBe("zh");
+    expect(controller.theme).toBe("orange");
+    expect(sent.map((request) => request.type)).toEqual(["initialize"]);
+  } finally { setLanguage(previous); }
 });
 
 test("saved settings synchronize the backend permission and reasoning display", () => {
