@@ -1,20 +1,6 @@
 """VulnClaw knowledge-base package."""
 
-from vulnclaw.kb.experience import (
-    EvidenceRefs,
-    ExperienceStore,
-    Lesson,
-    LessonScope,
-    LessonSignal,
-    LessonStatus,
-    LessonTags,
-)
-from vulnclaw.kb.retriever import (
-    KeywordRetriever,
-    KnowledgeRetriever,
-    RetrieverStatus,
-)
-from vulnclaw.kb.store import KnowledgeStore
+from importlib import import_module
 
 __all__ = [
     "KnowledgeStore",
@@ -29,3 +15,18 @@ __all__ = [
     "LessonStatus",
     "LessonSignal",
 ]
+
+
+def __getattr__(name: str):
+    """Load the requested public component without importing retrieval engines."""
+    if name not in __all__:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if name in {"KnowledgeRetriever", "KeywordRetriever", "RetrieverStatus"}:
+        module = "retriever"
+    elif name == "KnowledgeStore":
+        module = "store"
+    else:
+        module = "experience"
+    value = getattr(import_module(f"{__name__}.{module}"), name)
+    globals()[name] = value
+    return value

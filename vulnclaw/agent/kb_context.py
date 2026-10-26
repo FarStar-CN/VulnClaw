@@ -31,14 +31,15 @@ behavior. This can be revisited once an English corpus exists.
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
+    from vulnclaw.kb.retriever import KnowledgeRetriever
 
 
 from vulnclaw.i18n import current_lang
-from vulnclaw.kb.retriever import KnowledgeRetriever, RetrieverStatus
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +50,25 @@ def _retriever_for(agent: AgentContext) -> Optional[KnowledgeRetriever]:
     Returns None when the retriever cannot be constructed at all, so callers
     can degrade silently without raising into the main loop.
     """
-    if KnowledgeRetriever is None:
-        return None
-    if getattr(agent, "_kb_retriever", None) is None:
+    with getattr(agent, "_kb_init_lock", nullcontext()):
+        if getattr(agent, "_kb_retriever", None) is not None:
+            return agent._kb_retriever
+        if getattr(agent, "_kb_initialized", False):
+            return None
+        agent._kb_initialized = True
         try:
-            agent._kb_retriever = KnowledgeRetriever()
+            from vulnclaw.kb.retriever import KnowledgeRetriever, RetrieverStatus
+
+            retriever = KnowledgeRetriever()
+            if retriever.get_status() == RetrieverStatus.DISABLED:
+                from vulnclaw.kb.updater import seed_knowledge_base
+
+                seed_knowledge_base(retriever.store)
+                retriever = KnowledgeRetriever()
+            agent._kb_retriever = retriever
+            report = getattr(agent, "_report_kb_status", None)
+            if report is not None:
+                report()
         except Exception as exc:  # defensive — never break the agent loop
             logger.warning("KB retriever initialization failed: %s", exc)
             agent._kb_retriever = None
@@ -76,7 +91,11 @@ def build_kb_context(agent: AgentContext, user_input: Optional[str] = None) -> s
         return ""
 
     retriever = _retriever_for(agent)
-    if retriever is None or retriever.get_status() is RetrieverStatus.DISABLED:
+    if retriever is None:
+        return ""
+    from vulnclaw.kb.retriever import RetrieverStatus
+
+    if retriever.get_status() is RetrieverStatus.DISABLED:
         return ""
 
     # ── Session-level cache (keyed by the query signature) ───────────

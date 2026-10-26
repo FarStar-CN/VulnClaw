@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from threading import RLock
 from typing import Any, Callable, Optional
 
 from vulnclaw.agent.anti_loop import (
@@ -52,13 +53,6 @@ from vulnclaw.i18n import _
 from vulnclaw.kb.experience import ExperienceStore
 from vulnclaw.target_state.store import save_target_state
 
-# Optional KB integration — gracefully degrade if KB data is unavailable
-try:
-    from vulnclaw.kb.retriever import KnowledgeRetriever, RetrieverStatus
-except Exception:
-    KnowledgeRetriever = None
-    RetrieverStatus = None
-
 
 class AgentCore:
     """Core AI agent that orchestrates LLM calls and tool execution."""
@@ -89,10 +83,11 @@ class AgentCore:
         self._reset_runtime_state()
         # Optional KB retriever — lazily initialized on first use
         self._kb_retriever: Any = None
+        self._kb_initialized = False
+        self._kb_init_lock = RLock()
         self._kb_context_cache: dict[Any, str] = {}
         self._experience_store: Any = None
         self._observation_parser = ResponseObservationParser(self.context, self.runtime)
-        self._report_kb_status()
 
     def _child_factory(self) -> "AgentCore":
         """Build an isolated child; subclasses may override this explicit seam."""
@@ -100,21 +95,12 @@ class AgentCore:
         return AgentCore(self.config, self.mcp_manager)
 
     def _report_kb_status(self) -> None:
-        """Print the knowledge-base backend status once at startup."""
-        if KnowledgeRetriever is None:
+        """Report the retriever after its first actual initialization."""
+        if self._kb_retriever is None:
             return
-        try:
-            self._kb_retriever = KnowledgeRetriever()
-            status = self._kb_retriever.get_status()
-            # Auto-seed when KB is empty
-            if status == RetrieverStatus.DISABLED:
-                from vulnclaw.kb.updater import seed_knowledge_base
+        from vulnclaw.kb.retriever import RetrieverStatus
 
-                seed_knowledge_base(self._kb_retriever.store)
-                self._kb_retriever = KnowledgeRetriever()
-                status = self._kb_retriever.get_status()
-        except Exception:
-            return
+        status = self._kb_retriever.get_status()
 
         try:
             from rich.console import Console
@@ -123,8 +109,6 @@ class AgentCore:
         except Exception:
             return
 
-        if RetrieverStatus is None:
-            return
         if status == RetrieverStatus.CHROMADB_ACTIVE:
             console.print(f"[green]{_('agent.kb_enabled')}[/green]")
         elif status == RetrieverStatus.KEYWORD_FALLBACK:

@@ -31,12 +31,11 @@ class _KeywordFallbackRetriever:
 
 class TestKbDegradationHint:
     def test_hint_keeps_the_kb_extra(self, monkeypatch, capsys):
-        monkeypatch.setattr(core_mod, "KnowledgeRetriever", _KeywordFallbackRetriever)
-
         prev_lang = current_lang()
         init_i18n(lang="zh")  # the degradation warning is localized; pin zh
         try:
             agent = object.__new__(core_mod.AgentCore)
+            agent._kb_retriever = _KeywordFallbackRetriever()
             agent._report_kb_status()
 
             out = capsys.readouterr().out
