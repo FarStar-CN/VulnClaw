@@ -7,6 +7,7 @@ const { values } = parseArgs({ args: Bun.argv.slice(2), options: {
 }, strict: true });
 if (Bun.version !== "1.3.14") throw new Error(`Build with the pinned Bun 1.3.14 (found ${Bun.version})`);
 if (!["glibc", "musl"].includes(values.libc!)) throw new Error("--libc must be glibc or musl");
+await import("./generate-protocol");
 const target = values.target ?? `bun-${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`;
 const outfile = resolve(values.outfile ?? `dist/vulnclaw-terminal${target.includes("windows") ? ".exe" : ""}`);
 await mkdir(resolve(outfile, ".."), { recursive: true });

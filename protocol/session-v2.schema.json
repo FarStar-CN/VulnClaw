@@ -1154,6 +1154,9 @@
         "authoritative_state"
       ],
       "properties": {
+        "language": {
+          "enum": ["en", "zh"]
+        },
         "natural_language": {
           "type": "boolean"
         },
@@ -1244,6 +1247,9 @@
               },
               "ready": {
                 "type": "boolean"
+              },
+              "status": {
+                "enum": ["starting", "ready", "failed"]
               }
             }
           }
@@ -1558,7 +1564,8 @@
             "structured_content": {
               "type": "object",
               "additionalProperties": true
-            }
+            },
+            "result_ref": {"$ref": "#/$defs/executionDetailRef"}
           }
         }
       ]
@@ -2198,6 +2205,16 @@
         }
       ]
     },
+    "executionDetailRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "bytes", "preview"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "bytes": {"type": "integer", "minimum": 1},
+        "preview": {"type": "string"}
+      }
+    },
     "toolExecutionEvent": {
       "allOf": [
         {
@@ -2232,6 +2249,11 @@
             },
             "response_body": {
               "type": "string"
+            },
+            "detail_refs": {
+              "type": "object",
+              "propertyNames": {"enum": ["code", "body", "response_body", "stdout", "stderr"]},
+              "additionalProperties": {"$ref": "#/$defs/executionDetailRef"}
             },
             "stdout": {
               "type": "string"

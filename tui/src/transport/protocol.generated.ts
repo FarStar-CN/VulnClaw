@@ -177,6 +177,7 @@ export type ToolResultEvent = TaskEventEnvelope & {
   structured_content?: {
     [k: string]: unknown;
   };
+  result_ref?: ExecutionDetailRef;
 };
 export type FindingEvent = TaskEventEnvelope & {
   type: "finding";
@@ -251,6 +252,9 @@ export type ToolExecutionEvent = TaskEventEnvelope & {
   url?: string;
   body?: string;
   response_body?: string;
+  detail_refs?: {
+    [k: string]: ExecutionDetailRef;
+  };
   stdout?: string;
   stderr?: string;
   error?: string;
@@ -1126,6 +1130,7 @@ export interface RuntimeInfo {
   mcp_servers?: {
     name: string;
     ready: boolean;
+    status?: "starting" | "ready" | "failed";
   }[];
   skills_loaded?: number;
 }
@@ -1139,6 +1144,7 @@ export interface BackendInfo {
   protocol_version: 2;
 }
 export interface Capabilities {
+  language?: "en" | "zh";
   natural_language?: boolean;
   input_commands?: {
     [k: string]: string;
@@ -1148,6 +1154,11 @@ export interface Capabilities {
   cancellation: boolean;
   authoritative_state: boolean;
   permission_mode?: "read_only" | "ask" | "auto_review" | "full_access";
+}
+export interface ExecutionDetailRef {
+  id: Identifier;
+  bytes: number;
+  preview: string;
 }
 export interface TaskResult {
   report?: {

@@ -23,6 +23,37 @@ test("UTF-8 decoder preserves multibyte characters across every byte boundary", 
   expect(() => partial.finish()).toThrow("incomplete");
 });
 
+test("JSONL preserves multiple events, CRLF and whitespace at every two-chunk split", () => {
+  const events = ["中文😀é", "second"].map((message) => ({
+    protocol_version: 2 as const, type: "log" as const, task_id: "fixture", message,
+  }));
+  const bytes = Buffer.from(` \r\n${JSON.stringify(events[0])}\r\n\t\n${JSON.stringify(events[1])}\n `);
+  for (let cut = 0; cut <= bytes.length; cut++) {
+    const decoder = new JsonlDecoder();
+    expect([...decoder.push(bytes.subarray(0, cut)), ...decoder.push(bytes.subarray(cut))]).toEqual(events);
+    decoder.finish();
+  }
+});
+
+test("JSONL retains a large fragmented body exactly and rejects invalid input", () => {
+  const event = { protocol_version: 2, type: "log", task_id: "fixture",
+    message: "中文😀é".repeat(40000) } as const;
+  const bytes = Buffer.from(JSON.stringify(event) + "\n");
+  const decoder = new JsonlDecoder(), events: ServerEvent[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 4096) {
+    events.push(...decoder.push(bytes.subarray(offset, offset + 4096)));
+  }
+  decoder.finish();
+  expect(events).toEqual([event]);
+  for (const text of ["{invalid}\n", '{"protocol_version":1}\n']) {
+    expect(() => new JsonlDecoder().push(Buffer.from(text))).toThrow();
+  }
+  expect(() => new JsonlDecoder().push(new Uint8Array([0xff]))).toThrow();
+  const incompleteUtf8 = new JsonlDecoder();
+  incompleteUtf8.push(new Uint8Array([0xf0, 0x9f]));
+  expect(() => incompleteUtf8.finish()).toThrow();
+});
+
 test("Python session initializes, reads state and shuts down with one subprocess", async () => {
   const directory = await mkdtemp(join(tmpdir(), "vulnclaw-terminal-"));
   // Real application runtime, with external MCP services explicitly disabled.
