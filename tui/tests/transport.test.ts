@@ -77,7 +77,6 @@ test("Python session initializes, reads state and shuts down with one subprocess
     backend.send({ protocol_version: 2, type: "get_state", request_id: "state", payload: {} });
     await backend.close();
     expect(events.map((event) => event.type)).toEqual(["ready", "state", "shutdown_complete"]);
-    expect(diagnostics.length).toBeGreaterThan(0);
   } finally {
     await backend.close();
     await rm(directory, { recursive: true, force: true });

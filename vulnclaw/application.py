@@ -368,7 +368,7 @@ class ApplicationSession:
                 self._answer_in_progress = bool(self.conversation.pending_questions)
                 try:
                     if self.permission_mode != "read_only":
-                        await self.runtime.mcp_manager._preinit_chrome_devtools()
+                        await self.runtime.mcp_manager.wait_for_startup()
                     return await run_conversation(self, parsed.text, sink)
                 finally:
                     self._answer_in_progress = False
@@ -382,6 +382,8 @@ class ApplicationSession:
         if isinstance(raw, TaskCreateRequest):
             raw = raw.model_dump(exclude_unset=True)
         task = prepare_task(task_request_from_payload(raw, defaults=self.bootstrap))
+        if task.request.command != "codescan":
+            await self.runtime.mcp_manager.wait_for_startup()
 
         async def call() -> Any:
             self._install_task(task)
@@ -1232,7 +1234,7 @@ async def create_runtime(config: Any = None) -> ApplicationRuntime:
     init_i18n(config=config)
     mcp_manager = MCPLifecycleManager(config)
     try:
-        started = mcp_manager.start_enabled_servers()
+        started = mcp_manager.start_enabled_servers(background=True)
         agent = AgentCore(config, mcp_manager)
     except BaseException:
         await mcp_manager.astop_all()
@@ -1415,10 +1417,13 @@ def _runtime_metadata(runtime: Any) -> dict[str, Any]:
         if not server_config.enabled:
             continue
         server = servers.get(name)
+        ready = bool(server is not None and server.health_status == "healthy"
+                     and (server.running or server.execution_mode == "local"))
         mcp_servers.append({
             "name": name,
-            "ready": bool(server is not None and server.health_status == "healthy"
-                          and (server.running or server.execution_mode == "local")),
+            "ready": ready,
+            "status": "ready" if ready else "starting"
+                      if server is not None and server.health_status == "starting" else "failed",
         })
     return {
         "config_ready": _llm_configured(llm),

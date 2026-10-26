@@ -55,7 +55,7 @@ async def paused_task(monkeypatch, tmp_path):
     monkeypatch.setattr("vulnclaw.task_service.run_agent_task", orchestrate)
     runtime = SimpleNamespace(
         config=config, agent=agent, mcp_started=0, stop=AsyncMock(),
-        mcp_manager=SimpleNamespace(_preinit_chrome_devtools=AsyncMock()),
+        mcp_manager=SimpleNamespace(wait_for_startup=AsyncMock()),
     )
     session = ApplicationSession(
         lambda event_type, **fields: events.append((event_type, fields)), runtime_factory=lambda: runtime,

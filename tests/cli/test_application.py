@@ -35,7 +35,7 @@ class Runtime:
             apply_config=lambda config: setattr(self.agent, "config", config),
         )
         self.mcp_manager = SimpleNamespace(
-            _preinit_chrome_devtools=AsyncMock(),
+            wait_for_startup=AsyncMock(),
             apply_config=AsyncMock(),
             registry=SimpleNamespace(get_all_servers=lambda: {}),
         )
@@ -228,7 +228,7 @@ async def test_conversation_uses_current_config_without_task_orchestration(monke
 
 
 async def test_failed_runtime_initialization_closes_started_mcp(monkeypatch):
-    manager = SimpleNamespace(start_enabled_servers=lambda: 1, astop_all=AsyncMock())
+    manager = SimpleNamespace(start_enabled_servers=lambda **_options: 1, astop_all=AsyncMock())
     monkeypatch.setattr("vulnclaw.mcp.lifecycle.MCPLifecycleManager", lambda _config: manager)
 
     def fail(*_args):

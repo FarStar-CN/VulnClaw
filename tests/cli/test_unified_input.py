@@ -36,7 +36,7 @@ class Runtime:
         self.agent.reset_context = lambda: setattr(self.agent, "session_state", SessionState())
         self.mcp_manager = SimpleNamespace(
             list_available_tools=lambda: ["fetch"],
-            _preinit_chrome_devtools=AsyncMock(),
+            wait_for_startup=AsyncMock(),
         )
         self.mcp_started = 0
         self.stop = AsyncMock()

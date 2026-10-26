@@ -41,7 +41,7 @@ def headless_runtime(monkeypatch, tmp_path):
     agent.auto_pentest = AsyncMock(return_value=[])
     agent.chat = AsyncMock(return_value=SimpleNamespace(output="synthetic answer"))
     agent._generate_attack_summary = AsyncMock(return_value="synthetic summary")
-    manager = SimpleNamespace(astop_all=AsyncMock(), _preinit_chrome_devtools=AsyncMock())
+    manager = SimpleNamespace(astop_all=AsyncMock(), wait_for_startup=AsyncMock())
     runtimes = []
 
     def create():

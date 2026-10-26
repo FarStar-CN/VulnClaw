@@ -5,7 +5,9 @@ import io
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -21,6 +23,7 @@ class FakeRuntime:
         self.config = VulnClawConfig()
         self.stop_calls = 0
         self.run_count = 0
+        self.mcp_manager = SimpleNamespace(wait_for_startup=AsyncMock())
 
     def metadata(self) -> dict[str, Any]:
         return {

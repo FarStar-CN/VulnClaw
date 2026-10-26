@@ -122,6 +122,11 @@ class MCPLifecycleManager(ProbeMixin):
         # per (event loop, server). This protects shared stateful stdio sessions
         # across parent tools and every sub-agent.
         self._server_call_gates: dict[tuple[int, str], asyncio.Semaphore] = {}
+        self._background_startup = False
+        self._startup_tasks: dict[str, asyncio.Task[None]] = {}
+        self._startup_ready: dict[str, asyncio.Event] = {}
+        self._startup_stop: dict[str, asyncio.Event] = {}
+        self._startup_gate: asyncio.Semaphore | None = None
 
     async def __aenter__(self) -> MCPLifecycleManager:
         self.start_enabled_servers()
@@ -153,7 +158,10 @@ class MCPLifecycleManager(ProbeMixin):
             if server is not None and server.enabled:
                 self.registry.register_server(name)
                 try:
-                    self._start_server(name, server)
+                    if self._background_startup:
+                        self._schedule_server(name, server)
+                    else:
+                        self._start_server(name, server)
                 except Exception as exc:
                     self.registry.set_server_error(name, str(exc), error_type="startup_error")
 
@@ -306,7 +314,7 @@ class MCPLifecycleManager(ProbeMixin):
         loop.set_exception_handler(_handler)
         self._loop_exception_handler_loop = loop
 
-    def start_enabled_servers(self) -> int:
+    def start_enabled_servers(self, *, background: bool = False) -> int:
         """Start all enabled MCP servers.
 
         Returns the number of servers successfully started.
@@ -314,23 +322,84 @@ class MCPLifecycleManager(ProbeMixin):
         with suppress(RuntimeError):
             self._loop = asyncio.get_running_loop()
         self._install_loop_exception_handler()
+        self._background_startup = background
+        if background:
+            self._startup_gate = asyncio.Semaphore(max(1, self.config.safety.tool_max_concurrent))
         started = 0
         for name, server_config in self.config.mcp.servers.items():
             if server_config.enabled:
                 self.registry.register_server(name)
                 try:
-                    if self._start_server(name, server_config):
+                    start = self._schedule_server if background else self._start_server
+                    if start(name, server_config):
                         started += 1
                 except Exception as e:
                     self.registry.set_server_error(name, str(e), error_type="startup_error")
         # 如果事件循环在跑，后台预初始化 chrome-devtools session（在主协程入口也会跑）
         try:
             loop = asyncio.get_running_loop()
-            if "chrome-devtools" in self.config.mcp.servers and self.config.mcp.servers["chrome-devtools"].enabled:
+            if not background and "chrome-devtools" in self.config.mcp.servers and self.config.mcp.servers["chrome-devtools"].enabled:
                 loop.create_task(self._preinit_chrome_devtools())
         except RuntimeError:
             pass
         return started
+
+    def _schedule_server(self, name: str, config: MCPServerConfig) -> bool:
+        """Start local tools now and let an owning task connect each external server."""
+        transport = config.transport
+        if (name in {"fetch", "memory"}
+                or transport.type not in {"stdio", *HTTP_TRANSPORT_TYPES, *SSE_TRANSPORT_TYPES}):
+            return self._start_server(name, config)
+        if name in self._startup_tasks:
+            return True
+        self.registry.set_server_health(name, HealthStatus.STARTING.value)
+        self._register_known_tools(name)
+        ready, stop = asyncio.Event(), asyncio.Event()
+        self._startup_ready[name], self._startup_stop[name] = ready, stop
+        self._startup_tasks[name] = asyncio.create_task(self._connect_server(name, ready, stop))
+        return True
+
+    async def _connect_server(self, name: str, ready: asyncio.Event, stop: asyncio.Event) -> None:
+        """Keep SDK context entry and exit in the same task, including early shutdown."""
+        try:
+            assert self._startup_gate is not None
+            async with self._startup_gate:
+                session = await self._get_or_create_session(name)
+                config = self.config.mcp.servers[name]
+                if name == "chrome-devtools":
+                    # DevTools connects/launches its browser lazily on the first tool.
+                    # A read-only request completes that work before accepting tasks.
+                    result = await asyncio.wait_for(
+                        session.call_tool("list_pages", arguments={}),
+                        timeout=self._startup_timeout_seconds(config),
+                    )
+                    if getattr(result, "isError", False):
+                        detail = "\n".join(
+                            str(getattr(item, "text", ""))
+                            for item in getattr(result, "content", [])
+                        )
+                        raise RuntimeError(detail or "DevTools browser connection failed")
+                mode = "sdk" if config.transport.type == "stdio" else (
+                    "sse" if config.transport.type in SSE_TRANSPORT_TYPES else "http"
+                )
+                self.registry.set_server_execution_mode(name, mode)
+                self.registry.set_server_attach_result(name, attempted=True, succeeded=True)
+                self.registry.set_server_health(name, HealthStatus.HEALTHY.value)
+            ready.set()
+            await stop.wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.registry.set_server_error(name, str(exc), error_type="attach_failed")
+            self.registry.set_server_attach_result(name, attempted=True, succeeded=False)
+            self.registry.set_server_health(name, HealthStatus.DEGRADED.value)
+        finally:
+            ready.set()
+            await self._teardown_server(name)
+
+    async def wait_for_startup(self) -> None:
+        """Wait for discovery and warmup to settle before building a task's tool catalog."""
+        await asyncio.gather(*(ready.wait() for ready in self._startup_ready.values()))
 
     def _start_server(self, name: str, config: MCPServerConfig) -> bool:
         """Start a single MCP server.
@@ -558,20 +627,6 @@ class MCPLifecycleManager(ProbeMixin):
             raise
 
         # 发现并注册真实工具名，替换 KNOWN_TOOLS 硬编码的假名
-        try:
-            result = await asyncio.wait_for(session.list_tools(), timeout=10)
-            tool_defs = self._normalize_mcp_tools(getattr(result, "tools", []) or [])
-            if tool_defs:
-                self._register_runtime_tools(server_name, tool_defs)
-        except BaseException:
-            pass
-
-        # 关闭旧 context_manager，避免 GC 回收时 cancel scope 跨 task 冲突
-        old_cm = client_meta.get("context_manager") if isinstance(client_meta, dict) else None
-        if old_cm is not None and old_cm is not cm:
-            with _suppress_cleanup_errors():
-                await old_cm.__aexit__(None, None, None)
-
         self._mcp_clients[server_name] = {
             "kind": "persistent-stdio",
             "config": config,
@@ -579,10 +634,27 @@ class MCPLifecycleManager(ProbeMixin):
             "session": session,
             "context_manager": cm,
         }
+
+        try:
+            result = await asyncio.wait_for(session.list_tools(), timeout=10)
+            tool_defs = self._normalize_mcp_tools(getattr(result, "tools", []) or [])
+            if tool_defs:
+                self._register_runtime_tools(server_name, tool_defs)
+        except Exception:
+            if server_name in self._startup_tasks:
+                raise
+
+        # 关闭旧 context_manager，避免 GC 回收时 cancel scope 跨 task 冲突
+        old_cm = client_meta.get("context_manager") if isinstance(client_meta, dict) else None
+        if old_cm is not None and old_cm is not cm:
+            with _suppress_cleanup_errors():
+                await old_cm.__aexit__(None, None, None)
+
         self.registry.set_server_execution_mode(server_name, "sdk")
         self.registry.set_server_attach_result(server_name, attempted=True, succeeded=True)
         self.registry.set_server_running(server_name, running=True)
-        self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
+        if server_name not in self._startup_tasks:
+            self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
         return session
 
     async def _get_or_create_persistent_http_session(self, server_name: str) -> Any:
@@ -646,6 +718,8 @@ class MCPLifecycleManager(ProbeMixin):
                 with _suppress_cleanup_errors():
                     await cm.__aexit__(None, None, None)
             # Extract root cause from ExceptionGroup
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             detail = str(exc)
             if hasattr(exc, "exceptions"):
                 subs = list(getattr(exc, "exceptions", []))
@@ -656,14 +730,6 @@ class MCPLifecycleManager(ProbeMixin):
             ) from None
 
         # 首次连接时发现真实工具并替换启动时注册的静态占位工具
-        try:
-            tools = await asyncio.wait_for(session.list_tools(), timeout=read_s)
-            tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
-            if tool_defs:
-                self._register_runtime_tools(server_name, tool_defs)
-        except Exception:
-            pass
-
         self._mcp_clients[server_name] = {
             "kind": "persistent-http",
             "config": config,
@@ -671,8 +737,19 @@ class MCPLifecycleManager(ProbeMixin):
             "session": session,
             "context_manager": cm,
         }
+
+        try:
+            tools = await asyncio.wait_for(session.list_tools(), timeout=read_s)
+            tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
+            if tool_defs:
+                self._register_runtime_tools(server_name, tool_defs)
+        except Exception:
+            if server_name in self._startup_tasks:
+                raise
+
         self.registry.set_server_running(server_name, running=True)
-        self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
+        if server_name not in self._startup_tasks:
+            self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
         return session
 
     async def _get_or_create_persistent_sse_session(self, server_name: str) -> Any:
@@ -719,20 +796,14 @@ class MCPLifecycleManager(ProbeMixin):
             if cm is not None:
                 with _suppress_cleanup_errors():
                     await cm.__aexit__(None, None, None)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             detail = str(exc)
             if hasattr(exc, "exceptions"):
                 subs = list(getattr(exc, "exceptions", []))
                 if subs:
                     detail = "; ".join(str(s) for s in subs)
             raise RuntimeError(f"sse session for {server_name} failed: {detail}") from None
-
-        try:
-            tools = await asyncio.wait_for(session.list_tools(), timeout=read_s)
-            tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
-            if tool_defs:
-                self._register_runtime_tools(server_name, tool_defs)
-        except Exception:
-            pass
 
         self._mcp_clients[server_name] = {
             "kind": "persistent-sse",
@@ -741,12 +812,29 @@ class MCPLifecycleManager(ProbeMixin):
             "session": session,
             "context_manager": cm,
         }
+
+        try:
+            tools = await asyncio.wait_for(session.list_tools(), timeout=read_s)
+            tool_defs = self._normalize_mcp_tools(getattr(tools, "tools", []) or [])
+            if tool_defs:
+                self._register_runtime_tools(server_name, tool_defs)
+        except Exception:
+            if server_name in self._startup_tasks:
+                raise
+
         self.registry.set_server_running(server_name, running=True)
-        self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
+        if server_name not in self._startup_tasks:
+            self.registry.set_server_health(server_name, HealthStatus.HEALTHY.value)
         return session
 
     async def _get_or_create_session(self, server_name: str) -> Any:
         """Return a persistent MCP session, dispatching by the server's transport type."""
+        startup = self._startup_tasks.get(server_name)
+        if startup is not None and startup is not asyncio.current_task():
+            await self._startup_ready[server_name].wait()
+            if not self._is_persistent_session(self._mcp_clients.get(server_name)):
+                state = self.registry.get_all_servers().get(server_name)
+                raise RuntimeError(state.error if state and state.error else "MCP service is unavailable")
         config = self.config.mcp.servers.get(server_name)
         client_meta = self._mcp_clients.get(server_name)
         if config is None and isinstance(client_meta, dict):
@@ -1205,6 +1293,16 @@ class MCPLifecycleManager(ProbeMixin):
     async def astop_server(self, name: str) -> None:
         """Stop a single MCP server from within an event loop."""
         self.registry.set_server_health(name, HealthStatus.STOPPING.value)
+        startup = self._startup_tasks.pop(name, None)
+        if startup is not None:
+            if self._startup_ready[name].is_set():
+                self._startup_stop[name].set()
+            else:
+                startup.cancel()
+            with _suppress_cleanup_errors():
+                await startup
+            self._startup_ready.pop(name, None)
+            self._startup_stop.pop(name, None)
         try:
             await self._teardown_server(name)
         except BaseException as exc:
@@ -1224,7 +1322,7 @@ class MCPLifecycleManager(ProbeMixin):
 
     async def astop_all(self) -> None:
         """Stop all running MCP servers from within an event loop."""
-        names = set(self._processes.keys()) | set(self.registry.get_running_servers())
+        names = set(self._startup_tasks) | set(self._processes) | set(self.registry.get_running_servers())
         for name in names:
             try:
                 await self.astop_server(name)
@@ -1268,6 +1366,8 @@ class MCPLifecycleManager(ProbeMixin):
             raise ValueError(f"Unknown tool: {tool_name}")
 
         async with self._server_call_gate(server_name):
+            if server_name in self._startup_tasks:
+                await self._startup_ready[server_name].wait()
             # Liveness gate: if a tracked subprocess died, attempt a bounded restart
             # before dispatching the call.
             if server_name in self._processes and not self._is_process_alive(server_name):

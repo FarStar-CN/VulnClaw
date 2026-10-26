@@ -43,12 +43,12 @@ def test_runtime_counts_successfully_loaded_skills_and_ready_servers(monkeypatch
     result = _runtime_metadata(runtime)
     assert result["mcp_ready"] == 2
     assert result["mcp_servers"] == [
-        {"name": "local", "ready": True},
-        {"name": "placeholder", "ready": False},
-        {"name": "remote", "ready": True},
-        {"name": "starting", "ready": False},
-        {"name": "stopped", "ready": False},
-        {"name": "unregistered", "ready": False},
+        {"name": "local", "ready": True, "status": "ready"},
+        {"name": "placeholder", "ready": False, "status": "failed"},
+        {"name": "remote", "ready": True, "status": "ready"},
+        {"name": "starting", "ready": False, "status": "starting"},
+        {"name": "stopped", "ready": False, "status": "failed"},
+        {"name": "unregistered", "ready": False, "status": "failed"},
     ]
     assert result["skills_loaded"] == 2
     assert result["skills"] == ["custom", "valid"]
@@ -74,7 +74,7 @@ async def test_mcp_state_changes_push_runtime_updates_and_unsubscribe_on_close()
     application = ApplicationSession(emit, runtime_factory=lambda: runtime)
     try:
         await application.handle("initialize", request_id="init")
-        assert events[-1]["state"]["runtime"]["mcp_servers"] == [{"name": "custom", "ready": False}]
+        assert events[-1]["state"]["runtime"]["mcp_servers"] == [{"name": "custom", "ready": False, "status": "failed"}]
 
         def connect():
             registry.set_server_execution_mode("custom", "sse")
@@ -89,10 +89,10 @@ async def test_mcp_state_changes_push_runtime_updates_and_unsubscribe_on_close()
                 updated.clear()
 
         await asyncio.wait_for(wait_for_ready(1), timeout=2)
-        assert events[-1]["state"]["runtime"]["mcp_servers"] == [{"name": "custom", "ready": True}]
+        assert events[-1]["state"]["runtime"]["mcp_servers"] == [{"name": "custom", "ready": True, "status": "ready"}]
         registry.set_server_error("custom", "connection lost")
         await asyncio.wait_for(wait_for_ready(0), timeout=2)
-        assert events[-1]["state"]["runtime"]["mcp_servers"] == [{"name": "custom", "ready": False}]
+        assert events[-1]["state"]["runtime"]["mcp_servers"] == [{"name": "custom", "ready": False, "status": "failed"}]
     finally:
         await application.close()
     assert registry.on_state_change is None
