@@ -12,6 +12,7 @@ from vulnclaw.agent.errors import format_llm_user_error
 from vulnclaw.agent.streaming import TranscriptStreamSink
 from vulnclaw.config.domain_models import validate_action_constraints
 from vulnclaw.conversation import ConversationState, run_conversation
+from vulnclaw.execution_details import ExecutionDetails
 from vulnclaw.input_service import COMMANDS, InputRequest, command_help, parse_input
 from vulnclaw.management_service import (
     MANAGEMENT_OPERATIONS,
@@ -55,6 +56,7 @@ SUPPORTED_CONTROL_OPERATIONS = MANAGEMENT_OPERATIONS | frozenset(
         "session.scope.reset",
         "session.scope.update",
         "execution.approval.resolve",
+        "execution.details.read",
         "session.permission.set",
         "config.read",
         "config.preset",
@@ -72,7 +74,7 @@ SUPPORTED_CONTROL_OPERATIONS = MANAGEMENT_OPERATIONS | frozenset(
     }
 )
 TASK_ACTIVE_CONTROL_OPERATIONS = frozenset({
-    "execution.approval.resolve", "session.permission.set",
+    "execution.approval.resolve", "execution.details.read", "session.permission.set",
     "session.scope.read", "session.scope.preview", "session.help",
 })
 RUNTIME_STATE_FIELDS = frozenset(
@@ -148,6 +150,7 @@ class ApplicationSession:
         self._closed = False
         self._output = emit
         self.messages: dict[str, dict[str, Any]] = {}
+        self.execution_details = ExecutionDetails()
         self.emit = self._publish
         self._runtime_factory = runtime_factory or create_runtime
         self._task_runner = task_runner or _run_task
@@ -187,6 +190,8 @@ class ApplicationSession:
                 message["text"] += fields["text"]
             elif message is not None:
                 message["status"] = fields["status"]
+        if self.source == "tui":
+            fields = self.execution_details.compact(event_type, fields)
         self._output(event_type, **fields)
 
     def _publish_user(self, text: str, request_id: str, task_id: str) -> None:
@@ -842,6 +847,9 @@ class ApplicationSession:
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Extension point for feature-owned management operations."""
 
+        if operation == "execution.details.read":
+            return self.execution_details.read(arguments), None
+
         if operation in MANAGEMENT_OPERATIONS:
             result = await execute_management(self, operation, arguments)
             return result, self.state_snapshot() if operation == "config.update" else None
@@ -1136,6 +1144,7 @@ class ApplicationSession:
             except asyncio.CancelledError:
                 pass
         self._closed = True
+        self.execution_details.clear()
         if self._mcp_registry is not None:
             self._mcp_registry.on_state_change = None
         if self._mcp_state_update is not None:
