@@ -7,6 +7,7 @@ import { palettes, type ThemeId } from "../theme/palette";
 import { disclosureIcon, visibleText } from "./content";
 import { useI18n } from "../i18n";
 import { useExpansion } from "./useExpansion";
+import { ExpandedContent } from "./ExpandedContent";
 import type { ExecutionDetailRef } from "../transport/protocol.generated";
 import type { DetailPage, ExecutionDetailCache } from "../session/details";
 
@@ -59,13 +60,13 @@ function DetailBody({ id, detail, theme, navigation }: {
     </> : <text fg={p.muted}>{t("Loading…")}</text>}
   </box>;
 }
-function Section({ id, label, text, detail, theme, navigation, collapsible = true }: {
+function Section({ id, label, text, detail, theme, navigation, collapsible = true, marginTop = 0 }: {
   id: string; label: string; text: string; detail?: ExecutionDetailRef;
-  theme: ThemeId; navigation: ExecutionNavigation; collapsible?: boolean;
+  theme: ThemeId; navigation: ExecutionNavigation; collapsible?: boolean; marginTop?: number;
 }) {
   const [open, toggle] = useExpansion(id, navigation.expanded);
   const t = useI18n(), p = palettes[theme];
-  return <box flexDirection="column" flexShrink={0} marginTop={1}>
+  return <box flexDirection="column" flexShrink={0} marginTop={marginTop}>
     {collapsible ? <Action id={id} navigation={navigation} color={p.muted} action={toggle}>
       {disclosureIcon(open)}{t(label)}{detail ? ` · ${t("{count} bytes", { count: detail.bytes })}` : ""}
     </Action> : <text fg={p.muted}>{t(label)}{detail ? ` · ${t("{count} bytes", { count: detail.bytes })}` : ""}</text>}
@@ -80,18 +81,18 @@ function OperationBody({ operation, id, theme, navigation }: {
   const p = palettes[theme];
   const original = operationTitle(operation);
   const sections = operationSections(operation);
-  return <box flexDirection="column" flexShrink={0} paddingLeft={2}>
+  return <box flexDirection="column" flexShrink={0}>
     <text id={`${id}-command`} wrapMode="char" fg={p.text}>{visibleText(original)}</text>
     {operation.error && <text fg={p.error} wrapMode="word">{visibleText(operation.error)}</text>}
     {sections.map((section) => <Section key={section.label} id={`${id}-${section.label}`}
-      {...section} theme={theme} navigation={navigation} collapsible={sections.length > 1} />)}
+      {...section} theme={theme} navigation={navigation} collapsible={sections.length > 1} marginTop={1} />)}
   </box>;
 }
 function OperationRow({ operation, id, theme, width, navigation }: {
   operation: Operation; id: string; theme: ThemeId; width: number; navigation: ExecutionNavigation;
 }) {
   const [open, toggle] = useExpansion(id, navigation.expanded), p = palettes[theme];
-  return <box flexDirection="column" flexShrink={0} marginTop={1} paddingLeft={2}>
+  return <box flexDirection="column" flexShrink={0}>
     <Action id={id} navigation={navigation} color={p.accent} action={toggle}>
       {disclosureIcon(open)}{fitExecution(open ? operationLabel(operation) : visibleText(operationTitle(operation)), Math.max(1, width - 6))}
     </Action>
@@ -99,7 +100,9 @@ function OperationRow({ operation, id, theme, width, navigation }: {
       {fitExecution(operationReceipt(operation), Math.max(1, width - 4))}
     </text>
     {operation.error && !open && <text fg={p.error} wrapMode="word">{visibleText(operation.error)}</text>}
-    {open && <OperationBody operation={operation} id={id} theme={theme} navigation={navigation} />}
+    {open && <box flexDirection="column" flexShrink={0} paddingLeft={2}>
+      <OperationBody operation={operation} id={id} theme={theme} navigation={navigation} />
+    </box>}
   </box>;
 }
 export function ExecutionCard({ card, theme, width, navigation }: {
@@ -121,21 +124,23 @@ export function ExecutionCard({ card, theme, width, navigation }: {
     </text>
     {view.category === "execution" && record.evidenceId && <text fg={p.muted}>{t("Evidence {id}", { id: record.evidenceId })}</text>}
     {view.error && <text fg={p.error} wrapMode="word">{visibleText(view.error)}</text>}
-    {open && view.expandable && (view.category !== "execution" ? <box flexDirection="column" flexShrink={0} paddingLeft={2}>
-      {view.sections.map((section, index) => <box key={index} flexDirection="column" flexShrink={0} marginTop={1}>
-        <text fg={p.muted}>{visibleText(section.label)}</text>
-        <text id={`${id}-business-${index}-content`} wrapMode="char" fg={p.text}>{visibleText(section.text)}</text>
-      </box>)}
-      {record.resultRef && <Section id={`${id}-result`} label="Result" text="" detail={record.resultRef}
-        theme={theme} navigation={navigation} />}
-    </box> : <>
-      {operations.length === 1 ? <OperationBody operation={operations[0]!} id={`${id}-op`} theme={theme}
-        navigation={navigation} /> : operations.map((operation) => <OperationRow key={operation.operation_id}
-        id={`${id}-${operation.operation_id}`} operation={operation} theme={theme} width={width}
-        navigation={navigation} />)}
-      {result && <Section id={`${id}-result`} label="Result" text={result} detail={record.resultRef}
-        theme={theme} navigation={navigation} collapsible={operations.length > 0} />}
-      {!operations.length && !record.result && <text fg={p.muted}>{t(record.received ? "No output" : "Waiting for execution details")}</text>}
-    </>)}
+    {open && view.expandable && <ExpandedContent id={`${id}-details`} theme={theme}>
+      {view.category !== "execution" ? <>
+        {view.sections.map((section, index) => <box key={index} flexDirection="column" flexShrink={0}>
+          <text fg={p.muted}>{visibleText(section.label)}</text>
+          <text id={`${id}-business-${index}-content`} wrapMode="char" fg={p.text}>{visibleText(section.text)}</text>
+        </box>)}
+        {record.resultRef && <Section id={`${id}-result`} label="Result" text="" detail={record.resultRef}
+          theme={theme} navigation={navigation} />}
+      </> : <>
+        {operations.length === 1 ? <OperationBody operation={operations[0]!} id={`${id}-op`} theme={theme}
+          navigation={navigation} /> : operations.map((operation) => <OperationRow key={operation.operation_id}
+          id={`${id}-${operation.operation_id}`} operation={operation} theme={theme} width={Math.max(1, width - 2)}
+          navigation={navigation} />)}
+        {result && <Section id={`${id}-result`} label="Result" text={result} detail={record.resultRef}
+          theme={theme} navigation={navigation} collapsible={operations.length > 0} />}
+        {!operations.length && !record.result && <text fg={p.muted}>{t(record.received ? "No output" : "Waiting for execution details")}</text>}
+      </>}
+    </ExpandedContent>}
   </box>;
 }

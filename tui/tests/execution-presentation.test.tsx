@@ -127,10 +127,13 @@ for (const status of ["failed", "denied", "cancelled", "skipped"] as const) test
   expect(view.status).toBe(status); expect(view.expandable).toBe(false); expect(view.sections).toEqual([]);
 });
 
-test("business details have one expansion and preserve that expansion across source switches", async () => {
+for (const tool of ["crypto_decode", "submit_finding"] as const) test(`${tool}: business details start on the first guide row and preserve expansion across source switches`, async () => {
   const controller = new SessionController(); controller.inputFocused = false;
-  announce(controller, "decode", "crypto_decode", { operation: "base64_decode" });
-  complete(controller, "decode", { text: "Decoded business result" });
+  announce(controller, "decode", tool, tool === "crypto_decode" ? { operation: "base64_decode" }
+    : { title: "Display sample", method: "GET", endpoint: "https://example.test/a",
+      description: "Decoded business result", evidence_ids: ["e001"] });
+  complete(controller, "decode", tool === "crypto_decode" ? { text: "Decoded business result" }
+    : { action: "created", verification_status: "pending" });
   const card = [...controller.cards.values()][0]!;
   const setup = await testRender(<TuiShell controller={controller} workbench={new WorkbenchState()} />,
     { width: 140, height: 38, kittyKeyboard: true });
@@ -138,7 +141,14 @@ test("business details have one expansion and preserve that expansion across sou
     await finalFrame(setup);
     const header = setup.renderer.root.findDescendantById(`execution-${card.id}`)!;
     await act(async () => { await setup.mockMouse.click(header.x + 3, header.y); });
-    expect(await finalFrame(setup)).toContain("Decoded business result");
+    const frame = await finalFrame(setup);
+    expect(frame).toContain("Decoded business result");
+    const guide = setup.renderer.root.findDescendantById(`execution-${card.id}-details`)!;
+    const rows = frame.split("\n").slice(guide.y, guide.y + guide.height)
+      .map((line) => line.slice(guide.x, guide.x + guide.width).trimEnd());
+    expect(rows).toEqual(tool === "crypto_decode" ? ["│ Result", "│ Decoded business result"]
+      : ["│ Location", "│ GET https://example.test/a", "│", "│ Description",
+        "│ Decoded business result", "│", "│ Evidence", "│ e001"]);
     expect(setup.renderer.root.findDescendantById(`execution-${card.id}-business-0`)).toBeUndefined();
     await act(async () => { controller.source = "child"; controller.changed(); });
     expect(await finalFrame(setup)).not.toContain("Decoded business result");

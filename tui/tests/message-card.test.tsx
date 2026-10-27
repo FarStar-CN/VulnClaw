@@ -7,7 +7,7 @@ import { finalFrame } from "./render-helpers";
 for (const kind of ["log", "status"] as const) test(`${kind}: only the chevron and label toggle details`, async () => {
   const setup = await testRender(<ToolCard theme="blue" width={80} card={{ id: "fixture", source: "main", kind,
     title: "Log", text: "first preview\nDetailed receipt body", format: "text" }} />, { width: 80, height: 10 });
-  const detailsVisible = async () => (await finalFrame(setup)).split("\n").some((line) => line.trim() === "Detailed receipt body");
+  const detailsVisible = async () => (await finalFrame(setup)).split("\n").some((line) => line.trim() === "│ Detailed receipt body");
   try {
     expect(await detailsVisible()).toBe(false);
     const entry = setup.renderer.root.findDescendantById("entry-fixture")!;
@@ -43,7 +43,7 @@ test("thinking toggles through its label and chevron while its line count stays 
     }
     await act(async () => { await setup.mockMouse.click(entry.x + 4, entry.y); });
     const expanded = await finalFrame(setup);
-    expect(expanded).toContain("Detailed thought body"); expect(expanded).toContain("﹀Thinking · 1 lines");
+    expect(expanded).toContain("│ Detailed thought body"); expect(expanded).toContain("﹀Thinking · 1 lines");
     expect(entry.getChildren()[0].getChildren()[1].x).toBe(countX);
     await act(async () => { await setup.mockMouse.click(entry.x + 1, entry.y); });
     expect(await finalFrame(setup)).not.toContain("Detailed thought body");

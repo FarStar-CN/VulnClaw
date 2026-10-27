@@ -7,6 +7,7 @@ import { disclosureIcon, visibleText } from "./content";
 import { MarkdownBody } from "./MarkdownBody";
 import { useI18n, statusLabel } from "../i18n";
 import { useExpansion } from "./useExpansion";
+import { ExpandedContent } from "./ExpandedContent";
 
 export const MessageCard = memo(function MessageCard(props: {
   id: string; role: MessageSnapshot["role"]; text: string;
@@ -18,6 +19,9 @@ export const MessageCard = memo(function MessageCard(props: {
   const [expanded, toggle] = useExpansion(`reasoning-${props.id}`, props.expansion);
   const thinking = props.role === "reasoning";
   const label = props.role === "user" ? t("You") : props.role === "tool" ? t("Tool") : "VulnClaw";
+  const content = props.format === "markdown" ? <MarkdownBody id={`md-${props.id}`} text={props.text}
+    streaming={props.status === "streaming"} width={Math.max(1, props.width - (thinking ? 2 : 0))} theme={props.theme} />
+    : <text wrapMode="word" fg={p.text}>{visibleText(props.text)}</text>;
   return <box id={`entry-${props.id}`} flexDirection="column" flexShrink={0} marginTop={props.showRole === false ? 0 : 1}>
     {props.showRole !== false && <text alignSelf="flex-start" height={1} fg={props.role === "user" ? p.text : p.accent}><b>{label}</b></text>}
     {thinking && <box flexDirection="row" height={1}>
@@ -26,9 +30,9 @@ export const MessageCard = memo(function MessageCard(props: {
       </text>
       <text fg={p.muted}>{` · ${t("{count} lines", { count: props.text.split("\n").length })}`}</text>
     </box>}
-    {(!thinking || expanded) && (props.format === "markdown" ? <MarkdownBody id={`md-${props.id}`} text={props.text}
-      streaming={props.status === "streaming"} width={props.width} theme={props.theme} />
-      : <text wrapMode="word" fg={p.text}>{visibleText(props.text)}</text>)}
+    {thinking ? expanded && <ExpandedContent id={`reasoning-${props.id}-details`} theme={props.theme}>
+      {content}
+    </ExpandedContent> : content}
     {["cancelled", "failed"].includes(props.status) && <text fg={props.status === "failed" ? p.error : p.muted}>{statusLabel(props.status)}</text>}
   </box>;
 });
@@ -42,6 +46,9 @@ export const ToolCard = memo(function ToolCard({ card, theme, width, expansion }
   const result = card.kind === "result" || card.kind === "error";
   const title = t(card.title);
   const preview = expanded ? "" : ` · ${card.text.split("\n")[0]}`;
+  const content = card.format === "markdown" ? <MarkdownBody id={`tool-md-${card.id}`} text={card.text}
+    width={Math.max(1, width - (result ? 0 : 2))} theme={theme} />
+    : <text wrapMode="word" fg={card.kind === "error" ? p.error : p.text}>{visibleText(card.text)}</text>;
   return <box id={`entry-${card.id}`} flexDirection="column" flexShrink={0} marginTop={result ? 1 : 0}>
     {result ? <text fg={card.kind === "error" ? p.error : p.accent}>{visibleText(title)}</text>
       : <box flexDirection="row" height={1}>
@@ -49,7 +56,8 @@ export const ToolCard = memo(function ToolCard({ card, theme, width, expansion }
           onMouseDown={toggle}><b>{disclosureIcon(expanded)}</b>{visibleText(title)}</text>
         <text flexGrow={1} height={1} fg={p.muted}>{visibleText(preview)}</text>
       </box>}
-    {(result || expanded) && (card.format === "markdown" ? <MarkdownBody id={`tool-md-${card.id}`} text={card.text} width={width} theme={theme} />
-      : <text wrapMode="word" fg={card.kind === "error" ? p.error : p.text}>{visibleText(card.text)}</text>)}
+    {result ? content : expanded && <ExpandedContent id={`tool-${card.id}-details`} theme={theme}>
+      {content}
+    </ExpandedContent>}
   </box>;
 });
