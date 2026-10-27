@@ -96,7 +96,7 @@ async def test_backend_detail_reads_work_during_tasks_and_survive_conversation_r
         assert original.startswith(page["result"]["text"])
         backend.application.active_task = None
         await send("control", "new", {"operation": "session.new", "arguments": {}})
-        # REPL output queued before /new may still need to finish printing.
+        # Display details remain session-owned until the backend closes.
         await send("control", "read-again", {"operation": "execution.details.read",
                                             "arguments": {"id": ref["id"]}})
         assert json.loads(stream.getvalue().splitlines()[-1])["result"] == page["result"]

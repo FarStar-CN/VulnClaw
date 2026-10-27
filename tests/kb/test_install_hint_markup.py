@@ -30,7 +30,7 @@ class _KeywordFallbackRetriever:
 
 
 class TestKbDegradationHint:
-    def test_hint_keeps_the_kb_extra(self, monkeypatch, capsys):
+    def test_hint_keeps_the_kb_extra(self, capsys):
         prev_lang = current_lang()
         init_i18n(lang="zh")  # the degradation warning is localized; pin zh
         try:

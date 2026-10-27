@@ -41,13 +41,12 @@ export const ToolCard = memo(function ToolCard({ card, theme, width, expansion }
   const [expanded, toggle] = useExpansion(`tool-${card.id}`, expansion);
   const result = card.kind === "result" || card.kind === "error";
   const title = t(card.title);
-  const label = title;
   const preview = expanded ? "" : ` · ${card.text.split("\n")[0]}`;
   return <box id={`entry-${card.id}`} flexDirection="column" flexShrink={0} marginTop={result ? 1 : 0}>
     {result ? <text fg={card.kind === "error" ? p.error : p.accent}>{visibleText(title)}</text>
       : <box flexDirection="row" height={1}>
         <text flexShrink={0} maxWidth={width} height={1} fg={p.muted}
-          onMouseDown={toggle}><b>{disclosureIcon(expanded)}</b>{visibleText(label)}</text>
+          onMouseDown={toggle}><b>{disclosureIcon(expanded)}</b>{visibleText(title)}</text>
         <text flexGrow={1} height={1} fg={p.muted}>{visibleText(preview)}</text>
       </box>}
     {(result || expanded) && (card.format === "markdown" ? <MarkdownBody id={`tool-md-${card.id}`} text={card.text} width={width} theme={theme} />

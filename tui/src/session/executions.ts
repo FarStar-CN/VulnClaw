@@ -77,7 +77,7 @@ export function executionReceipt(record: ExecutionRecord): string {
     operations.length > 1 ? t("{completed} completed · {failed} failed", {
       completed: operations.filter((op) => op.status === "completed").length,
       failed: operations.filter((op) => failedExecution(op.status)).length,
-    }) : operations[0] ? operationReceipt(operations[0]) : "",
+    }) : "",
   ].filter(Boolean).join(" · ");
 }
 export interface ExecutionSection { label: string; text: string; detail?: ExecutionDetailRef }

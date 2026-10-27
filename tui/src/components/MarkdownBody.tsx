@@ -8,13 +8,13 @@ import { markdownStyle, palettes, type Palette, type ThemeId } from "../theme/pa
 import { usePalette } from "../theme/usePalette";
 import { t, useI18n, currentLanguage } from "../i18n";
 
-export interface MarkdownBodyProps {
+interface MarkdownBodyProps {
   id: string; text: string; streaming?: boolean; width: number; theme: ThemeId;
 }
 
 const errorHandlers = new WeakMap<CliRenderer, Map<string, (error: string) => void>>();
 const styles = new WeakMap<CliRenderer, Map<Palette, ReturnType<typeof markdownStyle>>>();
-export function sharedMarkdownStyle(renderer: CliRenderer, theme: ThemeId) {
+function sharedMarkdownStyle(renderer: CliRenderer, theme: ThemeId) {
   let cache = styles.get(renderer);
   if (!cache) {
     cache = new Map(); styles.set(renderer, cache);
@@ -27,7 +27,7 @@ export function sharedMarkdownStyle(renderer: CliRenderer, theme: ThemeId) {
 }
 
 /** Shared node adaptation for streaming and completed transcript messages. */
-export function markdownNodes(renderer: RenderContext, theme: ThemeId, width: number): MarkdownOptions["renderNode"] {
+function markdownNodes(renderer: RenderContext, theme: ThemeId, width: number): MarkdownOptions["renderNode"] {
   return (token, context) => {
     if (token.type === "def") return new BoxRenderable(renderer, { height: 0 });
     if (["paragraph", "heading", "text"].includes(token.type) && "tokens" in token && Array.isArray(token.tokens)) {

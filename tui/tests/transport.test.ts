@@ -59,7 +59,6 @@ test("Python session initializes, reads state and shuts down with one subprocess
   // Real application runtime, with external MCP services explicitly disabled.
   await writeFile(join(directory, "config.yaml"), "mcp:\n  servers:\n    fetch:\n      enabled: false\n    memory:\n      enabled: false\n    chrome-devtools:\n      enabled: false\n    burp:\n      enabled: false\n");
   const events: ServerEvent[] = [];
-  const diagnostics: string[] = [];
   let resolveReady!: () => void;
   let rejectReady!: (error: Error) => void;
   const ready = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -69,7 +68,7 @@ test("Python session initializes, reads state and shuts down with one subprocess
     if (event.type === "error") rejectReady(new Error(event.message));
   }, rejectReady, {
     python: process.env.VULNCLAW_PYTHON ?? (process.platform === "win32" ? "python" : resolve("../.venv/bin/python")), cwd: resolve(".."),
-    env: { VULNCLAW_CONFIG_DIR: directory }, onDiagnostic: (text) => diagnostics.push(text),
+    env: { VULNCLAW_CONFIG_DIR: directory },
   });
   try {
     backend.send({ protocol_version: 2, type: "initialize", request_id: "init", payload: {} });
