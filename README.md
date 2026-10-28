@@ -233,7 +233,7 @@ vulnclaw repl
 | `/think on` / `/think off`                           | 推理显示                                                |
 | `/help` / `/quit`                                               | 帮助 / 退出                                                   |
 
-输入 `@` 可筛选技能，Enter 将选择补全为后端识别的提示。技能通过 prompt 明确指定，例如“使用技能 web-pentest，检查登录流程”；未指定时自动选择。不提供 `/skill` 或 `/<技能名>` 启动语法。自然语言报告按语义及对应配置处理，明确要求生成或不生成优先于默认设置。完整架构见 [Markdown 架构文档](docs/architecture/tui-natural-language-design.md)。
+输入 `@` 可筛选技能，Enter 将选择补全为后端识别的提示。技能通过 prompt 明确指定，例如“使用技能 web-pentest，检查登录流程”；未指定时自动选择。不提供 `/skill` 或 `/<技能名>` 启动语法。自然语言报告按语义及对应配置处理，明确要求生成或不生成优先于默认设置。
 
 **自动渗透触发：** 输入包含「渗透测试」「找 flag」「爆破」等关键词 + 目标地址时，自动进入多轮自主渗透循环。`Ctrl+C` 随时中断。
 
@@ -339,11 +339,18 @@ CLI `run/solve --stream` 的 finding 列表来自已登记候选，保留其严�
 
 ### Headless 机器调用
 
+完整操作步骤见 [无头模式操作指南](docs/headless.md)。
+
 除 `tui` / `repl` 外，业务命令均无交互，不启动 Bun 或渲染终端界面。默认 stdout
 只含一个 `command_result` JSON；`--format jsonl` 输出版本 2 事件，最后恰好一个结果。
 日志写 stderr。帮助、版本和 manual 保持可读文本，Web 是显式启动的服务。
+根命令和无子命令的管理命令组返回成功的命令目录。`describe` 提供参数与 JSON 输入模型；
+`describe --protocol` 提供持续后端启动方式、审批和追问回复契约，发现过程不启动 LLM/MCP。
 
 ```bash
+vulnclaw config
+vulnclaw describe run
+vulnclaw describe --protocol approval_required
 vulnclaw run lab.example --format jsonl --max-steps 12
 vulnclaw ask "查看当前状态" --format json
 vulnclaw run --input-json task.json

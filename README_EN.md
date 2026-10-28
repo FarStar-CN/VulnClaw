@@ -241,7 +241,7 @@ you need explicit task parameters.
 | `/think on` / `/think off` | Reasoning display |
 | `/help` / `/quit` | Help / exit |
 
-Type `@` to filter skills; Enter completes the selection as a backend-readable prompt. Select skills in the prompt, for example `Use VulnClaw skill web-pentest. Inspect login.` Automatic selection remains available. There is no `/skill` or `/<skill-name>` launch syntax. Natural-language reports use the requested meaning and configured defaults; explicit requests override defaults. See the [Markdown architecture](docs/architecture/tui-natural-language-design.md).
+Type `@` to filter skills; Enter completes the selection as a backend-readable prompt. Select skills in the prompt, for example `Use VulnClaw skill web-pentest. Inspect login.` Automatic selection remains available. There is no `/skill` or `/<skill-name>` launch syntax. Natural-language reports use the requested meaning and configured defaults; explicit requests override defaults.
 
 **Auto Pentest Trigger:** Keywords like "pentest", "find flag", "bruteforce" + a target address auto-enter the multi-round autonomous loop. `Ctrl+C` to interrupt anytime.
 
