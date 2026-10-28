@@ -302,7 +302,7 @@ async def generate_attack_summary(agent: AgentContext) -> str:
 
         messages = _fit_context_window(agent, messages, [], purpose="persistent_summary")
 
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             **build_chat_completion_kwargs(
                 agent,
                 messages,

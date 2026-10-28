@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 import pytest
@@ -138,7 +139,7 @@ async def test_inconclusive_poc_falls_back_to_evidence_review(tmp_path, receiver
     _BEHAVIOR["run"] = lambda query: (200, "plain", {})
     url = f"{receiver}/cmd?file=notes%20id"
     config, state = _candidate(tmp_path, receiver, url, _recorded(url, "notes id"))
-    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", lambda *args: _review())
+    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", AsyncMock(side_effect=lambda *args: _review()))
     view = await verify_findings(state, config=config, poc_verify=True)
     assessment = view.findings[0].assessment
     assert assessment.method == "evidence_review" and assessment.outcome == "suspected_low"
@@ -154,7 +155,7 @@ async def test_action_restriction_blocks_poc_before_any_request(tmp_path, receiv
         tmp_path, receiver, url, _recorded(url, "notes id"),
         constraints=TaskConstraints(blocked_actions=["exploit"]),
     )
-    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", lambda *args: _review())
+    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", AsyncMock(side_effect=lambda *args: _review()))
     view = await verify_findings(state, config=config, poc_verify=True)
     assessment = view.findings[0].assessment
     assert assessment.method == "evidence_review" and assessment.outcome == "suspected_low"
@@ -167,7 +168,7 @@ async def test_redirects_are_not_followed_and_fall_back(tmp_path, receiver, monk
     _BEHAVIOR["run"] = lambda query: (302, "", {"Location": "/elsewhere"})
     url = f"{receiver}/cmd?file=notes%20id"
     config, state = _candidate(tmp_path, receiver, url, _recorded(url, "notes id"))
-    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", lambda *args: _review())
+    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", AsyncMock(side_effect=lambda *args: _review()))
     view = await verify_findings(state, config=config, poc_verify=True)
     assessment = view.findings[0].assessment
     assert assessment.method == "evidence_review"
@@ -206,7 +207,7 @@ async def test_get_replay_cannot_confirm_a_post_candidate(tmp_path, receiver, mo
         "vuln_type": "RCE", "severity": "High", "evidence_ids": ["e001", "e002"],
         "endpoint": url, "method": "POST",
     })
-    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", lambda *args: _review())
+    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", AsyncMock(side_effect=lambda *args: _review()))
     view = await verify_findings(state, config=config, poc_verify=True)
     assessment = view.findings[0].assessment
     assert assessment.method == "evidence_review" and assessment.outcome == "suspected_high"
@@ -255,7 +256,7 @@ async def test_poc_cannot_verify_a_different_query_route(tmp_path, receiver, mon
         'vuln_type': 'RCE', 'severity': 'High', 'endpoint': safe_url, 'method': 'GET',
         'evidence_ids': ['e001', 'e002'],
     })
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *_: _review())
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: _review()))
     view = await verify_findings(state, config=config, poc_verify=True)
     assert not view.findings[0].verified
     assert to_sarif(view.findings)['runs'][0]['results'] == []

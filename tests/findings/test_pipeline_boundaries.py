@@ -3,6 +3,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from typer.testing import CliRunner
 
@@ -43,10 +44,10 @@ async def test_plugin_session_records_evidence_for_explicit_submission(tmp_path,
     finding = state.findings[0]
     assert finding.submission_id
     assert load_snapshots(finding)[record.id].content == record.content
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *_: EvidenceReview(
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: EvidenceReview(
         confidence='low', reason='Provided headers still require target reproduction',
         observations=[{'evidence_id': record.id, 'quote': 'missing_headers'}],
-    ))
+    )))
     view = await verify_findings(state, config=config, poc_verify=False)
     assert view.findings[0].assessment.complete
     assert view.findings[0].assessment.outcome == 'suspected_low'

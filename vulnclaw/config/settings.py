@@ -92,13 +92,7 @@ def openai_default_headers() -> dict[str, str]:
 def make_openai_client(api_key: str, base_url: str, timeout: float | None = None):
     from openai import OpenAI
 
-    kwargs: dict[str, Any] = {
-        "api_key": api_key,
-        "base_url": base_url,
-        "default_headers": openai_default_headers(),
-    }
-    if timeout is not None:
-        kwargs["timeout"] = timeout
+    kwargs = _openai_client_options(api_key, base_url, timeout)
     try:
         return OpenAI(**kwargs)
     except TypeError as exc:
@@ -113,6 +107,23 @@ def make_openai_client(api_key: str, base_url: str, timeout: float | None = None
                 "（要求 openai>=1.66，或把 httpx 降到 <0.28）"
             ) from exc
         raise
+
+
+def make_async_openai_client(api_key: str, base_url: str, timeout: float | None = None):
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI(**_openai_client_options(api_key, base_url, timeout))
+
+
+def _openai_client_options(api_key: str, base_url: str, timeout: float | None) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "default_headers": openai_default_headers(),
+    }
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return kwargs
 
 
 # ── Load / Save ────────────────────────────────────────────────────

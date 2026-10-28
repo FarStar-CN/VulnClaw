@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 from types import SimpleNamespace
@@ -51,26 +50,9 @@ from vulnclaw.agent.tool_call_manager import (  # noqa: E402
 _CONTEXT_USABLE_RATIO = 0.9
 _DEFAULT_AUTO_TOOL_ROUNDS = 6
 _TOOL_LOOP_TARGET_RATIO = 26_000 / 32_000
-_SYNC_STREAM_END = object()
-
-
-def _next_sync_stream_item(iterator: Any) -> Any:
-    try:
-        return next(iterator)
-    except StopIteration:
-        return _SYNC_STREAM_END
-
-
-async def _create_streaming_response(
-    agent: AgentContext, kwargs: dict[str, Any]
-) -> Any:
-    """Open a synchronous provider stream without blocking sibling agents."""
-
-    create = agent._get_client().chat.completions.create
-    response = await asyncio.to_thread(create, **kwargs, stream=True)
-    if inspect.isawaitable(response):
-        response = await response
-    return response
+async def _create_streaming_response(agent: AgentContext, kwargs: dict[str, Any]) -> Any:
+    """Open an async provider stream that shares the caller's cancellation."""
+    return await agent._get_client().chat.completions.create(**kwargs, stream=True)
 
 
 def _fit_context_window(
@@ -290,33 +272,31 @@ async def _stream_chat_completion_message(
     kwargs = build_chat_completion_kwargs(agent, messages, tools)
     stream_sink.on_status("Thinking...")
     response = await _create_streaming_response(agent, kwargs)
+    if not hasattr(response, "__aiter__"):
+        raise ValueError("LLM response is not a valid stream object")
 
     full_text = ""
     reasoning_buffer = ""
     tool_calls_chunks: list[dict] = []
-    stream = _ensure_async_iter(response)
-    if stream is None:
-        raise ValueError("LLM response is not a valid stream object")
+    async with response as stream:
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            reasoning = getattr(delta, "reasoning_content", None) or ""
+            if reasoning:
+                reasoning_buffer += reasoning
+                stream_sink.on_thinking_token(reasoning)
 
-    async for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        reasoning = getattr(delta, "reasoning_content", None) or ""
-        if reasoning:
-            reasoning_buffer += reasoning
-            stream_sink.on_thinking_token(reasoning)
+            content = getattr(delta, "content", None) or ""
+            if content:
+                if reasoning_buffer:
+                    full_text += f"<thinking>\n{reasoning_buffer}\n</thinking>\n"
+                    reasoning_buffer = ""
+                stream_sink.on_content_token(content)
+                full_text += content
 
-        content = getattr(delta, "content", None) or ""
-        if content:
-            if reasoning_buffer:
-                full_text += f"<thinking>\n{reasoning_buffer}\n</thinking>\n"
-                reasoning_buffer = ""
-            stream_sink.on_content_token(content)
-            full_text += content
-
-        _collect_tool_call_deltas(delta, tool_calls_chunks)
-
+            _collect_tool_call_deltas(delta, tool_calls_chunks)
     if reasoning_buffer:
         full_text += f"<thinking>\n{reasoning_buffer}\n</thinking>\n"
     stream_sink.on_stream_end()
@@ -438,7 +418,6 @@ async def _call_with_persistent_retries_unbudgeted(
     Raises:
         RuntimeError: If max_retries is exceeded.
     """
-    loop = asyncio.get_running_loop()
     retry_attempts = 0
     pool_size = len(getattr(agent, "_key_pool", None) or [])
     can_rotate = pool_size > 1 and callable(getattr(agent, "rotate_api_key", None))
@@ -446,8 +425,7 @@ async def _call_with_persistent_retries_unbudgeted(
 
     while retry_attempts < max_retries:
         try:
-            maybe_response = loop.run_in_executor(None, request_fn)
-            response = await maybe_response if inspect.isawaitable(maybe_response) else maybe_response
+            response = await request_fn()
             if response is not None and getattr(response, "choices", None):
                 return response, retry_attempts
 
@@ -471,7 +449,7 @@ async def _call_with_persistent_retries_unbudgeted(
             if can_rotate and (is_exhausted or is_auth):
                 keys_tried.add(getattr(agent, "_key_index", 0))
                 if len(keys_tried) < pool_size:
-                    agent.rotate_api_key()
+                    await agent.rotate_api_key()
                     retry_attempts += 1
                     logger.warning(
                         "%s 当前密钥失败 (%s)，切换到下一个 API 密钥并重试...",
@@ -485,7 +463,7 @@ async def _call_with_persistent_retries_unbudgeted(
                 # All keys rate-limited: keep cycling, but back off first so we
                 # never hard-fail on transient quota limits.
                 keys_tried.clear()
-                agent.rotate_api_key()
+                await agent.rotate_api_key()
                 retry_attempts += 1
                 logger.warning(
                     "%s 所有 API 密钥均已限流，第 %d 次重连尝试中... (5s 后重试)",
@@ -707,38 +685,6 @@ async def call_llm_auto(
 # === Stream LLM Call Helpers ===
 
 
-class _AsyncIterWrapper:
-    """Wrap sync iterable as async iterable for unified async for usage.
-
-    OpenAI sync client → sync Stream（需包装后 async for）
-    测试 mock / async client → async Stream（直接用 async for）
-    """
-
-    def __init__(self, iterable):
-        self._iter = iter(iterable)
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        item = await asyncio.to_thread(_next_sync_stream_item, self._iter)
-        if item is _SYNC_STREAM_END:
-            raise StopAsyncIteration
-        return item
-
-
-def _ensure_async_iter(response):
-    """返回 async 可迭代对象，兼容 sync 和 async Stream。
-
-    检查顺序：async 可迭代 → sync 可迭代 → 不可迭代返回 None（触发降级）。
-    """
-    if hasattr(response, "__aiter__"):
-        return response
-    if hasattr(response, "__iter__"):
-        return _AsyncIterWrapper(response)
-    return None  # 不是可迭代对象，由调用方走降级路径
-
-
 def _collect_tool_call_deltas(delta: Any, tool_calls_chunks: list[dict]) -> None:
     """从单个流式 delta 中提取 tool_call 分片，追加到累积列表。
 
@@ -863,111 +809,30 @@ async def call_llm_stream(
     system_prompt: str,
     stream_sink: Optional["StreamSink"] = None,
 ) -> str:
-    """Call the LLM with streaming output.
-
-    Args:
-        agent: AgentCore instance
-        system_prompt: System prompt
-        stream_sink: Output sink for streaming (None = silent)
-
-    Returns:
-        Full response text (same as non-streaming version)
-    """
+    """Stream one assistant turn, closing the HTTP stream on every exit path."""
     if stream_sink is None:
         stream_sink = _NullSink()
-
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(agent.context.get_messages())
     tools = agent._build_openai_tools()
     messages = _fit_context_window(agent, messages, tools, purpose="single_turn_stream")
-
-    kwargs = build_chat_completion_kwargs(agent, messages, tools)
-
     try:
-        stream_sink.on_status("Thinking...")
-        response = await _create_streaming_response(agent, kwargs)
-
-        full_text = ""
-        reasoning_buffer = ""
-        tool_calls_chunks: list[dict] = []
-
-        # 自动适配 sync/async Stream（sync Stream 用 _AsyncIterWrapper 包装）
-        _stream = _ensure_async_iter(response)
-        if _stream is None:
-            raise ValueError("LLM response is not a valid stream object")
-        async for chunk in _stream:
-            if chunk.choices and len(chunk.choices) > 0:
-                delta = chunk.choices[0].delta
-
-                # Handle reasoning_content (DeepSeek R1, etc.)
-                reasoning = getattr(delta, "reasoning_content", None) or ""
-                if reasoning:
-                    reasoning_buffer += reasoning
-                    stream_sink.on_thinking_token(reasoning)
-
-                # Handle content
-                content = getattr(delta, "content", None) or ""
-                if content:
-                    if reasoning_buffer:
-                        full_text += f"<thinking>\n{reasoning_buffer}\n</thinking>\n"
-                        reasoning_buffer = ""
-                    stream_sink.on_content_token(content)
-                    full_text += content
-
-                # Handle tool_calls（流式 chat 模式也需要处理）
-                _collect_tool_call_deltas(delta, tool_calls_chunks)
-
-        if reasoning_buffer:
-            full_text += f"<thinking>\n{reasoning_buffer}\n</thinking>\n"
-
-        stream_sink.on_stream_end()
-
-        # 如果有 tool_calls，路由到 handle_tool_calls（同 call_llm_auto_stream 的逻辑）
-        if tool_calls_chunks:
-            tool_calls = _assemble_tool_calls(tool_calls_chunks)
-
-            if tool_calls:
-                dummy_msg = type("obj", (object,), {
-                    "content": full_text,
-                    "tool_calls": tool_calls,
-                })()
-                for tc in tool_calls:
-                    notify_call(stream_sink, tc)
-                # handle_tool_calls 执行工具并做第二轮 LLM 调用
-                with observe_tools(stream_sink):
-                    result = await handle_tool_calls(agent, dummy_msg)
-                if result and not callable(getattr(stream_sink, "on_tool_event", None)):
-                    stream_sink.on_content_token(result)
-                stream_sink.on_stream_end()
-                return result
-
-        return full_text
-
-    except Exception as e:
-        # Fallback to non-streaming on streaming-related errors or general failures
-        error_text = str(e).lower()
-        streaming_markers = [
-            "not supported", "not implemented", "streaming",
-            "requires an object with __aiter__",
-            "stream is not iterable", "doesn't support",
-            "not a valid stream",
-        ]
-        if any(marker in error_text for marker in streaming_markers):
-            # Provider doesn't support streaming or other streaming error, fall back
-            pass
-        else:
-            # Other error, re-raise
+        message = await _stream_chat_completion_message(agent, messages, tools, stream_sink)
+        if message.tool_calls:
+            for call in message.tool_calls:
+                notify_call(stream_sink, call)
+            with observe_tools(stream_sink):
+                result = await handle_tool_calls(agent, message)
+            if result and not callable(getattr(stream_sink, "on_tool_event", None)):
+                stream_sink.on_content_token(result)
+            stream_sink.on_stream_end()
+            return result
+        return extract_response(message)
+    except Exception as exc:
+        if not any(marker in str(exc).lower() for marker in (
+            "not supported", "not implemented", "streaming", "not a valid stream",
+        )):
             raise
-
-    # Fallback: non-streaming with simulated streaming
-    # Use existing call_llm as fallback
-    response_fallback, _ = await _call_with_persistent_retries(
-        agent,
-        lambda: agent._get_client().chat.completions.create(**kwargs),
-        "单轮",
-    )
-
-    # 降级到非流式 call_llm（有 retry + tool_calls 处理），行为一致
     return await call_llm(agent, system_prompt)
 
 

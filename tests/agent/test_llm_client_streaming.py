@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import threading
-import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from vulnclaw.agent.subagent.models import SubagentContext
+
+
+class AsyncStreamContext:
+    closed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        self.closed = True
 
 
 def test_subagent_usage_estimates_provider_omitted_fields():
@@ -235,6 +243,7 @@ class TestCallLlmStream:
         # Mock agent
         agent = MagicMock()
         mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
         agent._get_client.return_value = mock_client
 
         # Mock llm config
@@ -259,7 +268,7 @@ class TestCallLlmStream:
                 self.choices = [MockChoice(self.delta)]
 
         # Create async iterator
-        class MockAsyncStream:
+        class MockAsyncStream(AsyncStreamContext):
             def __init__(self, chunks):
                 self._chunks = chunks
 
@@ -295,6 +304,7 @@ class TestCallLlmStream:
 
         agent = MagicMock()
         mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
         agent._get_client.return_value = mock_client
 
         # Mock llm config
@@ -317,7 +327,7 @@ class TestCallLlmStream:
                 self.delta = MockDelta(content=content, reasoning=reasoning)
                 self.choices = [MockChoice(self.delta)]
 
-        class MockAsyncStream:
+        class MockAsyncStream(AsyncStreamContext):
             def __init__(self, chunks):
                 self._chunks = chunks
 
@@ -343,72 +353,45 @@ class TestCallLlmStream:
         assert "answer" in result
 
     @pytest.mark.asyncio
-    async def test_sync_stream_creation_does_not_block_event_loop(self):
-        """A slow synchronous provider handshake must not starve background tasks."""
-        from vulnclaw.agent.llm_client import call_llm_stream
-
-        agent = MagicMock()
-        mock_client = MagicMock()
-        agent._get_client.return_value = mock_client
-        agent.config.llm.provider = "openai"
-        agent.config.llm.model = "gpt-4"
-        agent.config.llm.max_tokens = None
-        agent.config.llm.temperature = None
-        agent.context.get_messages.return_value = []
-        agent._build_openai_tools.return_value = []
-
-        def slow_create(**kwargs):
-            assert kwargs["stream"] is True
-            time.sleep(0.2)
-            return iter(())
-
-        mock_client.chat.completions.create.side_effect = slow_create
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        task = asyncio.create_task(call_llm_stream(agent, "system prompt"))
-
-        await asyncio.sleep(0.02)
-
-        # If create() blocked the loop, this code could only run after the
-        # full 0.2s sleep inside slow_create. A generous threshold (< 0.19)
-        # keeps the blocking/unblocked distinction while tolerating slow CI
-        # runners where to_thread dispatch alone can cost 0.1s+.
-        assert loop.time() - started < 0.19
-        assert not task.done()
-        assert await task == ""
+    async def test_async_handshake_is_cancellable(self):
+        from vulnclaw.agent.llm_client import _create_streaming_response
+        entered = asyncio.Event()
+        async def create(**kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+        agent = SimpleNamespace(_get_client=lambda: SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+        task = asyncio.create_task(_create_streaming_response(agent, {}))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
     @pytest.mark.asyncio
-    async def test_sync_stream_next_does_not_block_event_loop(self):
-        """Waiting for the next sync stream chunk must yield to group runtimes."""
-        from vulnclaw.agent.llm_client import _ensure_async_iter
-
-        release = threading.Event()
-
-        class BlockingStream:
-            def __iter__(self):
+    async def test_stream_is_closed_when_iteration_is_cancelled(self):
+        from vulnclaw.agent.llm_client import call_llm_stream
+        entered = asyncio.Event()
+        class Stream(AsyncStreamContext):
+            def __aiter__(self):
                 return self
-
-            def __next__(self):
-                release.wait(timeout=0.2)
-                raise StopIteration
-
-        stream = _ensure_async_iter(BlockingStream())
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        timer = threading.Timer(0.2, release.set)
-        timer.start()
-        task = asyncio.create_task(anext(stream, None))
-        try:
-            await asyncio.sleep(0.02)
-            # Same rationale as test_sync_stream_creation_does_not_block_event_loop:
-            # a blocking __next__ would delay this past the 0.2s release.wait,
-            # so < 0.19 keeps the distinction while tolerating CI jitter.
-            assert loop.time() - started < 0.19
-            assert not task.done()
-            assert await task is None
-        finally:
-            release.set()
-            timer.cancel()
+            async def __anext__(self):
+                entered.set()
+                await asyncio.Event().wait()
+        stream = Stream()
+        agent = MagicMock()
+        agent.config.llm.provider = "openai"
+        agent.config.llm.model = "test"
+        agent.config.llm.max_tokens = 100
+        agent.config.llm.temperature = 0.1
+        agent.context.get_messages.return_value = []
+        agent._build_openai_tools.return_value = []
+        agent._get_client.return_value.chat.completions.create = AsyncMock(return_value=stream)
+        task = asyncio.create_task(call_llm_stream(agent, "system"))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert stream.closed
 
 
 class TestTerminalStreamSink:
@@ -471,6 +454,7 @@ class TestStreamOutputSequence:
         # Mock agent
         agent = MagicMock()
         mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
         agent._get_client.return_value = mock_client
 
         # Mock llm config
@@ -494,7 +478,7 @@ class TestStreamOutputSequence:
                 self.delta = MockDelta(content=content, reasoning=reasoning)
                 self.choices = [MockChoice(self.delta)]
 
-        class MockAsyncStream:
+        class MockAsyncStream(AsyncStreamContext):
             def __init__(self, chunks):
                 self._chunks = chunks
 
@@ -539,6 +523,7 @@ class TestStreamOutputSequence:
 
         agent = MagicMock()
         mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
         agent._get_client.return_value = mock_client
 
         agent.config.llm.provider = "openai"
@@ -560,7 +545,7 @@ class TestStreamOutputSequence:
                 self.delta = MockDelta(content=content, reasoning=reasoning)
                 self.choices = [MockChoice(self.delta)]
 
-        class MockAsyncStream:
+        class MockAsyncStream(AsyncStreamContext):
             def __init__(self, chunks):
                 self._chunks = chunks
 
@@ -604,6 +589,7 @@ class TestStreamOutputSequence:
 
         agent = MagicMock()
         mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
         agent._get_client.return_value = mock_client
 
         agent.config.llm.provider = "openai"
@@ -625,7 +611,7 @@ class TestStreamOutputSequence:
                 self.delta = MockDelta(content=content, reasoning=reasoning)
                 self.choices = [MockChoice(self.delta)]
 
-        class MockAsyncStream:
+        class MockAsyncStream(AsyncStreamContext):
             def __init__(self, chunks):
                 self._chunks = chunks
 
@@ -671,6 +657,7 @@ class TestStreamFallback:
 
         agent = MagicMock()
         mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
         agent._get_client.return_value = mock_client
 
         agent.config.llm.provider = "openai"
@@ -703,14 +690,15 @@ class TestStreamFallback:
         assert "Fallback response text" in result
 
     @pytest.mark.asyncio
-    async def test_stream_with_cancellation_returns_partial(self):
-        """测试流式中断时返回已收集的部分文本"""
+    async def test_stream_cancellation_propagates_and_closes_stream(self):
+        """Cancellation must close the stream without falling back or retrying."""
         from vulnclaw.agent.llm_client import call_llm_stream
 
         spy = SpySink()
 
         agent = MagicMock()
         mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
         agent._get_client.return_value = mock_client
 
         agent.config.llm.provider = "openai"
@@ -719,7 +707,7 @@ class TestStreamFallback:
         agent.config.llm.temperature = None
 
         # 创建一个会抛出 CancelledError 的流
-        class MockAsyncStream:
+        class MockAsyncStream(AsyncStreamContext):
             def __init__(self):
                 self.yielded = False
 
@@ -743,15 +731,10 @@ class TestStreamFallback:
         agent.context.get_messages.return_value = []
         agent._build_openai_tools.return_value = []
 
-        # Test
-        try:
-            result = await call_llm_stream(agent, "system prompt", stream_sink=spy)
-            # 如果没有抛出异常，验证返回值
-            assert result is not None
-        except asyncio.CancelledError:
-            # 如果抛出异常，这是可接受的行为
-            # 但最好能优雅处理
-            pass
+        with pytest.raises(asyncio.CancelledError):
+            await call_llm_stream(agent, "system prompt", stream_sink=spy)
+        assert mock_client.chat.completions.create.return_value.closed
+        mock_client.chat.completions.create.assert_awaited_once()
 
 
 class TestCallLlmAutoStream:
@@ -766,6 +749,7 @@ class TestCallLlmAutoStream:
 
         agent = MagicMock()
         mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
         agent._get_client.return_value = mock_client
 
         agent.config.llm.provider = "openai"
@@ -773,7 +757,7 @@ class TestCallLlmAutoStream:
         agent.config.llm.max_tokens = None
         agent.config.llm.temperature = None
 
-        # Mock 流式响应，包含工具调用（同步迭代器）
+        # Mock 流式响应，包含工具调用（异步迭代器）
         class MockDelta:
             def __init__(self, content="", reasoning="", tool_calls=None):
                 self.content = content
@@ -796,14 +780,19 @@ class TestCallLlmAutoStream:
             def __init__(self, content="", reasoning="", tool_calls=None):
                 self.choices = [MockChoice(MockDelta(content=content, reasoning=reasoning, tool_calls=tool_calls))]
 
-        class MockSyncStream:
+        class MockAsyncStream(AsyncStreamContext):
             def __init__(self, chunks):
                 self._chunks = chunks
 
-            def __iter__(self):
-                return iter(self._chunks)
+            def __aiter__(self):
+                return self
 
-        mock_stream = MockSyncStream([
+            async def __anext__(self):
+                if not self._chunks:
+                    raise StopAsyncIteration
+                return self._chunks.pop(0)
+
+        mock_stream = MockAsyncStream([
             MockChunk(content="Using "),
             MockChunk(content="test tool"),
         ])
@@ -841,6 +830,7 @@ class TestCallLlmAutoStream:
 
         agent = MagicMock()
         mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
         agent._get_client.return_value = mock_client
 
         agent.config.llm.provider = "openai"
@@ -848,7 +838,7 @@ class TestCallLlmAutoStream:
         agent.config.llm.max_tokens = None
         agent.config.llm.temperature = None
 
-        # Mock 流式响应（纯文本，同步迭代器）
+        # Mock 流式响应（纯文本，异步迭代器）
         class MockDelta:
             def __init__(self, content="", reasoning=""):
                 self.content = content
@@ -862,14 +852,19 @@ class TestCallLlmAutoStream:
             def __init__(self, content="", reasoning=""):
                 self.choices = [MockChoice(MockDelta(content=content, reasoning=reasoning))]
 
-        class MockSyncStream:
+        class MockAsyncStream(AsyncStreamContext):
             def __init__(self, chunks):
                 self._chunks = chunks
 
-            def __iter__(self):
-                return iter(self._chunks)
+            def __aiter__(self):
+                return self
 
-        mock_stream = MockSyncStream([
+            async def __anext__(self):
+                if not self._chunks:
+                    raise StopAsyncIteration
+                return self._chunks.pop(0)
+
+        mock_stream = MockAsyncStream([
             MockChunk(content="Analysis "),
             MockChunk(content="complete"),
         ])

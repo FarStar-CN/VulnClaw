@@ -23,7 +23,7 @@ class FakeAgent:
     def current_key(self):
         return self._key_pool[self._key_index]
 
-    def rotate_api_key(self) -> bool:
+    async def rotate_api_key(self) -> bool:
         if len(self._key_pool) > 1:
             self._key_index = (self._key_index + 1) % len(self._key_pool)
             return True
@@ -63,15 +63,15 @@ class TestIsKeyExhaustedError:
 
 
 class TestRotateApiKey:
-    def test_rotate_advances_index(self):
+    async def test_rotate_advances_index(self):
         agent = FakeAgent(["k1", "k2"])
         assert agent.current_key() == "k1"
-        assert agent.rotate_api_key() is True
+        assert await agent.rotate_api_key() is True
         assert agent.current_key() == "k2"
 
-    def test_rotate_single_key_is_noop(self):
+    async def test_rotate_single_key_is_noop(self):
         agent = FakeAgent(["only"])
-        assert agent.rotate_api_key() is False
+        assert await agent.rotate_api_key() is False
         assert agent.current_key() == "only"
 
 
@@ -89,7 +89,7 @@ class TestFailover:
         agent.config = SimpleNamespace(subagent=SimpleNamespace())
         attempts = 0
 
-        def request_fn():
+        async def request_fn():
             nonlocal attempts
             attempts += 1
             if attempts == 1:
@@ -152,7 +152,7 @@ class TestFailover:
     async def test_rotates_past_rate_limited_key(self):
         agent = FakeAgent(["bad", "good"])
 
-        def request_fn():
+        async def request_fn():
             if agent.current_key() == "bad":
                 raise RuntimeError("Error code: 429 - rate limit exceeded")
             return _ok_response()
@@ -164,7 +164,7 @@ class TestFailover:
     async def test_rotates_past_invalid_key_then_succeeds(self):
         agent = FakeAgent(["bad", "good"])
 
-        def request_fn():
+        async def request_fn():
             if agent.current_key() == "bad":
                 raise RuntimeError("invalid api key provided")
             return _ok_response()
@@ -176,7 +176,7 @@ class TestFailover:
     async def test_raises_when_all_keys_invalid(self):
         agent = FakeAgent(["bad1", "bad2"])
 
-        def request_fn():
+        async def request_fn():
             raise RuntimeError("invalid api key provided")
 
         with pytest.raises(RuntimeError):
@@ -185,7 +185,7 @@ class TestFailover:
     async def test_single_key_auth_error_raises_fast(self):
         agent = FakeAgent(["only"])
 
-        def request_fn():
+        async def request_fn():
             raise RuntimeError("unauthorized: invalid api key")
 
         with pytest.raises(RuntimeError):
@@ -205,9 +205,6 @@ class TestCallLlmUsesRotatedClient:
     async def test_call_llm_auto_retries_with_freshly_rotated_client(self, monkeypatch):
         from vulnclaw.agent import llm_client
 
-        class DummyLoop:
-            async def run_in_executor(self, executor, fn):
-                return fn()
 
         class DummyClient:
             def __init__(self, key):
@@ -216,7 +213,7 @@ class TestCallLlmUsesRotatedClient:
                     completions=SimpleNamespace(create=self._create)
                 )
 
-            def _create(self, **kwargs):
+            async def _create(self, **kwargs):
                 if self.key == "bad":
                     raise RuntimeError("Error code: 429 - rate limit exceeded")
                 return _full_ok_response()
@@ -255,14 +252,13 @@ class TestCallLlmUsesRotatedClient:
                 # rotation index, not whatever was current when first called.
                 return DummyClient(self._key_pool[self._key_index])
 
-            def rotate_api_key(self) -> bool:
+            async def rotate_api_key(self) -> bool:
                 if len(self._key_pool) > 1:
                     self._key_index = (self._key_index + 1) % len(self._key_pool)
                     return True
                 return False
 
         dummy = DummyAgent()
-        monkeypatch.setattr(llm_client.asyncio, "get_running_loop", lambda: DummyLoop())
 
         result = await llm_client.call_llm_auto(dummy, "sys", "round")
 
@@ -272,9 +268,6 @@ class TestCallLlmUsesRotatedClient:
     async def test_call_llm_retries_with_freshly_rotated_client(self, monkeypatch):
         from vulnclaw.agent import llm_client
 
-        class DummyLoop:
-            async def run_in_executor(self, executor, fn):
-                return fn()
 
         class DummyClient:
             def __init__(self, key):
@@ -283,7 +276,7 @@ class TestCallLlmUsesRotatedClient:
                     completions=SimpleNamespace(create=self._create)
                 )
 
-            def _create(self, **kwargs):
+            async def _create(self, **kwargs):
                 if self.key == "bad":
                     raise RuntimeError("invalid api key provided")
                 return _full_ok_response()
@@ -316,14 +309,13 @@ class TestCallLlmUsesRotatedClient:
             def _get_client(self):
                 return DummyClient(self._key_pool[self._key_index])
 
-            def rotate_api_key(self) -> bool:
+            async def rotate_api_key(self) -> bool:
                 if len(self._key_pool) > 1:
                     self._key_index = (self._key_index + 1) % len(self._key_pool)
                     return True
                 return False
 
         dummy = DummyAgent()
-        monkeypatch.setattr(llm_client.asyncio, "get_running_loop", lambda: DummyLoop())
 
         await llm_client.call_llm(dummy, "sys")
 
@@ -345,24 +337,27 @@ class TestAgentCoreRotation:
         assert agent._key_pool == ["k1", "k2"]
         assert agent._current_api_key() == "k1"
 
-    def test_pool_falls_back_to_single_key(self):
+    async def test_pool_falls_back_to_single_key(self):
         agent = self._agent(api_key="solo")
         assert agent._key_pool == ["solo"]
-        assert agent.rotate_api_key() is False
+        assert await agent.rotate_api_key() is False
 
-    def test_rotate_advances_and_invalidates_client(self, monkeypatch):
+    async def test_rotate_advances_and_invalidates_client(self, monkeypatch):
         fake_openai = ModuleType("openai")
 
         class FakeOpenAI:
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
 
-        fake_openai.OpenAI = FakeOpenAI
+            async def close(self):
+                self.closed = True
+
+        fake_openai.AsyncOpenAI = FakeOpenAI
         monkeypatch.setitem(sys.modules, "openai", fake_openai)
 
         agent = self._agent(api_keys=["k1", "k2"])
         agent._get_client()
         assert agent._client is not None
-        assert agent.rotate_api_key() is True
+        assert await agent.rotate_api_key() is True
         assert agent._client is None
         assert agent._current_api_key() == "k2"

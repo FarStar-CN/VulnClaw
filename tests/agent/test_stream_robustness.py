@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -66,15 +66,26 @@ class _Chunk:
             self.choices = [_Choice(_Delta(content=content, reasoning=reasoning, tool_calls=tool_calls))]
 
 
-class _SyncStream:
+class _AsyncStream:
     def __init__(self, chunks):
         self._chunks = chunks
 
-    def __iter__(self):
-        return iter(self._chunks)
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._chunks:
+            raise StopAsyncIteration
+        return self._chunks.pop(0)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        self.closed = True
 
 
-class _BreakingStream:
+class _BreakingStream(_AsyncStream):
     """先产出若干 chunk，再抛出异常模拟中途断开。"""
 
     def __init__(self, chunks, exc):
@@ -116,6 +127,7 @@ class SpySink:
 def _make_agent():
     agent = MagicMock()
     mock_client = MagicMock()
+    mock_client.chat.completions.create = AsyncMock()
     agent._get_client.return_value = mock_client
     agent.config.llm.provider = "openai"
     agent.config.llm.model = "gpt-4"
@@ -294,7 +306,7 @@ class TestStreamEndToEnd:
             _Chunk(tool_calls=[_TCDelta(index=0, id=None, name=None, arguments='{"host":')]),
             _Chunk(tool_calls=[_TCDelta(index=0, id=None, name=None, arguments='"a.com"}')]),
         ]
-        mock_client.chat.completions.create.return_value = _SyncStream(chunks)
+        mock_client.chat.completions.create.return_value = _AsyncStream(chunks)
 
         captured = {}
 
@@ -327,7 +339,7 @@ class TestStreamEndToEnd:
         chunks = [
             _Chunk(tool_calls=[_TCDelta(index=0, id="c1", name="scan", arguments='{"t":')]),
         ]
-        mock_client.chat.completions.create.return_value = _SyncStream(chunks)
+        mock_client.chat.completions.create.return_value = _AsyncStream(chunks)
 
         called = {"handle": False}
 
@@ -383,7 +395,7 @@ class TestStreamEndToEnd:
         spy = SpySink()
 
         chunks = [_Chunk(content="A"), _Chunk(content="B"), _Chunk(content="C")]
-        mock_client.chat.completions.create.return_value = _SyncStream(chunks)
+        mock_client.chat.completions.create.return_value = _AsyncStream(chunks)
 
         result = await call_llm_stream(agent, "sys", stream_sink=spy)
 
@@ -401,7 +413,7 @@ class TestStreamEndToEnd:
             _Chunk(reasoning="let me think"),
             _Chunk(content="final answer"),
         ]
-        mock_client.chat.completions.create.return_value = _SyncStream(chunks)
+        mock_client.chat.completions.create.return_value = _AsyncStream(chunks)
 
         result = await call_llm_stream(agent, "sys", stream_sink=spy)
 
@@ -423,7 +435,7 @@ class TestAutoStreamRobustness:
         spy = SpySink()
 
         # 第一轮：reasoning 残留（无后续 content 触发 flush）+ tool_call
-        first_round = _SyncStream([
+        first_round = _AsyncStream([
             _Chunk(reasoning="round1 reasoning"),
             _Chunk(tool_calls=[_TCDelta(index=0, id="c1", name="t", arguments="{}")]),
         ])

@@ -1,6 +1,7 @@
 """VulnClaw Report Module Tests — generator.py"""
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from tests.reporting_fixtures import assessed_snapshot
 
@@ -219,7 +220,7 @@ class TestReportGenerator:
         session = self._make_session()
         monkeypatch.setattr(
             "vulnclaw.report.generator._generate_attack_summary_from_session",
-            lambda session: "这是通过 VulnClaw 对接的 LLM 生成的攻击路径摘要。",
+            AsyncMock(side_effect=lambda session: "这是通过 VulnClaw 对接的 LLM 生成的攻击路径摘要。"),
         )
 
         output = str(tmp_path / "report_llm_summary.md")
@@ -454,7 +455,7 @@ class TestReportGenerator:
         session = self._make_session()
         monkeypatch.setattr(
             "vulnclaw.report.generator._generate_attack_summary_from_session",
-            lambda session: "来自 LLM 的持续渗透周期摘要",
+            AsyncMock(side_effect=lambda session: "来自 LLM 的持续渗透周期摘要"),
         )
 
         output = await generate_persistent_cycle_report(
@@ -518,7 +519,7 @@ class TestStandardReportI18n:
 
         monkeypatch.setattr(
             "vulnclaw.report.generator._generate_attack_summary_from_session",
-            lambda session: "",
+            AsyncMock(side_effect=lambda session: ""),
         )
         session = self._session_with_full_context()
         init_i18n(lang="en")
@@ -541,7 +542,7 @@ class TestStandardReportI18n:
 
         monkeypatch.setattr(
             "vulnclaw.report.generator._generate_attack_summary_from_session",
-            lambda session: "",
+            AsyncMock(side_effect=lambda session: ""),
         )
         session = self._session_with_full_context()
         init_i18n(lang="zh")

@@ -265,7 +265,7 @@ async def structured_call(agent: AgentContext, prompt: str, *, max_tokens: int =
     messages = [{"role": "user", "content": prompt}]
     messages = _fit_context_window(agent, messages, [], purpose="structured_call")
     kwargs = build_chat_completion_kwargs(agent, messages, max_tokens=max_tokens, temperature=0.1)
-    response = client.chat.completions.create(**kwargs)
+    response = await client.chat.completions.create(**kwargs)
     if response and response.choices:
         return response.choices[0].message.content or ""
     return ""

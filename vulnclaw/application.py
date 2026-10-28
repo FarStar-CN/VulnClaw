@@ -96,7 +96,12 @@ class ApplicationRuntime:
         if self.stopped:
             return
         self.stopped = True
-        await self.mcp_manager.astop_all()
+        try:
+            close = getattr(self.agent, "aclose", None)
+            if close is not None:
+                await close()
+        finally:
+            await self.mcp_manager.astop_all()
 
 
 RuntimeFactory = Callable[[], Any | Awaitable[Any]]
@@ -235,7 +240,7 @@ class ApplicationSession:
     async def apply_config(self, config: Any) -> None:
         from vulnclaw.agent.exec_gate import get_execution_gate
 
-        self.agent.apply_config(config)
+        await self.agent.apply_config(config)
         self.runtime.config = config
         get_execution_gate(config).apply_config(config.safety, source=self.source)
         manager = getattr(self.runtime, "mcp_manager", None)

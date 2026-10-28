@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -48,7 +49,7 @@ async def test_run_report_exports_audited_snapshot_and_all_artifacts(
     )
     prior = session.model_dump(mode="json")
     monkeypatch.setattr(generator, "SESSIONS_DIR", tmp_path / "sessions")
-    monkeypatch.setattr(generator, "_generate_attack_summary_from_session", lambda _: "Saved audit")
+    monkeypatch.setattr(generator, "_generate_attack_summary_from_session", AsyncMock(side_effect=lambda _: "Saved audit"))
 
     def unexpected(*_args, **_kwargs):
         pytest.fail("Audited run export must not load target state or verify findings")
@@ -97,7 +98,7 @@ async def test_export_returns_artifact_paths_without_report_body(
     target = "https://report-display.example.invalid"
     session = SessionState(target=target, agent_state=AgentState(origin=target, goal=marker))
     monkeypatch.setattr(
-        "vulnclaw.report.generator._generate_attack_summary_from_session", lambda _: marker,
+        "vulnclaw.report.generator._generate_attack_summary_from_session", AsyncMock(side_effect=lambda _: marker),
     )
 
     result = await export_report(

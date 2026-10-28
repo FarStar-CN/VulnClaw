@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -94,7 +95,7 @@ async def test_standard_and_cycle_report_phase_headings_follow_explicit_language
     monkeypatch.setenv("LANG", "fr_FR.UTF-8")
     monkeypatch.setattr(
         "vulnclaw.report.generator._generate_attack_summary_from_session",
-        lambda session: "",
+        AsyncMock(side_effect=lambda session: ""),
     )
     init_i18n(lang=language)
     try:

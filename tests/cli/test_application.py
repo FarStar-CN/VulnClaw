@@ -32,7 +32,7 @@ class Runtime:
         self.agent = SimpleNamespace(
             config=self.config, session_state=state,
             apply_task_constraints=lambda constraints: setattr(state, "task_constraints", constraints),
-            apply_config=lambda config: setattr(self.agent, "config", config),
+            apply_config=AsyncMock(side_effect=lambda config: setattr(self.agent, "config", config)),
         )
         self.mcp_manager = SimpleNamespace(
             wait_for_startup=AsyncMock(),

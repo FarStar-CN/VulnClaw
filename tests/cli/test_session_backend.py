@@ -624,7 +624,7 @@ class FakeConfigAgent:
         self.applied: list[Any] = []
         self.session_state = _AgentSessionState()
 
-    def apply_config(self, config: Any) -> None:
+    async def apply_config(self, config: Any) -> None:
         self.applied.append(config)
 
     def apply_task_constraints(self, constraints: Any) -> None:

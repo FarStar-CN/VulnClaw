@@ -37,10 +37,10 @@ If evidence is missing, contradictory or indirect choose low. Never invent quota
 """
 
 
-def _review_with_llm(config, finding, snapshots) -> EvidenceReview:
+async def _review_with_llm(config, finding, snapshots) -> EvidenceReview:
     from vulnclaw.agent.context_budget import prepare_context
     from vulnclaw.config.llm_utils import build_chat_completion_kwargs
-    from vulnclaw.config.settings import make_openai_client
+    from vulnclaw.config.settings import make_async_openai_client
     from vulnclaw.config.token_provider import has_llm_credentials, resolve_llm_token
 
     if not has_llm_credentials(config.llm):
@@ -57,20 +57,20 @@ def _review_with_llm(config, finding, snapshots) -> EvidenceReview:
     ]
     messages = prepare_context(SimpleNamespace(config=config, context=None), messages, [],
                                purpose="finding_evidence_review").messages
-    client = make_openai_client(resolve_llm_token(config.llm), config.llm.base_url, timeout=30)
+    client = make_async_openai_client(resolve_llm_token(config.llm), config.llm.base_url, timeout=30)
     try:
-        response = client.chat.completions.create(**build_chat_completion_kwargs(
+        response = await client.chat.completions.create(**build_chat_completion_kwargs(
             config.llm, messages, [], max_tokens=1500, temperature=0,
         ))
         content = response.choices[0].message.content or ""
         return EvidenceReview.model_validate_json(content)
     finally:
-        client.close()
+        await client.close()
 
 
 async def review_evidence(config, finding, snapshots, *, failure_reason="") -> FindingAssessment:
     try:
-        review = await asyncio.to_thread(_review_with_llm, config, finding, snapshots)
+        review = await _review_with_llm(config, finding, snapshots)
         if review.confidence == "high" and not review.observations:
             raise ValueError("High confidence requires quoted tool observations")
         ids = []

@@ -77,7 +77,7 @@ async def test_read_only_model_requests_keep_only_reads_through_stream_fallback(
     agent = AgentCore(VulnClawConfig())
     requests = []
 
-    def create(**kwargs):
+    async def create(**kwargs):
         requests.append(kwargs)
         if kwargs.get("stream"):
             raise ValueError("streaming not supported")

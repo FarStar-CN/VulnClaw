@@ -214,8 +214,7 @@ async def generate_report(
     assessed.findings = deduplicate_report_findings(assessed.findings)
     assessed._vulnerabilities.findings = assessed.findings
     if not llm_attack_summary:
-        import asyncio
-        llm_attack_summary = await asyncio.to_thread(_generate_attack_summary_from_session, assessed)
+        llm_attack_summary = await _generate_attack_summary_from_session(assessed)
     return _render_assessed_report(assessed, output, summary=llm_attack_summary,
                                    target_state_context=target_state_context)
 
@@ -245,10 +244,10 @@ def _summarize_attack_surface(session: SessionState) -> str:
 
 # ── Persistent Pentest Cycle Report ──────────────────────────────────
 
-def _generate_attack_summary_from_session(session: SessionState) -> str:
+async def _generate_attack_summary_from_session(session: SessionState) -> str:
     """Generate a readable attack-path summary using VulnClaw's configured LLM."""
     try:
-        from vulnclaw.config.settings import load_config, make_openai_client
+        from vulnclaw.config.settings import load_config, make_async_openai_client
         from vulnclaw.config.text_utils import strip_think_tags
         from vulnclaw.config.token_provider import (
             TokenResolutionError,
@@ -265,69 +264,72 @@ def _generate_attack_summary_from_session(session: SessionState) -> str:
         except TokenResolutionError:
             return ""
 
-        client = make_openai_client(
+        client = make_async_openai_client(
             api_key=token,
             base_url=config.llm.base_url,
         )
 
-        steps = session.executed_steps[-40:] if session.executed_steps else []
-        notes = session.notes[-25:] if session.notes else []
-        findings = session.findings[-20:] if session.findings else []
+        try:
+            steps = session.executed_steps[-40:] if session.executed_steps else []
+            notes = session.notes[-25:] if session.notes else []
+            findings = session.findings[-20:] if session.findings else []
 
-        steps_text = (
-            "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(steps))
-            if steps
-            else "No step records"
-        )
-        notes_text = "\n".join(f"- {note}" for note in notes) if notes else "No key observations"
-        findings_text = (
-            "\n".join(
-                f"- [{finding.assessment.outcome}] [{finding.severity}] {finding.title} | Evidence: {(finding.evidence or '')[:200]}"
-                for finding in findings
+            steps_text = (
+                "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(steps))
+                if steps
+                else "No step records"
             )
-            if findings
-            else "No findings"
-        )
-
-        summary_language = "English" if current_lang() == "en" else "Chinese"
-        prompt = (
-            f"Target: {session.target or 'unknown'}\n"
-            f"Phase: {localized_phase_name(session.phase)}\n\n"
-            f"=== Executed Steps ===\n{steps_text}\n\n"
-            f"=== Key Observations ===\n{notes_text}\n\n"
-            f"=== Findings ===\n{findings_text}\n\n"
-            f"Please write a readable {summary_language} attack-path summary. Requirements:\n"
-            "1. Clearly explain how the testing progressed, not generic filler.\n"
-            "2. Mention URLs, paths, parameters, stack, and verification actions when available.\n"
-            "3. Explicitly call out false positives or findings that failed to reproduce.\n"
-            "4. Output 2-5 short natural-language paragraphs only. No markdown headings. No thinking tags.\n"
-            "5. Do not invent steps that were never executed or promote suspected findings.\n"
-        )
-
-        # Reports do not have an AgentCore instance, but their LLM request
-        # still goes through the same budget/compaction policy as agent turns.
-        from vulnclaw.agent.context_budget import prepare_context
-
-        budget_agent = SimpleNamespace(
-            config=config,
-            context=SimpleNamespace(state=session),
-        )
-        messages = prepare_context(
-            budget_agent,
-            [{"role": "user", "content": prompt}],
-            [],
-            purpose="report_summary",
-        ).messages
-
-        response = client.chat.completions.create(
-            **_build_report_summary_llm_kwargs(
-                config,
-                messages,
+            notes_text = "\n".join(f"- {note}" for note in notes) if notes else "No key observations"
+            findings_text = (
+                "\n".join(
+                    f"- [{finding.assessment.outcome}] [{finding.severity}] {finding.title} | Evidence: {(finding.evidence or '')[:200]}"
+                    for finding in findings
+                )
+                if findings
+                else "No findings"
             )
-        )
-        if response and response.choices:
-            raw = response.choices[0].message.content or ""
-            return strip_think_tags(raw).strip()
+
+            summary_language = "English" if current_lang() == "en" else "Chinese"
+            prompt = (
+                f"Target: {session.target or 'unknown'}\n"
+                f"Phase: {localized_phase_name(session.phase)}\n\n"
+                f"=== Executed Steps ===\n{steps_text}\n\n"
+                f"=== Key Observations ===\n{notes_text}\n\n"
+                f"=== Findings ===\n{findings_text}\n\n"
+                f"Please write a readable {summary_language} attack-path summary. Requirements:\n"
+                "1. Clearly explain how the testing progressed, not generic filler.\n"
+                "2. Mention URLs, paths, parameters, stack, and verification actions when available.\n"
+                "3. Explicitly call out false positives or findings that failed to reproduce.\n"
+                "4. Output 2-5 short natural-language paragraphs only. No markdown headings. No thinking tags.\n"
+                "5. Do not invent steps that were never executed or promote suspected findings.\n"
+            )
+
+            # Reports do not have an AgentCore instance, but their LLM request
+            # still goes through the same budget/compaction policy as agent turns.
+            from vulnclaw.agent.context_budget import prepare_context
+
+            budget_agent = SimpleNamespace(
+                config=config,
+                context=SimpleNamespace(state=session),
+            )
+            messages = prepare_context(
+                budget_agent,
+                [{"role": "user", "content": prompt}],
+                [],
+                purpose="report_summary",
+            ).messages
+
+            response = await client.chat.completions.create(
+                **_build_report_summary_llm_kwargs(
+                    config,
+                    messages,
+                )
+            )
+            if response and response.choices:
+                raw = response.choices[0].message.content or ""
+                return strip_think_tags(raw).strip()
+        finally:
+            await client.close()
     except Exception as exc:
         logger.warning("LLM attack summary generation failed: %s", exc)
         return ""
@@ -353,7 +355,6 @@ async def generate_persistent_cycle_report(
     session: SessionState, cycle_num: int, output_path: Optional[str] = None,
     llm_attack_summary: str = "",
 ) -> Path:
-    import asyncio
     from uuid import uuid4
 
     from vulnclaw.findings.types import require_assessed
@@ -369,7 +370,7 @@ async def generate_persistent_cycle_report(
     assessed.findings = deduplicate_report_findings(assessed.findings)
     assessed._vulnerabilities.findings = assessed.findings
     if not llm_attack_summary:
-        llm_attack_summary = await asyncio.to_thread(_generate_attack_summary_from_session, assessed)
+        llm_attack_summary = await _generate_attack_summary_from_session(assessed)
     return _render_assessed_report(assessed, output, summary=llm_attack_summary, cycle_num=cycle_num)
 
 

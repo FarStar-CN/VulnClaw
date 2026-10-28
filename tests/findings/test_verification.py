@@ -41,7 +41,7 @@ def review(confidence='high'):
 async def test_default_disabled_poc_still_reviews_and_cannot_promote(candidate, monkeypatch):
     config, state = candidate
     calls = []
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *args: calls.append(args) or review())
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *args: calls.append(args) or review()))
     poc = AsyncMock()
     monkeypatch.setattr('vulnclaw.findings.verification.execute_plan', poc)
     state.findings[0].mark_verified('Previous conclusion')
@@ -62,7 +62,7 @@ async def test_default_disabled_poc_still_reviews_and_cannot_promote(candidate, 
 async def test_review_invalid_references_are_incomplete_low(candidate, monkeypatch, invalid, i18n_language):
     config, state = candidate
     i18n_language("zh")  # pin the incomplete marker regardless of auto-detection
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *args: invalid)
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *args: invalid))
     view = await verify_findings(state, config=config)
     result = view.findings[0].assessment
     assert result.outcome == 'suspected_low' and not result.complete
@@ -73,7 +73,7 @@ async def test_snapshot_tampering_never_reaches_review(candidate, monkeypatch):
     config, state = candidate
     ref = state.findings[0].evidence_snapshots[0]
     (Path(ref.root) / ref.path).write_text('{}')
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *args: pytest.fail('Tampered snapshots'))
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *args: pytest.fail('Tampered snapshots')))
     view = await verify_findings(state, config=config)
     assert not view.findings[0].assessment.complete
     assert 'integrity' in view.findings[0].assessment.reason
@@ -81,7 +81,7 @@ async def test_snapshot_tampering_never_reaches_review(candidate, monkeypatch):
 
 async def test_poc_unavailable_falls_back_to_review(candidate, monkeypatch):
     config, state = candidate
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *args: review('low'))
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *args: review('low')))
     view = await verify_findings(state, config=config, poc_verify=True)
     result = view.findings[0].assessment
     assert result.method == 'evidence_review' and result.outcome == 'suspected_low'
@@ -120,7 +120,7 @@ async def test_cancel_stops_generation_without_fallback(candidate, monkeypatch):
     config, state = candidate
     monkeypatch.setattr('vulnclaw.findings.verification.build_plan', lambda *args: object())
     monkeypatch.setattr('vulnclaw.findings.verification.execute_plan', AsyncMock(side_effect=asyncio.CancelledError()))
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *args: pytest.fail('cancelled'))
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *args: pytest.fail('cancelled')))
     with pytest.raises(asyncio.CancelledError):
         await verify_findings(state, config=config, poc_verify=True)
     assert state.findings[0].verification_history == []
@@ -144,7 +144,7 @@ async def test_legacy_state_is_only_read_and_never_rewritten(tmp_path):
 
 async def test_report_and_machine_outputs_use_current_review(candidate, monkeypatch):
     config, state = candidate
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *args: review())
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *args: review()))
     view = await verify_findings(state, config=config)
     path = await generate_report(view, str(config.session.output_dir / 'report.md'), llm_attack_summary='A suspected finding requires reproduction')
     text = path.read_text(encoding='utf-8')
@@ -169,7 +169,7 @@ async def test_unchanged_results_reuse_but_explicit_audits_repeat(candidate, mon
     config, state = candidate
     calls = []
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm',
-                        lambda *_: calls.append(1) or review())
+                        AsyncMock(side_effect=lambda *_: calls.append(1) or review()))
     first = await verify_findings(state, config=config)
     await verify_findings(state, config=config)
     assert len(calls) == 1 and len(state.findings[0].verification_history) == 1
@@ -183,7 +183,7 @@ async def test_changed_inputs_and_poc_upgrade_trigger_audit(candidate, monkeypat
     config, state = candidate
     calls = []
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm',
-                        lambda *_: calls.append(1) or review())
+                        AsyncMock(side_effect=lambda *_: calls.append(1) or review()))
     await verify_findings(state, config=config)
     state.findings[0].description = 'A new observation needs assessment'
     await verify_findings(state, config=config)
@@ -197,7 +197,7 @@ async def test_changed_inputs_and_poc_upgrade_trigger_audit(candidate, monkeypat
 
 async def test_cached_assessment_rechecks_evidence_integrity(candidate, monkeypatch):
     config, state = candidate
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *_: review())
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: review()))
     await verify_findings(state, config=config)
     ref = state.findings[0].evidence_snapshots[0]
     (Path(ref.root) / ref.path).write_text('{}')
@@ -224,7 +224,7 @@ async def test_saved_poc_reuse_requires_the_claimed_request(candidate, monkeypat
     state = SessionState.load(state.save(config.session.output_dir / 'cached-poc.json'))
     calls = []
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm',
-                        lambda *_: calls.append(1) or review())
+                        AsyncMock(side_effect=lambda *_: calls.append(1) or review()))
 
     view = await verify_findings(state, config=config)
 
@@ -258,7 +258,7 @@ async def test_renderers_consume_snapshot_without_auditing_or_mutating(candidate
     from vulnclaw.report.generator import generate_persistent_cycle_report
 
     config, state = candidate
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *_: review())
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: review()))
     view = await verify_findings(state, config=config)
     prior = view.model_dump(mode='json')
     monkeypatch.setattr('vulnclaw.findings.verification.assess_finding',
@@ -292,7 +292,7 @@ async def test_file_audit_caches_without_rewriting_source(candidate, monkeypatch
     original = source.read_bytes()
     calls = []
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm',
-                        lambda *_: calls.append(1) or review())
+                        AsyncMock(side_effect=lambda *_: calls.append(1) or review()))
     _view, path = await verify_session_file(str(source), config=config, reuse=True)
     await verify_session_file(str(source), config=config, reuse=True)
     assert len(calls) == 1 and source.read_bytes() == original
@@ -310,7 +310,7 @@ async def test_task_completion_audits_and_persists_before_summary(candidate, mon
     config.session.runs_dir = config.session.output_dir / 'runs'
     agent = SimpleNamespace(config=config, context=SimpleNamespace(state=state),
                             session_state=state, runtime=None)
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *_: review())
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: review()))
     result = await run_agent_task(agent=agent, command='run', target=state.target,
                                   resume=False, runner=AsyncMock())
     raw = json.loads(
@@ -333,7 +333,7 @@ async def test_persistent_cycle_audits_before_summary_and_callback(candidate, mo
     agent.context.state = state
     order = []
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm',
-                        lambda *_: order.append('audit') or review())
+                        AsyncMock(side_effect=lambda *_: order.append('audit') or review()))
     monkeypatch.setattr(agent, 'auto_pentest', AsyncMock(return_value=[AgentResult(should_continue=True)]))
 
     async def summary():
@@ -366,7 +366,7 @@ async def test_verify_cli_and_web_endpoint_delegate_to_independent_audits(candid
     from vulnclaw.web.app import create_app
 
     config, state = candidate
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *_: review())
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: review()))
     view = await verify_findings(state, config=config)
     calls = []
 
@@ -422,7 +422,7 @@ async def test_target_export_reuses_audit_without_new_checkpoint(candidate, monk
     source = store.save_target_state(state.target, state, command='initial')
     calls = []
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm',
-                        lambda *_: calls.append(1) or review())
+                        AsyncMock(side_effect=lambda *_: calls.append(1) or review()))
     await verify_target(state.target, config=config, reuse=True)
     current = source.read_bytes()
     _view, path, _raw = await verify_target(state.target, config=config, reuse=True)
@@ -513,7 +513,7 @@ async def test_failed_poc_is_incomplete_and_retried(candidate, monkeypatch):
     execute = AsyncMock(side_effect=TimeoutError('controlled timeout'))
     monkeypatch.setattr('vulnclaw.findings.verification.build_plan', lambda *_: object())
     monkeypatch.setattr('vulnclaw.findings.verification.execute_plan', execute)
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *_: review())
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: review()))
     first = await verify_findings(state, config=config, poc_verify=True)
     await verify_findings(state, config=config, poc_verify=True)
     result = first.findings[0].assessment
@@ -547,7 +547,7 @@ async def test_legacy_target_queries_use_current_assessment(candidate, monkeypat
     config, state = candidate
     monkeypatch.setattr(store, 'TARGETS_DIR', config.session.output_dir / 'targets')
     monkeypatch.setattr(targets, 'TARGETS_DIR', store.TARGETS_DIR)
-    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', lambda *_: review())
+    monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: review()))
     if not structured:
         state.findings[0].submission_id = ''
     await verify_findings(state, config=config)

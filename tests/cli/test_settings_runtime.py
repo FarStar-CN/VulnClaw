@@ -1,7 +1,7 @@
 """Settings changes reach the live runtime and its cached consumers."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -52,8 +52,8 @@ def session(monkeypatch, tmp_path):
 async def test_saved_model_settings_recreate_client_and_request_parameters(session, monkeypatch):
     client = SimpleNamespace(api_key="synthetic-key")
     create = Mock(return_value=client)
-    monkeypatch.setattr("vulnclaw.agent.core.make_openai_client", create)
-    session.agent._client = object()
+    monkeypatch.setattr("vulnclaw.agent.core.make_async_openai_client", create)
+    session.agent._client = SimpleNamespace(close=AsyncMock())
     await execute_management(session, "config.update", {"changes": {
         "llm.provider": "custom", "llm.base_url": "https://fixture.invalid/v1",
         "llm.model": "replacement", "llm.api_keys": ["synthetic-key"],

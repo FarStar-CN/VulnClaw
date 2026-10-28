@@ -72,7 +72,7 @@ class AgentContext(Protocol):
         """Build a fresh isolated child agent."""
         ...
 
-    def rotate_api_key(self) -> bool:
+    async def rotate_api_key(self) -> bool:
         """Advance to the next key in the failover pool; ``False`` if none."""
         ...
 

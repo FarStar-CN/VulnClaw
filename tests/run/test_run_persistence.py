@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -548,7 +549,7 @@ async def test_merge_save_keeps_appended_finding_evidence_for_restored_assessmen
             observations=[{"evidence_id": first, "quote": "first weak observation"}],
         )
 
-    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", review)
+    monkeypatch.setattr("vulnclaw.findings.verification._review_with_llm", AsyncMock(side_effect=review))
     view = await verify_findings(restored, config=config, poc_verify=False)
     assert set(captured) == {ref.evidence_id for ref in restored.findings[0].evidence_snapshots}
     assert len(captured) == 2

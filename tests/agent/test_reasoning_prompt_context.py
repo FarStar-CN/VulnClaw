@@ -129,7 +129,7 @@ async def test_generate_attack_summary_requests_an_english_narrative(i18n_langua
         class chat:
             class completions:
                 @staticmethod
-                def create(**kwargs):
+                async def create(**kwargs):
                     captured.update(kwargs)
                     message = SimpleNamespace(content="English summary")
                     return SimpleNamespace(choices=[SimpleNamespace(message=message)])

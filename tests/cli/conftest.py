@@ -34,7 +34,7 @@ def headless_runtime(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "vulnclaw.report.generator._generate_attack_summary_from_session",
-        lambda _state: "synthetic summary",
+        AsyncMock(side_effect=lambda _state: "synthetic summary"),
     )
     agent = AgentCore(config)
     agent.solve = AsyncMock(return_value=SimpleNamespace(completed=False, steps=1))

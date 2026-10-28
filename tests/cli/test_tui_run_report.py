@@ -32,7 +32,7 @@ def runtime(tmp_path, monkeypatch):
     config.session.runs_dir = tmp_path / "runs"
     monkeypatch.setattr(store, "TARGETS_DIR", tmp_path / "targets")
     monkeypatch.setattr("vulnclaw.report.generator._generate_attack_summary_from_session",
-                        lambda _: "Saved conclusions")
+                        AsyncMock(side_effect=lambda _: "Saved conclusions"))
     state = SessionState(target="https://lab.test")
     runtime = FakeRuntime()
     runtime.config = config

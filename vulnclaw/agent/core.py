@@ -48,7 +48,7 @@ from vulnclaw.agent.subagent.models import SubagentContext
 from vulnclaw.agent.system_prompt import build_dynamic_system_prompt
 from vulnclaw.agent.tool_call_manager import safe_parse_tool_args
 from vulnclaw.config.schema import VulnClawConfig, resolve_engine
-from vulnclaw.config.settings import make_openai_client
+from vulnclaw.config.settings import make_async_openai_client
 from vulnclaw.i18n import _
 from vulnclaw.kb.experience import ExperienceStore
 from vulnclaw.target_state.store import save_target_state
@@ -139,15 +139,15 @@ class AgentCore:
         self.context.reset()
         self._reset_runtime_state()
 
-    def apply_config(self, config: VulnClawConfig) -> None:
+    async def apply_config(self, config: VulnClawConfig) -> None:
         """Adopt an updated config (e.g. after the in-REPL config editor).
 
         The cached OpenAI client is bound to a specific ``base_url``, so drop it
         and rebuild the failover key pool; the next call re-creates the client
         with the new provider / model / key.
         """
+        await self.aclose()
         self.config = config
-        self._client = None
         self._key_pool = config.llm.key_pool()
         self._key_index = 0
         context = getattr(self, "context", None)
@@ -289,7 +289,13 @@ class AgentCore:
             return self._key_pool[self._key_index]
         return self.config.llm.api_key
 
-    def rotate_api_key(self) -> bool:
+    async def aclose(self) -> None:
+        """Release this agent's HTTP client before replacing or stopping it."""
+        client, self._client = self._client, None
+        if client is not None:
+            await client.close()
+
+    async def rotate_api_key(self) -> bool:
         """Advance to the next key in the failover pool.
 
         Invalidates the cached client so the next call rebuilds with the new
@@ -297,8 +303,8 @@ class AgentCore:
         """
         if len(self._key_pool) <= 1:
             return False
+        await self.aclose()
         self._key_index = (self._key_index + 1) % len(self._key_pool)
-        self._client = None
         return True
 
     def _get_client(self):
@@ -327,7 +333,7 @@ class AgentCore:
             proxy_base = ensure_proxy_running()
             if self._client is None:
                 try:
-                    self._client = make_openai_client(
+                    self._client = make_async_openai_client(
                         api_key="local-proxy", base_url=proxy_base
                     )
                 except ImportError:
@@ -343,7 +349,7 @@ class AgentCore:
             token = resolve_llm_token(llm)
         if self._client is None:
             try:
-                self._client = make_openai_client(
+                self._client = make_async_openai_client(
                     api_key=token or "placeholder",
                     base_url=llm.base_url,
                 )

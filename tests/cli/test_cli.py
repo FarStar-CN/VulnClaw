@@ -301,16 +301,19 @@ def test_feedback_survives_unwritable_run_dir(monkeypatch, tmp_path):
     assert "Could not save feedback" in str(result.message)
 
 
-def test_agent_apply_config_resets_client():
+async def test_agent_apply_config_resets_client():
     from vulnclaw.agent.core import AgentCore
     from vulnclaw.config.settings import load_config
 
     config = load_config()
     agent = AgentCore.__new__(AgentCore)
-    agent._client = object()
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    agent._client = SimpleNamespace(close=AsyncMock())
     agent._key_index = 3
 
-    agent.apply_config(config)
+    await agent.apply_config(config)
 
     assert agent.config is config
     assert agent._client is None
