@@ -39,10 +39,6 @@ def invoke(args, **kwargs):
         ["run"],
         ["solve"],
         ["ask"],
-        ["config"],
-        ["plugins"],
-        ["kb"],
-        ["code"],
         ["login"],
         ["feedback", "run"],
         ["verify"],
@@ -150,11 +146,12 @@ def test_json_options_and_report_destination_are_preserved(isolated, monkeypatch
     assert result.exit_code == 0
 
 
-def test_no_args_prints_help_without_starting_a_terminal():
+def test_no_args_discovers_commands_without_starting_a_terminal():
     result = CliRunner().invoke(app, [])
     assert result.exit_code == 0
-    assert "Usage:" in result.stdout
-    assert "repl" in result.stdout
+    document = json.loads(result.stdout)
+    assert document["result"]["kind"] == "command_group"
+    assert "repl" in {item["name"] for item in document["result"]["operations"]}
 
 
 def test_configuration_is_masked_and_invalid_change_is_not_saved(isolated, tmp_path):
@@ -185,7 +182,8 @@ def test_login_requires_explicit_credentials_without_browser(isolated, monkeypat
 
 
 @pytest.mark.parametrize("format", ["text", "json", "sarif", "markdown"])
-def test_code_artifact_format_is_separate_from_jsonl_envelope(format, isolated, tmp_path):
+@pytest.mark.parametrize("flags", [["--output-format", "jsonl"], ["--stream"]])
+def test_code_artifact_format_is_separate_from_jsonl_envelope(format, flags, isolated, tmp_path):
     source = tmp_path / "sample.py"
     source.write_text('eval(input("synthetic"))\n')
     artifact = tmp_path / f"result.{format}"
@@ -198,13 +196,14 @@ def test_code_artifact_format_is_separate_from_jsonl_envelope(format, isolated, 
             format,
             "--output",
             str(artifact),
-            "--output-format",
-            "jsonl",
+            *flags,
             "--fail-on",
             "any",
         ]
     )
     assert result.exit_code == 3, document
+    assert len(result.stdout.splitlines()) > 1
+    assert json.loads(result.stdout.splitlines()[0])["type"] == "status"
     assert document["findings"]["verified"] == 0
     assert document["findings"]["candidates"] > 0
     assert Path(document["artifacts"][0]["path"]) == artifact

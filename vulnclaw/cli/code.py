@@ -29,6 +29,7 @@ def code_scan(
     output_format: MachineFormat = typer.Option("json", "--output-format"),
     fail_on: Literal["verified", "any", "never"] = typer.Option("verified", "--fail-on"),
 ):
+    """Scan local source files and export a report artifact."""
     def operation():
         from vulnclaw.agent.exec_gate import get_execution_gate
         from vulnclaw.codescan.report import format_result

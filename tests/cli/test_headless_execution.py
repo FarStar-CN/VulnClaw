@@ -72,6 +72,9 @@ async def test_required_interaction_terminates_execution_and_preserves_policy(mo
     assert get_execution_gate().mode == "ask"
     assert get_execution_gate().channel is None
     assert not get_execution_gate()._pending_by_hash
+    assert result["result"]["interaction"]
+    action = result["result"]["feedback"]["next_actions"][0]
+    assert action["describe_argv"][-1] == ("approval_required" if interaction == "approval" else "waiting_for_input")
 
 
 async def test_cancellation_cleans_up_before_returning_a_machine_result():
@@ -101,3 +104,31 @@ async def test_cancellation_cleans_up_before_returning_a_machine_result():
     assert partial[0]["text"] == "```python\npartial"
     assert partial[-1]["status"] == "cancelled"
     assert messages[-1]["type"] == "command_result"
+
+
+@pytest.mark.parametrize(
+    "text,operation,result_key",
+    [
+        ("/help scope", "session.help", "commands"),
+        ("/permission", "session.permission.set", "mode"),
+        ("/scope --allowed-ports 443", "session.scope.update", "scope"),
+        ("/config", "config.document", "config"),
+    ],
+)
+@pytest.mark.parametrize("format", ["jsonl", "json"])
+async def test_headless_control_input_returns_business_result(text, operation, result_key, format):
+    """JSON must retain the result that the interactive backend sends to its client."""
+    runtime = FakeRuntime()
+    stream = io.StringIO()
+    executor = HeadlessExecutor(CommandOutput(format, stream), runtime_factory=lambda: runtime)
+    result = await executor.execute(InputRequest(text=text))
+    assert runtime.stop_calls == 1
+    assert result["status"] == "completed"
+    messages = [json.loads(line) for line in stream.getvalue().splitlines()]
+    if format == "jsonl":
+        control = next(message for message in messages if message["type"] == "control_result")
+        assert control["operation"] == operation
+        assert result_key in control["result"]
+        assert result["result"] == control["result"]
+    else:
+        assert result_key in result["result"]

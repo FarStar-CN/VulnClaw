@@ -27,9 +27,12 @@ def read_input_json(path: str) -> dict[str, Any]:
         )
         value = json.loads(text)
     except (OSError, ValueError) as exc:
-        raise CommandError("invalid_input_json", f"Could not read input JSON: {exc}") from exc
+        location = {"line": exc.lineno, "column": exc.colno} if isinstance(exc, json.JSONDecodeError) else None
+        raise CommandError("invalid_input_json", f"Could not read input JSON: {exc}",
+                           path=["input_json"], constraints=location) from exc
     if not isinstance(value, dict):
-        raise CommandError("invalid_input_json", "input JSON must be an object")
+        raise CommandError("invalid_input_json", "input JSON must be an object",
+                           path=["input_json"], constraints={"type": "object"})
     return value
 
 
@@ -48,10 +51,12 @@ def merge_task_fields(
     values = ctx.params
     payload = dict(payload)
     if "command" in payload and payload["command"] != expected:
-        raise CommandError("conflicting_input", f"input command must be {expected}")
+        raise CommandError("conflicting_input", f"input command must be {expected}",
+                           path=["command"], constraints={"choices": [expected]})
     payload.setdefault("command", expected)
     if not isinstance(payload.get("options", {}), dict):
-        raise CommandError("invalid_input_json", "task options must be an object")
+        raise CommandError("invalid_input_json", "task options must be an object", path=["options"],
+                           constraints={"type": "object"})
     options = dict(payload.get("options") or {})
     payload["options"] = options
     for name, value in values.items():
@@ -70,7 +75,9 @@ def merge_task_fields(
             continue
         if field in destination:
             raise CommandError(
-                "conflicting_input", f"{field} was supplied in both CLI arguments and input JSON"
+                "conflicting_input", f"{field} was supplied in both CLI arguments and input JSON",
+                path=["options", field] if destination is options else [field],
+                constraints={"sources": ["cli", "input_json"]},
             )
         destination[field] = value
     return payload
@@ -89,6 +96,7 @@ def task_from_context(
             "requires_input",
             "Provide a target argument or input JSON containing target.",
             status="requires_input",
+            path=["target"], constraints={"sources": ["argument:target", "input_json:target"]},
         )
     if entry == "solve":
         from vulnclaw.i18n import _
@@ -103,12 +111,15 @@ def task_from_context(
     scan_mode = values.get("scan_mode", headless.DEFAULT_SCAN_MODE)
     if scan_mode not in headless.SCAN_MODES:
         raise CommandError(
-            "invalid_arguments", f"--scan-mode must be one of: {', '.join(headless.SCAN_MODES)}"
+            "invalid_arguments", f"--scan-mode must be one of: {', '.join(headless.SCAN_MODES)}",
+            path=["scan_mode"], constraints={"choices": list(headless.SCAN_MODES)},
         )
     if values.get("scope_mode", headless.DEFAULT_SCOPE_MODE) not in headless.SCOPE_MODES:
-        raise CommandError("invalid_arguments", "--scope-mode must be auto or full")
+        raise CommandError("invalid_arguments", "--scope-mode must be auto or full",
+                           path=["scope_mode"], constraints={"choices": list(headless.SCOPE_MODES)})
     if values.get("fail_on", headless.DEFAULT_FAIL_ON) not in headless.FAIL_ON_MODES:
-        raise CommandError("invalid_arguments", "--fail-on must be verified, any or never")
+        raise CommandError("invalid_arguments", "--fail-on must be verified, any or never",
+                           path=["fail_on"], constraints={"choices": list(headless.FAIL_ON_MODES)})
     profile = headless.resolve_scan_profile(
         config,
         scan_mode,

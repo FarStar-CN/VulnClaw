@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -216,6 +217,34 @@ def _optional_identifier(value: Any) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def request_schema(kind: str) -> dict[str, Any]:
+    """Return a standalone request schema with only its reachable definitions."""
+    if kind not in CLIENT_MESSAGE_TYPES:
+        raise ValueError(f"unknown client message type: {kind}")
+    parts = kind.split("_")
+    name = parts[0] + "".join(part.title() for part in parts[1:]) + "Request"
+    source = _protocol_validator().schema
+    definitions: dict[str, Any] = {}
+
+    def collect(node: Any) -> None:
+        if isinstance(node, dict):
+            ref = node.get("$ref", "")
+            if ref.startswith("#/$defs/"):
+                key = ref.removeprefix("#/$defs/")
+                if key not in definitions:
+                    definitions[key] = deepcopy(source["$defs"][key])
+                    collect(definitions[key])
+            for value in node.values():
+                collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    root = {"$ref": f"#/$defs/{name}"}
+    collect(root)
+    return {"$schema": source["$schema"], **root, "$defs": definitions}
 
 
 @lru_cache(maxsize=1)

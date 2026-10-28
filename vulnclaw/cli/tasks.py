@@ -29,7 +29,8 @@ def _network(ctx: typer.Context):
     for name in NetworkScanRequest.model_fields.keys() - {"task"}:
         if explicit(ctx, name) and name in raw:
             raise CommandError(
-                "conflicting_input", f"{name} was supplied in both CLI and input JSON"
+                "conflicting_input", f"{name} was supplied in both CLI and input JSON", path=[name],
+                constraints={"sources": ["cli", "input_json"]},
             )
         raw.setdefault(name, values[name])
     task = merge_task_fields(ctx, raw.get("task") or {}, "run", skip=frozenset({"max_rounds"}))
@@ -45,6 +46,7 @@ def _network(ctx: typer.Context):
             "requires_input",
             "Configure LLM credentials before executing this task.",
             status="requires_input",
+            path=["llm", "credentials"],
         )
     executor = HeadlessExecutor(current_output())
 
@@ -70,13 +72,16 @@ def ask(
             raise CommandError("invalid_format", "--format must be json or jsonl")
         payload = read_input_json(input_json) if input_json else {}
         if text is not None and "text" in payload:
-            raise CommandError("conflicting_input", "text was supplied in both CLI and input JSON")
+            raise CommandError("conflicting_input", "text was supplied in both CLI and input JSON",
+                               path=["text"], constraints={"sources": ["cli", "input_json"]})
         if set(payload) - {"text"}:
-            raise CommandError("invalid_input_json", "ask input JSON accepts text only")
+            raise CommandError("invalid_input_json", "ask input JSON accepts text only",
+                               path=["input_json"], constraints={"fields": ["text"]})
         value = text if text is not None else payload.get("text")
         if not isinstance(value, str) or not value.strip():
             raise CommandError(
-                "requires_input", "Provide a natural-language input.", status="requires_input"
+                "requires_input", "Provide a natural-language input.", status="requires_input",
+                path=["text"], constraints={"sources": ["argument:text", "input_json:text"]},
             )
         request = InputRequest(text=value)
         config = load_config()
@@ -93,6 +98,7 @@ def ask(
                     "requires_input",
                     "Configure LLM credentials before executing this input.",
                     status="requires_input",
+                    path=["llm", "credentials"],
                 )
         return run_async(HeadlessExecutor(current_output()).execute(request))
 
@@ -112,6 +118,7 @@ def _execute(ctx: typer.Context):
             "requires_input",
             "Configure LLM credentials before executing this task.",
             status="requires_input",
+            path=["llm", "credentials"],
         )
     executor = HeadlessExecutor(current_output())
     direct = None

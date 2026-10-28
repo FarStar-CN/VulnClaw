@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -23,13 +24,11 @@ def command_group(help: str) -> typer.Typer:
     group = typer.Typer(help=help, no_args_is_help=False)
 
     @group.callback(invoke_without_command=True)
-    def root(ctx: typer.Context):
+    def root(ctx: typer.Context, output_format: MachineFormat = typer.Option("json", "--format")):
         if ctx.invoked_subcommand is None:
-            raise CommandError(
-                "requires_input",
-                "Choose an operation; use --help for commands.",
-                status="requires_input",
-            )
+            from vulnclaw.cli.discovery import command_path, group_document
+
+            perform(lambda: group_document(ctx.command, command_path(ctx)))
 
     return group
 
@@ -42,21 +41,36 @@ target_state_app = command_group("Manage saved target history")
 
 
 def _config_value(key: str):
-    value = masked_config(load_config().model_dump(mode="json"))
+    return _config_lookup(masked_config(load_config().model_dump(mode="json")), key)
+
+
+def _config_lookup(document, key):
+    value = document
     for part in key.split("."):
         if not isinstance(value, dict) or part not in value:
-            raise CommandError("invalid_config_key", f"Unknown configuration key: {key}")
+            def paths(node, prefix=""):
+                for name, child in node.items():
+                    path = f"{prefix}.{name}" if prefix else name
+                    yield path
+                    if isinstance(child, dict):
+                        yield from paths(child, path)
+
+            raise CommandError("invalid_config_key", f"Unknown configuration key: {key}",
+                               path=key.split("."),
+                               constraints={"choices": get_close_matches(key, list(paths(document)), n=3)})
         value = value[part]
     return value
 
 
 @config_app.command("get")
 def config_get(key: str, output_format: MachineFormat = typer.Option("json", "--format")):
+    """Read one effective configuration value with credentials masked."""
     perform(lambda: {"key": key, "value": _config_value(key)})
 
 
 @config_app.command("list")
 def config_list(output_format: MachineFormat = typer.Option("json", "--format")):
+    """Read the full effective configuration with credentials masked."""
     perform(lambda: {"config": masked_config(load_config().model_dump(mode="json"))})
 
 
@@ -64,11 +78,10 @@ def config_list(output_format: MachineFormat = typer.Option("json", "--format"))
 def config_set(
     key: str, value: str, output_format: MachineFormat = typer.Option("json", "--format")
 ):
+    """Save a validated configuration change and return its masked value."""
     def operation():
         config = load_config()
-        existing = config.model_dump(mode="json")
-        for part in key.split("."):
-            existing = existing[part]
+        existing = _config_lookup(config.model_dump(mode="json"), key)
         if isinstance(existing, list):
             parsed = (
                 json.loads(value)
@@ -83,7 +96,8 @@ def config_set(
             except ValueError:
                 parsed = value
         updated = update_config({key: parsed}, config=config)
-        return {"key": key, "config": masked_config(updated.model_dump(mode="json"))}
+        return {"key": key, "value": _config_lookup(masked_config(updated.model_dump(mode="json")), key),
+                "saved": True}
 
     perform(operation)
 
@@ -94,6 +108,7 @@ def config_provider(
     list_all: bool = typer.Option(False, "--list", "-l"),
     output_format: MachineFormat = typer.Option("json", "--format"),
 ):
+    """List provider presets or select a provider."""
     def operation():
         from vulnclaw.config.settings import apply_provider_preset, list_providers
 
@@ -144,6 +159,7 @@ def login(
                 "requires_input",
                 "Provide --token-file containing an OAuth token bundle; headless login does not start browser consent.",
                 status="requires_input",
+                path=["token_file"],
             )
         bundle = read_input_json(token_file)
         if not any(
@@ -208,6 +224,7 @@ def doctor(
                     "requires_input",
                     "Configure credentials before probing the LLM.",
                     status="requires_input",
+                    path=["llm", "credentials"],
                 )
             from vulnclaw.config.llm_probe import probe_llm_endpoint
 
@@ -219,6 +236,7 @@ def doctor(
 
 @kb_app.command("update")
 def kb_update(output_format: MachineFormat = typer.Option("json", "--format")):
+    """Refresh bundled knowledge-base entries."""
     def operation():
         from vulnclaw.kb.store import KnowledgeStore
         from vulnclaw.kb.updater import seed_knowledge_base
@@ -234,6 +252,7 @@ def kb_update(output_format: MachineFormat = typer.Option("json", "--format")):
 
 @kb_app.command("status")
 def kb_status(output_format: MachineFormat = typer.Option("json", "--format")):
+    """Inspect knowledge-base readiness and entry counts."""
     def operation():
         from vulnclaw.kb.retriever import KnowledgeRetriever
         from vulnclaw.kb.store import KnowledgeStore
@@ -258,6 +277,7 @@ def _experience(result):
 @experience_app.command("list")
 @experience_app.command("review")
 def experience_list(output_format: MachineFormat = typer.Option("json", "--format")):
+    """List lessons pending review."""
     perform(lambda: _experience(experience_service.list_lessons()))
 
 
@@ -265,6 +285,7 @@ def experience_list(output_format: MachineFormat = typer.Option("json", "--forma
 def experience_show(
     lesson_id: str, output_format: MachineFormat = typer.Option("json", "--format")
 ):
+    """Read a saved lesson and its provenance."""
     perform(lambda: _experience(experience_service.get_lesson(lesson_id)))
 
 
@@ -272,6 +293,7 @@ def experience_show(
 def experience_approve(
     lesson_id: str, output_format: MachineFormat = typer.Option("json", "--format")
 ):
+    """Approve a pending lesson for reuse."""
     perform(lambda: _experience(experience_service.set_lesson_status(lesson_id, "approved")))
 
 
@@ -279,6 +301,7 @@ def experience_approve(
 def experience_reject(
     lesson_id: str, output_format: MachineFormat = typer.Option("json", "--format")
 ):
+    """Reject a pending lesson."""
     perform(lambda: _experience(experience_service.set_lesson_status(lesson_id, "rejected")))
 
 
@@ -289,6 +312,7 @@ def experience_edit(
     lesson_text: Optional[str] = typer.Option(None, "--lesson"),
     output_format: MachineFormat = typer.Option("json", "--format"),
 ):
+    """Edit the context and content of a saved lesson."""
     perform(
         lambda: _experience(
             experience_service.edit_lesson(lesson_id, context=context, lesson=lesson_text)
@@ -330,6 +354,7 @@ def plugins_list(
     tag: Optional[str] = typer.Option(None, "--tag"),
     output_format: MachineFormat = typer.Option("json", "--format"),
 ):
+    """List detection plugins with optional stage and tag filters."""
     def operation():
         from vulnclaw.plugins import registry
 
@@ -348,6 +373,7 @@ def plugins_list(
 
 @plugins_app.command("info")
 def plugins_info(plugin_id: str, output_format: MachineFormat = typer.Option("json", "--format")):
+    """Read metadata and options for one detection plugin."""
     def operation():
         from vulnclaw.plugins import registry
 
@@ -373,6 +399,7 @@ def plugins_run(
     ),
     output_format: MachineFormat = typer.Option("json", "--format"),
 ):
+    """Execute one detection plugin with explicit inputs."""
     def operation():
         from vulnclaw.plugins import PluginContext, PluginStage, create_builtin_runtime
 
@@ -418,6 +445,7 @@ def _require_state(value, target):
 
 @target_state_app.command("list")
 def target_state_list(target: str, output_format: MachineFormat = typer.Option("json", "--format")):
+    """List saved snapshots for one target."""
     from vulnclaw.target_state.store import list_target_snapshots
 
     perform(lambda: {"snapshots": _require_state(list_target_snapshots(target), target)})
@@ -429,6 +457,7 @@ def target_state_preview(
     snapshot_id: Optional[str] = typer.Option(None, "--snapshot"),
     output_format: MachineFormat = typer.Option("json", "--format"),
 ):
+    """Preview saved target state and suggested next actions."""
     from vulnclaw.target_state.store import get_target_state_preview
 
     perform(
@@ -443,6 +472,7 @@ def target_state_diff(
     to_snapshot_id: Optional[str] = typer.Option(None, "--to"),
     output_format: MachineFormat = typer.Option("json", "--format"),
 ):
+    """Compare saved target snapshots."""
     from vulnclaw.target_state.store import diff_target_state_snapshots
 
     perform(
@@ -457,6 +487,7 @@ def target_state_diff(
 def target_state_rollback(
     target: str, snapshot_id: str, output_format: MachineFormat = typer.Option("json", "--format")
 ):
+    """Restore target history to a saved snapshot."""
     from vulnclaw.target_state.store import rollback_target_state
 
     perform(
@@ -471,6 +502,7 @@ def target_state_rollback(
 def target_state_clear(
     target: str, output_format: MachineFormat = typer.Option("json", "--format")
 ):
+    """Delete saved history for one target."""
     from vulnclaw.target_state.store import clear_target_state
 
     perform(lambda: {"cleared": bool(_require_state(clear_target_state(target), target))})

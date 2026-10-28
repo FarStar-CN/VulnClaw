@@ -24,6 +24,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
+from vulnclaw.interaction_contracts import ApprovalDecision
+
 # ── Display escaping ─────────────────────────────────────────────────────
 
 _BIDI_RANGES = (
@@ -243,24 +245,22 @@ class ExecutionGate:
 
     # ── Resolution from trusted control ops ──────────────────────────────
 
-    async def resolve(self, request_hash: str, decision: str) -> dict[str, str]:
+    async def resolve(self, request_hash: str, decision: ApprovalDecision) -> dict[str, str]:
         """Apply a trusted decision. Idempotent; hash-keyed; status-only.
 
         ``request_hash`` is the sole correlation key: identical concurrent
         requests are deduped into one pending, so the hash uniquely
         identifies a live request without any receipt number.
         """
-        normalized = str(decision or "").strip().lower()
-        if normalized not in ("approve", "deny"):
-            return {"status": "invalid_decision"}
+        # The control boundary validates ApprovalResolution before entering the gate.
         async with self._lock:
             pending = self._pending_by_hash.get(request_hash)
             if pending is None:
                 return {"status": "unknown_request"}
             if pending.state != "pending" or pending.future.done():
                 return {"status": "already_resolved"}
-            pending.state = "approved" if normalized == "approve" else "denied"
-            pending.future.set_result(normalized)
+            pending.state = "approved" if decision == "approve" else "denied"
+            pending.future.set_result(decision)
             return {"status": "resolved"}
 
     def expire_all_pending(self, reason: str = "expired") -> int:

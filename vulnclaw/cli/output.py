@@ -19,17 +19,26 @@ from typer.core import TyperGroup
 
 try:
     from typer._click.exceptions import ClickException, MissingParameter
+    from typer._click.globals import get_current_context
 except ImportError:  # Typer versions before the bundled Click implementation.
+    from click import get_current_context
     from click.exceptions import ClickException, MissingParameter
 
 from vulnclaw.session_protocol import JsonlWriter, make_event
 
 
 class CommandError(ValueError):
-    def __init__(self, code: str, message: str, *, status: str = "failed") -> None:
+    def __init__(
+        self, code: str, message: str, *, status: str = "failed",
+        path: list[str] | None = None, constraints: dict[str, Any] | None = None,
+        next_actions: list[dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
+        self.field_path = path
+        self.constraints = constraints
+        self.next_actions = next_actions
 
 
 def json_value(value: Any) -> Any:
@@ -119,23 +128,34 @@ def run_async(operation: Coroutine[Any, Any, Any]) -> Any:
 def perform(operation: Callable[[], Any]) -> None:
     """Keep library diagnostics on stderr and serialize only the command result."""
     output = current_output()
-    with redirect_stdout(sys.stderr):
-        result = operation()
+    try:
+        with redirect_stdout(sys.stderr):
+            result = operation()
+    except Exception as exc:
+        from vulnclaw.cli.feedback import build_feedback, error_message
+
+        output.finish(
+            status=getattr(exc, "status", "failed"), exit_code=1,
+            result={"feedback": build_feedback(exc, get_current_context())},
+            error={"code": getattr(exc, "code", "command_failed"), "message": error_message(exc)},
+        )
+        raise typer.Exit(1) from exc
     if not output.finished:
         output.finish(result=result)
     raise typer.Exit(output.exit_code)
 
 
 def requested_format(args: list[str]) -> str:
-    for index, arg in enumerate(args):
-        if (
-            arg in {"--output-format", "--format"}
-            and index + 1 < len(args)
-            and args[index + 1] in {"json", "jsonl"}
-        ):
-            return args[index + 1]
-        if arg in {"--output-format=jsonl", "--format=jsonl", "--stream"}:
+    # code scan's --format describes its artifact; --output-format owns stdout.
+    for flag in ("--output-format", "--format"):
+        if flag == "--format" and "--stream" in args:
             return "jsonl"
+        for index, arg in enumerate(args):
+            if arg == flag and index + 1 < len(args) and args[index + 1] in {"json", "jsonl"}:
+                return args[index + 1]
+            for value in ("json", "jsonl"):
+                if arg == f"{flag}={value}":
+                    return value
     return "json"
 
 
@@ -167,6 +187,7 @@ class HeadlessGroup(TyperGroup):
             if isinstance(result, int):
                 code = result
         except ClickException as exc:
+            from vulnclaw.cli.feedback import build_feedback
             code = 1
             missing = isinstance(exc, MissingParameter)
             output.finish(
@@ -176,6 +197,7 @@ class HeadlessGroup(TyperGroup):
                     "code": "requires_input" if missing else "invalid_arguments",
                     "message": exc.format_message(),
                 },
+                result={"feedback": build_feedback(exc, getattr(exc, "ctx", None))},
             )
         except (asyncio.CancelledError, KeyboardInterrupt, typer.Abort):
             code = 1
@@ -185,12 +207,14 @@ class HeadlessGroup(TyperGroup):
                 error={"code": "cancelled", "message": "Command cancelled."},
             )
         except Exception as exc:
+            from vulnclaw.cli.feedback import build_feedback, error_message
             code = 1
             if not output.finished:
                 output.finish(
                     status=getattr(exc, "status", "failed"),
                     exit_code=1,
-                    error={"code": getattr(exc, "code", "command_failed"), "message": str(exc)},
+                    error={"code": getattr(exc, "code", "command_failed"), "message": error_message(exc)},
+                    result={"feedback": build_feedback(exc)},
                 )
             else:
                 raise

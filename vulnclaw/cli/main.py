@@ -11,6 +11,7 @@ import typer
 from vulnclaw import __version__
 from vulnclaw.cli import management, reports, tasks, terminal
 from vulnclaw.cli.code import code_app
+from vulnclaw.cli.discovery import describe, group_document
 from vulnclaw.cli.manual import render_manual
 from vulnclaw.cli.output import CommandError, HeadlessGroup, current_output, perform, run_async
 from vulnclaw.cli.serving import web
@@ -70,6 +71,7 @@ for name, command in {
 for name in ("config", "kb", "experience", "plugins", "target_state"):
     app.add_typer(getattr(management, f"{name}_app"), name=name.replace("_", "-"))
 app.add_typer(code_app, name="code")
+app.command("describe")(describe)
 
 
 def manual(
@@ -100,7 +102,8 @@ def _resume_saved_run(name: str, runs_dir: str | None, repair: bool):
         raise CommandError("invalid_saved_run", "The saved run has no resumable target.")
     if not has_llm_credentials(config.llm):
         raise CommandError(
-            "requires_input", "Configure LLM credentials before resuming.", status="requires_input"
+            "requires_input", "Configure LLM credentials before resuming.", status="requires_input",
+            path=["llm", "credentials"],
         )
     target = str(saved["input"])
     request = TaskCreateRequest(
@@ -159,7 +162,7 @@ def main(
             )
         perform(lambda: _resume_saved_run(resume_run_name, runs_dir, repair))
     if ctx.invoked_subcommand is None:
-        typer.echo(ctx.get_help())
+        perform(lambda: group_document(ctx.command, []))
 
 
 if __name__ == "__main__":

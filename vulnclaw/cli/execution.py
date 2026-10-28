@@ -60,6 +60,7 @@ class HeadlessExecutor:
         self.task_id = f"task-{uuid4().hex}"
         self.interaction = HeadlessInteraction()
         self.terminal: dict[str, Any] | None = None
+        self.control_result: dict[str, Any] | None = None
         self.application = ApplicationSession(
             self._event,
             source="headless",
@@ -70,6 +71,8 @@ class HeadlessExecutor:
         )
 
     def _event(self, event_type: str, **fields: Any) -> None:
+        if event_type == "control_result" and fields.get("request_id") == self.output.request_id:
+            self.control_result = fields["result"]
         if event_type in {
             "task_completed",
             "turn_completed",
@@ -151,7 +154,7 @@ class HeadlessExecutor:
                     )
                 await app.wait_for_idle()
                 event = self.terminal or {}
-                result = event.get("result") or {}
+                result = event.get("result") or self.control_result or {}
                 if event.get("type") in {"task_failed", "turn_failed"}:
                     status, code, error = "failed", 1, event["error"]
                 elif event.get("type") in {"task_cancelled", "turn_cancelled"}:
@@ -226,13 +229,26 @@ class HeadlessExecutor:
             status, code = "cancelled", 1
             error = {"code": "cancelled", "message": "Command cancelled."}
         except Exception as exc:
+            from vulnclaw.cli.feedback import build_feedback
+
             status, code = "failed", 1
             error = {"code": getattr(exc, "code", "command_failed"), "message": format_llm_user_error(exc)}
+            result["feedback"] = build_feedback(exc)
         finally:
             await app.close()
+        if status == "failed" and error and "feedback" not in result:
+            from vulnclaw.cli.feedback import build_feedback
+            from vulnclaw.cli.output import CommandError
+
+            result["feedback"] = build_feedback(CommandError(
+                error["code"], error["message"], path=["task"],
+            ))
         if self.interaction.status:
+            from vulnclaw.cli.feedback import interaction_feedback
+
             status, code = self.interaction.status, 1
             result["interaction"] = self.interaction.details
+            result["feedback"] = interaction_feedback(status)
             error = {
                 "code": status,
                 "message": "This invocation requires operator input."
@@ -270,11 +286,14 @@ async def execute_service(operation, config):
     try:
         result = await operation()
     except asyncio.CancelledError:
+        from vulnclaw.cli.feedback import interaction_feedback
+
         status = interaction.status or "cancelled"
         return output.finish(
             status=status,
             exit_code=1,
-            result=interaction.details,
+            result={**interaction.details, "interaction": interaction.details,
+                    "feedback": interaction_feedback(status)} if interaction.status else {},
             error={
                 "code": status,
                 "message": "Operator approval is required."

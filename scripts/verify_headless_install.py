@@ -25,9 +25,16 @@ def main() -> None:
         env.pop("PYTHONPATH", None)
         source = root / "synthetic.py"
         source.write_text('eval(input("static fixture"))\n', encoding="utf-8")
-        for command in (["--help"], ["--version"], ["config", "list"], ["code", "scan", str(source), "--layer", "L1,L2", "--output-format", "json"]):
+        commands = (
+            ["--help"], ["--version"], [], ["config"], ["config", "list"],
+            ["describe", "run"], ["describe", "--protocol"],
+            ["describe", "--protocol", "approval_required"],
+            ["describe", "--protocol", "waiting_for_input"],
+            ["code", "scan", str(source), "--layer", "L1,L2", "--output-format", "json"],
+        )
+        for command in commands:
             result = subprocess.run([str(python), "-m", "vulnclaw", *command], cwd=root, env=env, capture_output=True, text=True, check=True)
-            if command[0] not in {"--help", "--version"}:
+            if not command or command[0] not in {"--help", "--version"}:
                 assert json.loads(result.stdout)["status"] == "completed", result.stdout
         print("[headless-install] wheel works without Bun/OpenTUI on PATH")
 

@@ -20,7 +20,7 @@ class ManualTopic:
 
 ROOT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("--help", "Show Typer's short help for the root command or selected subcommand."),
-    ("no subcommand", "Print help; use tui or repl to start an interactive client."),
+    ("no subcommand", "Return a successful JSON command directory; use --help for text or describe for schemas."),
     ("--version", "Print the installed VulnClaw version and exit."),
     ("--man, --manual", "Print this full CLI manual and exit."),
     ("--resume RUN", "Continue an exact saved run; --runs-dir PATH selects its storage root and --repair explicitly repairs an interrupted record."),
@@ -95,9 +95,16 @@ TASK_COMMAND_NAMES = {"run", "solve", "persistent", "recon", "scan", "network-sc
 
 COMMANDS: tuple[ManualTopic, ...] = (
     ManualTopic(
+        name="describe", summary="Discover command parameters and live session reply contracts.",
+        usage="vulnclaw describe [COMMAND_PATH...] [--protocol] [--format json|jsonl]",
+        notes=("Command definitions come from the parser and task models without starting LLM/MCP. --protocol lists backend launch arguments, requests and interactions; query a name for its schema and reply example.",),
+        examples=("vulnclaw describe run", "vulnclaw describe --protocol approval_required",
+                  "vulnclaw describe --protocol waiting_for_input"),
+    ),
+    ManualTopic(
         name="ask", summary="Submit one natural-language turn through the shared application.",
         usage='vulnclaw ask "Explain current findings" [--format json|jsonl]',
-        notes=("Questions and approval stop headless execution with a structured terminal result. Use tui/repl to answer interactively.",),
+        notes=("Questions and approval stop one-shot execution with a structured terminal result. Use a live session_backend process for Agent replies, or tui/repl for manual interaction.",),
     ),
     ManualTopic(
         name="code", summary="Scan local source and export a text, JSON, SARIF or Markdown artifact.",
@@ -381,14 +388,14 @@ COMMANDS: tuple[ManualTopic, ...] = (
             "vulnclaw config provider [NAME|--list]"
         ),
         flags=(
-            ("set KEY VALUE", "Set a dot-notated config key such as llm.model or session.max_rounds."),
+            ("set KEY VALUE", "Save a dot-notated config key and return {key, value, saved}, with secrets masked."),
             ("get KEY", "Print one config value. Secret-looking keys are masked."),
-            ("list", "Print the full effective config as YAML."),
+            ("list", "Return the full effective configuration as JSON, with secrets masked."),
             ("provider NAME", "Switch provider preset and fill base_url/model defaults."),
             ("provider --list, -l", "List provider presets and show the current provider."),
         ),
         notes=(
-            "A config subcommand is required; running vulnclaw config alone prints usage and exits.",
+            "Running vulnclaw config alone returns a successful command directory; use describe config set for parameters and the configuration schema.",
             "Useful LLM keys: llm.provider, llm.api_key, llm.api_keys, llm.auth_mode, "
             "llm.chatgpt_auto_proxy, llm.base_url, llm.model, llm.max_tokens, "
             "llm.max_context_tokens, llm.temperature, llm.reasoning_effort. Use `vulnclaw login` "

@@ -952,14 +952,10 @@ class ApplicationSession:
 
         if operation == "execution.approval.resolve":
             from vulnclaw.agent.exec_gate import get_execution_gate
+            from vulnclaw.interaction_contracts import ApprovalResolution
 
-            request_hash = str(arguments.get("request_hash") or "")
-            decision = str(arguments.get("decision") or "")
-            if not request_hash or decision not in {"approve", "deny"}:
-                raise ValueError(
-                    "execution.approval.resolve requires request_hash and decision=approve|deny"
-                )
-            result = await get_execution_gate().resolve(request_hash, decision)
+            resolution = ApprovalResolution.model_validate(arguments)
+            result = await get_execution_gate().resolve(resolution.request_hash, resolution.decision)
             return result, None
 
         if operation == "session.scope.update":
