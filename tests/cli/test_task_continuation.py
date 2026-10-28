@@ -213,8 +213,10 @@ async def test_specific_answer_preserves_context_evidence_and_question_history(p
     agent.chat.assert_not_awaited()
 
 
-async def test_continuation_uses_original_budgets_and_preserves_scope(paused_task):
+@pytest.mark.parametrize("poc_enabled", [False, True])
+async def test_continuation_uses_original_budgets_and_preserves_scope_and_poc(paused_task, poc_enabled):
     agent = paused_task.agent
+    agent.config.session.poc_verify_enabled = poc_enabled
     await paused_task.start(continuous=True, options={
         "rounds_per_cycle": 7, "max_tool_rounds": 2, "only_port": 443,
         "only_path": "/login", "blocked_path": "/login/admin",
@@ -235,6 +237,7 @@ async def test_continuation_uses_original_budgets_and_preserves_scope(paused_tas
     assert agent.persistent_pentest.await_args.kwargs["rounds_per_cycle"] == 7
     assert agent.persistent_pentest.await_args.kwargs["auto_report"] is False
     assert agent.session_state.task_constraints == constraints
+    assert agent.config.session.poc_verify_enabled is poc_enabled
     assert paused_task.session.permission_mode == "ask"
 
 

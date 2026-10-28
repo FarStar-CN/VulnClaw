@@ -121,8 +121,8 @@ async def test_subagent_streams_are_forwarded_live_with_the_main_vocabulary(
             action_result={"findings": []},
         )
 
-    monkeypatch.setattr("vulnclaw.tui_backend.execute_task", execute)
-    task = prepare_task(TaskCreateRequest(command="recon", target="example.test"))
+    monkeypatch.setattr("vulnclaw.application.execute_task", execute)
+    task = prepare_task(TaskCreateRequest(command="run", target="example.test", options=TaskOptions(auto_report=False)))
     await _run_task(SimpleNamespace(agent=object()), task, sink)
     emitted = events(stream)
     main = [event for event in emitted if "agent_id" not in event]

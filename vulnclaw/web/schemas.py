@@ -186,11 +186,6 @@ class FindingVerifyRequest(BaseModel):
     poc_verify: bool | None = None
 
 
-class FindingVerifyRequest(BaseModel):
-    target: str = Field(min_length=1, max_length=2048)
-    poc_verify: bool | None = None
-
-
 class ConfigView(BaseModel):
     provider: str
     model: str

@@ -80,7 +80,7 @@ async def test_tui_run_audits_and_exports_before_completion(runtime, monkeypatch
         order.append("report")
         return await reports.generate_report_for_run(run, config=config)
 
-    monkeypatch.setattr("vulnclaw.tui_backend.generate_report_for_run", report)
+    monkeypatch.setattr("vulnclaw.application.generate_report_for_run", report)
     stream = io.StringIO()
     session = BackendSession(JsonlWriter(stream), runtime_factory=lambda: runtime)
     await session.handle(request("initialize", "init"))
@@ -112,7 +112,7 @@ async def test_report_failure_preserves_successful_tui_task(runtime, monkeypatch
         SessionRestoreResult(target="lab.test"), {"findings_count": 0},
         audited_session=None if missing_snapshot else SessionState(target="lab.test"),
     )
-    monkeypatch.setattr("vulnclaw.tui_backend.execute_task",
+    monkeypatch.setattr("vulnclaw.application.execute_task",
                         AsyncMock(return_value=TaskExecution(run, None)))
     if not missing_snapshot:
         monkeypatch.setattr("vulnclaw.report_service.generate_report",
@@ -140,15 +140,15 @@ async def test_report_failure_preserves_successful_tui_task(runtime, monkeypatch
 ])
 async def test_report_export_only_runs_for_completed_run(runtime, monkeypatch, command, status):
     run = OrchestratorRunResult(SessionRestoreResult(target="lab.test"), {}, status=status)
-    monkeypatch.setattr("vulnclaw.tui_backend.execute_task",
+    monkeypatch.setattr("vulnclaw.application.execute_task",
                         AsyncMock(return_value=TaskExecution(run, None)))
     report = AsyncMock(side_effect=AssertionError("Unexpected extra report"))
-    monkeypatch.setattr("vulnclaw.tui_backend.generate_report_for_run", report)
+    monkeypatch.setattr("vulnclaw.application.generate_report_for_run", report)
+    from vulnclaw.application import ApplicationStreamSink, _run_task
     from vulnclaw.task_service import TaskCreateRequest, prepare_task
-    from vulnclaw.tui_backend import BackendStreamSink, _run_task
 
-    sink = BackendStreamSink(JsonlWriter(io.StringIO()), "t1", show_thinking=False)
-    result = await _run_task(runtime, prepare_task(TaskCreateRequest(command=command, target="lab.test")), sink)
+    sink = ApplicationStreamSink(JsonlWriter(io.StringIO()).event, "t1", show_thinking=False)
+    result = await _run_task(runtime, prepare_task(TaskCreateRequest(command=command, target="lab.test", options={"auto_report": False})), sink)
     assert result["report"] is None and result["report_error"] is None
     report.assert_not_awaited()
 

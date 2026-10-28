@@ -801,5 +801,3 @@ class TestReportRecommendationI18n:
             init_i18n()
         assert "Uncategorized" in en
         assert "未分类" in zh
-
-

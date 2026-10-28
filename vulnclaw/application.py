@@ -1463,6 +1463,8 @@ def _runtime_findings(runtime: Any) -> list[dict[str, Any]]:
         item = _model_dump(finding)
         if not isinstance(item, dict):
             continue
+        for field in ("submission_id", "evidence_snapshots", "verification_history", "assessment", "previous_verification"):
+            item.pop(field, None)
         item["id"] = item.pop("finding_id", item.get("id", ""))
         result.append(_json_safe(item))
     return result
