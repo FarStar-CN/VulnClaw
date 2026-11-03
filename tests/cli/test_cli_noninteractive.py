@@ -245,6 +245,6 @@ def test_root_resume_uses_exact_saved_run_and_preserves_its_command(headless_run
     assert document["result"]["run"]["name"] == "saved-solve"
     assert document["result"]["command"] == "solve"
     assert document["result"]["target"] == "https://synthetic.test"
-    assert len(list((case.root / "runs").iterdir())) == 1
+    assert len([p for p in (case.root / "runs").iterdir() if p.is_dir()]) == 1
     assert "saved-solve" in case.agent.chat.call_args.args[0]
     assert all(runtime.stopped for runtime in case.runtimes)

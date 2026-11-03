@@ -244,7 +244,7 @@ def test_persistent_process_stops_after_one_configured_cycle(machine):
         "jsonl",
     )
     assert events[-1]["status"] == "completed", events[-1]
-    assert len(list((machine.root / "runs").glob("*/run.json"))) == 1
+    assert len(list((machine.root / "runs").glob("*/*/run.json"))) == 1
 
 
 def test_root_resume_process_continues_exact_saved_run(machine):
@@ -266,7 +266,7 @@ def test_root_resume_process_continues_exact_saved_run(machine):
     )
     assert resumed[-1]["status"] == "completed", resumed[-1]
     assert resumed[-1]["result"]["run"]["name"] == initial[-1]["result"]["run"]["name"]
-    assert len(list((machine.root / "runs").glob("*/run.json"))) == 1
+    assert len(list((machine.root / "runs").glob("*/*/run.json"))) == 1
 
 
 @pytest.mark.parametrize("command", ["run", "recon", "scan", "exploit", "solve"])
@@ -330,7 +330,7 @@ def test_required_interaction_process_terminates_and_saves_checkpoint(machine, m
     assert final["status"] == status, final
     assert final["exit_code"] == 1
     assert final["result"]["interaction"]
-    manifests = list((machine.root / "runs").glob("*/run.json"))
+    manifests = list((machine.root / "runs").glob("*/*/run.json"))
     assert len(manifests) == 1
     assert json.loads(manifests[0].read_text())["status"] == "interrupted"
     if marker == "FIXTURE_TOOL":
@@ -460,7 +460,7 @@ def test_cancelled_run_saves_checkpoint_that_can_be_resumed(machine, endpoint):
             "FIXTURE_WAIT",
         ],
     )
-    manifest = next((machine.root / "runs").glob("*/run.json"))
+    manifest = next((machine.root / "runs").glob("*/*/run.json"))
     assert json.loads(manifest.read_text())["status"] == "interrupted"
     _, events = machine.invoke(
         "--resume", "cancelled-fixture", "--runs-dir", str(machine.root / "runs")

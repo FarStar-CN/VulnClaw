@@ -306,7 +306,9 @@ async def test_orchestrator_checkpoints_and_resumes_exact_run(tmp_path, monkeypa
     run_name = result.summary["run_name"]
     run_dir = Path(result.summary["run_dir"])
     assert result.status == "completed"
-    assert result.summary["resume_command"] == f"vulnclaw --resume {run_name}"
+    assert result.summary["resume_command"] == (
+        f"vulnclaw --resume {run_name} --runs-dir {tmp_path / 'runs'}"
+    )
     assert json.loads((run_dir / "run.json").read_text(encoding="utf-8"))["status"] == (
         "completed"
     )
