@@ -53,7 +53,15 @@ def test_plugins_run_with_inline_option_records_session_evidence(tmp_path):
     assert data['target'] == 'http://t.com'
     record = data['agent_state']['evidence'][0]
     assert record['tool'] == 'plugin:builtin.web.headers'
-    titles = [f['title'] for f in json.loads(record['content'])['findings']]
+    from vulnclaw.evidence import EvidenceScope, EvidenceStore
+
+    meta = data['resume_meta']
+    store = EvidenceStore(meta['run_dir'], run_id=meta['run_id'], writable=False)
+    content = store.read_text(
+        record['id'],
+        scope=EvidenceScope(run_id=meta['run_id'], task_id='main', read_all=True),
+    )
+    titles = [f['title'] for f in json.loads(content)['findings']]
     assert 'Missing common security headers' in titles
 
 

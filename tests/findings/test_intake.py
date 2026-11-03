@@ -235,9 +235,10 @@ def test_default_ports_are_equivalent_for_endpoint_matching(agent):
     assert len(agent.session_state.findings) == 1
 
 
-def test_receipts_are_not_new_evidence(agent):
+@pytest.mark.asyncio
+async def test_receipts_are_not_new_evidence(agent):
     record(agent)
-    content, evidence, raw = _record_tool_result_with_record(
+    content, evidence, raw = await _record_tool_result_with_record(
         agent, 'submit_finding', payload(), '{"finding_id":"x"}',
     )
     assert evidence is None and len(agent.session_state.agent_state.evidence) == 1

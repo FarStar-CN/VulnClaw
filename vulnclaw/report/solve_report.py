@@ -205,11 +205,21 @@ def render_solve_report(state: AgentState) -> str:
 
 
 def extract_reproduction_requests(state: AgentState) -> list[ReproductionRequest]:
-    """Extract replayable HTTP requests from saved solve evidence."""
+    """Extract replayable HTTP requests from persisted solve evidence."""
 
     requests: list[ReproductionRequest] = []
+    store = state.evidence_store
+    scope = state.evidence_scope
     for evidence in state.evidence:
         content = evidence.content or ""
+        arguments = dict(evidence.arguments or {})
+        if store is not None and scope is not None:
+            try:
+                content = store.read_text(evidence.id, scope=scope)
+                observation = store.observation(evidence.id, scope=scope)
+                arguments = dict(observation.tool.arguments or {})
+            except Exception:
+                pass
         if evidence.tool == "http_probe_batch" or "# http_probe_batch results" in content:
             requests.extend(_parse_http_probe_batch(content, evidence.id, evidence.tool))
             continue
@@ -217,7 +227,7 @@ def extract_reproduction_requests(state: AgentState) -> list[ReproductionRequest
             request = _parse_fetch_response(content, evidence.id, evidence.tool)
             if request is not None:
                 if evidence.tool == "fetch":
-                    _restore_fetch_request(request, evidence.arguments)
+                    _restore_fetch_request(request, arguments)
                 requests.append(request)
     return requests
 

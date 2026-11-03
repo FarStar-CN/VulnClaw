@@ -7,6 +7,7 @@ import copy
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
+from uuid import uuid4
 
 from vulnclaw.agent.agent_graph import AgentGraph, AgentOutcome, FanOutCaps
 from vulnclaw.agent.roles import ROLE_REGISTRY, get_role
@@ -174,6 +175,10 @@ async def run_team_pentest(
     """
     target = target or root_agent.session_state.target or user_input
     root_agent.session_state.target = target
+    if getattr(root_agent, "evidence_store", None) is None:
+        ensure_binding = getattr(root_agent, "_ensure_solve_run_binding", None)
+        if ensure_binding is not None:
+            ensure_binding(target)
     _seed_agent_state(root_agent, origin=target, goal=user_input)
     agent_factory = agent_factory or _default_agent_factory(root_agent)
     goal = user_input
@@ -397,6 +402,23 @@ async def _run_team_step(
     child.active_role = step.role
     # Record the dispatch so the run's agent graph shows who is working on what.
     node_id = _graph_begin_step(root_agent, step)
+    child_task_id = node_id or f"team-{step.role}-{uuid4().hex[:8]}"
+    root_store = getattr(root_agent, "evidence_store", None)
+    if root_store is not None:
+        parent_state = root_agent.context.state
+        parent_task = getattr(parent_state, "task_id", "") or "main"
+        child.bind_shared_evidence_store(
+            root_store,
+            run_context=getattr(root_agent, "run_context", None),
+            task_id=child_task_id,
+            parent_task_id=parent_task,
+            session_kind="team_role",
+            inherited_evidence_ids=[
+                item.id for item in parent_state.agent_state.evidence
+            ],
+            published_task_ids=[parent_task],
+            target_id=getattr(getattr(root_agent, "evidence_scope", None), "target_id", ""),
+        )
     failure: str | None = None
     try:
         result = await child.solve(
@@ -415,9 +437,11 @@ async def _run_team_step(
         child.active_role = previous_role
         _graph_finish_step(root_agent, node_id, error=failure)
     EvidenceCommitter().commit(
-        root_agent, child.session_state, task_id=node_id or f"team:{step.role}",
+        root_agent, child.session_state, task_id=child_task_id,
         agent_type=step.role, baseline_fingerprints=baseline, include_session_state=True,
     )
+    if root_store is not None:
+        root_agent.refresh_evidence_scope(published_task_ids=[child_task_id])
     return result
 
 

@@ -131,7 +131,15 @@ def _labels() -> dict[str, str]:
     return {key: _rl(*value) for key, value in pairs.items()}
 
 
-def _render_assessed_report(session, output: Path, *, summary="", cycle_num=None, target_state_context=None):
+def _render_assessed_report(
+    session,
+    output: Path,
+    *,
+    summary="",
+    cycle_num=None,
+    target_state_context=None,
+    traffic_base=None,
+):
     from html import escape
 
     from vulnclaw.findings.types import require_assessed
@@ -181,7 +189,7 @@ def _render_assessed_report(session, output: Path, *, summary="", cycle_num=None
     if verified:
         content += "\n\n" + _render_verified_finding_details_clean(
             verified, _rl("## 已验证漏洞定位与复现信息", "## Verified Findings — Location & Reproduction"),
-            traffic_store=_resolve_traffic_store(output.parent),
+            traffic_store=_resolve_traffic_store(traffic_base or output.parent),
         )
     if target_state_context:
         content += "\n\n" + _render_target_state_context(target_state_context)
@@ -195,6 +203,7 @@ def _render_assessed_report(session, output: Path, *, summary="", cycle_num=None
 async def generate_report(
     session: SessionState, output_path: Optional[str] = None, llm_attack_summary: str = "",
     report_format: str = "markdown", target_state_context: Optional[dict[str, Any]] = None,
+    traffic_base: Optional[str | Path] = None,
 ) -> Path:
     from uuid import uuid4
 
@@ -216,7 +225,8 @@ async def generate_report(
     if not llm_attack_summary:
         llm_attack_summary = await _generate_attack_summary_from_session(assessed)
     return _render_assessed_report(assessed, output, summary=llm_attack_summary,
-                                   target_state_context=target_state_context)
+                                   target_state_context=target_state_context,
+                                   traffic_base=traffic_base)
 
 
 def _summarize_attack_surface(session: SessionState) -> str:

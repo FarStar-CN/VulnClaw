@@ -21,6 +21,8 @@ from vulnclaw.findings.types import (
 )
 from vulnclaw.run_context import atomic_write_json
 
+EVIDENCE_ROOT_MARKER = "evidence"
+
 
 def scope_identity(target: str) -> tuple[str, int | None]:
     parsed = urlsplit(target if "://" in target else "//" + target)
@@ -83,6 +85,53 @@ def recorded_requests(record: Any) -> list[tuple[str, str]]:
 
 def snapshot_records(agent: Any, evidence_ids: list[str]) -> list[EvidenceSnapshotRef]:
     session = agent.context.state
+    store = getattr(agent, "evidence_store", None)
+    scope = getattr(agent, "evidence_scope", None)
+    if store is None or scope is None:
+        return _snapshot_records_legacy(agent, evidence_ids)
+    records = []
+    for evidence_id in dict.fromkeys(evidence_ids):
+        try:
+            observation = store.observation(evidence_id, scope=scope)
+            content = store.read_text(evidence_id, scope=scope)
+        except Exception as exc:
+            raise ValueError(f"Evidence is not available in this session: {evidence_id}: {exc}")
+        if observation.target and observation.target != session.target:
+            raise ValueError(f"Evidence belongs to another target: {evidence_id}")
+        records.append((observation, content))
+    namespace = hashlib.sha256(
+        f"{session.started_at}:{session.target}:{session.task_id}".encode()
+    ).hexdigest()[:24]
+    result = []
+    for observation, content in records:
+        snapshot = Snapshot(
+            evidence_id=observation.id, target=session.target or observation.target,
+            task_id=session.task_id, tool=observation.tool.name,
+            arguments=observation.tool.arguments, content=content,
+            fingerprint=observation.id,
+        )
+        payload = snapshot.model_dump(mode="json")
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()
+        relative = f"findings/{namespace}/{digest}.json"
+        atomic_write_json(store.run_dir / "evidence" / relative, payload)
+        result.append(EvidenceSnapshotRef(
+            evidence_id=observation.id, source_id=observation.id, target=snapshot.target,
+            root="evidence", path=relative, sha256=digest,
+            fingerprint=observation.id, task_id=session.task_id,
+        ))
+    return result
+
+
+def _snapshot_records_legacy(agent: Any, evidence_ids: list[str]) -> list[EvidenceSnapshotRef]:
+    """Chat/legacy fallback: snapshot session-local descriptors as before.
+
+    Run-backed tool execution never takes this path; it persists observations in
+    the run store and reads their exact payloads.
+    """
+
+    session = agent.context.state
     records = []
     for evidence_id in dict.fromkeys(evidence_ids):
         record = session.agent_state.get_evidence(evidence_id)
@@ -116,10 +165,20 @@ def snapshot_records(agent: Any, evidence_ids: list[str]) -> list[EvidenceSnapsh
     return result
 
 
-def load_snapshots(finding: Any) -> dict[str, Snapshot]:
+def load_snapshots(finding: Any, *, run_root: str | Path | None = None) -> dict[str, Snapshot]:
     result = {}
     for ref in merge_snapshot_refs(finding.evidence_snapshots):
-        root = Path(ref.root).resolve()
+        root_raw = str(ref.root or "")
+        if root_raw == EVIDENCE_ROOT_MARKER:
+            if run_root is None:
+                raise ValueError(
+                    "Evidence snapshot is run-relative but no run root was supplied"
+                )
+            root = (Path(run_root) / "evidence").resolve()
+        else:
+            # Legacy absolute root: readable so old assessments survive until a
+            # migration rewrites the checkpoint.
+            root = Path(root_raw).resolve()
         path = (root / ref.path).resolve()
         if not path.is_relative_to(root):
             raise ValueError("Evidence snapshot path escapes its evidence directory")

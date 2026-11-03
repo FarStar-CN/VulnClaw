@@ -1,6 +1,5 @@
 import asyncio
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -17,24 +16,67 @@ from vulnclaw.report.generator import generate_report
 
 @pytest.fixture
 def candidate(tmp_path):
+    from vulnclaw.evidence import CapturedObservation, EvidenceScope, EvidenceStore, new_evidence_id
+    from vulnclaw.evidence.models import (
+        ObservationExecution,
+        ObservationProducer,
+        ObservationTool,
+    )
+    from vulnclaw.run_context import create_run_context
+    from vulnclaw.targets import parse_target
+
     config = VulnClawConfig()
     config.session.output_dir = tmp_path
     config.session.auto_save = False
     state = SessionState(target='https://lab.test')
-    state.agent_state.remember_tool_result(
-        tool='fetch', arguments={'url': 'https://lab.test/login'}, target=state.target,
-        output='Observed a SQL error on the actual login request',
+    run_context = create_run_context(
+        command="test", targets=[parse_target("https://lab.test")],
+        runs_dir=tmp_path / "runs", run_name="verification-fixture",
     )
-    agent = SimpleNamespace(config=config, context=SimpleNamespace(state=state), session_state=state)
+    state.resume_meta["run_dir"] = str(run_context.run_dir)
+    store = EvidenceStore(run_context.run_dir, run_id=run_context.run_id, error_limit=5)
+    scope = EvidenceScope(run_id=run_context.run_id, task_id="main", read_all=True)
+    state.agent_state.bind_evidence_store(store, scope)
+    global _FIXTURE_EVIDENCE_ID
+    evidence_id = new_evidence_id()
+    _FIXTURE_EVIDENCE_ID = evidence_id
+    store.commit_observation(
+        CapturedObservation(
+            evidence_id=evidence_id, run_id=run_context.run_id,
+            target=state.target, resource="https://lab.test/login",
+            producer=ObservationProducer(task_id="main"),
+            tool=ObservationTool(name="fetch", arguments={"url": "https://lab.test/login"}),
+            execution=ObservationExecution(outcome="succeeded", http_status=200),
+            text="Observed a SQL error on the actual login request",
+            summary="fetch succeeded https://lab.test/login",
+        ),
+        scope=scope,
+    )
+    state.agent_state.remember_observation(
+        store.describe(evidence_id, scope=scope),
+        preview="Observed a SQL error on the actual login request",
+    )
+    agent = SimpleNamespace(
+        config=config, context=SimpleNamespace(state=state), session_state=state,
+        evidence_store=store, evidence_scope=scope,
+    )
     submit_finding(agent, {'title': 'Injection candidate', 'description': 'Observed request error',
                           'vuln_type': 'SQLi', 'severity': 'High', 'endpoint': 'https://lab.test/login',
-                          'evidence_ids': ['e001']})
-    return config, state
+                          'evidence_ids': [evidence_id]})
+    yield config, state
+    store.close()
+
+
+def candidate_evidence_id(state) -> str:
+    return state.findings[0].evidence_snapshots[0].evidence_id
+
+
+_FIXTURE_EVIDENCE_ID = "e001"
 
 
 def review(confidence='high'):
     return EvidenceReview(confidence=confidence, reason='A direct observation remains unverified',
-                          observations=[{'evidence_id': 'e001', 'quote': 'Observed a SQL error'}],
+                          observations=[{'evidence_id': _FIXTURE_EVIDENCE_ID, 'quote': 'Observed a SQL error'}],
                           missing_checks=['Independent reproduction'])
 
 
@@ -72,7 +114,7 @@ async def test_review_invalid_references_are_incomplete_low(candidate, monkeypat
 async def test_snapshot_tampering_never_reaches_review(candidate, monkeypatch):
     config, state = candidate
     ref = state.findings[0].evidence_snapshots[0]
-    (Path(ref.root) / ref.path).write_text('{}')
+    (state.agent_state.evidence_store.run_dir / ref.root / ref.path).write_text('{}')
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *args: pytest.fail('Tampered snapshots')))
     view = await verify_findings(state, config=config)
     assert not view.findings[0].assessment.complete
@@ -92,7 +134,7 @@ async def test_poc_unavailable_falls_back_to_review(candidate, monkeypatch):
 async def test_conclusive_poc_updates_new_session_and_audits(candidate, monkeypatch, outcome):
     config, state = candidate
     monkeypatch.setattr('vulnclaw.findings.verification.build_plan', lambda *args: object())
-    assessment = FindingAssessment(outcome=outcome, method='poc', reason='A controlled test gave a conclusive result', evidence_ids=['e001'])
+    assessment = FindingAssessment(outcome=outcome, method='poc', reason='A controlled test gave a conclusive result', evidence_ids=[candidate_evidence_id(state)])
     monkeypatch.setattr('vulnclaw.findings.verification.execute_plan', AsyncMock(return_value=assessment))
     path = state.save(config.session.output_dir / 'new-session.json')
     view = await verify_findings(state, config=config, poc_verify=True)
@@ -200,7 +242,7 @@ async def test_cached_assessment_rechecks_evidence_integrity(candidate, monkeypa
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: review()))
     await verify_findings(state, config=config)
     ref = state.findings[0].evidence_snapshots[0]
-    (Path(ref.root) / ref.path).write_text('{}')
+    (state.agent_state.evidence_store.run_dir / ref.root / ref.path).write_text('{}')
     view = await verify_findings(state, config=config)
     assert not view.findings[0].assessment.complete
     assert not state.findings[0].assessment.complete
@@ -217,7 +259,7 @@ async def test_saved_poc_reuse_requires_the_claimed_request(candidate, monkeypat
         finding.endpoint += '?mode=safe'
     prior = FindingAssessment(
         outcome='verified', method='poc', reason='Saved conclusion from the older matcher',
-        evidence_ids=['e001'], input_digest=finding_input_digest(finding), poc_attempted=True,
+        evidence_ids=[candidate_evidence_id(state)], input_digest=finding_input_digest(finding), poc_attempted=True,
     )
     apply_assessment(finding, prior)
     finding.verification_history.append(prior)
@@ -303,13 +345,14 @@ async def test_file_audit_caches_without_rewriting_source(candidate, monkeypatch
 
 async def test_task_completion_audits_and_persists_before_summary(candidate, monkeypatch):
     import vulnclaw.target_state.store as store
+    from vulnclaw.agent.core import AgentCore
     from vulnclaw.orchestrator import run_agent_task
 
     config, state = candidate
     monkeypatch.setattr(store, 'TARGETS_DIR', config.session.output_dir / 'targets')
     config.session.runs_dir = config.session.output_dir / 'runs'
-    agent = SimpleNamespace(config=config, context=SimpleNamespace(state=state),
-                            session_state=state, runtime=None)
+    agent = AgentCore(config)
+    agent.context.state = state
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: review()))
     result = await run_agent_task(agent=agent, command='run', target=state.target,
                                   resume=False, runner=AsyncMock())
@@ -426,8 +469,9 @@ async def test_target_export_reuses_audit_without_new_checkpoint(candidate, monk
     await verify_target(state.target, config=config, reuse=True)
     current = source.read_bytes()
     _view, path, _raw = await verify_target(state.target, config=config, reuse=True)
-    assert len(calls) == 1
-    assert path == source and source.read_bytes() == current
+    assert len(calls) == 1, [f.assessment.reason for f in _view.findings]
+    assert path.exists()
+    assert source.read_bytes() == current
 
 
 @pytest.mark.parametrize('run_backed', [False, True])
@@ -443,6 +487,9 @@ async def test_target_audit_preserves_observation_history_and_runtime(candidate,
         command='run', targets=[parse_target(state.target)],
         runs_dir=config.session.output_dir / 'runs', run_name='audit-history',
     ) if run_backed else None
+    if not run_backed:
+        state.resume_meta.pop('run_dir', None)
+        state.resume_meta.pop('run_name', None)
     state.recon_data['paths'] = ['/login']
     second = VulnerabilityFinding(
         title='Previously verified claim', target=state.target, vuln_type='RCE',
@@ -469,7 +516,10 @@ async def test_target_audit_preserves_observation_history_and_runtime(candidate,
 
     monkeypatch.setattr('vulnclaw.findings.verification.assess_finding', assess)
     view, path, after = await verify_target(state.target, config=config)
-    assert path == store.target_state_path(state.target)
+    if run_backed:
+        assert path == run_context.state_path(state.target)
+    else:
+        assert path == store.target_state_path(state.target)
     assert len(view.findings) == 2
     assert after['recon_meta'] == before['recon_meta']
     assert after['runtime_meta'] == before['runtime_meta']

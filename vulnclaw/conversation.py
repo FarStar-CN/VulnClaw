@@ -528,6 +528,10 @@ async def run_conversation(application: Any, text: str, sink: Any) -> dict[str, 
             state,
             config=config,
             poc_verify=conversation.task.request.options.poc_verify if conversation.task else None,
+            run_root=(
+                getattr(getattr(agent, "evidence_store", None), "run_dir", None)
+                or getattr(getattr(agent, "run_context", None), "run_dir", None)
+            ),
         )
     conversation.target = state.target or conversation.target
     phase = getattr(state.phase, "value", state.phase)

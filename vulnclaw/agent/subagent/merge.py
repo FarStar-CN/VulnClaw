@@ -17,6 +17,7 @@ from vulnclaw.agent.agent_state import (
 )
 from vulnclaw.agent.parallel_agents import merge_session_state
 from vulnclaw.agent.subagent.models import get_subagent_context
+from vulnclaw.evidence.models import is_evidence_id
 from vulnclaw.findings.types import replace_snapshot_refs
 
 
@@ -224,6 +225,78 @@ def _enforce_auxiliary_capacity(state: AgentState) -> None:
             del records[:overflow]
 
 
+def _merge_stable_evidence(parent: AgentState, child: AgentState) -> dict[str, str]:
+    """Merge stable-id evidence without renaming.
+
+    A stable id identifies exactly one persisted observation.  Two executions
+    that returned the same bytes are still two observations, so this path never
+    deduplicates by fingerprint; only the same id is the same record.
+    """
+
+    parent_ids = {item.id for item in parent.evidence}
+    new_items = [item for item in child.evidence if item.id not in parent_ids]
+    for item in new_items:
+        parent.evidence.append(copy.deepcopy(item))
+    _trim_evidence_cache(parent)
+    id_map = {item.id: item.id for item in new_items}
+
+    seen_claims = {claim.claim for claim in parent.verified_claims}
+    for claim in child.verified_claims:
+        if claim.claim in seen_claims:
+            continue
+        copied = copy.deepcopy(claim)
+        parent.claim_seq += 1
+        copied.id = f"c{parent.claim_seq:03d}"
+        parent.verified_claims.append(copied)
+        seen_claims.add(claim.claim)
+
+    seen_pins = {fact.text for fact in parent.pinned_facts}
+    for fact in child.pinned_facts:
+        if fact.text in seen_pins:
+            continue
+        parent.pinned_facts.append(copy.deepcopy(fact))
+        seen_pins.add(fact.text)
+
+    seen_signals = {(signal.kind, signal.detail) for signal in parent.progress_signals}
+    for signal in child.progress_signals:
+        key = (signal.kind, signal.detail)
+        if key in seen_signals:
+            continue
+        parent.progress_signals.append(copy.deepcopy(signal))
+        seen_signals.add(key)
+
+    for tool_call in child.tool_calls:
+        copied = copy.deepcopy(tool_call)
+        if copied not in parent.tool_calls:
+            parent.tool_calls.append(copied)
+    for step in child.steps:
+        if step not in parent.steps:
+            parent.steps.append(copy.deepcopy(step))
+    parent.pending_questions.extend(
+        question
+        for question in child.pending_questions
+        if question not in parent.pending_questions
+    )
+    _enforce_auxiliary_capacity(parent)
+    return id_map
+
+
+def _trim_evidence_cache(parent: AgentState) -> None:
+    if len(parent.evidence) <= MAX_STORED_EVIDENCE:
+        return
+    protected = {
+        evidence_id
+        for claim in parent.verified_claims
+        for evidence_id in claim.evidence_ids
+    }
+    protected.update(fact.evidence_id for fact in parent.pinned_facts if fact.evidence_id)
+    kept = []
+    for item in reversed(parent.evidence):
+        if len(kept) < MAX_STORED_EVIDENCE or item.id in protected:
+            kept.append(item)
+    parent.evidence = list(reversed(kept))
+
+
 def merge_agent_state(
     parent: AgentState,
     child: AgentState,
@@ -235,6 +308,9 @@ def merge_agent_state(
 
     if parent is child:
         return {}
+
+    if any(is_evidence_id(item.id) for item in child.evidence):
+        return _merge_stable_evidence(parent, child)
 
     id_map: dict[str, str] = {}
     parent_by_fingerprint = {
@@ -422,6 +498,11 @@ class EvidenceCommitter:
                 refs.append(ref.model_copy(update={"evidence_id": mapped or ref.evidence_id}))
             replace_snapshot_refs(finding, refs)
         new_ids = sorted(set(id_map.values()))
+        publisher = getattr(parent_agent, "refresh_evidence_scope", None)
+        if include_session_state and callable(publisher):
+            published = [task_id]
+            published.extend(child_session.agent_state.published_task_ids)
+            publisher(published_task_ids=published)
         for parent_id in new_ids:
             child_ids = sorted(
                 child_id

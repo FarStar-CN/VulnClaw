@@ -374,7 +374,7 @@ async def test_continuation_audits_preserve_task_poc_choice(
     ))
     decisions = []
 
-    async def assess(_session, _finding, _config, *, poc_verify, artifact_dir):
+    async def assess(_session, _finding, _config, *, poc_verify, artifact_dir, **_kwargs):
         decisions.append(poc_verify)
         return FindingAssessment(
             outcome="suspected_low", method="evidence_review", reason="Fixture assessment",

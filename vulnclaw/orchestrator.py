@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -14,8 +15,10 @@ from vulnclaw.run_context import (
     RunCorruptError,
     build_completion_summary,
     create_run_context,
+    ensure_writable_run_layout,
     load_run_context,
     mark_run_status,
+    targets_from_manifest,
 )
 from vulnclaw.target_state.store import (
     SessionRestoreResult,
@@ -26,6 +29,8 @@ from vulnclaw.target_state.store import (
     save_target_state,
 )
 from vulnclaw.targets import Target, build_targets
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -91,140 +96,192 @@ async def run_agent_task(
     if resume_run_name:
         if run_context is None:
             raise RunCorruptError(Path("."), "resume run context was not loaded")
+        # First writable resume moves a legacy flat run into the target/time
+        # layout before any state is written.
+        run_context = ensure_writable_run_layout(
+            run_context, error_limit=agent.config.session.persistence_error_limit
+        )
         targets = _targets_from_run_context(run_context)
         target = targets[0].raw
 
-    restore_result = None
-    if before_restore is not None:
-        before_restore(None)
-
-    primary_target = targets[0]
-    if resume_run_name:
-        if run_context is None:
-            raise RunCorruptError(Path("."), "resume run context was not loaded")
-        restore_result = apply_target_state_to_agent(
-            agent,
-            primary_target.raw,
-            snapshot_id=snapshot_id,
-            run_context=run_context,
-            target_model=primary_target,
-        )
-        if restore_result.restored and on_restored is not None:
-            on_restored(restore_result)
-    elif resume:
-        if legacy_target_state_exists(primary_target.raw, primary_target):
-            if no_import:
-                restore_result = apply_target_state_to_agent(
-                    agent,
-                    primary_target.raw,
-                    snapshot_id=snapshot_id,
-                )
-            else:
-                if run_context is None:
-                    raise RunCorruptError(Path("."), "run context was not created")
-                import_result = import_legacy_target_state(
-                    primary_target.raw,
-                    run_context=run_context,
-                    target_model=primary_target,
-                    command=command,
-                    runtime=agent.runtime,
-                )
-                if import_result.restored and on_legacy_import is not None:
-                    on_legacy_import(import_result)
-                restore_result = apply_target_state_to_agent(
-                    agent,
-                    primary_target.raw,
-                    snapshot_id=snapshot_id,
-                    run_context=run_context,
-                    target_model=primary_target,
-                )
-        else:
-            restore_result = apply_target_state_to_agent(
-                agent, primary_target.raw, snapshot_id=snapshot_id
-            )
-        if restore_result.restored and on_restored is not None:
-            on_restored(restore_result)
-    else:
-        agent.context.state.target = primary_target.raw
-        restore_result = SessionRestoreResult(
-            restored=False,
-            target=primary_target.raw,
-            phase=getattr(agent.context.state.phase, "value", str(agent.context.state.phase)),
-            snapshot_id=snapshot_id or "",
-            preview={"target": primary_target.raw},
-        )
-
-    checkpoint = (
-        _install_checkpoint_hook(agent, command, run_context, targets)
-        if run_context is not None
-        else lambda _reason: None
-    )
-    checkpoint("run_start")
-
-    status = "completed"
-    exit_code = 0
-    audited_session = None
+    prior_run_id = agent.session_state.run_id
+    prior_run_dir = agent.session_state.resume_meta.get("run_dir")
     try:
-        await runner(agent)
-        from vulnclaw.findings.types import require_assessed
-        from vulnclaw.findings.verification import verify_findings
+        # Establish writable ownership and restore the health counter before any
+        # operation that can consume the save-failure budget.
+        if run_context is not None and not legacy_read_only:
+            _bind_run_context(agent, run_context)
+            store = getattr(agent, "evidence_store", None)
+            if store is not None:
+                store.check_writable_execution_allowed()
 
-        # Persistent cycles already audit before their summaries and reports.
-        # Do not immediately retry an incomplete audit from the final cycle.
-        if command == "persistent" or continuous:
+        restore_result = None
+        if before_restore is not None:
+            before_restore(None)
+
+        primary_target = targets[0]
+        if resume_run_name:
+            if run_context is None:
+                raise RunCorruptError(Path("."), "resume run context was not loaded")
+            restore_result = apply_target_state_to_agent(
+                agent,
+                primary_target.raw,
+                snapshot_id=snapshot_id,
+                run_context=run_context,
+                target_model=primary_target,
+            )
+            if restore_result.restored and on_restored is not None:
+                on_restored(restore_result)
+        elif resume:
+            if legacy_target_state_exists(primary_target.raw, primary_target):
+                if no_import:
+                    restore_result = apply_target_state_to_agent(
+                        agent,
+                        primary_target.raw,
+                        snapshot_id=snapshot_id,
+                    )
+                else:
+                    if run_context is None:
+                        raise RunCorruptError(Path("."), "run context was not created")
+                    import_result = import_legacy_target_state(
+                        primary_target.raw,
+                        run_context=run_context,
+                        target_model=primary_target,
+                        command=command,
+                        runtime=agent.runtime,
+                    )
+                    if import_result.restored and on_legacy_import is not None:
+                        on_legacy_import(import_result)
+                    restore_result = apply_target_state_to_agent(
+                        agent,
+                        primary_target.raw,
+                        snapshot_id=snapshot_id,
+                        run_context=run_context,
+                        target_model=primary_target,
+                    )
+            else:
+                restore_result = apply_target_state_to_agent(
+                    agent, primary_target.raw, snapshot_id=snapshot_id
+                )
+            if restore_result.restored and on_restored is not None:
+                on_restored(restore_result)
+        else:
+            agent.context.state.target = primary_target.raw
+            restore_result = SessionRestoreResult(
+                restored=False,
+                target=primary_target.raw,
+                phase=getattr(agent.context.state.phase, "value", str(agent.context.state.phase)),
+                snapshot_id=snapshot_id or "",
+                preview={"target": primary_target.raw},
+            )
+
+        checkpoint = (
+            _install_checkpoint_hook(agent, command, run_context, targets)
+            if run_context is not None
+            else lambda _reason: None
+        )
+        # Restore may have replaced agent.context.state; bind the store and scope
+        # again to the restored AgentState.
+        if run_context is not None and not legacy_read_only:
+            source_run_id = agent.session_state.run_id if restore_result.restored else prior_run_id
+            source_run_dir = (
+                agent.session_state.resume_meta.get("run_dir")
+                if restore_result.restored else prior_run_dir
+            )
+            _bind_run_context(agent, run_context)
+            migrator = getattr(agent, "migrate_legacy_state", None)
+            if callable(migrator):
+                if source_run_dir and Path(source_run_dir).resolve() != run_context.run_dir:
+                    migrator(source_run_dir=source_run_dir, source_run_id=source_run_id)
+                else:
+                    migrator()
+            agent.session_state.resume_meta.update(
+                run_dir=str(run_context.run_dir), run_name=run_context.run_name
+            )
+        checkpoint("run_start")
+
+        def save_failure(reason: str, status: str, exit_code: int, message: str = "") -> None:
+            # Cleanup must not mask the exception that stopped execution.
             try:
-                require_assessed(agent.session_state)
-            except ValueError:
+                checkpoint(reason)
+            except Exception:
+                logger.exception("could not checkpoint failed run (%s)", reason)
+            if run_context is not None:
+                try:
+                    mark_run_status(run_context, status, exit_code=exit_code, message=message)
+                except Exception:
+                    logger.exception("could not mark run status as %s", status)
+
+        status = "completed"
+        exit_code = 0
+        audited_session = None
+        try:
+            await runner(agent)
+            # Persist the final boundary before findings/evidence snapshots read
+            # from the store.  A pending save failure here consumes the run budget.
+            if run_context is not None:
+                store = getattr(agent, "evidence_store", None)
+                if store is not None:
+                    await asyncio.to_thread(store.flush_pending, boundary_id="run_complete")
+                    await asyncio.to_thread(store.flush_index)
+            from vulnclaw.findings.types import require_assessed
+            from vulnclaw.findings.verification import verify_findings
+
+            # Persistent cycles already audit before their summaries and reports.
+            # Do not immediately retry an incomplete audit from the final cycle.
+            if command == "persistent" or continuous:
+                try:
+                    require_assessed(agent.session_state)
+                except ValueError:
+                    audited_session = await verify_findings(
+                        agent.session_state, config=agent.config, poc_verify=poc_verify,
+                        run_root=run_context.run_dir if run_context is not None else None,
+                    )
+                else:
+                    audited_session = agent.session_state.model_copy(deep=True)
+            else:
                 audited_session = await verify_findings(
                     agent.session_state, config=agent.config, poc_verify=poc_verify,
+                    run_root=run_context.run_dir if run_context is not None else None,
                 )
-            else:
-                audited_session = agent.session_state.model_copy(deep=True)
-        else:
-            audited_session = await verify_findings(
-                agent.session_state, config=agent.config, poc_verify=poc_verify,
-            )
-        checkpoint("run_complete")
-        if run_context is not None:
-            mark_run_status(run_context, "completed", exit_code=0)
-            _schedule_completed_run_distillation(agent, run_context, primary_target)
-    except KeyboardInterrupt:
-        status = "interrupted"
-        exit_code = 130
-        checkpoint("interrupt")
-        if run_context is not None:
-            mark_run_status(run_context, "interrupted", exit_code=130)
-    except asyncio.CancelledError:
-        status = "interrupted"
-        exit_code = 130
-        checkpoint("cancelled")
-        if run_context is not None:
-            mark_run_status(run_context, "interrupted", exit_code=130)
-        raise
-    except Exception as exc:
-        status = "failed"
-        exit_code = 1
-        checkpoint("failed")
-        if run_context is not None:
-            mark_run_status(run_context, "failed", exit_code=1, message=str(exc))
-        raise
+            checkpoint("run_complete")
+            if run_context is not None:
+                mark_run_status(run_context, "completed", exit_code=0)
+                _schedule_completed_run_distillation(agent, run_context, primary_target)
+        except KeyboardInterrupt:
+            status = "interrupted"
+            exit_code = 130
+            save_failure("interrupt", status, exit_code)
+        except asyncio.CancelledError:
+            status = "interrupted"
+            exit_code = 130
+            save_failure("cancelled", status, exit_code)
+            raise
+        except Exception as exc:
+            status = "failed"
+            exit_code = 1
+            save_failure("failed", status, exit_code, str(exc))
+            raise
 
-    summary = _build_summary(
-        agent=agent,
-        command=command,
-        restore_result=restore_result,
-        run_context=run_context,
-        status=status,
-        exit_code=exit_code,
-    )
-    return OrchestratorRunResult(
-        restore_result=restore_result or SessionRestoreResult(target=target),
-        summary=summary,
-        run_context=run_context,
-        status=status,
-        exit_code=exit_code,
-        audited_session=audited_session,
-    )
+        summary = _build_summary(
+            agent=agent,
+            command=command,
+            restore_result=restore_result,
+            run_context=run_context,
+            status=status,
+            exit_code=exit_code,
+        )
+        return OrchestratorRunResult(
+            restore_result=restore_result or SessionRestoreResult(target=target),
+            summary=summary,
+            run_context=run_context,
+            status=status,
+            exit_code=exit_code,
+            audited_session=audited_session,
+        )
+    finally:
+        _release_run_binding(agent)
+        agent.session_state.set_checkpoint_callback(None)
 
 
 def _schedule_completed_run_distillation(
@@ -297,31 +354,26 @@ def _resolve_run_context(
         runs_dir=runs_dir,
         config=config,
         run_name=run_name,
-        replace=False,
     )
 
 
+def _bind_run_context(agent: AgentCore, run_context: RunContext) -> None:
+    binder = getattr(agent, "bind_run_context", None)
+    if callable(binder):
+        binder(run_context)
+
+
+def _release_run_binding(agent: AgentCore) -> None:
+    releaser = getattr(agent, "release_run_binding", None)
+    if callable(releaser):
+        releaser()
+
+
 def _targets_from_run_context(run_context: RunContext) -> list[Target]:
-    targets: list[Target] = []
-    for item in run_context.manifest.get("targets", []):
-        if not isinstance(item, dict):
-            continue
-        raw = str(item.get("input") or item.get("canonical") or "")
-        canonical = str(item.get("canonical") or raw)
-        kind = str(item.get("type") or "domain")
-        targets.append(
-            Target(
-                kind=kind,  # type: ignore[arg-type]
-                raw=raw,
-                canonical=canonical,
-                label=item.get("label") if isinstance(item.get("label"), str) else None,
-                ingress_mode=str(item.get("ingress_mode") or "copy"),  # type: ignore[arg-type]
-                scope_mode=str(item.get("scope_mode") or "auto"),  # type: ignore[arg-type]
-                diff_base=item.get("diff_base") if isinstance(item.get("diff_base"), str) else None,
-            )
-        )
+    targets = targets_from_manifest(run_context.manifest, run_dir=run_context.run_dir)
     if not targets:
         raise RunCorruptError(run_context.run_dir, "run.json targets[] is empty")
+    run_context.targets = targets
     return targets
 
 
@@ -366,27 +418,42 @@ def _install_checkpoint_hook(
                 update_index=False,
             )
 
+    def save_checkpoint(reason: str) -> None:
+        nonlocal secondaries_seeded
+        if not secondaries_seeded:
+            _seed_secondary_targets()
+            secondaries_seeded = True
+        state = agent.session_state
+        state.target = state.target or primary_target.raw
+        checkpoint_state = getattr(agent, "checkpoint_evidence_state", None)
+        if callable(checkpoint_state):
+            checkpoint_state()
+        save_target_state(
+            primary_target.raw,
+            state,
+            command=command,
+            runtime=agent.runtime,
+            run_context=run_context,
+            target_model=primary_target,
+            checkpoint_reason=reason,
+            merge_existing=False,
+        )
+
     def checkpoint(reason: str) -> None:
-        nonlocal checkpointing, secondaries_seeded
+        nonlocal checkpointing
         if checkpointing:
             return
         checkpointing = True
         try:
-            if not secondaries_seeded:
-                secondaries_seeded = True
-                _seed_secondary_targets()
-            state = agent.session_state
-            state.target = state.target or primary_target.raw
-            save_target_state(
-                primary_target.raw,
-                state,
-                command=command,
-                runtime=agent.runtime,
-                run_context=run_context,
-                target_model=primary_target,
-                checkpoint_reason=reason,
-                merge_existing=False,
-            )
+            store = getattr(agent, "evidence_store", None)
+            if store is not None:
+                store.flush_index()
+                store.save_checkpoint(
+                    lambda: save_checkpoint(reason), operation_id=reason,
+                    required=reason == "run_start",
+                )
+            else:
+                save_checkpoint(reason)
         finally:
             checkpointing = False
 

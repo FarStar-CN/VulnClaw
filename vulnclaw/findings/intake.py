@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
@@ -53,7 +54,21 @@ def submit_finding(agent, arguments: dict) -> str:
         location = Path(location_path).expanduser().resolve()
         if location != target_path and not location.is_relative_to(target_path):
             raise ValueError("Code location is outside the selected source target")
-    records = [session.agent_state.get_evidence(key) for key in submission.evidence_ids]
+    store = getattr(agent, "evidence_store", None)
+    scope = getattr(agent, "evidence_scope", None)
+    records = []
+    for key in submission.evidence_ids:
+        if store is not None and scope is not None:
+            try:
+                observation = store.observation(key, scope=scope)
+            except Exception:
+                records.append(None)
+                continue
+            records.append(
+                SimpleNamespace(tool=observation.tool.name, arguments=observation.tool.arguments)
+            )
+        else:
+            records.append(session.agent_state.get_evidence(key))
     if endpoint:
         supplied = endpoint_identity(endpoint)
         matching = [

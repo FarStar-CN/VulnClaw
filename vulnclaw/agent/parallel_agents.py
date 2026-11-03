@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 
 from vulnclaw.agent.agent_graph import AgentGraph, AgentOutcome
 from vulnclaw.agent.context import SessionState, VulnerabilityFinding
+from vulnclaw.evidence.models import is_evidence_id
 from vulnclaw.findings.evidence import merge_finding_evidence
 from vulnclaw.findings.types import replace_snapshot_refs
 
@@ -240,8 +241,12 @@ def merge_session_state(parent: SessionState, child: SessionState) -> None:
         merged = copy.deepcopy(finding)
         by_fingerprint = {record.fingerprint: record.id for record in parent.agent_state.evidence}
         replace_snapshot_refs(merged, [
-            ref.model_copy(update={"evidence_id": by_fingerprint.get(
-                ref.fingerprint, ref.fingerprint[:12] + ":" + ref.source_id,
+            ref.model_copy(update={"evidence_id": (
+                ref.evidence_id
+                if is_evidence_id(ref.evidence_id) or is_evidence_id(ref.fingerprint)
+                else by_fingerprint.get(
+                    ref.fingerprint, ref.fingerprint[:12] + ":" + ref.source_id,
+                )
             )}) for ref in merged.evidence_snapshots
         ])
         existing = (

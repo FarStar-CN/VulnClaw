@@ -35,15 +35,25 @@ async def test_plugin_session_records_evidence_for_explicit_submission(tmp_path,
     assert len(state.agent_state.evidence) == 1
     record = state.agent_state.evidence[0]
     assert record.tool == 'plugin:builtin.web.headers'
-    assert json.loads(record.content)['findings']
-    agent = SimpleNamespace(config=config, context=SimpleNamespace(state=state), session_state=state)
+    from vulnclaw.evidence import EvidenceScope, EvidenceStore
+
+    meta = state.resume_meta
+    store = EvidenceStore(meta['run_dir'], run_id=meta['run_id'], writable=False)
+    scope = EvidenceScope(run_id=meta['run_id'], task_id='main', read_all=True)
+    state.agent_state.bind_evidence_store(store, scope)
+    content = store.read_text(record.id, scope=scope)
+    assert json.loads(content)['findings']
+    agent = SimpleNamespace(
+        config=config, context=SimpleNamespace(state=state), session_state=state,
+        evidence_store=store, evidence_scope=scope,
+    )
     submit_finding(agent, {
         'title': 'Missing security headers', 'description': 'Review the recorded plugin result',
         'vuln_type': 'security_headers', 'severity': 'Low', 'evidence_ids': [record.id],
     })
     finding = state.findings[0]
     assert finding.submission_id
-    assert load_snapshots(finding)[record.id].content == record.content
+    assert load_snapshots(finding, run_root=meta['run_dir'])[record.id].content == content
     monkeypatch.setattr('vulnclaw.findings.verification._review_with_llm', AsyncMock(side_effect=lambda *_: EvidenceReview(
         confidence='low', reason='Provided headers still require target reproduction',
         observations=[{'evidence_id': record.id, 'quote': 'missing_headers'}],

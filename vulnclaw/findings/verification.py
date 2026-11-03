@@ -98,9 +98,17 @@ async def review_evidence(config, finding, snapshots, *, failure_reason="") -> F
         )
 
 
-async def assess_finding(session, finding, config, *, poc_verify: bool, artifact_dir: Path):
+async def assess_finding(
+    session,
+    finding,
+    config,
+    *,
+    poc_verify: bool,
+    artifact_dir: Path,
+    run_root: str | Path | None = None,
+):
     try:
-        snapshots = load_snapshots(finding)
+        snapshots = load_snapshots(finding, run_root=run_root)
     except Exception as exc:
         return FindingAssessment(
             outcome="suspected_low", method="evidence_review", complete=False,
@@ -134,14 +142,26 @@ async def assess_finding(session, finding, config, *, poc_verify: bool, artifact
     return assessment
 
 
-async def verify_findings(session, *, config=None, poc_verify: bool | None = None, reuse=True):
+async def verify_findings(
+    session,
+    *,
+    config=None,
+    poc_verify: bool | None = None,
+    reuse=True,
+    run_root: str | Path | None = None,
+):
     """Audit candidates, commit their conclusions, and return an isolated snapshot."""
     if config is None:
         from vulnclaw.config.settings import load_config
 
         config = load_config()
+    if run_root is None:
+        run_root = (getattr(session, "resume_meta", {}) or {}).get("run_dir")
     use_poc = config.session.poc_verify_enabled if poc_verify is None else poc_verify
-    artifact_root = Path(config.session.output_dir) / "evidence" / "verification" / uuid4().hex
+    evidence_root = Path(run_root) / "evidence" if run_root is not None else (
+        Path(config.session.output_dir) / "evidence"
+    )
+    artifact_root = evidence_root / "verification" / uuid4().hex
     view = session.model_copy(deep=True)
     for candidate in view.findings:
         digest = finding_input_digest(candidate)
@@ -149,7 +169,7 @@ async def verify_findings(session, *, config=None, poc_verify: bool | None = Non
         if (reuse and previous and previous.complete and previous.input_digest == digest
                 and (not use_poc or previous.poc_attempted)):
             try:
-                snapshots = load_snapshots(candidate)
+                snapshots = load_snapshots(candidate, run_root=run_root)
                 if previous.method == "poc" and candidate.endpoint:
                     # Older audits could borrow another query on the same path.
                     endpoint = endpoint_identity(candidate.endpoint)
@@ -174,6 +194,7 @@ async def verify_findings(session, *, config=None, poc_verify: bool | None = Non
         assessment = await assess_finding(
             session, candidate, config, poc_verify=use_poc,
             artifact_dir=artifact_root / hashlib.sha256(candidate.finding_id.encode()).hexdigest()[:24],
+            run_root=run_root,
         )
         assessment.input_digest = digest
         assessment.poc_attempted = use_poc
@@ -203,8 +224,7 @@ async def verify_findings(session, *, config=None, poc_verify: bool | None = Non
                             f"{session.started_at}:{session.target}:{session.task_id}".encode()
                         ).hexdigest()
                         session.set_save_path(
-                            Path(config.session.output_dir) / "evidence" / "verification"
-                            / "sessions" / key / "session.json"
+                            evidence_root / "verification" / "sessions" / key / "session.json"
                         )
                     atomic_write_json(session._save_path, session.model_dump(mode="json"))
             except Exception:

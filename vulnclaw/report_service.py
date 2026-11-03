@@ -35,6 +35,7 @@ async def generate_report_for_run(
         )
     path = Path(await generate_report(
         run.audited_session, output_path, report_format=config.session.report_format,
+        traffic_base=run.run_context.run_dir if run.run_context is not None else None,
     )).resolve()
     artifacts = path.parent / (path.stem + ".artifacts") / "findings"
     return {
@@ -61,13 +62,20 @@ async def generate_report_for_target(
         try:
             require_assessed(current_session)
         except ValueError:
-            current_session = await verify_findings(current_session, config=config)
-        return await generate_report(current_session, output_path, report_format=report_format)
+            current_session = await verify_findings(
+                current_session, config=config,
+                run_root=(getattr(current_session, "resume_meta", {}) or {}).get("run_dir"),
+            )
+        return await generate_report(
+            current_session, output_path, report_format=report_format,
+            traffic_base=(getattr(current_session, "resume_meta", {}) or {}).get("run_dir"),
+        )
     if load_target_state(target):
         session, _path, raw = await verify_target(target, config=config, reuse=True)
         return await generate_report(
             session, output_path, report_format=report_format,
             target_state_context={key: raw.get(key) for key in CONTEXT_FIELDS},
+            traffic_base=(raw.get("resume_meta") or {}).get("run_dir"),
         )
     return await generate_report(SessionState(target=target), output_path, report_format=report_format)
 

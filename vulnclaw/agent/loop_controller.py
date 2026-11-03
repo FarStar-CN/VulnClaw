@@ -383,6 +383,10 @@ async def persistent_pentest(
 
         audited = await verify_findings(
             agent.context.state, config=agent.config, poc_verify=poc_verify,
+            run_root=(
+                getattr(getattr(agent, "evidence_store", None), "run_dir", None)
+                or getattr(getattr(agent, "run_context", None), "run_dir", None)
+            ),
         )
         total_findings = len(agent.context.state.findings)
         total_steps = len(agent.context.state.executed_steps)

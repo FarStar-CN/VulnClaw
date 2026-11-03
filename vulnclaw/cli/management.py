@@ -424,11 +424,47 @@ def plugins_run(
         result = run_async(create_builtin_runtime(load_config()).execute(plugin_id, context))
         if session_file:
             from vulnclaw.agent.context import SessionState
+            from vulnclaw.evidence import EvidenceScope, EvidenceStore
             from vulnclaw.plugins.integration import record_plugin_result
+            from vulnclaw.run_context import create_run_context
+            from vulnclaw.targets import build_targets
 
             path = Path(session_file)
             session = SessionState.load(path) if path.exists() else SessionState()
-            record_plugin_result(session, result, context)
+            run_context = None
+            store = None
+            scope = None
+            if target:
+                run_context = create_run_context(
+                    command="plugins", targets=build_targets(target), config=load_config(),
+                )
+                session.resume_meta.update(
+                    {
+                        "run_name": run_context.run_name,
+                        "run_dir": str(run_context.run_dir),
+                        "run_id": run_context.run_id,
+                    }
+                )
+                store = EvidenceStore(
+                    run_context.run_dir,
+                    run_id=run_context.run_id,
+                    error_limit=int(load_config().session.persistence_error_limit),
+                )
+                scope = EvidenceScope(
+                    run_id=run_context.run_id, task_id="main", read_all=True
+                )
+                session.agent_state.bind_evidence_store(store, scope)
+            try:
+                record_plugin_result(
+                    session, result, context, store=store, scope=scope,
+                    target_id=(
+                        run_context.target_manifest().get("target_id", "")
+                        if run_context is not None else ""
+                    ),
+                )
+            finally:
+                if store is not None:
+                    store.close()
             session.save(path)
         if result.error and not result.skipped:
             raise CommandError(result.error_type or "plugin_failed", result.error)

@@ -31,6 +31,11 @@ from vulnclaw.agent.subagent.service import (
     DelegationDenied,
     TaskService,
 )
+from vulnclaw.evidence.models import (
+    EVIDENCE_REFERENCE_RE,
+    PersistenceErrorLimitExceeded,
+    is_evidence_id,
+)
 
 logger = logging.getLogger(__name__)
 _MAX_SUBAGENT_EVENTS = 256
@@ -232,6 +237,7 @@ class VulnClawTaskRuntime:
     def __init__(self, root_agent: Any):
         self.root_agent = root_agent
         self.agents: dict[str, Any] = {"main": root_agent}
+        self.run_context = getattr(root_agent, "run_context", None)
         root_state = root_agent.context.state
         self.run_id = str(getattr(root_state, "run_id", "") or uuid4().hex)
         root_state.run_id = self.run_id
@@ -417,6 +423,13 @@ class VulnClawTaskRuntime:
                 reason = context.token.reason or "agent cancelled"
                 include_session_state = False
                 _strip_unvalidated_partial_state(child_state)
+            except PersistenceErrorLimitExceeded:
+                if stream_sink is not None:
+                    stream_sink.on_stream_end("failed")
+                status = "failed"
+                reason = "evidence persistence error limit exceeded"
+                include_session_state = False
+                raise
             except Exception as exc:
                 if stream_sink is not None:
                     stream_sink.on_stream_end("failed")
@@ -503,9 +516,12 @@ class VulnClawTaskRuntime:
                 return None, True
             id_map = self.evidence_maps[key]
             projected.evidence = [
-                id_map[str(evidence_id)]
-                for evidence_id in projected.evidence
-                if str(evidence_id) in id_map
+                evidence_id
+                for evidence_id in (
+                    str(item) if is_evidence_id(str(item)) else id_map.get(str(item), "")
+                    for item in projected.evidence
+                )
+                if evidence_id
             ]
             projected.summary = _rewrite_evidence_ids(
                 projected.summary,
@@ -549,8 +565,23 @@ class VulnClawTaskRuntime:
         child_state.lifecycle_status = "running"
         child_state._checkpoint_transform = sanitize_checkpoint
         child_state.set_save_path(
-            _child_checkpoint_path(self.run_id, context.task_id)
+            _child_checkpoint_path(self.run_id, context.task_id, self.run_context)
         )
+
+        parent_store = getattr(parent, "evidence_store", None)
+        if parent_store is not None:
+            child.bind_shared_evidence_store(
+                parent_store,
+                run_context=getattr(parent, "run_context", None),
+                task_id=context.task_id,
+                parent_task_id=context.parent_id or None,
+                session_kind=definition.session_kind,
+                inherited_evidence_ids=[item.id for item in state_seed.evidence],
+                published_task_ids=[],
+                target_id=getattr(
+                    getattr(parent, "evidence_scope", None), "target_id", ""
+                ),
+            )
 
         child.active_role = definition.name
         context.session.messages = child.context.messages
@@ -589,9 +620,11 @@ def _seed_child_agent_state(parent: AgentState) -> AgentState:
     )
 
 
-def _child_checkpoint_path(run_id: str, task_id: str) -> Path:
+def _child_checkpoint_path(run_id: str, task_id: str, run_context: Any = None) -> Path:
     from vulnclaw.config.settings import SESSIONS_DIR
 
+    if run_context is not None:
+        return run_context.agent_dir(task_id) / "checkpoint.json"
     safe_run = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id).strip("._") or "run"
     safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_id).strip("._") or "agent"
     return SESSIONS_DIR / f"subagent_{safe_run}_{safe_task}.json"
@@ -657,13 +690,17 @@ def _rewrite_evidence_ids(
 
     def replace(match: re.Match[str]) -> str:
         evidence_id = match.group(0)
+        if is_evidence_id(evidence_id):
+            # Stable observation ids are already global; they need no namespace
+            # projection and must survive every ancestor boundary.
+            return evidence_id
         if evidence_id in id_map:
             return id_map[evidence_id]
         if allowed_unmapped is None or evidence_id in allowed_unmapped:
             return evidence_id
         return "[uncommitted evidence]"
 
-    return re.sub(r"(?<![A-Za-z0-9_])e\d+(?![A-Za-z0-9_])", replace, text)
+    return EVIDENCE_REFERENCE_RE.sub(replace, text)
 
 
 def get_task_runtime(agent: Any) -> VulnClawTaskRuntime:
