@@ -214,10 +214,12 @@ def run(
         None, "--max-rounds", help="Override the scan-mode legacy-engine round cap"
     ),
     run_name: Optional[str] = typer.Option(
-        None, "--run-name", help="Explicit name for a new run directory"
+        None,
+        "--run-name",
+        help="Task name for a new run (used by --resume; the directory uses the target/time layout)",
     ),
     resume_run: Optional[str] = typer.Option(
-        None, "--resume-run", help="Resume an exact run by run name"
+        None, "--resume-run", help="Resume a run by its task name"
     ),
     runs_dir: Optional[str] = typer.Option(
         None, "--runs-dir", help="Run-directory root (overrides VULNCLAW_RUNS_DIR)"
@@ -292,10 +294,12 @@ def solve(
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume previous target state"),
     snapshot: Optional[str] = typer.Option(None, "--snapshot", help="Resume from a snapshot id"),
     run_name: Optional[str] = typer.Option(
-        None, "--run-name", help="Explicit name for a new run directory"
+        None,
+        "--run-name",
+        help="Task name for a new run (used by --resume; the directory uses the target/time layout)",
     ),
     resume_run: Optional[str] = typer.Option(
-        None, "--resume-run", help="Resume an exact run by run name"
+        None, "--resume-run", help="Resume a run by its task name"
     ),
     runs_dir: Optional[str] = typer.Option(None, "--runs-dir", help="Run-directory root"),
     additional_targets: Optional[list[str]] = typer.Option(
@@ -380,10 +384,12 @@ def network_scan(
         None, "--snapshot", help="Resume from a specific target snapshot id"
     ),
     run_name: Optional[str] = typer.Option(
-        None, "--run-name", help="Explicit name for a new run directory"
+        None,
+        "--run-name",
+        help="Task name for a new run (used by --resume; the directory uses the target/time layout)",
     ),
     resume_run: Optional[str] = typer.Option(
-        None, "--resume-run", help="Resume an exact run by run name"
+        None, "--resume-run", help="Resume a run by its task name"
     ),
     runs_dir: Optional[str] = typer.Option(None, "--runs-dir", help="Run-directory root"),
     additional_targets: Optional[list[str]] = typer.Option(

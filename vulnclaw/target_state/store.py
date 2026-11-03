@@ -102,11 +102,13 @@ def _candidate_state_paths(
 ) -> list[Path | None]:
     paths: list[Path | None] = []
     if run_context is not None:
+        # A bound run is authoritative: never silently restore another run's
+        # global or indexed state when this run's file is missing.
         if snapshot_id:
             if SNAPSHOT_ID_PATTERN.fullmatch(snapshot_id):
-                paths.append(run_context.snapshot_path(snapshot_id, target_model))
-        else:
-            paths.append(run_context.state_path(target_model))
+                return [run_context.snapshot_path(snapshot_id, target_model)]
+            return []
+        return [run_context.state_path(target_model)]
 
     if snapshot_id:
         paths.append(_snapshot_path(target, snapshot_id))
@@ -115,10 +117,12 @@ def _candidate_state_paths(
         if legacy_snapshot != paths[-2]:
             paths.append(legacy_snapshot)
     else:
-        paths.append(_target_path(target))
+        # The index mirror points at the latest run-backed state; a stale
+        # global state.json must not mask it after a run save.
         paths.append(_indexed_state_path(target))
+        paths.append(_target_path(target))
         legacy_path = _legacy_target_path(target)
-        if legacy_path != paths[0]:
+        if legacy_path != paths[-1]:
             paths.append(legacy_path)
     return _unique_paths(paths)
 
@@ -340,6 +344,14 @@ def save_target_state(
         raw["resume_meta"]["run_name"] = run_context.run_name
         raw["resume_meta"]["run_dir"] = str(run_context.run_dir)
         raw["resume_meta"]["target_id"] = model.target_id
+    else:
+        previous_resume = existing.get("resume_meta", {}) if existing else {}
+        if not previous_resume:
+            previous_resume = getattr(session, "resume_meta", {}) or {}
+        if isinstance(previous_resume, dict):
+            for key in ("run_name", "run_dir", "target_id"):
+                if previous_resume.get(key):
+                    raw["resume_meta"][key] = previous_resume[key]
 
     if run_context is not None:
         snapshots = run_context.state_dir(model) / "snapshots"
@@ -982,12 +994,48 @@ def _write_index_mirror(model: Target, run_context: RunContext, snapshot_id: str
             "raw": model.raw,
             "canonical": model.canonical,
             "latest_run": run_context.run_name,
+            "run_id": run_context.run_id,
             "run_dir": str(run_context.run_dir),
             "target_id": model.target_id,
             "latest_snapshot_id": snapshot_id,
             "updated_at": datetime.now().isoformat(),
         },
     )
+
+
+def refresh_run_index(
+    run_context: RunContext, *, previous_run_dir: str | Path | None = None
+) -> None:
+    """Refresh navigation mirrors after a run directory move.
+
+    Only existing mirrors that pointed at the previous directory are touched;
+    a mirror for another run is left alone.
+    """
+
+    previous = str(Path(previous_run_dir)) if previous_run_dir is not None else ""
+    for model in run_context.targets:
+        path = _index_path(model)
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        current_run_dir = str(payload.get("run_dir") or "")
+        if previous and current_run_dir not in {previous, str(run_context.run_dir)}:
+            continue
+        payload.update(
+            {
+                "latest_run": run_context.run_name,
+                "run_id": run_context.run_id,
+                "run_dir": str(run_context.run_dir),
+                "target_id": model.target_id,
+                "updated_at": datetime.now().isoformat(),
+            }
+        )
+        atomic_write_json(path, payload)
 
 
 def _make_tree_read_only(path: Path) -> None:
