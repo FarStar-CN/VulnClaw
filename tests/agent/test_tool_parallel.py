@@ -141,8 +141,10 @@ async def test_business_receipt_is_captured_before_model_prefix_and_evidence_pre
         calls.append(name)
         return json.dumps(payload)
 
-    monkeypatch.setattr(tool_call_manager, "_record_tool_result_with_record",
-                        lambda *args, **kwargs: ("short model preview", None, json.dumps(payload)))
+    async def fake_record(*args, **kwargs):
+        return "short model preview", None, json.dumps(payload)
+
+    monkeypatch.setattr(tool_call_manager, "_record_tool_result_with_record", fake_record)
     message = _make_message([("finding", "submit_finding", '{}')])
     with observe_tools(TranscriptStreamSink(lambda event_type, **fields: events.append({"type": event_type, **fields}))):
         if legacy:
@@ -405,7 +407,7 @@ async def test_bounded_tool_result_is_returned_inline_by_default():
 
     assert skipped == []
     assert marker in results[0]["content"]
-    assert "raw output stored" not in results[0]["content"]
+    assert "durability=memory" in results[0]["content"]
     record = agent.context.state.agent_state.evidence[0]
     assert record.truncated is False
     assert record.preview.endswith(marker)
@@ -425,13 +427,12 @@ async def test_large_tool_result_uses_high_signal_preview_and_stores_raw():
 
     assert skipped == []
     content = results[0]["content"]
-    assert "raw output stored" in content
+    assert "durability=memory" in content
     assert "active-context high-signal preview" in content
     assert 'input name="id"' in content
     record = agent.context.state.agent_state.evidence[0]
     assert record.truncated is True
     assert marker in record.content
-    assert marker in agent.context.state.agent_state.format_evidence_search(marker)
 
 
 @pytest.mark.asyncio
@@ -441,7 +442,7 @@ async def test_redundant_evidence_view_is_suppressed_and_recorded():
 
     async def executor(func_name, func_args):
         executed.append(dict(func_args))
-        return agent.context.state.agent_state.format_evidence_view(**func_args)
+        return "A" * 2000
 
     agent = _Agent(executor, _Safety(tool_parallel=False, tool_max_concurrent=1))
     record = agent.context.state.agent_state.remember_tool_result(

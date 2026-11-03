@@ -271,14 +271,19 @@ LAB_MODE_PATTERNS: list[str] = [
 def resolve_traffic_store(agent: AgentContext) -> Any:
     """Resolve the per-run traffic evidence store for this agent.
 
-    Prefers a run/evidence directory carried on the session (once the run-dir
-    PRD lands); otherwise falls back to the config-scoped evidence directory so
-    headless/CI runs still get a durable store.
+    A run-bound agent always writes to its own run.  Only legacy/read-only
+    entrypoints without a binding fall back to the config-scoped directory.
     """
     from vulnclaw.traffic.paths import resolve_traffic_store as _resolve
 
-    session = getattr(agent, "session_state", None)
-    base = getattr(session, "evidence_dir", None) or getattr(session, "run_dir", None)
+    evidence_store = getattr(agent, "evidence_store", None)
+    run_context = getattr(agent, "run_context", None)
+    base = (
+        getattr(evidence_store, "run_dir", None)
+        or getattr(run_context, "run_dir", None)
+        or getattr(getattr(agent, "session_state", None), "evidence_dir", None)
+        or getattr(getattr(agent, "session_state", None), "run_dir", None)
+    )
     return _resolve(base)
 
 
@@ -324,20 +329,29 @@ def execute_evidence_tool(agent: AgentContext, tool_name: str, args: dict[str, A
     if agent_state is None:
         return "[!] AgentState is not available"
     if tool_name == "evidence_list":
-        return agent_state.format_evidence_list(limit=int(args.get("limit", 20) or 20))
+        filters = args.get("filters")
+        return agent_state.format_evidence_list(
+            limit=int(args.get("limit", 20) or 20),
+            cursor=args.get("cursor") or None,
+            filters=filters if isinstance(filters, dict) else None,
+        )
     if tool_name == "evidence_view":
         return agent_state.format_evidence_view(
             str(args.get("evidence_id", "") or ""),
             offset=int(args.get("offset", 0) or 0),
             limit=int(args.get("limit", 12000) or 12000),
+            representation=str(args.get("representation", "tool-text-v1") or "tool-text-v1"),
         )
     if tool_name == "evidence_search":
+        filters = args.get("filters")
         return agent_state.format_evidence_search(
             str(args.get("query", "") or ""),
             evidence_id=str(args.get("evidence_id", "") or ""),
             regex=bool(args.get("regex", False)),
             context_chars=int(args.get("context_chars", 180) or 180),
             limit=int(args.get("limit", 12) or 12),
+            cursor=args.get("cursor") or None,
+            filters=filters if isinstance(filters, dict) else None,
         )
     return f"[!] Unknown evidence tool: {tool_name}"
 
@@ -806,13 +820,22 @@ async def execute_source_extract(agent: AgentContext, args: dict[str, Any]) -> s
         agent_state = _agent_state_for_tool(agent)
         if agent_state is None:
             return "[!] AgentState is not available"
-        for evidence in agent_state.evidence:
-            if evidence.id == evidence_id:
-                raw = evidence.content
-                source_label = f"evidence {evidence_id}"
-                break
+        store = agent_state.evidence_store
+        scope = agent_state.evidence_scope
+        if store is not None and scope is not None:
+            try:
+                raw = store.read_text(evidence_id, scope=scope)
+            except Exception as exc:
+                return f"[!] evidence not readable: {evidence_id}: {exc}"
+            source_label = f"evidence {evidence_id}"
         else:
-            return f"[!] evidence not found: {evidence_id}"
+            for evidence in agent_state.evidence:
+                if evidence.id == evidence_id:
+                    raw = evidence.content
+                    source_label = f"evidence {evidence_id}"
+                    break
+            else:
+                return f"[!] evidence not found: {evidence_id}"
     if not raw.strip():
         return "[!] source_extract requires evidence_id or text"
 

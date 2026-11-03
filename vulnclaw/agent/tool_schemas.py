@@ -62,22 +62,69 @@ def append_builtin_tool_schemas(
         }
     )
 
+    evidence_filter_schema = {
+        "type": "object",
+        "description": "Optional metadata filters; the current run and task visibility always apply.",
+        "properties": {
+            "evidence_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Restrict to these evidence ids.",
+            },
+            "target_id": {"type": "string", "description": "Restrict to one target id."},
+            "target": {"type": "string", "description": "Restrict to the original target text."},
+            "resource": {
+                "type": "string",
+                "description": "Substring match on the resource/endpoint that was observed.",
+            },
+            "tool": {"type": "string", "description": "Restrict to one tool name."},
+            "producer_task_id": {
+                "type": "string",
+                "description": "Restrict to records produced by one task (main or a sub-agent).",
+            },
+            "identity_label": {"type": "string", "description": "Restrict to one identity label."},
+            "since": {
+                "type": "string",
+                "description": "ISO-8601 lower bound on acquisition time (inclusive).",
+            },
+            "until": {
+                "type": "string",
+                "description": "ISO-8601 upper bound on acquisition time (inclusive).",
+            },
+            "outcome": {
+                "type": "string",
+                "description": "Execution outcome: succeeded, failed, timeout, cancelled, unknown.",
+            },
+            "record_kind": {
+                "type": "string",
+                "description": "observation (a real probe) or derived (a recorded transformation).",
+            },
+        },
+        "additionalProperties": False,
+    }
+
     append_tool(
         {
             "type": "function",
             "function": {
                 "name": "evidence_list",
                 "description": (
-                    "List raw evidence records saved from prior tool calls. Use this when you need "
-                    "to orient yourself or find an evidence id for a previous large output."
+                    "List persisted evidence metadata in the current run scope. Records survive "
+                    "context compaction and restarts; pending records are usable in this process "
+                    "only. Use evidence_view to read a payload."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum recent evidence records to list (default 20).",
-                        }
+                            "description": "Maximum records to return (default 20, capped at 100).",
+                        },
+                        "cursor": {
+                            "type": "string",
+                            "description": "Opaque next_cursor from a previous evidence_list page.",
+                        },
+                        "filters": evidence_filter_schema,
                     },
                 },
             },
@@ -90,7 +137,8 @@ def append_builtin_tool_schemas(
             "function": {
                 "name": "evidence_view",
                 "description": (
-                    "View raw saved evidence by id. Use offset/limit only for missing chunks of "
+                    "View persisted evidence by id. Offsets and limits are Unicode code points "
+                    "over the stored representation. Use offset/limit only for missing chunks of "
                     "large output; do not reread the same id/range. Redundant ranges may be "
                     "suppressed to prevent evidence-reading loops."
                 ),
@@ -99,15 +147,23 @@ def append_builtin_tool_schemas(
                     "properties": {
                         "evidence_id": {
                             "type": "string",
-                            "description": "Evidence id from evidence_list or a prior tool result, e.g. e001.",
+                            "description": (
+                                "Stable evidence id from a tool result or evidence_list, "
+                                "e.g. ev_<32 lowercase hex characters> (legacy e001 ids may appear "
+                                "for imported material)."
+                            ),
                         },
                         "offset": {
                             "type": "integer",
-                            "description": "Character offset for paging through raw output (default 0).",
+                            "description": "Code-point offset for paging through the payload (default 0).",
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum characters to return, capped internally (default 12000).",
+                            "description": "Maximum characters to return (default 12000, capped at 24000).",
+                        },
+                        "representation": {
+                            "type": "string",
+                            "description": "Stored representation to read; default tool-text-v1.",
                         },
                     },
                     "required": ["evidence_id"],
@@ -122,9 +178,10 @@ def append_builtin_tool_schemas(
             "function": {
                 "name": "evidence_search",
                 "description": (
-                    "Search raw saved evidence by substring or regex and return bounded snippets "
-                    "with evidence ids and offsets. Use this before rereading a large body when "
-                    "you need to find source/sink/parameter/token/flag text inside prior raw output."
+                    "Search persisted evidence bodies by substring or regex and return bounded "
+                    "snippets with real offsets. Use this before rereading a large body when you "
+                    "need to find source/sink/parameter/token/flag text in prior raw output. "
+                    "scan_complete=false means part of the requested scope was not searched."
                 ),
                 "parameters": {
                     "type": "object",
@@ -135,20 +192,28 @@ def append_builtin_tool_schemas(
                         },
                         "evidence_id": {
                             "type": "string",
-                            "description": "Optional evidence id to search inside, e.g. e004.",
+                            "description": "Optional evidence id to search inside.",
                         },
                         "regex": {
                             "type": "boolean",
-                            "description": "Interpret query as a regex. Default false.",
+                            "description": (
+                                "Interpret query as a regex. Default false. Records over the regex "
+                                "scan limit are reported as unsearched, not as no-match."
+                            ),
                         },
                         "context_chars": {
                             "type": "integer",
-                            "description": "Characters of raw context around each match. Default 180.",
+                            "description": "Characters of body context around each match. Default 180.",
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum matches to return. Default 12, capped internally.",
+                            "description": "Maximum matches to return. Default 12, capped at 50.",
                         },
+                        "cursor": {
+                            "type": "string",
+                            "description": "Opaque next_cursor from a previous evidence_search page.",
+                        },
+                        "filters": evidence_filter_schema,
                     },
                     "required": ["query"],
                 },

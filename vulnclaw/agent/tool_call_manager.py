@@ -10,7 +10,12 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from vulnclaw.agent.agent_state import parse_status_code
+from vulnclaw.agent.agent_state import (
+    DEFAULT_EVIDENCE_PREVIEW_CHARS,
+    make_evidence_preview,
+    one_line,
+    parse_status_code,
+)
 from vulnclaw.agent.correction_layer import (
     after_tool_batch,
     after_tool_call,
@@ -30,6 +35,22 @@ from vulnclaw.agent.subagent.tooling import (
     reserve_tool_call as _reserve_subagent_tool_call,
 )
 from vulnclaw.agent.tool_result_overrides import pop_raw_tool_output_override
+from vulnclaw.evidence import (
+    CapturedObservation,
+    EvidenceDescriptor,
+    new_evidence_id,
+    serialize_tool_output,
+)
+from vulnclaw.evidence.models import (
+    REPRESENTATION_TOOL_TEXT,
+    ObservationAcquisition,
+    ObservationCompleteness,
+    ObservationExecution,
+    ObservationIdentity,
+    ObservationProducer,
+    ObservationTool,
+)
+from vulnclaw.evidence.store import utc_now_iso
 from vulnclaw.i18n import _
 
 if TYPE_CHECKING:
@@ -62,7 +83,6 @@ def _display_content(tool: str, value: Any) -> dict[str, Any] | None:
 async def handle_tool_calls(agent: AgentContext, message: Any) -> str:
     """Handle tool calls from the LLM response (legacy single-turn)."""
     results: list[str] = []
-    # [修改] 2026-06-10 Nyaecho - 修复 tool_calls 属性访问问题，使用 getattr 防止 AttributeError
     for tool_call in (getattr(message, "tool_calls", None) or []):
         func_name = tool_call.function.name
         func_args = safe_parse_tool_args(tool_call.function.arguments)
@@ -71,71 +91,24 @@ async def handle_tool_calls(agent: AgentContext, message: Any) -> str:
             observer("tool_call", call_id=tool_call.id, tool=func_name,
                      arguments=tool_call.function.arguments)
 
-        with trace_call(tool_call.id):
-            structured_content = None
-            pre_hint = before_tool_call(agent, func_name, func_args)
-            started = time.perf_counter()
-            try:
-                tool_result = await agent._execute_mcp_tool(func_name, func_args)
-                structured_content = _display_content(func_name, tool_result)
-                duration_ms = _elapsed_ms(started)
-                content, record, raw = _record_tool_result_with_record(
-                    agent,
-                    func_name,
-                    func_args,
-                    tool_result,
-                    duration_ms=duration_ms,
-                    ok=True,
-                )
-                signal = after_tool_call(
-                    agent,
-                    tool=func_name,
-                    arguments=func_args,
-                    raw_output=raw,
-                    duration_ms=duration_ms,
-                    evidence=record,
-                )
-                content = _append_correction_note(content, pre_hint, signal.model_hint())
-            except asyncio.CancelledError as exc:
-                if not _looks_like_tool_local_cancellation(exc):
-                    raise
-                call_status("failed", error=str(exc))
-                duration_ms = _elapsed_ms(started)
-                content, record, raw = _record_tool_failure_with_record(
-                    agent, func_name, func_args, exc, duration_ms=duration_ms
-                )
-                signal = after_tool_call(
-                    agent,
-                    tool=func_name,
-                    arguments=func_args,
-                    raw_output=raw,
-                    duration_ms=duration_ms,
-                    evidence=record,
-                    error=exc,
-                )
-                content = _append_correction_note(content, pre_hint, signal.model_hint())
-            except Exception as exc:
-                call_status("failed", error=str(exc))
-                duration_ms = _elapsed_ms(started)
-                content, record, raw = _record_tool_failure_with_record(
-                    agent, func_name, func_args, exc, duration_ms=duration_ms
-                )
-                signal = after_tool_call(
-                    agent,
-                    tool=func_name,
-                    arguments=func_args,
-                    raw_output=raw,
-                    duration_ms=duration_ms,
-                    evidence=record,
-                    error=exc,
-                )
-                content = _append_correction_note(content, pre_hint, signal.model_hint())
-            results.append(f"[tool:{func_name}] {content}")
+        item = {
+            "index": len(results),
+            "tool_call": tool_call,
+            "func_name": func_name,
+            "func_args": func_args,
+        }
+        result = await _execute_single(agent, item)
+        if result is None:
+            continue
+        content = result["content"]
+        results.append(content)
         observer = _OBSERVER.get()
         if observer:
-            observer("tool_result", call_id=tool_call.id, result=f"[tool:{func_name}] {content}",
-                     **({"structured_content": structured_content} if structured_content is not None else {}),
-                     **({"evidence_id": record.id} if record else {}))
+            observer("tool_result", call_id=tool_call.id, result=content,
+                     **({"structured_content": result["structured_content"]}
+                        if result.get("structured_content") is not None else {}),
+                     **({"evidence_id": result["evidence_id"]}
+                        if result.get("evidence_id") else {}))
     return "\n".join(results)
 
 
@@ -218,10 +191,20 @@ async def handle_tool_calls_with_results(
         zip(normal_calls, executed_normal)
     )
     combined.sort(key=lambda pair: int(pair[0].get("index", 0)))
-    executed = [result for _, result in combined]
 
     # Drop failed calls (preserves legacy behavior) while keeping original order.
-    results = [r for r in executed if r is not None]
+    executed_pairs = [(item, result) for item, result in combined if result is not None]
+    results = [result for _, result in executed_pairs]
+    state = _agent_state(agent)
+    if state is not None and hasattr(state, "record_round_results"):
+        state.record_round_results(
+            [item["func_name"] for item, _ in executed_pairs],
+            [
+                result["evidence_id"]
+                for _, result in executed_pairs
+                if result.get("evidence_id")
+            ],
+        )
     after_tool_batch(
         agent,
         [
@@ -307,7 +290,12 @@ async def _execute_single_impl(agent: AgentContext, item: dict[str, Any]) -> dic
     as prompt-visible error results instead of being dropped, because OpenAI-style
     tool calling expects every tool_call id to receive a corresponding tool
     message and the model needs the failure evidence to choose a fallback.
+
+    Tool execution errors and evidence-save errors are deliberately separated:
+    the save step runs outside the execution ``except`` block, so a
+    ``PersistenceErrorLimitExceeded`` is never reclassified as a tool failure.
     """
+
     tool_call = item["tool_call"]
     func_name = item["func_name"]
     func_args = item["func_args"]
@@ -316,6 +304,7 @@ async def _execute_single_impl(agent: AgentContext, item: dict[str, Any]) -> dic
     _raise_if_subagent_cancelled(agent)
     pre_hint = before_tool_call(agent, func_name, func_args)
     started = time.perf_counter()
+    started_at = utc_now_iso()
     redundant_local_view = _redundant_evidence_view_reason(agent, func_name, func_args)
     if redundant_local_view:
         call_status("skipped", error=redundant_local_view)
@@ -347,98 +336,77 @@ async def _execute_single_impl(agent: AgentContext, item: dict[str, Any]) -> dic
             "correction": signal.model_hint(),
             "correction_signal": signal,
         }
+
+    structured_content: dict[str, Any] | None = None
+    execution_error: BaseException | None = None
+    outcome = "succeeded"
+    tool_result: Any
     try:
         _reserve_subagent_tool_call(agent)
         tool_result = await agent._execute_mcp_tool(func_name, func_args)
         _reserve_subagent_evidence_bytes(agent, tool_result)
-        duration_ms = _elapsed_ms(started)
         # NOTE: do not re-invoke agent.mcp_manager.call_tool here. _execute_mcp_tool
         # already dispatches MCP tools through call_tool (running the side effect
         # once) and embeds any structured content into tool_result as
         # "[structured] {...}". A second call_tool would run the side effect twice,
         # so we recover the structured payload from the result string instead.
         structured_content = _display_content(func_name, tool_result)
-        content, record, raw = _record_tool_result_with_record(
-            agent,
-            func_name,
-            func_args,
-            tool_result,
-            duration_ms=duration_ms,
-            ok=True,
-        )
-        signal = after_tool_call(
-            agent,
-            tool=func_name,
-            arguments=func_args,
-            raw_output=raw,
-            duration_ms=duration_ms,
-            evidence=record,
-        )
-        content = _append_correction_note(content, pre_hint, signal.model_hint())
-        return {
-            "tool_call": tool_call,
-            "tool_call_id": tool_call.id,
-            "content": f"[tool:{func_name}] {content}",
-            "structured_content": structured_content,
-            "evidence_id": record.id if record else None,
-            "duration_ms": duration_ms,
-            "correction": signal.model_hint(),
-            "correction_signal": signal,
-        }
     except asyncio.CancelledError as exc:
         if not _looks_like_tool_local_cancellation(exc):
             raise
         logger.warning("工具执行被本地取消 %s: %s", func_name, exc)
-        duration_ms = _elapsed_ms(started)
-        content, record, raw = _record_tool_failure_with_record(
-            agent, func_name, func_args, exc, duration_ms=duration_ms
-        )
-        signal = after_tool_call(
-            agent,
-            tool=func_name,
-            arguments=func_args,
-            raw_output=raw,
-            duration_ms=duration_ms,
-            evidence=record,
-            error=exc,
-        )
-        content = _append_correction_note(content, pre_hint, signal.model_hint())
-        return {
-            "tool_call": tool_call,
-            "tool_call_id": tool_call.id,
-            "execution_error": str(exc),
-            "content": f"[tool:{func_name}] {content}",
-            "structured_content": None,
-            "duration_ms": duration_ms,
-            "correction": signal.model_hint(),
-            "correction_signal": signal,
-        }
+        execution_error = exc
+        outcome = "cancelled"
+        tool_result = _local_failure_text(func_name, exc)
     except Exception as exc:
         logger.warning("工具执行失败 %s: %s", func_name, exc)
-        duration_ms = _elapsed_ms(started)
-        content, record, raw = _record_tool_failure_with_record(
-            agent, func_name, func_args, exc, duration_ms=duration_ms
+        execution_error = exc
+        outcome = (
+            "timeout"
+            if isinstance(exc, (TimeoutError, asyncio.TimeoutError))
+            else "failed"
         )
-        signal = after_tool_call(
-            agent,
-            tool=func_name,
-            arguments=func_args,
-            raw_output=raw,
-            duration_ms=duration_ms,
-            evidence=record,
-            error=exc,
-        )
-        content = _append_correction_note(content, pre_hint, signal.model_hint())
-        return {
-            "tool_call": tool_call,
-            "tool_call_id": tool_call.id,
-            "execution_error": str(exc),
-            "content": f"[tool:{func_name}] {content}",
-            "structured_content": None,
-            "duration_ms": duration_ms,
-            "correction": signal.model_hint(),
-            "correction_signal": signal,
-        }
+        tool_result = _local_failure_text(func_name, exc)
+    duration_ms = _elapsed_ms(started)
+
+    # Save path: intentionally outside the execution error handler.
+    content, record, raw = await _record_tool_result_with_record(
+        agent,
+        func_name,
+        func_args,
+        tool_result,
+        duration_ms=duration_ms,
+        ok=execution_error is None,
+        error_type=execution_error.__class__.__name__ if execution_error else "",
+        tool_call_id=tool_call.id,
+        started_at=started_at,
+        outcome=outcome,
+        error=execution_error,
+    )
+    signal = after_tool_call(
+        agent,
+        tool=func_name,
+        arguments=func_args,
+        raw_output=raw,
+        duration_ms=duration_ms,
+        evidence=record,
+        error=execution_error,
+    )
+    content = _append_correction_note(content, pre_hint, signal.model_hint())
+    result: dict[str, Any] = {
+        "tool_call": tool_call,
+        "tool_call_id": tool_call.id,
+        "content": f"[tool:{func_name}] {content}",
+        "structured_content": structured_content,
+        "evidence_id": record.id if record else None,
+        "duration_ms": duration_ms,
+        "correction": signal.model_hint(),
+        "correction_signal": signal,
+    }
+    if execution_error is not None:
+        result["execution_error"] = str(execution_error)
+        call_status("failed", error=str(execution_error))
+    return result
 def _looks_like_tool_local_cancellation(exc: asyncio.CancelledError) -> bool:
     """Differentiate MCP/AnyIO local cancel scopes from user task cancellation."""
 
@@ -446,7 +414,7 @@ def _looks_like_tool_local_cancellation(exc: asyncio.CancelledError) -> bool:
     return "cancel scope" in text or "cancelled via" in text
 
 
-def _record_tool_failure(
+async def _record_tool_failure(
     agent: AgentContext,
     func_name: str,
     func_args: dict[str, Any],
@@ -456,7 +424,7 @@ def _record_tool_failure(
 ) -> str:
     """Persist a tool failure as evidence and return a model-facing error."""
 
-    content, _, _ = _record_tool_failure_with_record(
+    content, _, _ = await _record_tool_failure_with_record(
         agent,
         func_name,
         func_args,
@@ -466,7 +434,7 @@ def _record_tool_failure(
     return content
 
 
-def _record_tool_failure_with_record(
+async def _record_tool_failure_with_record(
     agent: AgentContext,
     func_name: str,
     func_args: dict[str, Any],
@@ -476,9 +444,15 @@ def _record_tool_failure_with_record(
 ) -> tuple[str, Any | None, str]:
     """Persist a tool failure and return preview, evidence and raw text."""
 
-    message = str(exc).strip() or exc.__class__.__name__
-    raw = f"[!] Tool {func_name} failed locally: {exc.__class__.__name__}: {message}"
-    return _record_tool_result_with_record(
+    raw = _local_failure_text(func_name, exc)
+    outcome = (
+        "timeout"
+        if isinstance(exc, (TimeoutError, asyncio.TimeoutError))
+        else "cancelled"
+        if isinstance(exc, asyncio.CancelledError)
+        else "failed"
+    )
+    return await _record_tool_result_with_record(
         agent,
         func_name,
         func_args,
@@ -486,10 +460,12 @@ def _record_tool_failure_with_record(
         duration_ms=duration_ms,
         ok=False,
         error_type=exc.__class__.__name__,
+        outcome=outcome,
+        error=exc,
     )
 
 
-def _record_and_preview_tool_result(
+async def _record_and_preview_tool_result(
     agent: AgentContext,
     func_name: str,
     func_args: dict[str, Any],
@@ -505,7 +481,7 @@ def _record_and_preview_tool_result(
     otherwise viewing an evidence blob would recursively duplicate it.
     """
 
-    content, _, _ = _record_tool_result_with_record(
+    content, _, _ = await _record_tool_result_with_record(
         agent,
         func_name,
         func_args,
@@ -517,7 +493,7 @@ def _record_and_preview_tool_result(
     return content
 
 
-def _record_tool_result_with_record(
+async def _record_tool_result_with_record(
     agent: AgentContext,
     func_name: str,
     func_args: dict[str, Any],
@@ -526,8 +502,16 @@ def _record_tool_result_with_record(
     duration_ms: int = 0,
     ok: bool = True,
     error_type: str = "",
-) -> tuple[str, Any | None, str]:
-    """Persist raw tool output and return prompt preview plus evidence record."""
+    tool_call_id: str = "",
+    started_at: str = "",
+    outcome: str | None = None,
+    error: BaseException | None = None,
+) -> tuple[str, EvidenceDescriptor | None, str]:
+    """Commit one tool result to the run store and return its bounded preview.
+
+    The raw override is resolved before preview construction and the frozen
+    value is reused for every save retry inside the store.
+    """
 
     if func_name in {"evidence_list", "evidence_view", "evidence_search", "submit_finding"}:
         raw = str(tool_result)
@@ -548,37 +532,128 @@ def _record_tool_result_with_record(
         raw = str(tool_result)
         return raw, None, raw
 
-    raw = pop_raw_tool_output_override(
+    raw_override = pop_raw_tool_output_override(
         agent,
         tool=func_name,
         arguments=func_args,
     )
-    if raw is None:
-        raw = str(tool_result)
-    record = agent_state.remember_tool_result(
-        tool=func_name,
-        arguments=func_args,
-        output=raw,
-        status=parse_status_code(raw),
-        target=state.target or "",
+    if raw_override is not None:
+        text, data, representation = raw_override, None, REPRESENTATION_TOOL_TEXT
+    else:
+        text, data, representation = serialize_tool_output(tool_result)
+    raw = text if text is not None else f"<{len(data or b'')} bytes>"
+    preview = make_evidence_preview(raw, DEFAULT_EVIDENCE_PREVIEW_CHARS)
+    summary = one_line(preview, 300)
+    status = parse_status_code(raw)
+    error_type = error_type or (error.__class__.__name__ if error is not None else "")
+
+    store = getattr(agent, "evidence_store", None)
+    scope = getattr(agent, "evidence_scope", None)
+    if store is None or scope is None:
+        # Legacy/read-only entrypoints have no writable run.  Keep the old
+        # in-memory behavior, but never call it durable.
+        record = agent_state.remember_tool_result(
+            tool=func_name,
+            arguments=func_args,
+            output=raw,
+            status=status,
+            target=getattr(state, "target", "") or "",
+            preview_chars=DEFAULT_EVIDENCE_PREVIEW_CHARS,
+        )
+        agent_state.record_tool_call(
+            tool=func_name,
+            arguments=func_args,
+            status=record.status,
+            evidence_id=record.id,
+            summary=record.summary,
+            duration_ms=duration_ms,
+            ok=ok,
+            error_type=error_type,
+        )
+        return (
+            f"[evidence:{record.id}] durability=memory (no writable run bound); "
+            "this preview is not recoverable after the process exits.\n"
+            f"{preview}"
+        ), record, raw
+
+    finished_at = utc_now_iso()
+    captured = CapturedObservation(
+        evidence_id=new_evidence_id(),
+        run_id=store.run_id,
+        target_id=getattr(scope, "target_id", ""),
+        target=getattr(state, "target", "") or "",
+        resource=_observation_resource(func_name, func_args, getattr(state, "target", "")),
+        producer=ObservationProducer(
+            task_id=getattr(state, "task_id", "") or "main",
+            parent_task_id=getattr(state, "parent_session_id", "") or None,
+            session_kind=getattr(state, "session_kind", "") or "parent",
+        ),
+        tool=ObservationTool(
+            name=func_name,
+            arguments=dict(func_args or {}),
+            tool_call_id=tool_call_id,
+            execution_id=tool_call_id,
+        ),
+        acquisition=ObservationAcquisition(
+            started_at=started_at or finished_at,
+            finished_at=finished_at,
+            time_source="runtime",
+        ),
+        identity=ObservationIdentity(label=None, source="unknown"),
+        execution=ObservationExecution(
+            outcome=outcome or ("succeeded" if ok else "failed"),
+            duration_ms=max(0, int(duration_ms or 0)),
+            exit_code=None,
+            http_status=status or None,
+        ),
+        completeness=ObservationCompleteness(
+            captured_complete=True,
+            upstream_truncated=None,
+            partial_output=False,
+            reason=None if error is None else one_line(str(error), 300),
+        ),
+        representation=representation,
+        text=text,
+        data=data,
+        summary=summary,
+        preview=preview,
     )
+    save = await store.commit_observation_async(
+        captured,
+        scope=scope,
+        operation_id=f"tool_{tool_call_id or captured.evidence_id}",
+    )
+    descriptor = save.descriptor or store.describe(captured.evidence_id, scope=scope)
+    agent_state.remember_observation(descriptor, preview=preview)
     agent_state.record_tool_call(
         tool=func_name,
         arguments=func_args,
-        status=record.status,
-        evidence_id=record.id,
-        summary=record.summary,
+        status=descriptor.status,
+        evidence_id=descriptor.id,
+        summary=descriptor.summary or summary,
         duration_ms=duration_ms,
         ok=ok,
         error_type=error_type,
     )
-    if record.truncated:
-        return (
-            f"[evidence:{record.id}] raw output stored ({record.size} chars). "
-            "Preview follows; call evidence_view with this id for raw chunks.\n"
-            f"{record.preview}"
-        ), record, raw
-    return f"[evidence:{record.id}]\n{record.preview}", record, raw
+    size_label = (
+        f"{descriptor.size_chars} chars"
+        if descriptor.size_chars
+        else f"{descriptor.size_bytes} bytes"
+    )
+    if save.durability == "pending":
+        header = (
+            f"[evidence:{descriptor.id}] durability=pending save_error={save.error or 'unknown'}; "
+            f"{size_label}. The body is held in memory only and is NOT durable across a restart. "
+            "Preview follows."
+        )
+    else:
+        header = (
+            f"[evidence:{descriptor.id}] durability=committed {size_label} "
+            f"representation={descriptor.representation}"
+            + (" index_dirty=true" if save.index_dirty else "")
+            + ". Preview follows; use evidence_view for exact spans."
+        )
+    return f"{header}\n{preview}", descriptor, raw
 
 
 def _agent_state(agent: AgentContext) -> Any | None:
@@ -629,6 +704,19 @@ def _record_tool_call_without_new_evidence(
 
 def _elapsed_ms(started: float) -> int:
     return max(0, int((time.perf_counter() - started) * 1000))
+
+
+def _local_failure_text(func_name: str, exc: BaseException) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    return f"[!] Tool {func_name} failed locally: {exc.__class__.__name__}: {message}"
+
+
+def _observation_resource(func_name: str, func_args: dict[str, Any], target: str) -> str:
+    for key in ("url", "base_url", "endpoint", "host", "target", "path"):
+        value = func_args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return target or func_name
 
 
 def _append_correction_note(content: str, pre_hint: str, post_hint: str) -> str:

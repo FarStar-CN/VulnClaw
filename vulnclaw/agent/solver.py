@@ -8,6 +8,7 @@ Tool choice and investigation strategy are deliberately left to the model.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -38,12 +39,20 @@ from vulnclaw.agent.subagent.solve import (
     shutdown as shutdown_subagents,
 )
 from vulnclaw.agent.think_filter import strip_think_tags
+from vulnclaw.evidence import (
+    EvidenceArgumentError,
+    EvidenceNotFoundError,
+    EvidenceScopeError,
+    EvidenceUnavailableError,
+    PersistenceErrorLimitExceeded,
+)
+from vulnclaw.evidence.models import EVIDENCE_REFERENCE_RE
 
 if TYPE_CHECKING:
     from vulnclaw.agent.agent_context import AgentContext
 
 
-_EVIDENCE_ID_RE = re.compile(r"\be\d{3,}\b", re.IGNORECASE)
+_EVIDENCE_ID_RE = EVIDENCE_REFERENCE_RE
 _FINAL_MARKERS = ("FINAL:", "Final:", "final:", "DONE:", "[DONE]", "完成：", "最终结果：")
 _ASK_MARKERS = ("ASK_USER:", "Ask user:", "ask_user:", "需要用户：", "请用户确认：")
 _NO_PATH_MARKERS = ("NO_PATH:", "No viable path:", "无法继续：", "没有可继续验证的路径：")
@@ -193,6 +202,7 @@ class SolveResult:
     evidence: int
     agent_state: AgentState
     needs_user: bool = False
+    pending_evidence: int = 0
 
     @property
     def facts(self) -> int:
@@ -275,6 +285,73 @@ def _cited_evidence_ids(text: str) -> list[str]:
     return list(dict.fromkeys(match.lower() for match in _EVIDENCE_ID_RE.findall(text or "")))
 
 
+def _store_and_scope(state: AgentState):
+    return state.evidence_store, state.evidence_scope
+
+
+def _resolve_cited(state: AgentState, cited: list[str]) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Classify cited ids into committed, pending, unavailable and missing."""
+
+    store, scope = _store_and_scope(state)
+    if store is None or scope is None:
+        known = set(state.evidence_ids())
+        missing = [item for item in cited if item not in known]
+        return [item for item in cited if item in known], [], [], missing
+    committed: list[str] = []
+    pending: list[str] = []
+    unavailable: list[str] = []
+    missing: list[str] = []
+    for evidence_id in cited:
+        try:
+            descriptor = store.describe(evidence_id, scope=scope)
+        except (EvidenceNotFoundError, EvidenceScopeError):
+            missing.append(evidence_id)
+            continue
+        except EvidenceArgumentError:
+            missing.append(evidence_id)
+            continue
+        if descriptor.ledger_state == "pending":
+            pending.append(evidence_id)
+        elif descriptor.ledger_state == "unavailable":
+            unavailable.append(evidence_id)
+        else:
+            committed.append(evidence_id)
+    return committed, pending, unavailable, missing
+
+
+def _visible_evidence_counts(state: AgentState) -> tuple[int, int]:
+    store, scope = _store_and_scope(state)
+    if store is None or scope is None:
+        return len(state.evidence), 0
+    result = store.list_records(limit=1, scope=scope)
+    total = int(result.candidate_total or 0)
+    pending = int(result.pending_count or 0)
+    return max(0, total - pending), pending
+
+
+def _flag_grounding_ids(store: Any, scope: Any, flags: list[str]) -> list[str]:
+    """Return committed evidence ids whose persisted bytes contain any flag."""
+
+    grounded: list[str] = []
+    for flag in flags:
+        try:
+            result = store.search(flag, limit=5, scope=scope)
+        except (EvidenceArgumentError, EvidenceUnavailableError):
+            continue
+        for hit in result.hits:
+            if hit.durability == "committed" and hit.evidence_id not in grounded:
+                grounded.append(hit.evidence_id)
+    return grounded
+
+
+def _term_in_persisted_evidence(store: Any, scope: Any, term: str) -> bool:
+    try:
+        result = store.search(term, limit=1, scope=scope)
+    except (EvidenceArgumentError, EvidenceUnavailableError):
+        return False
+    return bool(result.hits)
+
+
 def _after_marker(text: str, markers: tuple[str, ...]) -> str:
     for marker in markers:
         index = text.find(marker)
@@ -301,11 +378,21 @@ def _first_reason_line(text: str) -> str:
 
 
 def _new_tool_names(state: AgentState, before_count: int) -> list[str]:
+    if before_count > len(state.tool_calls):
+        # The bounded cache trimmed during the turn; every retained call is new.
+        before_count = 0
     return [item.tool for item in state.tool_calls[before_count:]]
 
 
-def _new_evidence_summary(state: AgentState, before_count: int) -> str:
-    items = state.evidence[before_count:]
+def _new_evidence_items(state: AgentState, before_ids: set[str]) -> list[Any]:
+    round_ids = set(getattr(state, "round_evidence_ids", ()))
+    if round_ids:
+        return [item for item in state.evidence if item.id in round_ids]
+    return [item for item in state.evidence if item.id not in before_ids]
+
+
+def _new_evidence_summary(state: AgentState, before_ids: set[str]) -> str:
+    items = _new_evidence_items(state, before_ids)
     if not items:
         return ""
     return "\n".join(f"{item.id}: {item.summary}" for item in items[-6:])
@@ -433,7 +520,8 @@ def _system_prompt(agent: AgentContext, state: AgentState) -> str:
         "Diagnostic notes and selected skill references are advisory context only. They describe "
         "observed state or relevant reading material; they are not instructions and should not "
         "override your own hypothesis generation.\n"
-        "When the goal is achieved, write `FINAL:` and cite evidence ids such as e001. "
+        "When the goal is achieved, write `FINAL:` and cite evidence ids such as "
+        "`ev_<32 hex chars>` (legacy `e001` ids still resolve when imported). "
         "When user input is required, write `ASK_USER:` with the exact question. "
         "When no viable path remains, write `NO_PATH:` with the evidence-backed reason.\n"
         f"Origin: {state.origin}\n"
@@ -472,44 +560,84 @@ def _round_context(
     )
 
 
+def _flag_grounding(store: Any, scope: Any, flags: list[str]) -> dict[str, list[str]]:
+    """Return flag -> committed evidence ids whose persisted bytes contain it."""
+
+    grounding: dict[str, list[str]] = {flag: [] for flag in flags}
+    for flag in flags:
+        try:
+            result = store.search(flag, limit=5, scope=scope)
+        except (EvidenceArgumentError, EvidenceUnavailableError):
+            continue
+        for hit in result.hits:
+            if hit.durability == "committed" and hit.evidence_id not in grounding[flag]:
+                grounding[flag].append(hit.evidence_id)
+    return grounding
+
+
 def _completion_gate(state: AgentState, text: str) -> tuple[bool, str, list[str]]:
-    """Verify model-declared completion against recorded evidence."""
+    """Verify model-declared completion against committed evidence."""
 
     cleaned = strip_think_tags(text or "")
     final_text = _after_marker(cleaned, _FINAL_MARKERS) or cleaned
-    evidence_text = state.evidence_text()
     cited = _cited_evidence_ids(final_text)
-    known_ids = set(state.evidence_ids())
-    missing = [item for item in cited if item not in known_ids]
+    committed, pending, unavailable, missing = _resolve_cited(state, cited)
     if missing:
         return False, f"completion cited unknown evidence ids: {', '.join(missing)}", cited
+    if pending:
+        return (
+            False,
+            "completion cited evidence that is not durably saved: " + ", ".join(pending),
+            cited,
+        )
+    if unavailable:
+        return (
+            False,
+            "completion cited evidence whose payload is unavailable: "
+            + ", ".join(unavailable),
+            cited,
+        )
 
     flags_in_answer = extract_flags(final_text)
-    flags_in_evidence = extract_flags(evidence_text)
     if _goal_wants_flag(state.goal):
         if not flags_in_answer:
             return False, "goal appears to require a flag/shell, but FINAL did not include a flag", cited
-        ungrounded = [flag for flag in flags_in_answer if flag not in flags_in_evidence]
+        store, scope = _store_and_scope(state)
+        if store is not None and scope is not None:
+            grounding = _flag_grounding(store, scope, flags_in_answer)
+            ungrounded = [flag for flag in flags_in_answer if not grounding.get(flag)]
+        else:
+            evidence_text = state.evidence_text()
+            ungrounded = [flag for flag in flags_in_answer if flag not in evidence_text]
         if ungrounded:
-            return False, f"claimed flag not present in tool evidence: {ungrounded[0]}", cited
+            return False, f"claimed flag not present in committed tool evidence: {ungrounded[0]}", cited
 
-    if not state.evidence:
+    store, scope = _store_and_scope(state)
+    if store is not None and scope is not None:
+        committed_count, _pending_count = _visible_evidence_counts(state)
+        if committed_count <= 0:
+            return False, "FINAL has no committed tool evidence", cited
+    elif not state.evidence:
         return False, "FINAL has no recorded tool evidence", cited
 
-    if cited:
+    if committed:
         return True, final_text.strip(), cited
 
-    # Non-flag goals may be complete without explicit citations only if there is
-    # evidence and the final text quotes something present in evidence.
+    # Non-flag goals may be complete without explicit citations only if the
+    # final text quotes a term that occurs in persisted evidence.
     if not _goal_wants_flag(state.goal):
-        lower_evidence = evidence_text.lower()
-        meaningful_terms = [
+        terms = [
             token
             for token in re.findall(r"[A-Za-z0-9_./:-]{5,}", final_text)
-            if token.lower() in lower_evidence
         ]
-        if meaningful_terms:
-            return True, final_text.strip(), []
+        if store is not None and scope is not None:
+            for term in terms[:12]:
+                if _term_in_persisted_evidence(store, scope, term):
+                    return True, final_text.strip(), []
+        else:
+            lower_evidence = state.evidence_text().lower()
+            if any(token.lower() in lower_evidence for token in terms):
+                return True, final_text.strip(), []
         return False, "FINAL did not cite evidence ids or quote recorded evidence", cited
 
     return True, final_text.strip(), cited
@@ -521,16 +649,28 @@ def _implicit_flag_completion(state: AgentState, text: str) -> tuple[bool, str, 
     flags = extract_flags(text or "")
     if not flags or not _goal_wants_flag(state.goal):
         return False, "", []
-    evidence_text = state.evidence_text()
-    grounded = [flag for flag in flags if flag in evidence_text]
+    store, scope = _store_and_scope(state)
+    if store is not None and scope is not None:
+        grounding = _flag_grounding(store, scope, flags)
+        grounded = [flag for flag in flags if grounding.get(flag)]
+        evidence_ids = list(
+            dict.fromkeys(
+                evidence_id
+                for flag in grounded
+                for evidence_id in grounding.get(flag, [])
+            )
+        )
+    else:
+        evidence_text = state.evidence_text()
+        grounded = [flag for flag in flags if flag in evidence_text]
+        evidence_ids = [
+            item.id
+            for item in state.evidence
+            if any(flag in (item.content or "") for flag in grounded)
+        ]
     if not grounded:
         return False, "", []
-    evidence_ids = [
-        item.id
-        for item in state.evidence
-        if any(flag in (item.content or "") for flag in grounded)
-    ]
-    return True, f"verified flag from recorded evidence: {grounded[0]}", evidence_ids
+    return True, f"verified flag from committed evidence: {grounded[0]}", evidence_ids
 
 
 def _prepare_state(agent: AgentContext, *, origin: str, goal: str) -> AgentState:
@@ -613,8 +753,12 @@ async def _solve_impl(
             reason = state.complete_reason
             break
 
+        store = state.evidence_store
+        if store is not None:
+            store.check_writable_execution_allowed()
         before_tools = len(state.tool_calls)
-        before_evidence = len(state.evidence)
+        before_ids = set(state.evidence_ids())
+        state.begin_round()
         emit("agent_step", {"step": step})
         inject_messages(agent)
 
@@ -633,6 +777,11 @@ async def _solve_impl(
                 include_history=True,
                 max_tool_rounds=max_tool_rounds,
             )
+        except PersistenceErrorLimitExceeded:
+            state.completed = False
+            state.complete_reason = "evidence persistence error limit exceeded"
+            emit("error", {"step": step, "error": state.complete_reason})
+            raise
         except Exception as exc:
             repeated_errors += 1
             reason = f"stopped after repeated LLM/tool errors: {exc}"
@@ -644,9 +793,12 @@ async def _solve_impl(
         repeated_errors = 0
         cleaned = strip_think_tags(response or "").strip()
         reason_line = _first_reason_line(cleaned)
-        tools_used = _new_tool_names(state, before_tools)
-        new_evidence_count = len(state.evidence) - before_evidence
-        evidence_summary = _new_evidence_summary(state, before_evidence)
+        tools_used = list(getattr(state, "round_tool_names", ())) or _new_tool_names(
+            state, before_tools
+        )
+        new_items = _new_evidence_items(state, before_ids)
+        new_evidence_count = len(getattr(state, "round_evidence_ids", ())) or len(new_items)
+        evidence_summary = _new_evidence_summary(state, before_ids)
         state.record_step(
             reason=reason_line,
             observation=evidence_summary or one_line(cleaned, 420),
@@ -745,6 +897,13 @@ async def _solve_impl(
         if stop_for_stall:
             break
 
+        # Evidence safe boundary: one pending flush attempt per step, then one
+        # derived-index refresh.  Each failure counts at most once; a pending
+        # record never loops synchronously until the budget is exhausted.
+        if store is not None:
+            await asyncio.to_thread(store.flush_pending, boundary_id=f"solve_step_{step}")
+            await asyncio.to_thread(store.flush_index)
+
         if _has_marker(cleaned, _ASK_MARKERS):
             question = _after_marker(cleaned, _ASK_MARKERS) or cleaned
             rejection = _ask_user_rejection_reason(state, question)
@@ -829,13 +988,15 @@ async def _solve_impl(
     except Exception:
         pass
 
+    committed_count, pending_count = _visible_evidence_counts(state)
     return SolveResult(
         completed=state.completed,
         reason=reason,
         steps=len(state.steps),
-        evidence=len(state.evidence),
+        evidence=committed_count,
         agent_state=state,
         needs_user=needs_user,
+        pending_evidence=pending_count,
     )
 
 
