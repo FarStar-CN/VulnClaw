@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, Optional
 
@@ -49,9 +50,12 @@ from vulnclaw.agent.system_prompt import build_dynamic_system_prompt
 from vulnclaw.agent.tool_call_manager import safe_parse_tool_args
 from vulnclaw.config.schema import VulnClawConfig, resolve_engine
 from vulnclaw.config.settings import make_async_openai_client
+from vulnclaw.evidence import EvidenceScope, EvidenceStore, read_persistence_health
 from vulnclaw.i18n import _
 from vulnclaw.kb.experience import ExperienceStore
+from vulnclaw.run_context import RunContext, create_run_context, ensure_writable_run_layout
 from vulnclaw.target_state.store import save_target_state
+from vulnclaw.targets import build_targets
 
 
 class AgentCore:
@@ -88,6 +92,233 @@ class AgentCore:
         self._kb_context_cache: dict[Any, str] = {}
         self._experience_store: Any = None
         self._observation_parser = ResponseObservationParser(self.context, self.runtime)
+        self.run_context: RunContext | None = None
+        self.evidence_store: EvidenceStore | None = None
+        self.evidence_scope: EvidenceScope | None = None
+        self._owns_evidence_store = False
+
+    # ── run/evidence binding ───────────────────────────────────────────
+    def bind_run_context(
+        self,
+        run_context: RunContext,
+        *,
+        writable: bool = True,
+        task_id: str = "main",
+        parent_task_id: str | None = None,
+        session_kind: str = "parent",
+        inherited_evidence_ids: list[str] | None = None,
+        published_task_ids: list[str] | None = None,
+    ) -> EvidenceStore:
+        """Bind this agent to one run and its evidence store.
+
+        The binding is a runtime dependency: it is never serialized.  Restored
+        states must be rebound after ``apply_target_state_to_agent`` replaces
+        ``agent.context.state``.
+        """
+
+        if writable:
+            run_context = ensure_writable_run_layout(
+                run_context, error_limit=self.config.session.persistence_error_limit
+            )
+        self.run_context = run_context
+        if (
+            self.evidence_store is not None
+            and self.evidence_store.run_id == run_context.run_id
+        ):
+            self._bind_memory_paths(run_context, task_id)
+            self._bind_state_evidence(
+                task_id=task_id,
+                parent_task_id=parent_task_id,
+                session_kind=session_kind,
+                inherited_evidence_ids=inherited_evidence_ids,
+                published_task_ids=published_task_ids,
+                target_id=_primary_target_id(run_context),
+            )
+            return self.evidence_store
+
+        self.release_run_binding()
+        self.run_context = run_context
+        restored = read_persistence_health(run_context.run_dir, run_id=run_context.run_id)
+        store = EvidenceStore(
+            run_context.run_dir,
+            run_id=run_context.run_id,
+            error_limit=int(getattr(self.config.session, "persistence_error_limit", 5) or 0),
+            writable=writable,
+            restored_health=restored,
+        )
+        self.evidence_store = store
+        self._owns_evidence_store = True
+        self._bind_memory_paths(run_context, task_id)
+        self._bind_state_evidence(
+            task_id=task_id,
+            parent_task_id=parent_task_id,
+            session_kind=session_kind,
+            inherited_evidence_ids=inherited_evidence_ids,
+            published_task_ids=published_task_ids,
+            target_id=_primary_target_id(run_context),
+        )
+        return store
+
+    def bind_shared_evidence_store(
+        self,
+        store: EvidenceStore,
+        *,
+        run_context: RunContext | None = None,
+        task_id: str,
+        parent_task_id: str | None = None,
+        session_kind: str = "team",
+        inherited_evidence_ids: list[str] | None = None,
+        published_task_ids: list[str] | None = None,
+        target_id: str = "",
+    ) -> EvidenceStore:
+        """Attach a child/role agent to the parent-computed store without owning it."""
+
+        self.release_run_binding()
+        self.run_context = run_context
+        self.evidence_store = store
+        self._owns_evidence_store = False
+        if run_context is not None:
+            self._bind_memory_paths(run_context, task_id)
+        self._bind_state_evidence(
+            task_id=task_id,
+            parent_task_id=parent_task_id,
+            session_kind=session_kind,
+            inherited_evidence_ids=inherited_evidence_ids,
+            published_task_ids=published_task_ids,
+            target_id=target_id,
+        )
+        return store
+
+    def _bind_memory_paths(self, run_context: RunContext, task_id: str) -> None:
+        """Point conversation archives and the vault at this run's agent slot."""
+
+        agent_dir = run_context.agent_dir(task_id or "main")
+        memory_dir = agent_dir / "memory"
+        memory_store = getattr(self.context, "memory_store", None)
+        if memory_store is None:
+            memory_store = MemoryStore(
+                store_dir=self.config.session.output_dir / "memory",
+                archive_max_bytes=self.config.session.memory_archive_max_bytes,
+                archive_max_files=self.config.session.memory_archive_max_files,
+            )
+            self.context.memory_store = memory_store
+        memory_store.archive_dir = memory_dir
+        memory_store.session_id = f"{run_context.run_id}:{task_id or 'main'}"
+        self.context.vault_output_dir = agent_dir
+        if self.context.vault is not None:
+            self.context.vault.set_output_dir(agent_dir)
+
+    def _bind_state_evidence(
+        self,
+        *,
+        task_id: str,
+        parent_task_id: str | None,
+        session_kind: str,
+        inherited_evidence_ids: list[str] | None,
+        published_task_ids: list[str] | None,
+        target_id: str,
+    ) -> None:
+        if self.evidence_store is None:
+            raise RuntimeError("cannot bind evidence scope without a store")
+        state = self.context.state
+        state.run_id = self.evidence_store.run_id
+        state.task_id = task_id or "main"
+        state.parent_session_id = parent_task_id or ""
+        state.session_kind = session_kind
+        agent_state = state.agent_state
+        inherited = set(agent_state.inherited_evidence_ids)
+        inherited.update(inherited_evidence_ids or [])
+        published = set(agent_state.published_task_ids)
+        published.update(published_task_ids or [])
+        scope = EvidenceScope(
+            run_id=self.evidence_store.run_id,
+            task_id=state.task_id,
+            target_id=target_id,
+            inherited_evidence_ids=frozenset(inherited),
+            published_task_ids=frozenset(published),
+        )
+        self.evidence_scope = scope
+        agent_state.bind_evidence_store(self.evidence_store, scope)
+
+    def refresh_evidence_scope(
+        self,
+        *,
+        inherited_evidence_ids: list[str] | None = None,
+        published_task_ids: list[str] | None = None,
+    ) -> None:
+        state = self.context.state
+        agent_state = state.agent_state
+        if inherited_evidence_ids:
+            agent_state.inherited_evidence_ids = list(
+                dict.fromkeys([*agent_state.inherited_evidence_ids, *inherited_evidence_ids])
+            )
+        if published_task_ids:
+            agent_state.published_task_ids = list(
+                dict.fromkeys([*agent_state.published_task_ids, *published_task_ids])
+            )
+        if self.evidence_store is None:
+            return
+        self.evidence_scope = EvidenceScope(
+            run_id=self.evidence_store.run_id,
+            task_id=state.task_id or "main",
+            target_id=self.evidence_scope.target_id if self.evidence_scope else "",
+            inherited_evidence_ids=frozenset(agent_state.inherited_evidence_ids),
+            published_task_ids=frozenset(agent_state.published_task_ids),
+        )
+        agent_state.bind_evidence_store(self.evidence_store, self.evidence_scope)
+
+    def release_run_binding(self) -> None:
+        store = getattr(self, "evidence_store", None)
+        self.evidence_store = None
+        self.evidence_scope = None
+        self.run_context = None
+        if store is not None and getattr(self, "_owns_evidence_store", False):
+            store.close()
+        self._owns_evidence_store = False
+
+    def checkpoint_evidence_state(self) -> None:
+        """Freeze the current evidence watermark and health into the state snapshot."""
+
+        store = self.evidence_store
+        if store is None:
+            return
+        agent_state = self.context.state.agent_state
+        agent_state.checkpoint_commit_seq = store.max_commit_seq
+        agent_state.persistence_health = store.health_snapshot()
+        agent_state.evidence_pending_ids = sorted(store.health.pending_ids)
+
+    def migrate_legacy_state(
+        self, *, source_run_dir: str | Path | None = None, source_run_id: str = ""
+    ) -> dict[str, int]:
+        """Import embedded checkpoint evidence and absolute finding snapshots once."""
+
+        store = self.evidence_store
+        scope = self.evidence_scope
+        state = self.context.state
+        if store is None or scope is None:
+            return {"imported_evidence": 0, "imported_snapshots": 0}
+        from vulnclaw.evidence.migration import (
+            import_run_evidence,
+            migrate_embedded_checkpoint_evidence,
+            migrate_finding_snapshots,
+        )
+
+        imported = 0
+        if source_run_dir is not None and source_run_id != store.run_id:
+            imported = import_run_evidence(
+                store, state.agent_state, scope=scope,
+                source_run_dir=source_run_dir, source_run_id=source_run_id,
+            )
+        id_map = migrate_embedded_checkpoint_evidence(
+            store,
+            state.agent_state,
+            scope=scope,
+            target=state.target or "",
+            target_id=scope.target_id,
+            session=state,
+        )
+        copied = migrate_finding_snapshots(store.run_dir, state, source_run_dir=source_run_dir)
+        return {"imported_evidence": len(id_map) + imported, "imported_snapshots": copied}
 
     def _child_factory(self) -> "AgentCore":
         """Build an isolated child; subclasses may override this explicit seam."""
@@ -136,6 +367,7 @@ class AgentCore:
 
     def reset_context(self) -> None:
         """Reset agent context and runtime loop state."""
+        self.release_run_binding()
         self.context.reset()
         self._reset_runtime_state()
 
@@ -159,14 +391,23 @@ class AgentCore:
             if memory_store is not None:
                 directory = config.session.output_dir / "memory"
                 if memory_store.store_dir.resolve() != directory.resolve():
-                    replacement = MemoryStore(store_dir=directory)
+                    replacement = MemoryStore(
+                        store_dir=directory,
+                        archive_dir=memory_store.archive_dir if self.run_context else None,
+                    )
                     replacement.session_id = memory_store.session_id
                     context.memory_store = memory_store = replacement
                 memory_store.archive_max_bytes = config.session.memory_archive_max_bytes
                 memory_store.archive_max_files = config.session.memory_archive_max_files
-            context.vault_output_dir = config.session.output_dir
-            if context.vault is not None:
-                context.vault.set_output_dir(config.session.output_dir)
+            if self.run_context is not None:
+                agent_dir = self.run_context.agent_dir(self.context.state.task_id or "main")
+                context.vault_output_dir = agent_dir
+                if context.vault is not None:
+                    context.vault.set_output_dir(agent_dir)
+            else:
+                context.vault_output_dir = config.session.output_dir
+                if context.vault is not None:
+                    context.vault.set_output_dir(config.session.output_dir)
             context._trim()
 
     def _reset_runtime_state(
@@ -291,6 +532,7 @@ class AgentCore:
 
     async def aclose(self) -> None:
         """Release this agent's HTTP client before replacing or stopping it."""
+        self.release_run_binding()
         client, self._client = self._client, None
         if client is not None:
             await client.close()
@@ -637,6 +879,9 @@ class AgentCore:
             self.apply_task_constraints(task_constraints)
         self.context.add_user_message(user_input)
 
+        if self.evidence_store is None and self.run_context is None:
+            self._ensure_solve_run_binding(detected_target or self.context.state.target)
+
         resolved_goal = goal or user_input
         origin = detected_target or self.context.state.target or user_input
         return await run_solve(
@@ -648,6 +893,25 @@ class AgentCore:
             stream_sink=stream_sink,
             on_event=on_event,
         )
+
+    def _ensure_solve_run_binding(self, target: str | None) -> None:
+        """Create/reuse a managed run when ``solve`` is called outside the orchestrator."""
+
+        if self.evidence_store is not None:
+            return
+        if not target:
+            raise ValueError(
+                "direct solve requires a target so evidence can be grouped under a managed run"
+            )
+        targets = build_targets(target)
+        run_context = create_run_context(
+            command="solve",
+            targets=targets,
+            runs_dir=getattr(self.config.session, "runs_dir", None),
+            config=self.config,
+        )
+        store = self.bind_run_context(run_context)
+        store.check_writable_execution_allowed()
 
     def apply_task_constraints(self, constraints: TaskConstraints) -> None:
         """Install one authoritative constraint object across the runtime."""
@@ -812,3 +1076,8 @@ class AgentCore:
     def _update_recon_dimension_completion(self, response: str) -> None:
         """Auto-detect which recon dimensions have been explored."""
         update_recon_dimension_completion(self, response)
+
+
+def _primary_target_id(run_context: RunContext) -> str:
+    entry = run_context.target_manifest()
+    return str(entry.get("target_id") or entry.get("state_key") or "")

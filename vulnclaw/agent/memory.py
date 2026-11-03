@@ -52,11 +52,13 @@ class MemoryStore:
         self,
         store_dir: Optional[Path] = None,
         *,
+        archive_dir: Optional[Path] = None,
         archive_max_bytes: int = 64 * 1024 * 1024,
         archive_max_files: int = 8,
     ) -> None:
         self.store_dir = store_dir or KB_DIR / "memory"
         self.store_dir.mkdir(parents=True, exist_ok=True)
+        self.archive_dir = archive_dir or self.store_dir
         self.archive_max_bytes = max(1024, int(archive_max_bytes))
         self.archive_max_files = max(2, int(archive_max_files))
         self.session_id = uuid4().hex
@@ -69,7 +71,7 @@ class MemoryStore:
 
     @property
     def _archive_file(self) -> Path:
-        return self.store_dir / "conversation_archive.jsonl"
+        return self.archive_dir / "conversation_archive.jsonl"
 
     def new_scope(self) -> str:
         """Start an isolated task scope while retaining the same durable store."""
@@ -149,13 +151,13 @@ class MemoryStore:
             "messages": messages,
         }
         encoded = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-        with _file_lock(self.store_dir / ".conversation_archive.lock"):
+        with _file_lock(self.archive_dir / ".conversation_archive.lock"):
             encoded_size = len((encoded + "\n").encode("utf-8"))
             if (
                 self._archive_file.exists()
                 and self._archive_file.stat().st_size + encoded_size > self.archive_max_bytes
             ):
-                rotated = self.store_dir / (
+                rotated = self.archive_dir / (
                     f"conversation_archive.{datetime.now().strftime('%Y%m%d%H%M%S%f')}."
                     f"{uuid4().hex[:8]}.jsonl"
                 )
@@ -173,7 +175,7 @@ class MemoryStore:
 
     def _archive_shards(self) -> list[Path]:
         return sorted(
-            self.store_dir.glob("conversation_archive*.jsonl"),
+            self.archive_dir.glob("conversation_archive*.jsonl"),
             key=lambda path: (path.stat().st_mtime_ns, path.name),
         )
 

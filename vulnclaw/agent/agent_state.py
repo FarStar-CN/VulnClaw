@@ -12,13 +12,26 @@ import hashlib
 import json
 import re
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+
+from vulnclaw.evidence.models import (
+    EvidenceArgumentError,
+    EvidenceDescriptor,
+    EvidenceFilters,
+    EvidenceNotFoundError,
+    EvidenceScope,
+    EvidenceScopeError,
+    EvidenceUnavailableError,
+)
+
+if TYPE_CHECKING:
+    from vulnclaw.evidence.store import EvidenceStore
 
 DEFAULT_EVIDENCE_PREVIEW_CHARS = 6000
-DEFAULT_EVIDENCE_VIEW_CHARS = 0
-FULL_EVIDENCE_RANGE_END = 2**63 - 1
+DEFAULT_EVIDENCE_VIEW_CHARS = 12_000
+MAX_EVIDENCE_VIEW_CHARS = 24_000
 MAX_STORED_EVIDENCE = 240
 MAX_STORED_TOOL_CALLS = 400
 MAX_STORED_STEPS = 400
@@ -51,6 +64,10 @@ def one_line(value: str, limit: int = 240) -> str:
     """Collapse whitespace and clip to one prompt-safe line."""
 
     return clip_text(re.sub(r"\s+", " ", str(value or "")).strip(), limit)
+
+
+def _tri_state(value: bool | None) -> str:
+    return "unknown" if value is None else ("true" if value else "false")
 
 
 def parse_status_code(output: str) -> int:
@@ -165,29 +182,17 @@ def make_evidence_preview(content: str, limit: int = DEFAULT_EVIDENCE_PREVIEW_CH
     return clip_text(preview, limit, marker="...[preview clipped; inspect saved evidence]...")
 
 
-class EvidenceRecord(BaseModel):
-    """Raw tool evidence plus prompt-safe preview."""
+class EvidenceRecord(EvidenceDescriptor):
+    """Backward-compatible evidence descriptor name.
 
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str
-    target: str = ""
-    tool: str = ""
-    arguments: dict[str, Any] = Field(default_factory=dict)
-    key_args: str = ""
-    status: int = 0
-    summary: str = ""
-    preview: str = ""
-    content: str = ""
-    truncated: bool = False
-    fingerprint: str = ""
-    content_hash: str = ""
-    duplicate_of: str = ""
-    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    New observations are persisted by :class:`vulnclaw.evidence.store.EvidenceStore`.
+    A descriptor never carries committed payload text in production; ``content``
+    is populated only when reading an old checkpoint for migration.
+    """
 
     @property
     def size(self) -> int:
-        return len(self.content or "")
+        return int(self.size_chars or self.size_bytes or 0)
 
 
 class ToolCallRecord(BaseModel):
@@ -306,9 +311,43 @@ class AgentState(BaseModel):
     completed: bool = False
     complete_reason: str = ""
     final_answer: str = ""
+    checkpoint_commit_seq: int = 0
+    evidence_pending_ids: list[str] = Field(default_factory=list)
+    persistence_health: dict[str, Any] = Field(default_factory=dict)
+    published_task_ids: list[str] = Field(default_factory=list)
+    inherited_evidence_ids: list[str] = Field(default_factory=list)
     evidence_seq: int = Field(default=0, exclude=True)
     step_seq: int = Field(default=0, exclude=True)
     claim_seq: int = Field(default=0, exclude=True)
+    round_tool_names: list[str] = Field(default_factory=list, exclude=True)
+    round_evidence_ids: list[str] = Field(default_factory=list, exclude=True)
+
+    _evidence_store: Any = PrivateAttr(default=None)
+    _evidence_scope: EvidenceScope | None = PrivateAttr(default=None)
+
+    # ── runtime evidence binding ───────────────────────────────────────
+    def bind_evidence_store(self, store: "EvidenceStore", scope: EvidenceScope) -> None:
+        """Attach the run store and visibility scope after creation or restore."""
+
+        self._evidence_store = store
+        self._evidence_scope = scope
+
+    @property
+    def evidence_store(self) -> "EvidenceStore | None":
+        return self._evidence_store
+
+    @property
+    def evidence_scope(self) -> EvidenceScope | None:
+        return self._evidence_scope
+
+    def require_evidence_binding(self) -> tuple["EvidenceStore", EvidenceScope]:
+        store = self._evidence_store
+        scope = self._evidence_scope
+        if store is None or scope is None:
+            raise EvidenceUnavailableError(
+                "no evidence store is bound to this agent; start a run before inspecting evidence"
+            )
+        return store, scope
 
     @model_validator(mode="before")
     @classmethod
@@ -345,6 +384,15 @@ class AgentState(BaseModel):
         if self.verified_claims and self.claim_seq == 0:
             self.claim_seq = self._restore_seq([item.id for item in self.verified_claims], "c")
 
+    def __deepcopy__(self, memo: dict[int, Any]) -> "AgentState":
+        clone = type(self).model_validate(self.model_dump(mode="json"))
+        # Runtime dependencies are shared, never copied: a lock or open file
+        # handle must not be duplicated into a child/checkpoint state.
+        clone._evidence_store = self._evidence_store
+        clone._evidence_scope = self._evidence_scope
+        memo[id(self)] = clone
+        return clone
+
     @staticmethod
     def _restore_seq(values: list[str], prefix: str) -> int:
         nums = [
@@ -379,9 +427,32 @@ class AgentState(BaseModel):
         self.completed = False
         self.complete_reason = ""
         self.final_answer = ""
+        self.checkpoint_commit_seq = 0
+        self.evidence_pending_ids = []
+        self.persistence_health = {}
+        self.published_task_ids = []
+        self.inherited_evidence_ids = []
         self.evidence_seq = 0
         self.step_seq = 0
         self.claim_seq = 0
+        self.round_tool_names = []
+        self.round_evidence_ids = []
+
+    def begin_round(self) -> None:
+        """Start a solver turn; tool capture appends this turn's result ids."""
+
+        self.round_tool_names = []
+        self.round_evidence_ids = []
+
+    def record_round_results(
+        self, tool_names: list[str], evidence_ids: list[str]
+    ) -> None:
+        """Record tool calls and evidence created by one internal tool round."""
+
+        self.round_tool_names.extend(tool_names)
+        for evidence_id in evidence_ids:
+            if evidence_id and evidence_id not in self.round_evidence_ids:
+                self.round_evidence_ids.append(evidence_id)
 
     def record_step(
         self,
@@ -402,6 +473,21 @@ class AgentState(BaseModel):
             del self.steps[: MAX_STORED_STEPS // 2]
         return step
 
+    def remember_observation(
+        self,
+        descriptor: EvidenceDescriptor,
+        *,
+        preview: str = "",
+    ) -> EvidenceRecord:
+        """Add a committed/pending store descriptor to the bounded active cache."""
+
+        record = EvidenceRecord.model_validate(descriptor.model_dump(exclude={"content", "preview"}))
+        record.preview = preview
+        self.evidence.append(record)
+        if len(self.evidence) > MAX_STORED_EVIDENCE:
+            del self.evidence[: MAX_STORED_EVIDENCE // 2]
+        return record
+
     def remember_tool_result(
         self,
         *,
@@ -412,6 +498,13 @@ class AgentState(BaseModel):
         target: str = "",
         preview_chars: int = DEFAULT_EVIDENCE_PREVIEW_CHARS,
     ) -> EvidenceRecord:
+        """Legacy in-memory capture used only by non-run callers and plugins.
+
+        Run-backed tool execution goes through ``EvidenceStore``.  This method
+        keeps the old session-local behavior for chat/plugin paths until they
+        are migrated, and never claims persistence.
+        """
+
         raw = str(output or "")
         args = dict(arguments or {})
         serialized_args = json.dumps(args, ensure_ascii=False, sort_keys=True)
@@ -449,6 +542,9 @@ class AgentState(BaseModel):
             fingerprint=digest,
             content_hash=content_hash,
             duplicate_of=duplicate_of,
+            size_chars=len(raw),
+            size_bytes=len(raw.encode("utf-8", errors="replace")),
+            ledger_state="committed",
         )
         self.evidence.append(record)
         if len(self.evidence) > MAX_STORED_EVIDENCE:
@@ -509,7 +605,7 @@ class AgentState(BaseModel):
         except (TypeError, ValueError):
             limit = DEFAULT_EVIDENCE_VIEW_CHARS
         if limit <= 0:
-            return evidence_id, start, FULL_EVIDENCE_RANGE_END
+            limit = DEFAULT_EVIDENCE_VIEW_CHARS
         return evidence_id, start, start + limit
 
     def evidence_view_redundancy_reason(
@@ -709,22 +805,53 @@ class AgentState(BaseModel):
             "Use a different argument, inspect saved evidence, or explain why repetition is necessary."
         )
 
-    def format_evidence_list(self, limit: int = 20) -> str:
-        items = self.evidence[-max(1, int(limit)) :]
-        if not items:
-            return "No evidence has been recorded yet."
-        lines = []
-        for item in items:
-            size = f"{item.size} chars"
-            truncated = ", preview truncated" if item.truncated else ""
-            lines.append(
-                f"{item.id}: tool={item.tool} status={item.status} size={size}{truncated}"
-                + (f", same_as={item.duplicate_of}" if item.duplicate_of else "")
-                + f" hash={item.content_hash or item.fingerprint}\n"
-                f"  args={one_line(item.key_args, 180)}\n"
-                f"  summary={item.summary}"
+    def format_evidence_list(
+        self,
+        limit: int = 20,
+        *,
+        cursor: str | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> str:
+        try:
+            store, scope = self.require_evidence_binding()
+            result = store.list_records(
+                EvidenceFilters.model_validate(filters or {}),
+                cursor=cursor,
+                limit=limit,
+                scope=scope,
             )
-        return "\n".join(lines)
+        except EvidenceUnavailableError:
+            return self._legacy_format_evidence_list(limit)
+        except EvidenceArgumentError as exc:
+            return f"evidence_list unavailable: {exc}"
+        lines = [
+            f"# evidence_list scope={result.scope_description} "
+            f"sort=commit_seq_desc returned={result.returned_count} "
+            f"candidates={result.candidate_total if result.candidate_total is not None else '?'} "
+            f"watermark={result.watermark} pending={result.pending_count}"
+        ]
+        if not result.items:
+            lines.append("No evidence has been recorded in this scope.")
+        for item in result.items:
+            lines.append(
+                f"{item.id}: tool={item.tool} target={item.target or '-'} "
+                f"identity={item.identity_label or 'unknown'} "
+                f"acquired={item.finished_at or item.started_at or 'unknown'} "
+                f"outcome={item.outcome} status={item.status or '-'} "
+                f"chars={item.size_chars} bytes={item.size_bytes} "
+                f"complete={_tri_state(item.captured_complete)} "
+                f"durability={item.ledger_state}"
+                + (f" same_as={item.duplicate_of}" if item.duplicate_of else "")
+                + f"\n  summary={item.summary}"
+            )
+        if result.truncated and result.next_cursor:
+            lines.append(f"[truncated] next_cursor={result.next_cursor}")
+        if result.pending_count:
+            lines.append(
+                "[durability] pending records are readable in this process only and are not "
+                "recoverable after a restart until they are saved again."
+            )
+        return clip_text("\n".join(lines), 16_000, marker="\n...[evidence_list clipped]")
 
     def format_evidence_search(
         self,
@@ -734,59 +861,65 @@ class AgentState(BaseModel):
         regex: bool = False,
         context_chars: int = 180,
         limit: int = 12,
+        cursor: str | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> str:
-        """Search raw saved evidence and return bounded snippets with offsets."""
+        """Search persisted payloads and render bounded snippets with real offsets."""
 
-        pattern = str(query or "")
-        if not pattern:
-            return "evidence_search requires a non-empty query."
         try:
-            max_hits = max(1, min(50, int(limit or 12)))
-        except (TypeError, ValueError):
-            max_hits = 12
-        try:
-            ctx = max(0, min(2000, int(context_chars or 180)))
-        except (TypeError, ValueError):
-            ctx = 180
-
-        items = [self.get_evidence(evidence_id)] if evidence_id else list(self.evidence)
-        records = [item for item in items if item is not None]
-        hits: list[str] = []
-        compiled: re.Pattern[str] | None = None
-        if regex:
-            try:
-                compiled = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
-            except re.error as exc:
-                return f"Invalid regex for evidence_search: {exc}"
-
-        for item in records:
-            raw = item.content or ""
-            if compiled is not None:
-                matches = compiled.finditer(raw)
-            else:
-                escaped = re.escape(pattern)
-                matches = re.finditer(escaped, raw, re.IGNORECASE)
-            for match in matches:
-                start = max(0, match.start() - ctx)
-                end = min(len(raw), match.end() + ctx)
-                snippet = raw[start:end].replace("\r\n", "\n")
-                hits.append(
-                    f"{item.id}@{match.start()}:{match.end()} tool={item.tool} "
-                    f"status={item.status} hash={item.content_hash or item.fingerprint}\n"
-                    f"{snippet}"
+            store, scope = self.require_evidence_binding()
+            result = store.search(
+                query,
+                EvidenceFilters.model_validate(filters or {}),
+                cursor=cursor,
+                limit=limit,
+                context_chars=context_chars,
+                regex=regex,
+                evidence_id=evidence_id,
+                scope=scope,
+            )
+        except EvidenceUnavailableError:
+            return self._legacy_format_evidence_search(
+                query,
+                evidence_id=evidence_id,
+                regex=regex,
+                context_chars=context_chars,
+                limit=limit,
+            )
+        except EvidenceArgumentError as exc:
+            return f"evidence_search unavailable: {exc}"
+        lines = [
+            f"# evidence_search query={result.query!r} returned={result.returned_count} "
+            f"scanned_records={result.scanned_records} scanned_chars={result.scanned_chars} "
+            f"scan_complete={result.scan_complete} pending={result.pending_count}"
+        ]
+        if result.unsearched_ids:
+            lines.append(
+                "[scan incomplete] unsearched="
+                + ", ".join(result.unsearched_ids[:20])
+                + (
+                    "; narrow filters, raise the record limit or use a literal query"
+                    if any("regex" in reason for reason in result.skipped_reasons.values())
+                    else ""
                 )
-                if len(hits) >= max_hits:
-                    break
-            if len(hits) >= max_hits:
-                break
-
-        if not hits:
-            scope = f" in {evidence_id}" if evidence_id else ""
-            return f"No raw evidence matches {pattern!r}{scope}."
-        return (
-            f"# evidence_search query={pattern!r} hits={len(hits)} "
-            f"(context_chars={ctx})\n\n" + "\n\n---\n\n".join(hits)
-        )
+            )
+        if not result.hits and not result.metadata_matches:
+            lines.append("No matching body text was found in the searched scope.")
+        for hit in result.hits:
+            lines.append(
+                f"{hit.evidence_id} {hit.match_kind}@{hit.match_start}:{hit.match_end} "
+                f"snippet={hit.snippet_start}:{hit.snippet_end} "
+                f"representation={hit.representation} durability={hit.durability}\n"
+                f"{hit.text}"
+            )
+        for hit in result.metadata_matches:
+            lines.append(
+                f"[metadata hit, not response body] {hit.evidence_id} field={hit.field} "
+                f"range={hit.match_start}:{hit.match_end}\n{hit.text}"
+            )
+        if result.next_cursor:
+            lines.append(f"[continue] next_cursor={result.next_cursor}")
+        return clip_text("\n".join(lines), 16_000, marker="\n...[evidence_search clipped]")
 
     def format_evidence_view(
         self,
@@ -794,6 +927,106 @@ class AgentState(BaseModel):
         *,
         offset: int = 0,
         limit: int = DEFAULT_EVIDENCE_VIEW_CHARS,
+        representation: str = "tool-text-v1",
+    ) -> str:
+        try:
+            store, scope = self.require_evidence_binding()
+            result = store.view(
+                evidence_id,
+                offset=offset,
+                limit=min(int(limit), MAX_EVIDENCE_VIEW_CHARS),
+                representation=representation,
+                scope=scope,
+            )
+        except EvidenceUnavailableError as exc:
+            if self.evidence_store is not None and self.evidence_scope is not None:
+                return f"evidence_view unavailable: {exc}"
+            return self._legacy_format_evidence_view(
+                evidence_id, offset=offset, limit=limit
+            )
+        except (EvidenceArgumentError, EvidenceNotFoundError, EvidenceScopeError) as exc:
+            return f"evidence_view unavailable: {exc}"
+        descriptor = result.descriptor
+        header = (
+            f"{descriptor.id}: tool={descriptor.tool} target={descriptor.target or '-'} "
+            f"identity={descriptor.identity_label or 'unknown'} "
+            f"acquired={descriptor.finished_at or descriptor.started_at or 'unknown'} "
+            f"outcome={descriptor.outcome} representation={result.representation} "
+            f"durability={result.durability} complete={_tri_state(descriptor.captured_complete)} "
+            f"chars={result.total_chars} bytes={result.size_bytes} "
+            f"range={result.start}:{result.end}"
+        )
+        if result.eof:
+            header += " eof=true"
+        elif result.next_offset is not None:
+            header += f" next_offset={result.next_offset}"
+        if result.returned_truncated:
+            header += " returned_truncated=true"
+        budget = 16_000 - len(header) - 1
+        body = result.text
+        if budget > 0 and len(body) > budget:
+            body = body[:budget]
+            end = result.start + len(body)
+            header += f" truncated_end={end} next_offset={end}"
+        return f"{header}\n{body}" if body else f"{header}\n[empty range]"
+
+    # ── legacy session-local views (chat/plugin paths without a run) ───
+    def _legacy_format_evidence_list(self, limit: int) -> str:
+        items = self.evidence[-max(1, int(limit)) :]
+        if not items:
+            return "No evidence has been recorded yet."
+        lines = [
+            f"{item.id}: tool={item.tool} status={item.status} size={item.size} chars"
+            + (", preview truncated" if item.truncated else "")
+            + (f", same_as={item.duplicate_of}" if item.duplicate_of else "")
+            + f"\n  args={one_line(item.key_args, 180)}\n  summary={item.summary}"
+            for item in items
+        ]
+        return clip_text("\n".join(lines), 16_000, marker="\n...[evidence_list clipped]")
+
+    def _legacy_format_evidence_search(
+        self,
+        query: str,
+        *,
+        evidence_id: str = "",
+        regex: bool = False,
+        context_chars: int = 180,
+        limit: int = 12,
+    ) -> str:
+        pattern = str(query or "")
+        if not pattern:
+            return "evidence_search requires a non-empty query."
+        records = [self.get_evidence(evidence_id)] if evidence_id else list(self.evidence)
+        records = [item for item in records if item is not None]
+        hits: list[str] = []
+        try:
+            compiled = re.compile(pattern, re.IGNORECASE | re.MULTILINE) if regex else None
+        except re.error as exc:
+            return f"Invalid regex for evidence_search: {exc}"
+        for item in records:
+            raw = item.content or ""
+            matches = (
+                compiled.finditer(raw)
+                if compiled is not None
+                else re.finditer(re.escape(pattern), raw, re.IGNORECASE)
+            )
+            for match in matches:
+                start = max(0, match.start() - context_chars)
+                end = min(len(raw), match.end() + context_chars)
+                hits.append(
+                    f"{item.id}@{match.start()}:{match.end()} tool={item.tool}\n"
+                    f"{raw[start:end]}"
+                )
+                if len(hits) >= max(1, int(limit or 12)):
+                    break
+            if len(hits) >= max(1, int(limit or 12)):
+                break
+        if not hits:
+            return f"No raw evidence matches {pattern!r}."
+        return clip_text("\n\n---\n\n".join(hits), 16_000, marker="\n...[clipped]")
+
+    def _legacy_format_evidence_view(
+        self, evidence_id: str, *, offset: int = 0, limit: int = DEFAULT_EVIDENCE_VIEW_CHARS
     ) -> str:
         item = self.get_evidence(evidence_id)
         if item is None:
@@ -810,11 +1043,12 @@ class AgentState(BaseModel):
         end = start + len(chunk)
         header = (
             f"{item.id}: tool={item.tool} status={item.status} "
-            f"bytes={len(raw)} range={start}:{end}"
+            f"durability=memory bytes={len(raw)} range={start}:{end}"
         )
         if end < len(raw):
             header += f" next_offset={end}"
         return f"{header}\n{chunk}"
+
 
     def to_prompt_summary(self, *, max_evidence: int = 12, max_steps: int = 10) -> str:
         """A bounded memory block for the model-led solver."""

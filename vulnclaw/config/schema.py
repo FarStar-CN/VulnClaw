@@ -588,6 +588,14 @@ class SessionConfig(BaseModel):
     persistent_auto_report: bool = Field(
         default=True, description="Auto-generate report after each cycle"
     )
+    persistence_error_limit: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Cumulative per-run save failures allowed before execution stops; "
+            "0 stops on the first failure"
+        ),
+    )
     # Language configuration
     language: Literal["auto", "zh", "en"] = Field(
         default="auto", description="UI language: auto, zh, en"

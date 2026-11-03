@@ -387,6 +387,9 @@ def _overlay_env(config: VulnClawConfig) -> VulnClawConfig:
     if v := os.environ.get("VULNCLAW_SESSION_STALE_ROUNDS_THRESHOLD"):
         with suppress(ValueError):
             config.session.stale_rounds_threshold = int(v)
+    if v := os.environ.get("VULNCLAW_SESSION_PERSISTENCE_ERROR_LIMIT"):
+        with suppress(ValueError):
+            config.session.persistence_error_limit = max(0, int(v))
 
     # ── Session: 推理状态 / 反思引擎 / 插件运行时 ──────────────
     _truthy = ("1", "true", "yes", "on")
